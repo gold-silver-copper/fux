@@ -296,9 +296,8 @@ fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
         Some(long.len())
     );
     assert_eq!(again.parts.panes().len(), 2);
-    // Its panes found gone, it wrote a record: every name it read in a
-    // file of its own (it counts on no file another server wrote), and
-    // the old ones swept, the run being its own. Once, not at each change.
+    // Its panes found gone, it wrote a record: the name it read stays in
+    // the file it was read from, and what no structure names is swept.
     let named = large(&kept, NAME)?;
     assert_eq!(named.len(), 1, "the name, in one file: {named:?}");
     let tab = (again.parts.tabs_in(None).first())
@@ -337,80 +336,15 @@ fn read_whole(kept: &Path) -> Result<Vec<String>, String> {
     Ok(names.values().map(|name| name.to_string()).collect())
 }
 
-/// Two servers on one run (D-171: the first's lock file removed under it)
-/// each leave a record that reads whole, whatever the other does. The
-/// second takes the run back while a pane has not answered it, so it does
-/// not know the run is its own; the first, alive, then names its
-/// workspace anew and removes the old name's file, which the second read.
-/// The second, asked for a name too, writes its record: every name it
-/// holds in a file of its own, and a structure naming those alone. It
-/// reads whole at once, with no write of the first's to repair it, and
-/// the first's files are all there; and so does the first's next record.
-/// (Once the second's structure named the file the first had removed, and
-/// the run could not be taken back; before that its sweep took the
-/// first's new file.)
-#[cfg(unix)]
-#[test]
-fn two_servers_on_a_run_each_leave_a_record_that_reads_whole() -> TestResult {
-    let (options, journal) = defaults()?;
-    let dir = scratch("two")?;
-    let (mut first, kept) = recording(&dir, journal)?;
-    nest(&mut first, None, 1, options)?;
-    let (ws, tab, pane) = (first.parts.tabs_in(None).first())
-        .map(|(ws, tab)| (*ws, tab.id(), tab.root().first_pane()))
-        .ok_or("no tab")?;
-    let rename = |target: AnyRef, name: &str| Command::Rename {
-        target,
-        name: name.to_owned(),
-    };
-    ask(&mut first, &rename(AnyRef::Workspace(ws), "one"))?;
-    // The pane's own process, as the second finds it: it listens, and has
-    // not answered.
-    let socket = kept.join(pane.number().to_string());
-    let _silent = std::os::unix::net::UnixListener::bind(&socket)?;
-    let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
-    let (mut second, _) = recording(&dir, journal)?;
-    second.names_as = first.names_as.wrapping_add(1);
-    second.resume(record, Instant::now())?;
-    assert!(!second.owns(), "a pane has not answered");
-    // The first names its workspace anew, after the second read the
-    // record: the file of the name the second still has is gone.
-    ask(&mut first, &rename(AnyRef::Workspace(ws), "three"))?;
-    let named = |s: &Session, of: AnyRef| {
-        let (id, _) = s.named.get(&of).ok_or("no such name")?;
-        Ok::<_, String>((id.server, crate::record::name_file(&kept, *id)))
-    };
-    let (_, firsts) = named(&first, AnyRef::Workspace(ws))?;
-    // The second writes a record, as a client asks it for a name.
-    let origin = Origin::Cli(Caller::default());
-    let asked = Request::Do(rename(AnyRef::Tab(tab), "two"));
-    let begun = second.begin(asked, &origin, Instant::now());
-    assert!(matches!(begun, Begun::Done(_)), "made at once");
-    second.settle(Instant::now());
-    // It reads whole as it is: the second's, with the names it had.
-    assert_eq!(read_whole(&kept)?, ["one", "two"]);
-    for of in [AnyRef::Workspace(ws), AnyRef::Tab(tab)] {
-        assert_eq!(named(&second, of)?.0, second.names_as, "a file of its own");
-    }
-    assert_eq!(std::fs::read_to_string(&firsts)?, "three", "the first's");
-    // The second leaves. The first's next record reads whole too.
-    drop(second);
-    ask(&mut first, &rename(AnyRef::Tab(tab), "four"))?;
-    assert_eq!(read_whole(&kept)?, ["three", "four"]);
-    drop(first);
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(())
-}
-
 /// A server that took a run back and has not heard from a pane serves as
 /// one that has (D-172): a client attaches, which takes an id the record
 /// holds, and the record is written. And stopped then, it records the
 /// run's end (D-174): no start takes the run back.
 /// What it writes meanwhile does not grow with its changes: a long name it
-/// read is copied to a file of its own once, not with each record.
+/// read stays in the one file it was read from, copied by no record.
 #[cfg(unix)]
 #[test]
-fn a_server_not_yet_known_to_own_its_run_attaches_clients_and_records_its_end() -> TestResult {
+fn a_server_a_pane_has_not_answered_attaches_clients_and_records_its_end() -> TestResult {
     let (options, journal) = defaults()?;
     let dir = scratch("unsettled")?;
     let (mut first, kept) = recording(&dir, journal)?;
@@ -430,16 +364,14 @@ fn a_server_not_yet_known_to_own_its_run_attaches_clients_and_records_its_end() 
     let before = record.ids.clone();
     let (mut again, _) = recording(&dir, journal)?;
     again.resume(record, Instant::now())?;
-    assert!(!again.owns(), "a pane has not answered");
+    assert!(!again.awaited.is_empty(), "a pane has not answered");
     again.attach(24, 80, None)?;
     again.settle(Instant::now());
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
     assert_ne!(record.ids, before, "the client's id is recorded");
     assert!(!record.ended);
-    // Meanwhile a name it read is copied once, to a file of its own, and
-    // no later record copies it again; a name of its own it replaces
-    // leaves no file. The last server's file stays till the run is known
-    // to be this one's.
+    // Meanwhile a name it read is kept where it is, and no record copies
+    // it; a name it replaces leaves no file, the last server's neither.
     let (ws, tab) = (again.parts.tabs_in(None).first())
         .map(|(ws, tab)| (*ws, tab.id()))
         .ok_or("no tab")?;
@@ -449,18 +381,14 @@ fn a_server_not_yet_known_to_own_its_run_attaches_clients_and_records_its_end() 
     };
     ask(&mut again, &rename(AnyRef::Tab(tab), "t0"))?;
     let copies = large(&kept, LONG)?;
-    assert_eq!(
-        copies.len(),
-        2,
-        "the last server's, and its own: {copies:?}"
-    );
+    assert_eq!(copies.len(), 1, "the last server's alone: {copies:?}");
     for change in 1..=5 {
         ask(&mut again, &rename(AnyRef::Tab(tab), &format!("t{change}")))?;
     }
-    assert_eq!(large(&kept, LONG)?, copies, "copied once");
+    assert_eq!(large(&kept, LONG)?, copies, "never copied");
     let other: String = std::iter::repeat_n('m', usize::try_from(LONG)?).collect();
     ask(&mut again, &rename(AnyRef::Workspace(ws), &other))?;
-    assert_eq!(large(&kept, LONG)?.len(), 2, "its own old copy went");
+    assert_eq!(large(&kept, LONG)?.len(), 1, "the old name's file went");
     assert_eq!(
         read_whole(&kept)?.len(),
         2,

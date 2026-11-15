@@ -893,9 +893,9 @@ fn pin(
             Ok(()) | Err(_) => {}
         }
     }
-    if !panes.exists() {
-        fuxix::file::private_dir(panes)?;
-    }
+    // The directory is the one the server locked as it took the socket
+    // (`socket::bind_socket`), and is not made here: one gone since is
+    // not this server's to make again, and what is kept next fails.
     match own {
         true => Ok(()),
         false => crate::socket::keep_executable(exe),
@@ -1032,9 +1032,10 @@ impl Server {
                 }
             }
             self.ready = ready;
-            // A pane says another server holds it: two servers took one
-            // run (its lock's file was removed under the first). This one
-            // leaves it to that one.
+            // A pane says another server holds it. The run's lock keeps
+            // two servers off one run (`socket::bind_socket`), so this is
+            // where that lock did not hold; the pane is believed all the
+            // same, and this server leaves the run to that one.
             if let Some((pane, by)) = self.session.holder.take() {
                 self.leave(pane, by);
                 return;

@@ -6,7 +6,10 @@
 //! - Its directory is owned by the user, mode 0700; the directories above
 //!   it are not checked (`private_directory`). The socket is mode 0600, set
 //!   before `listen`.
-//! - A lock file beside the socket makes one server its only owner.
+//! - A lock on the run's own directory (`panes`) makes one server its only
+//!   owner, for as long as it lives: the lock is on the directory the
+//!   run's record is in, so whoever finds that record finds the lock, and
+//!   nothing that removes files can take it away (`lock_run`).
 //! - A leftover socket is replaced only when nothing answers on it.
 //! - At exit the socket is removed only if it is still the one this server
 //!   bound. On Linux an `O_PATH` descriptor keeps its inode allocated so the
@@ -193,7 +196,7 @@ pub fn owned(socket: &SocketPath) -> bool {
 }
 
 /// Whether the run on the socket at `path` lost its server: its record is
-/// left, which a stop removes, and no server holds the socket's lock, asked
+/// left, which a stop removes, and no server holds the run's lock, asked
 /// as a starting server does, once none is starting there.
 fn crashed(path: &Path) -> bool {
     if !panes(path).join("run").exists() {
@@ -202,11 +205,7 @@ fn crashed(path: &Path) -> bool {
     let Ok((starting, _)) = lock_file(path, ".starting") else {
         return false;
     };
-    starting.lock().is_ok()
-        && matches!(
-            lock_file(path, ".lock").map(|(lock, _)| lock.try_lock()),
-            Ok(Ok(()))
-        )
+    starting.lock().is_ok() && matches!(lock_run(path, false), Ok(Run::Ours(_)))
 }
 
 /// Whether process `pid` is gone: it has no session, or, on Linux, it is a
@@ -219,8 +218,131 @@ fn gone(pid: fuxix::process::Pid) -> bool {
     fuxix::process::session(pid).is_none() || cfg!(target_os = "linux") && zombie()
 }
 
+/// What locking the run on a socket found (`lock_run`).
+enum Run {
+    /// No server has it: the lock, this process's while it is kept.
+    Ours(File),
+    /// A server that lives has it: its process, where the system says
+    /// which (`locker`).
+    Theirs(Option<i32>),
+    /// No run is there: it has no directory, and none was to be made.
+    None,
+}
+
+/// How often a run's directory replaced as it was locked is locked again
+/// before the start is refused: it takes a run ending and one beginning
+/// there between two calls, each time.
+const LOCK_TRIES: usize = 8;
+
+/// Locks the run on the socket at `path`, without waiting: the lock is on
+/// the run's directory itself (`panes`), made if `make` and it is not
+/// there. That is what no cleaner of old files can undo while its server
+/// lives: the run's record is in that directory, so a server that finds
+/// the record finds this lock, and a directory removed (it was empty,
+/// then: no record, no run to take) and made again is another run's. A
+/// lock file beside the socket, as this once was, could be removed alone,
+/// and a second server then started on the live one's run. systemd's
+/// cleaner leaves a locked directory and all in it alone, too
+/// (tmpfiles.d(5)).
+///
+/// The lock is the one the directory at the path has: one removed, or
+/// replaced, between its opening and its locking is locked again.
+fn lock_run(path: &Path, make: bool) -> Result<Run, Error> {
+    let directory = panes(path);
+    for _ in 0..LOCK_TRIES {
+        if make {
+            match fuxix::file::private_dir(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(failed("creating ", &directory)(error)),
+            }
+        }
+        let opened = OpenOptions::new()
+            .read(true)
+            // std opens close-on-exec.
+            .custom_flags(fuxix::file::NOFOLLOW)
+            .open(&directory);
+        let lock = match opened {
+            Ok(lock) => lock,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && make => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Run::None),
+            Err(error) => return Err(io(&directory)(error)),
+        };
+        let held = lock.metadata().map_err(io(&directory))?;
+        if !held.is_dir() {
+            return Err(Error::Refused(format!(
+                "{} is not a directory: fux keeps a run there, and will not replace it",
+                directory.display()
+            )));
+        }
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => return Ok(Run::Theirs(locker(&held))),
+            // No guess at another way to be the only one: a filesystem
+            // that locks no directory (NFS, for one that must be written
+            // to be locked) has no fux server.
+            Err(fs::TryLockError::Error(error)) => {
+                return Err(Error::Refused(format!(
+                    "{} could not be locked ({error}): the lock on a run's directory is what                      makes its server the only one, so fux starts none there; FUX_SOCKET                      names a socket on another filesystem",
+                    directory.display()
+                )));
+            }
+        }
+        let there = fs::symlink_metadata(&directory).map(|meta| identity(&meta));
+        if there.is_ok_and(|there| there == identity(&held)) {
+            return Ok(Run::Ours(lock));
+        }
+    }
+    Err(Error::Refused(format!(
+        "{} was replaced each of the {LOCK_TRIES} times it was locked; fux starts no server there",
+        directory.display()
+    )))
+}
+
+/// The process that holds a lock on the directory `held`, as the system
+/// lists them: on Linux alone (`/proc/locks`, each named there checked to
+/// have that very directory open), and only to name it.
+fn locker(held: &fs::Metadata) -> Option<i32> {
+    let locks = fs::read_to_string("/proc/locks").ok()?;
+    let inode = format!(":{}", held.ino());
+    (locks.lines())
+        // `1: FLOCK ADVISORY WRITE 4242 00:2e:1234 0 EOF`
+        .filter_map(|line| {
+            let mut words = line.split_whitespace().skip(1);
+            let (kind, pid, file) = (words.next()?, words.nth(2)?, words.next()?);
+            (kind == "FLOCK" && file.ends_with(&inode)).then(|| pid.parse::<i32>().ok())?
+        })
+        .find(|pid| {
+            fs::read_dir(format!("/proc/{pid}/fd")).is_ok_and(|open| {
+                (open.flatten())
+                    .filter_map(|entry| fs::metadata(entry.path()).ok())
+                    .any(|meta| identity(&meta) == identity(held))
+            })
+        })
+}
+
+/// Why a start on the socket at `path` is refused for the server that
+/// holds its run (`server`, where the system named it). One whose socket
+/// file is gone, removed under it, is said so: no client finds it there.
+fn held_by(path: &Path, server: Option<i32>) -> String {
+    let who = server.map_or_else(String::new, |pid| format!(" (process {pid})"));
+    let gone = match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => format!(
+            ": it lives, and holds {}, but its socket file is gone, so no client reaches it",
+            panes(path).display()
+        ),
+        Ok(_) | Err(_) => String::new(),
+    };
+    format!(
+        "another fux server{who} is already using {}{gone}",
+        path.display()
+    )
+}
+
 /// The lock file beside the socket at `path`, its name ending `end`, made
-/// if it is not there, and its path.
+/// if it is not there, and its path. It orders the servers starting there
+/// (`.starting`), and only that: which one has the run is `lock_run`'s to
+/// say, so this file removed under a start costs that start's turn alone.
 fn lock_file(path: &Path, end: &str) -> Result<(File, PathBuf), Error> {
     let mut lock_path = path.as_os_str().to_owned();
     lock_path.push(end);
@@ -252,14 +374,13 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
     starting
         .lock()
         .map_err(failed("locking ", &starting_path))?;
-    let (lock, lock_path) = lock_file(path, ".lock")?;
-    lock.try_lock().map_err(|error| match error {
-        fs::TryLockError::WouldBlock => Error::Refused(format!(
-            "another fux server is already using {}",
-            path.display()
-        )),
-        fs::TryLockError::Error(error) => failed("locking ", &lock_path)(error),
-    })?;
+    // Before anything there is touched: a server refused here has changed
+    // nothing, its socket least of all.
+    let lock = match lock_run(path, true)? {
+        Run::Ours(lock) => lock,
+        Run::Theirs(server) => return Err(Error::Refused(held_by(path, server))),
+        Run::None => return Err(io(&panes(path))(io::ErrorKind::NotFound.into())),
+    };
     // Pinned before the probe, so the file found dead is the one removed.
     let stale = Pinned::new(path);
     match fs::symlink_metadata(path) {
@@ -271,9 +392,10 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
                 path.display()
             )));
         }
-        // With the lock held, one that listens is no live fux server's,
-        // but still refused, unless its run's record is left: then it is a
-        // crashed one's, held by a process of its (`listened`, full or not).
+        // With the run's lock held, one that listens is no live fux
+        // server's of this run, but still refused, unless its run's record
+        // is left: then it is a crashed one's, held by a process of its
+        // (`listened`, full or not).
         Ok(_) if listened(path) && !panes(path).join("run").exists() => {
             return Err(Error::Refused(format!(
                 "another fux server is already listening on {}",
@@ -536,17 +658,19 @@ pub struct Held {
 
 /// Takes the locks of the socket at `path` again, as a starting server
 /// does, for a server that stopped to let go of what its run kept: none if
-/// another server holds the socket now, whose run's the files there are.
-/// A server that starts meanwhile waits for it, as for one starting.
+/// another server holds the run now, whose the files there are, or if
+/// nothing is kept there any more. A server that starts meanwhile waits
+/// for it, as for one starting.
 pub fn hold_again(path: &Path) -> Option<Held> {
     let (starting, _) = lock_file(path, ".starting").ok()?;
     starting.lock().ok()?;
-    let (lock, _) = lock_file(path, ".lock").ok()?;
-    lock.try_lock().ok()?;
-    Some(Held {
-        _starting: starting,
-        _lock: lock,
-    })
+    match lock_run(path, false) {
+        Ok(Run::Ours(lock)) => Some(Held {
+            _starting: starting,
+            _lock: lock,
+        }),
+        Ok(Run::Theirs(_) | Run::None) | Err(_) => None,
+    }
 }
 
 /// Whether the process `pid` still runs (`gone`).

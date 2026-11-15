@@ -12,8 +12,8 @@
 //! `name.S.N`, written once, when the name is given, and the structure,
 //! written whole on every change of the tree, costs what its rows do,
 //! whatever the names weigh. `S` is the process of the server that wrote
-//! the file: two servers that find themselves on one run (D-171) never
-//! write one file.
+//! the file: a server that takes a run back numbers its own names apart
+//! from those it read.
 //!
 //! The order keeps every crash recoverable: a new name's file is written
 //! before the structure that names it, and a name no longer used is
@@ -22,13 +22,9 @@
 //! no structure names, which the server that takes the run back removes
 //! with the first record it writes as the run's one server (`sweep`).
 //!
-//! Two servers on one run (D-171, after the first's lock file was removed
-//! under it) are kept from each other's files as far as this goes: a
-//! server removes none but its own till the run is known to be its own,
-//! and the record it writes on a run it took back names files of its own
-//! alone, each name it read copied to one, once (`Session::commit`). A
-//! narrow race is left (D-175): a record there may then name a removed
-//! file, till a server of the run writes again.
+//! A run has one server at a time (D-177: the lock on its directory,
+//! `socket::bind_socket`), so every file here is that server's to keep or
+//! remove, whichever server wrote it.
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
@@ -60,8 +56,8 @@ pub struct Tree {
 wired!(struct Tree { top, workspaces, tabs });
 
 /// A name's number: the process id of the server that wrote its file, and
-/// which of that server's names it is. No two servers alive at once give
-/// one number, so none writes over another's name.
+/// which of that server's names it is: a server gives no number twice,
+/// and none an earlier server's file has, so none is written over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NameId {
     pub server: u32,
@@ -199,9 +195,8 @@ pub fn sweep(panes: &Path, kept: &BTreeSet<NameId>) {
 
 /// Writes `bytes`, a record, to `path`, whole: to a file beside it renamed
 /// over it, so that a crash leaves the last one or this one, never a
-/// part. That file is this process's own (`PATH.new.PID`): two servers
-/// writing one path write no file of each other's, and one that fails
-/// removes its own alone. No `fsync`: a machine's crash ends the panes
+/// part. That file is this process's own (`PATH.new.PID`), and one that
+/// fails removes it alone. No `fsync`: a machine's crash ends the panes
 /// anyway.
 pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
