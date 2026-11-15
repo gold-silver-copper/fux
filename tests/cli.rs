@@ -867,21 +867,25 @@ fn renames_to_names_of_a_megabyte_are_read_whole_a_batch_each() -> Outcome {
         format!("(rename (tab 1) {})", long('t', LONG_NAME / 64)),
         "(rename (pane 1) \"after\")".to_owned(),
     ];
-    for rename in renames {
-        server.ok(&[&format!("(sequence! {rename} #inert)")])?;
-    }
+    // The first is read before the second is made: the journal's room is
+    // two frames, and two such names with their entries are more.
     let mut batches = Vec::new();
-    loop {
-        let read = format!(
-            "(next-events (all) {} 0)",
-            fux::script::quoted(cursor.trim())
-        );
-        let next = server.ok(&[&format!("(get {read} \"next\")")])?;
-        if next == cursor {
-            break;
+    for renames in [renames.get(..1), renames.get(1..)] {
+        for rename in renames.unwrap_or_default() {
+            server.ok(&[&format!("(sequence! {rename} #inert)")])?;
         }
-        batches.push(server.ok(&[&read])?);
-        cursor = next;
+        loop {
+            let read = format!(
+                "(next-events (all) {} 0)",
+                fux::script::quoted(cursor.trim())
+            );
+            let next = server.ok(&[&format!("(get {read} \"next\")")])?;
+            if next == cursor {
+                break;
+            }
+            batches.push(server.ok(&[&read])?);
+            cursor = next;
+        }
     }
     let [workspace, tab, pane] = batches.as_slice() else {
         return Err(format!("{} batches", batches.len()));

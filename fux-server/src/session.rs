@@ -11225,8 +11225,8 @@ mod journal_tests {
         assert_eq!(kind, "pane\n");
         let mut s = started()?;
         let from = s.parts.journal().end(s.run);
-        let kept = fux::script::default_state()?.preferences.journal_bytes;
-        for _ in 0..kept.get().saturating_add(1) {
+        // One bell more than the journal's room holds.
+        for _ in 0..s.parts.journal().rows().saturating_add(1) {
             s.output(PaneId::of(1), b"\x07", Instant::now());
         }
         let job =

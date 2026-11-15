@@ -108,13 +108,6 @@ struct Entry {
     event: Event,
     actor: Actor,
 }
-impl Entry {
-    /// The bytes it holds: itself, and what its event says at the size
-    /// it is stored.
-    fn bytes(&self) -> usize {
-        std::mem::size_of::<Entry>().saturating_add(self.event.stored())
-    }
-}
 
 /// A time in the journal: before entry `seq` and before the `moves`th
 /// workspace to leave where it was. What `truncate` takes it back to,
@@ -143,9 +136,24 @@ struct Move {
     ws: WsId,
     until: Seq,
 }
-/// The bytes a move holds: its row in each of the two tables.
-const MOVE: usize =
-    std::mem::size_of::<Move>() + std::mem::size_of::<((WsId, Mark), Option<WsId>)>();
+/// The bytes one row of `Journal::was` is.
+const WAS: usize = std::mem::size_of::<((WsId, Mark), Option<WsId>)>();
+/// The rows a table of the journal's gains at once, at least.
+const ROWS: usize = 16;
+
+/// Gives back the rows of `table` beyond half as many again as it holds,
+/// and all of them once it holds none: a table that held many rows once
+/// holds no room for them after.
+fn trim<T>(table: &mut VecDeque<T>) {
+    let rows = table.len();
+    let spare = if rows == 0 { 0 } else { ROWS };
+    let most = rows
+        .saturating_mul(2)
+        .saturating_add(spare.saturating_mul(2));
+    if table.capacity() > most {
+        table.shrink_to(rows.saturating_add(rows / 2).saturating_add(spare));
+    }
+}
 
 /// Entry `entry` happened at a place as the workspaces were nested at
 /// `mark`, before the change that journaled it, and as they were when it
@@ -172,16 +180,17 @@ pub type Nested<'a> = &'a dyn Fn(WsId) -> Option<WsId>;
 
 /// What happened, as many of the last events as `room` bytes hold, the
 /// last of them at least: a reader further behind is told how many it
-/// missed. An entry holds no more for being in a workspace in others:
+/// missed. What it holds is counted as it is held (`held`): each table at
+/// the rows it has room for, used or not, and each text at the size
+/// stored. An entry holds no more for being in a workspace in others:
 /// which held it is read from how they are nested now and from each
 /// workspace's leaving a place since (`moves`).
 #[derive(Debug)]
 pub struct Journal {
     entries: VecDeque<Entry>,
-    /// The bytes it may hold, and those it holds: its entries, the moves
-    /// and the `thens`.
+    /// The bytes it may hold, and those its entries' texts hold.
     room: usize,
-    held: usize,
+    text: usize,
     next: Seq,
     actor: Actor,
     exhausted: bool,
@@ -202,7 +211,7 @@ impl Journal {
         Journal {
             entries: VecDeque::new(),
             room: room.get(),
-            held: 0,
+            text: 0,
             next: Seq::default(),
             actor: Actor::default(),
             exhausted: false,
@@ -221,7 +230,28 @@ impl Journal {
         self.was.insert((ws, at), from);
         let until = self.next;
         self.moves.push_back(Move { at, ws, until });
-        self.held = self.held.saturating_add(MOVE);
+    }
+    /// The bytes it holds: its texts, its tables at the rows each has room
+    /// for, and a row of `was` for each move.
+    fn held(&self) -> usize {
+        let rows = |rows: usize, row: usize| rows.saturating_mul(row);
+        (self.text)
+            .saturating_add(rows(self.entries.capacity(), std::mem::size_of::<Entry>()))
+            .saturating_add(rows(self.moves.capacity(), std::mem::size_of::<Move>()))
+            .saturating_add(rows(self.thens.capacity(), std::mem::size_of::<Then>()))
+            .saturating_add(rows(self.was.len(), WAS))
+    }
+    /// The entries it holds.
+    #[cfg(test)]
+    pub(crate) fn kept(&self) -> usize {
+        self.entries.len()
+    }
+    /// The most entries its room holds: those that hold no text.
+    #[cfg(test)]
+    pub(crate) fn rows(&self) -> usize {
+        (self.room)
+            .checked_div(std::mem::size_of::<Entry>())
+            .unwrap_or(0)
     }
     /// A change begins that may journal an event at a place as it was
     /// before it (`push_then`): how the workspaces are nested now is kept
@@ -309,7 +339,7 @@ impl Journal {
     /// The bytes it holds, as it counts them.
     #[cfg(test)]
     pub(crate) fn bytes(&self) -> usize {
-        self.held
+        self.held()
     }
     /// Request scopes restore the previous actor before returning; deferred
     /// work retains its own actor rather than inheriting a later request's.
@@ -346,34 +376,54 @@ impl Journal {
                 mark,
                 now,
             });
-            self.held = self.held.saturating_add(std::mem::size_of::<Then>());
         }
-        let entry = Entry { seq, event, actor };
-        self.held = self.held.saturating_add(entry.bytes());
-        self.entries.push_back(entry);
-        self.evict();
-    }
-    /// Lets the oldest entries go till what is held fits its room, but
-    /// for the newest, and the moves no entry kept happened before.
-    fn evict(&mut self) {
-        while self.held > self.room && self.entries.len() > 1 {
-            let Some(evicted) = self.entries.pop_front() else {
-                break;
-            };
-            self.held = self.held.saturating_sub(evicted.bytes());
-            if (self.thens.front()).is_some_and(|then| then.entry == evicted.seq) {
-                self.thens.pop_front();
-                self.held = (self.held).saturating_sub(std::mem::size_of::<Then>());
+        self.text = self.text.saturating_add(event.stored());
+        // The ring's table grows by the rows its room has left, and no
+        // more than half again: with no row left, the oldest entry's is
+        // the new one's.
+        if self.entries.len() == self.entries.capacity() {
+            let left = (self.room.saturating_sub(self.held()))
+                .checked_div(std::mem::size_of::<Entry>())
+                .unwrap_or(0);
+            let more = left.min((self.entries.len() / 2).max(ROWS));
+            match more {
+                0 if self.entries.len() > 1 => self.oldest_goes(),
+                _ => self.entries.reserve_exact(more.max(1)),
             }
         }
-        let first = self.first();
-        while let Some(moved) = self.moves.front()
-            && moved.until < first
-            && self.open.is_none_or(|open| moved.at < open)
-        {
-            self.was.remove(&(moved.ws, moved.at));
-            self.moves.pop_front();
-            self.held = self.held.saturating_sub(MOVE);
+        self.entries.push_back(Entry { seq, event, actor });
+        self.evict();
+    }
+    /// The oldest entry is let go.
+    fn oldest_goes(&mut self) {
+        let Some(evicted) = self.entries.pop_front() else {
+            return;
+        };
+        self.text = self.text.saturating_sub(evicted.event.stored());
+        if (self.thens.front()).is_some_and(|then| then.entry == evicted.seq) {
+            self.thens.pop_front();
+        }
+    }
+    /// Lets go the moves no entry kept happened before, gives back the
+    /// room of each table for rows it holds no more, and lets the oldest
+    /// entries go, but for the newest, till what is held fits its room.
+    fn evict(&mut self) {
+        loop {
+            let first = self.first();
+            while let Some(moved) = self.moves.front()
+                && moved.until < first
+                && self.open.is_none_or(|open| moved.at < open)
+            {
+                self.was.remove(&(moved.ws, moved.at));
+                self.moves.pop_front();
+            }
+            trim(&mut self.entries);
+            trim(&mut self.moves);
+            trim(&mut self.thens);
+            if self.held() <= self.room || self.entries.len() <= 1 {
+                break;
+            }
+            self.oldest_goes();
         }
     }
     pub fn end(&self, run: Run) -> Cursor {
@@ -394,14 +444,11 @@ impl Journal {
     /// (`Session::transact`). What they evicted is gone.
     pub(crate) fn truncate(&mut self, mark: Mark) {
         while let Some(entry) = self.entries.pop_back_if(|entry| entry.seq >= mark.seq) {
-            self.held = self.held.saturating_sub(entry.bytes());
+            self.text = self.text.saturating_sub(entry.event.stored());
         }
-        while (self.thens.pop_back_if(|then| then.entry >= mark.seq)).is_some() {
-            self.held = (self.held).saturating_sub(std::mem::size_of::<Then>());
-        }
+        while (self.thens.pop_back_if(|then| then.entry >= mark.seq)).is_some() {}
         while let Some(moved) = self.moves.pop_back_if(|moved| moved.at.moves >= mark.moves) {
             self.was.remove(&(moved.ws, moved.at));
-            self.held = self.held.saturating_sub(MOVE);
         }
         self.moved = self.moved.min(mark.moves);
         if mark.seq < self.next {
@@ -1452,6 +1499,7 @@ mod tests {
             .ok_or("notification")?;
         let each = std::mem::size_of::<Entry>().saturating_add(maximum.stored());
         assert!(maximum.stored() >= 501 * 4, "its text counts");
+        let texts = |n: usize| maximum.stored().saturating_mul(n);
         let room = each.saturating_mul(8).saturating_add(each / 2);
         let mut journal =
             Journal::new(fux_wire::command::JournalBytes::new(room).ok_or("journal")?);
@@ -1460,13 +1508,15 @@ mod tests {
         let from = |seq| Cursor { seq: Seq(seq), run };
         for n in 1..=8 {
             journal.push(maximum.clone());
-            assert_eq!((journal.entries.len(), journal.held), (n, each * n));
+            assert_eq!((journal.entries.len(), journal.text), (n, texts(n)));
+            assert!(journal.held() <= room);
         }
         let mut oldest = Reader::new(Scope::All, &journal, run, Some(from(0)))?;
         let full = oldest.batch(&journal, &top, true)?;
         assert_eq!((full.missed, full.first.seq), (0, Seq(0)));
         journal.push(maximum.clone());
-        assert_eq!((journal.entries.len(), journal.held), (8, each * 8));
+        assert_eq!((journal.entries.len(), journal.text), (8, texts(8)));
+        assert!(journal.held() <= room);
         // Its first is the oldest it holds, as many as a reader from 0 missed.
         let mut lost = Reader::new(Scope::All, &journal, run, Some(from(0)))?;
         let wrapped = lost.batch(&journal, &top, true)?;
@@ -1478,7 +1528,8 @@ mod tests {
         assert_eq!(journal.entries.len(), 1);
         assert_eq!(lost.batch(&journal, &top, true)?.events.len(), 1);
         journal.push(bell(1));
-        assert_eq!((journal.entries.len(), journal.held), (1, 80));
+        assert_eq!((journal.entries.len(), journal.text), (1, 0));
+        assert!(journal.held() <= room);
         if cfg!(target_pointer_width = "64") {
             assert_eq!(std::mem::size_of::<Entry>(), 80);
             assert_eq!(std::mem::size_of::<Event>(), 56);
@@ -1519,8 +1570,8 @@ mod tests {
         for n in 1..=1000 {
             say(&mut session, n);
             let journal = session.parts.journal();
-            assert!(journal.held <= room, "{} held of {room}", journal.held);
-            longest = longest.max(journal.entries.back().map_or(0, |entry| entry.bytes()));
+            assert!(journal.held() <= room, "{} held of {room}", journal.held());
+            longest = longest.max(journal.entries.back().map_or(0, |e| e.event.stored()));
         }
         assert!(longest > 65_000 * 3, "a title holds {longest} bytes");
         let held = fux_vt_peak::ThreadPeak.live().saturating_sub(start);
@@ -1668,13 +1719,17 @@ mod tests {
         assert_eq!(read(&journal, &now, a)?, [0, 1, 3, 4]);
         // The moves go with the entries from before them, and are counted.
         assert_eq!(journal.moves.len(), 4);
-        assert_eq!(journal.held, 5 * 80 + 4 * MOVE);
+        assert_eq!((journal.was.len(), journal.text), (4, 0));
         for _ in 0..KEPT {
             journal.push(bell(d));
         }
         assert_eq!((journal.moves.len(), journal.was.len()), (0, 0));
-        assert_eq!(journal.held, journal.entries.len() * 80);
-        assert!(journal.entries.len() >= KEPT - 4);
+        assert!(journal.held() <= KEPT * 80);
+        assert!(
+            journal.entries.len() >= KEPT - 8,
+            "{}",
+            journal.entries.len()
+        );
         Ok(())
     }
 

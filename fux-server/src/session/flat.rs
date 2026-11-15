@@ -141,7 +141,7 @@ fn live() -> usize {
 
 /// F013: an event in a workspace in a thousand others holds what one at
 /// the top does. A pane's program sets 4,000 titles: the journal counts
-/// the same bytes for them at either depth, and the thread's allocator,
+/// as many bytes for them at either depth, and the thread's allocator,
 /// which counts what is really held, differs by less than the journal's
 /// ring grows by at once. With each entry's chain of workspaces it was
 /// 16 MiB more at the depth.
@@ -164,14 +164,66 @@ fn a_journal_entry_holds_the_same_at_any_depth() -> TestResult {
         ))
     };
     let (shallow, deep) = (titles(1)?, titles(1_000)?);
-    assert_eq!(shallow.0, deep.0, "what the journal counts");
+    // What the journal counts: 4,000 entries and their titles, and the
+    // rows its table has room for, which come half as many again at once.
     assert!(shallow.0 >= 4_000 * 80, "{shallow:?}");
+    assert!(
+        deep.0 < shallow.0.saturating_mul(3) / 2,
+        "counted: {} at depth 1, {} at depth 1,000",
+        shallow.0,
+        deep.0
+    );
     assert!(
         deep.1.abs_diff(shallow.1) < 1 << 20,
         "held: {} at depth 1, {} at depth 1,000",
         shallow.1,
         deep.1
     );
+    Ok(())
+}
+
+/// Killing the outermost of N nested workspaces, a pane elsewhere left
+/// running, journals each one's leaving what held it while the kill goes
+/// on, N rows at once whatever the journal's room. The room those rows
+/// took is given back once the events that follow let them go: with the
+/// ring full of bells before and after, the thread holds no more after a
+/// kill of 16,000 than of 1,000, and the ring as many bells as before. A
+/// table that kept room for every row it once held kept half a megabyte
+/// of it at 16,000, uncounted.
+#[test]
+fn what_a_deep_kill_took_of_the_journal_is_given_back_at_any_depth() -> TestResult {
+    let (options, room) = defaults()?;
+    let left = |depth: usize| -> Result<usize, String> {
+        let (mut s, _) = testing::attached(24, 80)?;
+        let bells = |s: &mut Session| {
+            for _ in 0..s.parts.journal().rows().saturating_add(1) {
+                s.output(PaneId::of(1), b"\x07", Instant::now());
+            }
+        };
+        bells(&mut s);
+        let (start, kept) = (live(), s.parts.journal().kept());
+        nest(&mut s, None, depth, options)?;
+        let (_, outermost) = innermost(&s)?;
+        let kill = Command::Kill {
+            target: Some(AnyRef::Workspace(outermost)),
+        };
+        ask(&mut s, &kill)?;
+        assert_eq!(s.parts.every_workspace().len(), 1);
+        bells(&mut s);
+        let held = s.parts.journal().bytes();
+        assert!(held <= room.get(), "{held} counted at depth {depth}");
+        // No room is kept for rows gone, so as many bells fit as before.
+        assert_eq!(
+            s.parts.journal().kept(),
+            kept,
+            "bells kept at depth {depth}"
+        );
+        Ok(live().saturating_sub(start))
+    };
+    for depth in [1_000, 4_000, 16_000] {
+        let left = left(depth)?;
+        assert!(left < 64 << 10, "{left} bytes left held at depth {depth}");
+    }
     Ok(())
 }
 
@@ -202,10 +254,10 @@ fn nesting_deep_and_killing_holds_no_more_than_the_journals_room(rounds: usize) 
         }
     }
     let end = live();
-    // The ring's own table is a power of two long, so up to twice its
-    // entries; a move's rows are in a map with room to spare in each node.
+    // Beyond what the journal counts: the nodes of its map of moves, and
+    // what the session keeps of ten thousand ids.
     assert!(
-        end.saturating_sub(start) < room.get().saturating_mul(3),
+        end.saturating_sub(start) < room.get().saturating_mul(2),
         "{} bytes held more after {rounds} rounds, the journal's room {}",
         end.saturating_sub(start),
         room.get()
