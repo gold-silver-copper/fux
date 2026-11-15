@@ -1009,10 +1009,18 @@ impl<'a> PaneMut<'a> {
         self.queued();
     }
     /// Its program is sent `held`'s mouse report, `report`; the button
-    /// `send-mouse press` holds is `held` once it is queued.
-    pub fn send_mouse(&mut self, report: &[u8], held: Option<fux_vt::keys::mouse::MouseButton>) {
-        self.send(report, Sent::Mouse, None);
-        self.pane.mouse_held = held;
+    /// `send-mouse press` holds is `held` once it is queued. False if it
+    /// could not be (`send`): no button is held for a press never sent.
+    pub fn send_mouse(
+        &mut self,
+        report: &[u8],
+        held: Option<fux_vt::keys::mouse::MouseButton>,
+    ) -> bool {
+        let queued = self.send(report, Sent::Mouse, None);
+        if queued {
+            self.pane.mouse_held = held;
+        }
+        queued
     }
     /// A request sent `signal` to what runs in its terminal's foreground.
     pub fn tell_signalled(&mut self, signal: fuxix::process::Signal) {
@@ -1029,11 +1037,13 @@ impl<'a> PaneMut<'a> {
         self.pane.push_with(write);
         self.queued();
     }
-    /// Its program is told the scheme is `scheme`.
+    /// Its program is told the scheme is `scheme`, once that is queued:
+    /// one that could not be is offered again (`Host::tell_schemes`).
     pub fn offer_scheme(&mut self, scheme: Scheme) {
-        self.pane.push(scheme.report());
-        self.pane.scheme_told = Some(scheme);
-        self.queued();
+        if self.pane.push(scheme.report()) {
+            self.pane.scheme_told = Some(scheme);
+            self.queued();
+        }
     }
     #[must_use]
     pub fn host(&mut self, colours: Colours, palette: Palette, graphics: fux_vt::Graphics) -> bool {
@@ -1484,8 +1494,10 @@ impl Pane {
         if begun.is_none() && slice.len() < bytes.len() {
             begun = Some((read, fux_vt::Stop::Budget));
         }
-        let unkept = u64::from(!self.input.reply(&sink.replies));
-        if let Some(scheme) = sink.told {
+        // A scheme it asked for is told once its reply is queued.
+        let kept = self.input.reply(&sink.replies);
+        let unkept = u64::from(!kept);
+        if let Some(scheme) = sink.told.filter(|_| kept) {
             self.scheme_told = Some(scheme);
         }
         let pictures = sink.pictures;

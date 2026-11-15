@@ -1248,8 +1248,12 @@ impl Host {
             return Err(fail(Code::Mouse, message));
         }
         let version = p.version(run);
-        p.send_mouse(&report, held);
-        Ok(Answered::Acted(version))
+        let queued = p.send_mouse(&report, held);
+        drop(p);
+        match queued {
+            true => Ok(Answered::Acted(version)),
+            false => Err(self.not_queued()),
+        }
     }
 
     /// `signal` sent to the process group that runs in its foreground: the
@@ -2730,6 +2734,42 @@ mod tests {
         assert!(largest > LAUNCH, "its launch is in none: {sizes:?}");
         // A message's own few bytes beside its report's.
         assert!(largest.saturating_add(64) <= MAX_PAYLOAD, "{sizes:?}");
+        Ok(())
+    }
+
+    /// A pane whose input waits behind a paste still to come, with as much
+    /// behind it as may wait (`pane::BEHIND`): no more is queued.
+    fn full(rows: u16, cols: u16) -> Result<Host, Box<dyn std::error::Error>> {
+        let mut host = lone(rows, cols)?;
+        host.pane_mut().expect_paste(7);
+        assert!(host.pane_mut().typed(&vec![b'x'; crate::pane::BEHIND]));
+        Ok(host)
+    }
+
+    /// A mouse press that could not be queued is refused, and holds no
+    /// button: the next move is no drag.
+    #[test]
+    fn a_mouse_press_not_queued_is_refused_and_holds_no_button() -> TestResult {
+        let mut host = full(5, 20)?;
+        host.output(b"\x1b[?1000h", Instant::now());
+        let press = Mouse::Press(command::Button::Left);
+        assert!(host.send_mouse(press, 0, 0).is_err(), "acted, unqueued");
+        assert_eq!(host.pane().mouse_held, None);
+        Ok(())
+    }
+
+    /// A colour-scheme report that could not be queued is not marked told:
+    /// it is sent once there is room.
+    #[test]
+    fn a_scheme_report_not_queued_is_sent_once_there_is_room() -> TestResult {
+        let mut host = full(5, 20)?;
+        host.hosting.scheme = Some(fux_vt::keys::colour::Scheme::Dark);
+        host.output(b"\x1b[?2031h", Instant::now());
+        host.tell_schemes();
+        assert_eq!(host.pane().scheme_told, None, "told, unqueued");
+        host.pane_mut().paste_came(7);
+        host.tell_schemes();
+        assert_eq!(host.pane().scheme_told, Some(fux_vt::keys::colour::Scheme::Dark));
         Ok(())
     }
 
