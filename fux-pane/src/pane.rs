@@ -1286,7 +1286,7 @@ impl Pane {
 
     /// A frame's bytes read but `left`, the work they leave counted in:
     /// once neither is left, the frame is done and a resize it held up is
-    /// taken, its read ended first. Whether one was.
+    /// taken. Whether one was.
     fn frame_read(&mut self, left: usize, tell: &mut Teller<'_>) -> bool {
         self.frame_left = left;
         self.frame_work = left == 0 && self.parser.has_work_left();
@@ -1517,7 +1517,7 @@ impl Pane {
             return;
         }
         self.release_frame(now, tell);
-        // The frame read now ends its read, before the resize's own losses.
+        // The frame read now was a turn's read: the resize has its own.
         self.read_done();
         if self.mid_frame() {
             self.resize_to = Some(size);

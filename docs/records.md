@@ -401,8 +401,12 @@ not grow. A
 journal is its server process's, ordered as each pane's process reported: a server that takes a run
 back after a crash (`(start)`) keeps one of its own, and refuses a cursor from the one before
 (`bad-value`), saying that what came between is lost: resnapshot. A change to the tree (a name, a
-layout, a new pane) is told only once the run's record holds it: one whose record can't be written (a
-full disk) fails `client`, saying so, and is not made.
+layout, a new pane) is made and told whether or not the run's record could be written: one whose
+record can't be (a full disk) stands, its asker, the attached clients and the log told once that the
+record is behind, and the next change writes it. A server that takes the run back before then finds
+the tree as last written, and may give again the ids given since: a pane, tab or workspace made while
+the record was behind is not one a later id of the same number names. A new pane alone waits for the
+record: with none written, its program is not started, and the request fails `client`.
 
 The journal guarantees ordered invalidations, not complete state replication: a later snapshot can
 already contain newer state. Foreground process groups and continuous terminal cell changes are
@@ -530,7 +534,9 @@ detach) always run; only its pastes wait for one another, the second sent once t
 another sent a client (`send-keys` to a client), more than 64 keys of it in a row, goes on from that client
 as a paste's text does, a piece at a time, and the request is answered once the program took it. While
 a paste is open or its text still to come, whatever else its program is to read (another client's keys, the
-answers to its own queries) waits behind the paste's closing bracket, a frame of it at most.
+answers to its own queries) waits behind the paste's closing bracket, a frame of it at most: past
+that, what is typed is not taken and its typist is told, and an answer to the program's own query is
+let go, counted nowhere.
 [`codes.txt`](codes.txt) lists every kind with its exit status.
 
 A program catches a failure by kind with `(catch-kind! EXPRESSION KIND NAME HANDLER...)`, or any with

@@ -472,7 +472,7 @@ pub fn hand(accepted: Accepted) -> Handed {
 
 /// Starts `fux __conn` from `exe`, its link on stdin and `out` on stdout:
 /// the server's end of its link, and the process, which the server reaps
-/// by name once it ends (`Server::reap`).
+/// by its pid once it ends (`Server::reap`).
 pub fn launch_conn(
     exe: &Path,
     out: Handed,

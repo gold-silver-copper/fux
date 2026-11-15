@@ -483,8 +483,8 @@ The tests start real servers and shells: they need `/bin/sh`, `/bin/bash`
 and `python3`, use `dash` if it is on `PATH`, and with `FUX_TEST_SHELLS=1`
 also zsh and fish. Tools outside the workspace, each with a README:
 [`fux-vt/compare`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md) (fux's terminal emulator
-beside other terminals), [`diff`](https://github.com/gold-silver-copper/fux/blob/master/diff/README.md) (fux beside its last
-release), [`bench`](https://github.com/gold-silver-copper/fux/blob/master/bench/README.md) (speed, latency and footprint),
+beside other terminals), [`diff`](https://github.com/gold-silver-copper/fux/blob/master/diff/README.md) (fux-vt beside
+an earlier commit of itself), [`bench`](https://github.com/gold-silver-copper/fux/blob/master/bench/README.md) (speed, latency and footprint),
 [`fuzz`](https://github.com/gold-silver-copper/fux/blob/master/fuzz/README.md) (libFuzzer targets) and [`walk`](https://github.com/gold-silver-copper/fux/blob/master/walk/README.md)
 (scripted runs of the real binary).
 

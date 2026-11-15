@@ -160,8 +160,7 @@ impl Side {
             mirror.set_host_graphics(graphics);
         }
         mirror.set_picture_bytes(drawn.picture_bytes);
-        // Every byte read, budget or no: the bytes paint one screen. A
-        // refusal loses only what it was for, and the mirror shows the rest.
+        // Every byte read, budget or no: the bytes paint one screen.
         mirror.process_all(&drawn.screen, &mut ());
     }
 }
@@ -1437,8 +1436,7 @@ fn serve_on(client: &Stream, mut link: End) -> Result<(), String> {
         // Its server out of reach, what it would say to it is let go: its
         // link then reads to its end, what its server said before it went
         // is taken, and its client is told (`gone`, below), so that one in
-        // hand whose server went before it heard of it (a spare's, taken as
-        // its server stopped) is not just closed.
+        // hand whose server went before it heard of it is not just closed.
         if link.flush().is_err() {
             link.out.take(link.out.len());
         }

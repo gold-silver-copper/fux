@@ -69,8 +69,9 @@ pub struct Remote {
     /// whose asker went first is let go (`Link::unask`). Of what says how
     /// it is to be, only the latest of each kind since the last question
     /// is kept: a question is answered as it was when it was asked, after
-    /// what was said before it and before what was said after. So what a
-    /// pane that reads nothing is owed grows only with those still asking.
+    /// what was said before it and before what was said after. What a
+    /// pane that reads nothing is owed grows with those still asking, and
+    /// with what else is said to it meanwhile (a key a client types).
     pub parked: Vec<(Option<u64>, ToPane)>,
     /// The program whose handle the server copied from it (Windows,
     /// D-134), till another takes its place or the pane ends.

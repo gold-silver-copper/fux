@@ -4,7 +4,7 @@ What a program in a pane can make fux-vt do, and the numbers that hold
 it back: the threat model (1), every bound with its test (2), memory
 (3), work and the quota a call spends (4), and the
 checker's invariants (6). The code and tests cite it by row (B01 to
-B46 but B07, B10 and B29, which are gone, and B34a) and by section number.
+B46 but B07, B10, B29 and B44, which are gone, and B34a) and by section number.
 
 "The defaults" are fux's: a 50×200 screen (N = 10,000 cells, R = 50
 rows, C = 200 columns) and H = 8 MiB of history.

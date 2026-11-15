@@ -655,7 +655,7 @@ impl End {
 
     /// `next_message`, for what this end asked for and may be long (a
     /// pane's screen or capture) and, for now, a paste's body: its pieces
-    /// joined into `joining`, as far as the OS gives memory.
+    /// joined into `joining`.
     pub fn next_long<T: Wire>(
         &mut self,
         joining: &mut Joining,

@@ -248,8 +248,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   `READY`. Notices before `READY` go to the server's log (`notice: ...`): the built-in ConPTY's
   losses, and a launcher job that binds the run (`process::job_fate`, D-135). PR 8's client should
   print them.
-- **No spare connection process on Windows** (`keep_spare` is Linux's): the server takes every
-  client and starts `fux __conn` with the client's instance on stdout and its link on stdin
+- **The server takes every client itself**, as on Unix, and starts `fux __conn` with the client's instance on stdout and its link on stdin
   (`io::pipe_for_fuxix_child`, both overlapped), handed through a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
   of exactly those handles (`process::start`).
 - **D-134:** a pane process sends `FromPane::Offer` (its program's pid, creation time and handle
@@ -287,14 +286,9 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
 - `socket::Listener::bind` fails with `Errno::ADDRINUSE` when any process holds the name (another
   server or a squatter): the server then reads the run record, as Unix reads its socket.
 - `Listener::accept` gives a `Connection` (to serve: `Connection::stream`; for `fux __conn`:
-  `OwnedHandle::from` then `Stdio::from`); `Listener::spare` gives the waiting `Spare` for
-  `fux __conn` (`OwnedHandle::try_from`). In the child, `Spare::try_from(handle)` or
-  `Connection::from(handle)`; both bind to the child's own port only when made a stream. Pass the
-  handle as a stdio the child's runtime doesn't write (Rust's test harness prints to stdout; fux's
-  `__conn` already moves its stdout aside, `conn::wait`).
-- Every instance takes a client: while a spare waits, the listener's own next instance can take one
-  too. On Linux, which alone has spares, the server accepts while one waits too (D-164); on Windows it must keep polling
-  its listener and hand such a client to a `__conn`.
+  `OwnedHandle::from` then `Stdio::from`). In the child, `Connection::from(handle)`, bound to the
+  child's own port only when made a stream. Pass the handle as a stdio the child's runtime doesn't
+  write (Rust's test harness prints to stdout; fux's `__conn` moves its stdout aside as it starts).
 - `socket::connect` checks the server's user before returning, and the pipe's owner against this
   process's default owner (`TokenOwner`; Administrators for an elevated admin), which a squatter of
   another user can't forge even should the server's pid be reused. It fails with `Errno::ACCES` (the

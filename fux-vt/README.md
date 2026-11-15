@@ -601,7 +601,7 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
 - **Fuzzing**: five targets in
   [`fuzz/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/fuzz/README.md)
   (`terminal`, `deep`, `keys`, `graphemes` and `cells`), explored nightly
-  in CI from cached corpora (`fuzz.yml`), beside the oracle's.
+  in CI from cached corpora (`fuzz.yml`).
 - **Other terminals**:
   [`compare/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md)
   runs fux-vt beside Ghostty, alacritty, libvterm, avt, wezterm, vt100,

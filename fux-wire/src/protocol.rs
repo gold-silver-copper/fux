@@ -111,7 +111,7 @@ impl std::fmt::Display for Mismatch {
         };
         write!(
             f,
-            "the server runs {theirs} and this client is {ours}: stop the server, or use its own binary to keep its panes running. `kill` on its process stops it and its panes (`fux '(status)'` gives its `server-process-id`, where the system says it); a new server does not resume them",
+            "the server runs {theirs} and this client is {ours}: stop the server, or use its own binary to keep its panes running (the run keeps a copy, `exe` in the directory named as its socket with `.panes` after it). `kill` on its process stops it and its panes (`fux '(status)'` gives its `server-process-id`, where the system says it); a new server does not resume them",
         )
     }
 }
@@ -1040,8 +1040,7 @@ impl Decoder {
     }
 
     /// `frame`, for a reader that asked for something long: a message sent
-    /// in pieces is joined into `joining`, as far as the OS gives memory
-    /// (`Error::Memory`), and lent from it.
+    /// in pieces is joined into `joining`, and lent from it.
     pub fn long<'a, F: Frame<'a>>(
         &'a mut self,
         joining: &'a mut Joining,

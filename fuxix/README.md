@@ -4,7 +4,7 @@ The system calls [fux](https://github.com/gold-silver-copper/fux) makes on
 Linux, Android and macOS, over `libc`, each behind a safe function. It
 holds only what fux's own crates call, and the one clock fux-bench times
 with. On Windows it has the types every OS shares (`Pid`, `Signal`'s
-names, `Status`, `Errno`, `Allocation`), the event loop (`poll`,
+names, `Status`, `Errno`), the event loop (`poll`,
 `signal::Pipe`, `io`'s reads and writes) and `socket`'s named pipes (both
 below), over `windows-sys`; the
 other modules are Unix only for now. Each OS's code sits in its own file

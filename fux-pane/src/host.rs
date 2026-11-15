@@ -346,8 +346,8 @@ impl Host {
         match message {
             // Its first word, which `begin` took.
             ToPane::Begin(_) | ToPane::Taken => {}
-            // Asked the size it has, it keeps it: a size refused before is
-            // a new refusal when asked again.
+            // Asked the size it has, it keeps it: no resize held up by a
+            // frame waits any more.
             ToPane::Resize { size, .. } if self.pane.size() == size => {
                 self.pane_mut().keeps_size();
             }

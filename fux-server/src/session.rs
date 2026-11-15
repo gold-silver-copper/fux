@@ -2214,7 +2214,7 @@ impl Session {
     /// A change made, its record written (`commit`). One that can't be
     /// stands, and is written by the next that can; that the record fell
     /// behind is said once, to the log, to every attached client and to
-    /// the asker of the request being made, and so is that it caught up.
+    /// the asker of the request being made. That it caught up is logged.
     fn record_change(&mut self) {
         match self.commit() {
             Ok(()) if std::mem::take(&mut self.behind) => {
@@ -3732,7 +3732,7 @@ impl Session {
                 }
                 let mut grid = crate::render::Grid::default();
                 crate::render::compose_scene(&scene, &|id| self.screen(id), &mut grid)
-                    .map_err(|e| fail(Code::Memory, format!("capturing {client}: {e}")))?;
+                    .map_err(|e| fail(Code::Size, format!("capturing {client}: {e}")))?;
                 let captured = crate::capture::client(client, &grid);
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
