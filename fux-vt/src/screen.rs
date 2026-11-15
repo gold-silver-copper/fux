@@ -623,9 +623,6 @@ pub struct Screen {
     /// The colours the program set, with `Feature::Palette`: made when
     /// the first is set, so a screen whose program sets none keeps none.
     colours: Option<Box<Colours>>,
-    /// The window title the program set last, with `Feature::Events`
-    /// (OSC 0 or 2), and whether its string went on past it.
-    title: (Vec<u8>, bool),
 }
 
 /// The screen's part of the invariant checker (THREATS.md section 6).
@@ -841,7 +838,6 @@ impl Screen {
             links_seen: false,
             next_link: 1,
             colours: None,
-            title: (Vec::new(), false),
         })
     }
     /// The primary screen's grid, as a test starts from it.
@@ -1035,22 +1031,6 @@ impl Screen {
         (u32::from(g.cursor_line()) + 1, u32::from(col) + 1)
     }
 
-    /// The window title the program set last (OSC 0 or OSC 2), with
-    /// `Feature::Events`, which reads them; empty until one is set. Its
-    /// raw bytes, at most [`crate::OSC_PAYLOAD_LIMIT`], `cut` if the
-    /// string went on past them, as [`crate::Event::Title`] gives it.
-    pub fn title(&self) -> crate::Kept<'_> {
-        crate::Kept {
-            bytes: &self.title.0,
-            cut: self.title.1,
-        }
-    }
-    /// Keeps `title` as the window title.
-    pub(crate) fn set_title(&mut self, title: crate::Kept<'_>) {
-        self.title.0.clear();
-        self.title.0.extend_from_slice(title.bytes);
-        self.title.1 = title.cut;
-    }
     /// The colour palette entry `index` shows if the program changed it
     /// (OSC 4, with `Feature::Palette`); `None` while it is the terminal's.
     pub fn palette_color(&self, index: u8) -> Option<Rgb> {
