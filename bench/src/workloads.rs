@@ -588,19 +588,13 @@ impl fux_vt::Sink for Sink {
 }
 
 /// Reads `bytes` into `parser` as a pane does, `process_until_stop` from
-/// each stop on until none is left, its replies to [`Sink`]: an error if
-/// room was refused on the way.
+/// each stop on until none is left, its replies to [`Sink`].
 pub(crate) fn feed(parser: &mut fux_vt::Parser, bytes: &[u8]) -> Result<(), String> {
-    let (refused, mut rest) = (parser.refused(), bytes);
-    while let Some((taken, _)) =
-        (parser.process_until_stop(rest, &mut Sink)).map_err(|e| e.to_string())?
-    {
+    let mut rest = bytes;
+    while let Some((taken, _)) = parser.process_until_stop(rest, &mut Sink) {
         rest = rest.get(taken..).unwrap_or_default();
     }
-    match parser.refused() == refused {
-        true => Ok(()),
-        false => Err(fux_vt::Error::Capacity.to_string()),
-    }
+    Ok(())
 }
 
 /// What a pane is given of `bytes` (a tick's read, or a whole load), a

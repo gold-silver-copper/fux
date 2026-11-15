@@ -131,9 +131,9 @@ fn grid(rows: u16, cols: u16) -> Grid {
 }
 
 /// Reads `bytes` into `terminal` as fux reads a pane's output, from each
-/// stop on until none is left: whether it was read whole, nothing refused.
-fn feed(terminal: &mut Parser, bytes: &[u8]) -> bool {
-    terminal.process_all(bytes, &mut ()) == 0
+/// stop on until none is left.
+fn feed(terminal: &mut Parser, bytes: &[u8]) {
+    terminal.process_all(bytes, &mut ());
 }
 
 /// A cell's width, halves, text and attributes; a blank for no cell.
@@ -200,8 +200,8 @@ fuzz_target!(|data: &[u8]| {
     let Ok(mut terminal) = Parser::with_options(size, 0, Options::default()) else {
         return;
     };
-    assert!(feed(&mut terminal, &paint(None, &old)));
-    assert!(feed(&mut terminal, &paint(Some(&old), &new)));
+    feed(&mut terminal, &paint(None, &old));
+    feed(&mut terminal, &paint(Some(&old), &new));
     let screen = terminal.screen();
     let window = screen.window();
     for y in 0..new_rows {

@@ -139,7 +139,7 @@ fuzz_target!(|data: &[u8]| {
                 let mut b = Record::default();
                 let before = kept.take().unwrap_or_else(|| Rows::of(&whole));
                 let mark = whole.screen().mark();
-                assert!(fed(&mut whole, bytes, &mut a));
+                fed(&mut whole, bytes, &mut a);
                 let after = Rows::of(&whole);
                 versions_follow(&before, &after);
                 marks_sound(&before, mark, &whole, &after);
@@ -151,7 +151,7 @@ fuzz_target!(|data: &[u8]| {
                 let mut was = Rows::of(&split);
                 for byte in bytes {
                     let one = std::slice::from_ref(byte);
-                    assert!(fed(&mut split, one, &mut b));
+                    fed(&mut split, one, &mut b);
                     let now = Rows::of(&split);
                     versions_follow(&was, &now);
                     was = now;

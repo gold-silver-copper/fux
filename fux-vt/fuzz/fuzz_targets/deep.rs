@@ -136,7 +136,7 @@ impl Run {
                 self.hashed = self.hashed.saturating_add(cells);
             }
             let before = few.then(|| kept.take().unwrap_or_else(|| Rows::of(&self.split)));
-            assert!(fed(&mut self.split, std::slice::from_ref(byte), &mut b));
+            fed(&mut self.split, std::slice::from_ref(byte), &mut b);
             if let Some(before) = before {
                 let after = Rows::of(&self.split);
                 versions_follow(&before, &after);

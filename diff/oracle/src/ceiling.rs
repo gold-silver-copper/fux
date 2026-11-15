@@ -121,20 +121,17 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
                 // Stopped at a frame's edge or its budget, it is given the
                 // rest, again after a budget stop that took no byte (REP's
                 // copies, or the stop a frame's boundary owed); else all of
-                // it was taken, or refused (an allocation past its limits,
-                // which a pane takes and goes on from).
+                // it was taken.
                 // Calls that take no byte make a REP's copies, at least one
                 // each, or the stop a frame's boundary owed: past those, the
                 // parser makes no progress, which is an error.
                 match stop {
-                    Ok(Some((n, _))) if n > 0 => (taken, idle) = (taken.saturating_add(n), 0),
-                    Ok(Some((0, Stop::Budget))) if idle < IDLE_MOST => {
-                        idle = idle.saturating_add(1)
-                    }
-                    Ok(Some((_, stop))) => {
+                    Some((n, _)) if n > 0 => (taken, idle) = (taken.saturating_add(n), 0),
+                    Some((0, Stop::Budget)) if idle < IDLE_MOST => idle = idle.saturating_add(1),
+                    Some((_, stop)) => {
                         return Err(format!("{at}: {idle} calls took no byte, then {stop:?}"));
                     }
-                    Ok(None) | Err(_) => break,
+                    None => break,
                 }
             }
             fed = fed.saturating_add(read.len());
@@ -173,9 +170,7 @@ pub fn resize_history(history: usize, fill: usize) -> Result<(u64, u64), String>
     let mut written = 0usize;
     while written < fill {
         let mut rest = &line[..];
-        while let Some((taken, _)) =
-            (parser.process_until_stop(rest, &mut ())).map_err(|e| e.to_string())?
-        {
+        while let Some((taken, _)) = parser.process_until_stop(rest, &mut ()) {
             rest = rest.get(taken..).unwrap_or_default();
         }
         written = written.saturating_add(line.len());

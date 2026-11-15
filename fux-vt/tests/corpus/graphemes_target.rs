@@ -40,10 +40,9 @@ impl Pick {
     }
 }
 
-/// `parser` fed every byte of `bytes`, from each stop on, as a host does:
-/// whether no call failed and no room was refused.
-fn fed(parser: &mut Parser, bytes: &[u8]) -> bool {
-    parser.process_all(bytes, &mut ()) == 0
+/// `parser` fed every byte of `bytes`, from each stop on, as a host does.
+fn fed(parser: &mut Parser, bytes: &[u8]) {
+    parser.process_all(bytes, &mut ());
 }
 
 /// Asserts row `row` holds `expected`, and nothing after it.
@@ -136,7 +135,7 @@ pub fn run(input: &Input) {
             .next()
             .map_or(rest.len(), |s| usize::from(*s % 16).saturating_add(1));
         let (piece, tail) = rest.split_at_checked(size).unwrap_or((rest, &[]));
-        assert!(fed(&mut parser, piece));
+        fed(&mut parser, piece);
         rest = tail;
     }
     let check = |parser: &Parser| {

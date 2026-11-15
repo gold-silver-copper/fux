@@ -249,17 +249,8 @@ macro_rules! side {
                 }
 
                 fn process(&mut self, bytes: &[u8], heard: &mut Vec<Heard>) -> Result<(), Error> {
-                    let refused = self.parser.refused();
-                    let mut rest = bytes;
-                    while let Some((taken, _)) =
-                        self.parser.process_until_stop(rest, &mut Sink(heard)).map_err(error)?
-                    {
-                        rest = rest.get(taken..).unwrap_or_default();
-                    }
-                    match self.parser.refused() == refused {
-                        true => Ok(()),
-                        false => Err(error(vt::Error::Capacity)),
-                    }
+                    self.parser.process_all(bytes, &mut Sink(heard));
+                    Ok(())
                 }
 
                 fn process_until_stop(
@@ -273,8 +264,7 @@ macro_rules! side {
                         vt::Stop::Ended => Stop::Ended,
                         vt::Stop::Budget => Stop::Budget,
                     };
-                    stop.map(|s| s.map(|(taken, stop)| (taken, why(stop))))
-                        .map_err(error)
+                    Ok(stop.map(|(taken, stop)| (taken, why(stop))))
                 }
 
                 fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
