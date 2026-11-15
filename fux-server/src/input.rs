@@ -342,7 +342,10 @@ mod tests {
 
     /// How many tabs the first workspace has.
     fn tabs(s: &Session) -> Option<usize> {
-        s.parts.workspaces().first().map(|w| w.tabs().count())
+        s.parts
+            .workspaces()
+            .first()
+            .map(|w| s.parts.tabs_of(w.id()).count())
     }
 
     /// The prefix, then `keys`.
@@ -1054,8 +1057,8 @@ mod tests {
         escape(&mut s, c);
         let order: Vec<String> = (s.parts.workspaces().first())
             .map(|w| {
-                w.tabs()
-                    .map(|t| crate::workspace::Child::id(t).to_string())
+                (s.parts.tabs_of(w.id()))
+                    .map(|t| t.id().to_string())
                     .collect()
             })
             .unwrap_or_default();
