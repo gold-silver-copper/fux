@@ -1018,8 +1018,13 @@ fn apply(
         }
         Opt::Program => {
             built.shell = Some(false);
-            let argv = super::settings::strings(&next()?);
-            built.argv = argv.map_err(|unread| refused(unread, Code::BadValue))?;
+            // Each word as words that take text read it: a port or a count
+            // is written as the number it is.
+            let list = next()?;
+            let Value::List(words) = &list else {
+                return Err(wrong("a list", &list));
+            };
+            built.argv = words.items().iter().map(text).collect::<Result<_, _>>()?;
             if built.argv.is_empty() {
                 return Err(fail(Code::BadValue, "takes a program, then its arguments"));
             }
