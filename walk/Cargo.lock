@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "fux"
-version = "0.37.0"
+version = "0.38.0"
 dependencies = [
  "fux-server",
  "fux-vt",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "fux-pane"
-version = "0.37.0"
+version = "0.38.0"
 dependencies = [
  "fux-vt",
  "fux-wire",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "fux-server"
-version = "0.37.0"
+version = "0.38.0"
 dependencies = [
  "fux-pane",
  "fux-vt",
@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "fux-walk"
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "fux-wire"
-version = "0.37.0"
+version = "0.38.0"
 dependencies = [
  "fux-vt",
  "fuxix",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "libc",
  "windows-sys",
@@ -65,9 +65,9 @@ dependencies = [
 
 [[package]]
 name = "grift"
-version = "6.0.0"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bc9777d6c0a10f85773dfe5e6762cd9b6899af3f8e504ee03081c8c3b5bea49"
+checksum = "8567d08d66a6a4056dfcbee25b710f71c0f81c7986c9820dab21ba5dca1aa9ee"
 
 [[package]]
 name = "libc"
