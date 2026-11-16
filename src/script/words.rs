@@ -2622,7 +2622,7 @@ mod tests {
             // An element of a list of the wrong kind is a list it refuses.
             (
                 Code::BadValue,
-                "(shell-program (options) (list 1))".to_owned(),
+                "(shell-program (options) (list 1.5))".to_owned(),
             ),
         ];
         // all-history's guard, whatever comes after it.
@@ -2730,7 +2730,7 @@ mod tests {
             r#"(set "styles" (list (list 5 1 2)))"#,
             r#"(set "bar" (list 1))"#,
             r#"(set "bar" (list "top" (list (list "text" 1)) () #false))"#,
-            r#"(set "shell" (list 1))"#,
+            r#"(set "shell" (list 1.5))"#,
         ] {
             let (failed, _, text) = offline(&format!(
                 "(catch-kind! {expression} config failure (print \"caught\"))"
