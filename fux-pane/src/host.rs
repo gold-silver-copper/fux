@@ -2276,11 +2276,7 @@ pub fn serve(
         // waits for it, and read again once it took enough
         // (`Pane::reads_output`).
         let reads = host.pane().reads_output();
-        // Its terminal is asked when it can be written while input waits,
-        // and while a piece it was given is not all written yet, which its
-        // sender waits to hear (`Pane::input_taken`).
-        let owing = peers.iter().any(|peer| peer.owes.is_some());
-        let writing = host.input || owing && !host.pane().input_taken();
+        let writing = awaits_room(&host, &peers);
         let unread = (host.pane().process().child()).filter(|_| !reads && writing);
         let reading = match host.pane().process() {
             Process::Reading(child) => (reads && !host.pane().has_unread()).then_some(child),
@@ -2538,42 +2534,8 @@ pub fn serve(
         }
         kept.reverse();
         peers = kept;
-        // What waits is written before the next piece is looked for, and
-        // again after it: a write that empties the queue is followed by
-        // that look in the same turn. Written only after it, the write
-        // that took the last of what waited left a piece held with nothing
-        // to wake the pane for it (its terminal no longer asked for room),
-        // and its sender waited for ever.
-        if host.input {
-            host.write_input();
-        }
-        // One piece in flight for the pane, whoever sends: the next is
-        // taken, from the body under way or one a question waits for, once
-        // the program's terminal took the last.
-        if peers.iter().all(|peer| peer.owes.is_none()) && host.pane().input_taken() {
-            let next = (peers.iter_mut())
-                .find(|peer| matches!(&peer.held, Some((token, _)) if host.takes(*token)));
-            if let Some(peer) = next
-                && let Some((token, inputs)) = peer.held.take()
-            {
-                host.piece(token, &inputs);
-                peer.sends = fux_wire::command::Input::go_on(&inputs).then_some(token);
-                peer.owes = Some(token);
-                clock.next = now;
-            }
-        }
-        if host.input {
-            host.write_input();
-        }
-        // Taken once its terminal has written it all: where a write is in
-        // flight a while (Windows), not as soon as it was given.
-        if host.pane().input_taken() {
-            for peer in &mut peers {
-                if let Some(token) = peer.owes.take() {
-                    peer.end.send(&FromSide::Took { token });
-                    let _ = peer.end.flush();
-                }
-            }
+        if settle(&mut host, &mut peers) {
+            clock.next = now;
         }
         if let Some((at, timer)) = host.timer()
             && at <= Instant::now()
@@ -2584,6 +2546,57 @@ pub fn serve(
             again = None;
             host.look_again();
         }
+    }
+}
+
+/// Whether its terminal is asked when it can be written: while input
+/// waits, and while a piece it was given is not all written yet, which its
+/// sender waits to hear, or one is held that only a write still in flight
+/// keeps it from taking (`Pane::input_taken`).
+fn awaits_room(host: &Host, peers: &[Peer]) -> bool {
+    let pieces = (peers.iter()).any(|peer| peer.owes.is_some() || peer.held.is_some());
+    host.input || pieces && !host.pane().input_taken()
+}
+
+/// The end of a turn of the pane's loop: what waits for its program is
+/// written, each peer whose piece its terminal took is told so, and the
+/// next piece is taken, from the body under way or one a question waits
+/// for (one in flight for the pane, whoever sends); and again, till no
+/// piece is taken. Whether one was.
+///
+/// Nothing is written and no one is told after the last look for a piece,
+/// so a turn never ends with a piece that could be taken: one still held
+/// waits on what will wake the pane (its question on its server's link,
+/// room in its terminal, which `awaits_room` asks for).
+fn settle(host: &mut Host, peers: &mut [Peer]) -> bool {
+    use crate::link::FromSide;
+    let mut took = false;
+    loop {
+        if host.input {
+            host.write_input();
+        }
+        // Taken once its terminal has written it all: where a write is in
+        // flight a while (Windows), not as soon as it was given.
+        if !host.pane().input_taken() {
+            return took;
+        }
+        for peer in peers.iter_mut() {
+            if let Some(token) = peer.owes.take() {
+                peer.end.send(&FromSide::Took { token });
+                let _ = peer.end.flush();
+            }
+        }
+        let next = (peers.iter_mut())
+            .find(|peer| matches!(&peer.held, Some((token, _)) if host.takes(*token)));
+        let Some((peer, (token, inputs))) =
+            next.and_then(|peer| peer.held.take().map(|held| (peer, held)))
+        else {
+            return took;
+        };
+        host.piece(token, &inputs);
+        peer.sends = fux_wire::command::Input::go_on(&inputs).then_some(token);
+        peer.owes = Some(token);
+        took = true;
     }
 }
 
@@ -2854,6 +2867,50 @@ mod tests {
             host.pane().scheme_told,
             Some(fux_vt::keys::colour::Scheme::Dark)
         );
+        Ok(())
+    }
+
+    /// A turn ends with nothing left to look for: a piece of keys one
+    /// peer holds is taken in the turn that tells another its own piece
+    /// was taken. Told after the look, the first peer's debt was cleared
+    /// with the second's piece still held, nothing owed and nothing to
+    /// write, so no wait woke the pane for it and its sender waited for
+    /// ever.
+    #[cfg(unix)]
+    #[test]
+    fn a_piece_held_is_taken_in_the_turn_that_clears_the_debt_before_it() -> TestResult {
+        let mut host = lone(5, 20)?;
+        let now = Instant::now();
+        let keys = Ask::Keys {
+            inputs: Vec::new(),
+            seen: None,
+            body: Some(7),
+        };
+        assert!(host.ask(3, keys, now).is_none());
+        let peer = |held, owes| -> Result<(Peer, std::os::unix::net::UnixStream), std::io::Error> {
+            let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+            let peer = Peer {
+                end: crate::link::End::new(ours)?,
+                side: Some(None),
+                held,
+                sends: None,
+                owes,
+                leaving: false,
+            };
+            Ok((peer, theirs))
+        };
+        // The first was given its piece's turn already, and its terminal
+        // took it all; the second holds the piece the question waits for.
+        let (first, _first) = peer(None, Some(1))?;
+        let (second, _second) = peer(Some((7, vec![Input::Text("a".into())])), None)?;
+        let mut peers = [first, second];
+        assert!(settle(&mut host, &mut peers), "no piece was taken");
+        let [first, second] = &peers;
+        assert_eq!((first.owes, second.held.is_none()), (None, true));
+        // The piece taken is owed its sender till its terminal took it,
+        // and the pane asks its terminal for room meanwhile.
+        assert_eq!(second.owes, Some(7));
+        assert!(awaits_room(&host, &peers));
         Ok(())
     }
 
