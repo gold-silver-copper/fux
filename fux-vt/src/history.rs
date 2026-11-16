@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::compact::{BLANK, Compact, NO_TEXT, Text};
 use crate::grid::{MAX_CELLS, MAX_ROWS};
 use crate::link::{KeptLinks, Runs};
-use crate::{Error, LineRendition, RowId};
+use crate::{LineRendition, RowId};
 
 /// The cells a block holds, unless one row needs more. Small, as the
 /// partly filled newest and partly left oldest blocks cost their whole
@@ -36,20 +36,6 @@ const BLOCK: usize = 1 << 12;
 /// (`grid::MAX_CELLS`): a block made is half full, or holds a row half its
 /// size or more.
 const BLOCKS: usize = 1 << 16;
-
-/// Refused metadata is lost, separately from ordinary history eviction.
-fn room_for_metadata<T>(rows: &mut VecDeque<T>) -> bool {
-    #[cfg(feature = "checks")]
-    if crate::check::refusing() {
-        crate::degraded();
-        return false;
-    }
-    if rows.try_reserve(1).is_err() {
-        crate::degraded();
-        return false;
-    }
-    true
-}
 
 /// Values kept for some rows, by row number, oldest first: rows come and
 /// go in order, so lookup is a binary search and removal is from an end.
@@ -70,13 +56,9 @@ impl<T> ByRow<T> {
         let at = self.at(number).ok()?;
         self.0.get(at).map(|(_, value)| value)
     }
-    /// Keeps `value` for the newest row; out of memory keeps none.
-    fn insert(&mut self, number: u64, value: T) -> bool {
-        let kept = room_for_metadata(&mut self.0);
-        if kept {
-            self.0.push_back((number, value));
-        }
-        kept
+    /// Keeps `value` for the newest row.
+    fn insert(&mut self, number: u64, value: T) {
+        self.0.push_back((number, value));
     }
     fn remove(&mut self, number: u64) -> Option<T> {
         let at = self.at(number).ok()?;
@@ -470,18 +452,11 @@ impl History {
         fresh.first_row = self.first_row;
         fresh.followed = self.followed.clone();
         fresh.charge(self.charged);
-        if fresh.take(self).is_ok() {
-            *self = fresh;
-        } else {
-            // Out of memory: trim in place.
-            self.budget = budget;
-            self.room = budget.saturating_sub(self.charged);
-            self.trim();
-        }
+        fresh.take(self);
+        *self = fresh;
     }
-    /// Takes in `old`'s rows, trimming as it fills; fails only when out
-    /// of memory.
-    pub(crate) fn take(&mut self, old: &Self) -> Result<(), Error> {
+    /// Takes in `old`'s rows, trimming as it fills.
+    pub(crate) fn take(&mut self, old: &Self) {
         for found in (0..old.len()).filter_map(|index| old.get(index)) {
             let kept = found.kept;
             crate::budget::spend(found.cells.len().saturating_add(1));
@@ -491,14 +466,13 @@ impl History {
                 flags: found.flags,
                 cells: found.cells,
                 width: kept.width(),
-            })?;
+            });
             let text = (!found.text.is_empty()).then(|| found.text.exact());
             if text.is_some() || found.links.is_some() {
                 self.attach(text, found.links.and_then(KeptLinks::of));
             }
             self.trim();
         }
-        Ok(())
     }
     pub(crate) fn kept_cells(&self) -> usize {
         self.cells
@@ -604,11 +578,11 @@ impl History {
     /// Makes room for a row of `len` cells: a ring chunk if needed, and
     /// room for its cells. The newest block grows by doubling up to
     /// `block_cells`; else a new block starts, of `block_cells`, or just the
-    /// row's size for a row over half a block or for the first block. Fails
-    /// only when out of memory. Out of line: a row usually fits.
+    /// row's size for a row over half a block or for the first block. Out
+    /// of line: a row usually fits.
     #[cold]
     #[inline(never)]
-    fn make_room(&mut self, len: usize) -> Result<(), Error> {
+    fn make_room(&mut self, len: usize) {
         let block = self.block_cells();
         if !self.rows.has_room() {
             // Keep to `MAX_ROWS` once the chunk is made.
@@ -616,13 +590,14 @@ impl History {
             while self.rows.len() > most {
                 self.pop();
             }
-            self.rows.grow()?;
+            self.rows.grow();
             self.recount();
         }
         if self.fits(len) {
-            return Ok(());
+            return;
         }
-        // Keep to `BLOCKS` block numbers and `MAX_CELLS` cells.
+        // Keep to `BLOCKS` block numbers and `MAX_CELLS` cells: with no
+        // row left, at most the first block is.
         let most = MAX_CELLS.saturating_sub(len.max(block));
         while !self.rows.is_empty()
             && (self.older.len() >= BLOCKS.saturating_sub(2) || self.room_cells > most)
@@ -633,33 +608,26 @@ impl History {
         if self.newest.capacity() > 0 && end <= block {
             let before = self.newest.capacity();
             let capacity = before.saturating_mul(2).clamp(end, block);
-            crate::reserve(&mut self.newest, capacity)?;
+            crate::reserve(&mut self.newest, capacity);
             self.room_cells = (self.room_cells)
                 .saturating_add(self.newest.capacity())
                 .saturating_sub(before);
             self.recount();
-            return Ok(());
+            return;
         }
         let first = self.newest.capacity() == 0 && self.older.is_empty();
         let capacity = if first || len > block / 2 { len } else { block };
-        if self.older.len() >= BLOCKS.saturating_sub(2) {
-            return Err(Error::Capacity);
-        }
-        let mut cells = Vec::new();
-        crate::reserve(&mut cells, capacity)?;
-        self.start_block(cells);
-        Ok(())
+        self.start_block(Vec::with_capacity(capacity));
     }
 
     /// Appends `row`, its cells already `trimmed`; the caller spends the
-    /// row (its cells, trimmed or not, and one). Fails, with nothing
-    /// changed, only when out of memory. Inlined: it is the hot path of
-    /// `Grid::scroll_into_history`.
+    /// row (its cells, trimmed or not, and one). Inlined: it is the hot
+    /// path of `Grid::scroll_into_history`.
     #[inline(always)]
-    pub(crate) fn push(&mut self, row: Arriving<'_>) -> Result<(), Error> {
+    pub(crate) fn push(&mut self, row: Arriving<'_>) {
         let len = row.cells.len();
         if !self.rows.has_room() || !self.fits(len) {
-            self.make_room(len)?;
+            self.make_room(len);
         }
         let start = u16::try_from(self.newest.len()).unwrap_or(0);
         // One cell, common for short lines, is stored without a copy call.
@@ -677,9 +645,8 @@ impl History {
             self.keep_rendition(LineRendition::from_bits(row.flags >> RENDITION_SHIFT));
         }
         if row.flags & ENDS != 0 {
-            let _ = self.keep_ended();
+            self.keep_ended();
         }
-        Ok(())
     }
 
     /// The row coming next, `id`, begins a span. Out of line, as scrolled
@@ -704,10 +671,8 @@ impl History {
         let Some(number) = self.rows.len().checked_sub(1).and_then(|i| self.number(i)) else {
             return;
         };
-        // No memory for it: the row is kept single width.
-        if self.renditions.insert(number, rendition) {
-            self.recount();
-        }
+        self.renditions.insert(number, rendition);
+        self.recount();
     }
     /// Notes that the row pushed last, soft-wrapped, ends its line (`ENDS`).
     #[cold]
@@ -716,8 +681,7 @@ impl History {
         let Some(number) = self.rows.len().checked_sub(1).and_then(|i| self.number(i)) else {
             return false;
         };
-        // No memory for it: the line goes on, as xterm's would.
-        let new = self.ended.back() != Some(&number) && room_for_metadata(&mut self.ended);
+        let new = self.ended.back() != Some(&number);
         if new {
             self.ended.push_back(number);
             self.recount();
@@ -925,17 +889,15 @@ impl History {
         };
         if let Some(text) = text.filter(|text| !text.is_empty()) {
             let bytes = text.bytes();
-            if self.texts.insert(number, text) {
-                self.text = self.text.saturating_add(bytes);
-                kept.set(TEXT, true);
-            }
+            self.texts.insert(number, text);
+            self.text = self.text.saturating_add(bytes);
+            kept.set(TEXT, true);
         }
         if let Some(links) = links {
             let heap = links.heap();
-            if self.linked.insert(number, links) {
-                self.runs = self.runs.saturating_add(heap);
-                kept.set(LINKED, true);
-            }
+            self.linked.insert(number, links);
+            self.runs = self.runs.saturating_add(heap);
+            kept.set(LINKED, true);
         }
         self.recount();
     }
@@ -1190,51 +1152,10 @@ mod faults {
                 cells: &cells,
                 width: 4,
             };
-            assert!(history.push(row).is_ok());
+            history.push(row);
             history.trim();
         }
         history
-    }
-
-    #[test]
-    fn refused_history_metadata_is_counted_once_and_eviction_is_not() {
-        let mut history = history();
-        let mut text = Text::default();
-        let mut cells = [Compact::ascii(b'x', 0)];
-        assert!(
-            crate::compact::Line {
-                cells: &mut cells,
-                text: &mut text
-            }
-            .set(
-                0,
-                Compact::ascii(b'x', 0),
-                &format!(
-                    "x{}",
-                    std::iter::repeat_n("\u{301}", 12).collect::<String>()
-                )
-            )
-        );
-        let link = crate::Hyperlink::new(1, "https://example.test", None);
-        let mut links = crate::link::RowLinks::default();
-        assert!(links.set(0..1, Some(&link)));
-        let links = KeptLinks::take(&mut links);
-        assert!(links.is_some() && !text.is_empty());
-        let before = crate::degrades();
-        crate::refuse_next(2);
-        history.attach(Some(text), links);
-        assert_eq!(crate::degrades().saturating_sub(before), 2);
-        crate::refuse_next(1);
-        history.keep_rendition(LineRendition::DoubleWidth);
-        assert_eq!(crate::degrades().saturating_sub(before), 3);
-        crate::refuse_next(1);
-        assert!(!history.keep_ended());
-        assert_eq!(crate::degrades().saturating_sub(before), 4);
-        assert!(history.keep_ended());
-        assert!(!history.keep_ended());
-        history.budget = 0;
-        history.trim();
-        assert_eq!(crate::degrades().saturating_sub(before), 4);
     }
 
     fn faulted(history: &History) -> Vec<&'static str> {

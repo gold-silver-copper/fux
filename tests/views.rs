@@ -239,7 +239,7 @@ fn a_fixed_tab_keeps_its_size_and_a_fitting_one_its_last_screen() -> Outcome {
     let mut client = server.attach(25, 84)?;
     client.wait_for("$")?;
     let run = [
-        "(sequence! (define! value-190 (new-tab (program (size (in (options) \"agent\") 100 40) \"cat\"))) (rename value-190 \"hid\") value-190)",
+        "(sequence! (define! value-190 (new-tab (program (size (in (options) \"agent\") 100 40) (list \"cat\")))) (rename value-190 \"hid\") value-190)",
     ];
     let pane = server.ok(&run)?;
     let pane = pane.split(':').next().unwrap_or_default();
@@ -260,7 +260,7 @@ fn a_fixed_tab_keeps_its_size_and_a_fitting_one_its_last_screen() -> Outcome {
     )])?;
     eventually("the client's size", || sized("84x25"))?;
     let other = server.words(
-        "(new-tab (argument (program (size (in (options) \"agent\") 60 20) \"sleep\") \"60\"))",
+        "(new-tab (program (size (in (options) \"agent\") 60 20) (list \"sleep\" \"60\")))",
     )?;
     let other = other.split(':').next().unwrap_or_default();
     server.ok(&[&format!(
@@ -294,5 +294,126 @@ fn a_bar_off_attach_keeps_pane_geometry_under_feedback() -> Outcome {
     client.keys("x")?;
     client.wait_for("$ x")?;
     assert_eq!(capture()?.lines().count(), 1);
+    Ok(())
+}
+
+/// The pane an answer is about: its text before the version.
+fn pane_of(answer: &str) -> String {
+    answer
+        .trim()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The names of the workspace and the tab client `id` is shown.
+fn place(server: &Server, id: &str) -> Result<(String, String), String> {
+    let named = |what: &str| {
+        let asked = format!("(get ({what} (focused (client \"{id}\"))) \"name\")");
+        server.ok(&[&asked]).map(|name| name.trim().to_owned())
+    };
+    Ok((named("workspace")?, named("tab")?))
+}
+
+/// Waits until `count` clients are attached.
+fn attached(server: &Server, count: usize) -> Outcome {
+    eventually("the clients attached", || {
+        let clients = server.ok(&["(length (get (list-session) \"clients\"))"])?;
+        Ok(clients.trim() == count.to_string())
+    })
+}
+
+fn place_is(server: &Server, id: &str, workspace: &str, tab: &str) -> Outcome {
+    let at = place(server, id)?;
+    assert_eq!((at.0.as_str(), at.1.as_str()), (workspace, tab), "{id}");
+    Ok(())
+}
+
+/// Two clients step through workspaces and tabs on their own, each with
+/// its own last; a tab's zoom is the focus of every client shown it, and
+/// each client's own comes back when it ends.
+#[test]
+fn two_clients_step_on_their_own_and_a_zoom_is_every_viewer_s_focus() -> Outcome {
+    let server = Server::empty()?;
+    let first =
+        pane_of(&server.ok(&["(new-tab (name (size (in (options) \"one\") 80 24) \"a\"))"])?);
+    server.ok(&["(new-tab (name (size (in (options) \"one\") 80 24) \"b\"))"])?;
+    server.ok(&["(new-tab (size (in (options) \"two\") 80 24))"])?;
+    let _one = server.attach_to(30, 100, "one")?;
+    attached(&server, 1)?;
+    let _two = server.attach_to(20, 60, "one")?;
+    attached(&server, 2)?;
+    server.ok(&["(step (client \"c1\") (tab \"a\") \"next\") #inert"])?;
+    server.ok(&["(step (client \"c2\") (workspace \"one\") \"next\") #inert"])?;
+    place_is(&server, "c1", "one", "b")?;
+    place_is(&server, "c2", "two", "none")?;
+    server.ok(&["(step (client \"c2\") (workspace \"two\") \"last\") #inert"])?;
+    server.ok(&["(step (client \"c1\") (tab \"b\") \"last\") #inert"])?;
+    place_is(&server, "c1", "one", "a")?;
+    place_is(&server, "c2", "one", "a")?;
+    let split = format!("(split (axis (pane \"{first}\") \"horizontal\"))");
+    let second = pane_of(&server.ok(&[&split])?);
+    let focused = |id: &str| {
+        let asked = format!("(focused (client \"{id}\"))");
+        server.ok(&[&asked]).map(|pane| pane.trim().to_owned())
+    };
+    let zoom = format!("(zoom (pane \"{second}\")) #inert");
+    let left = |id: &str| format!("(step (client \"{id}\") (pane \"{second}\") \"left\") #inert");
+    server.ok(&[&left("c1")])?;
+    server.ok(&[&zoom])?;
+    assert_eq!(
+        (focused("c1")?, focused("c2")?),
+        (second.clone(), second.clone())
+    );
+    server.ok(&[&zoom])?;
+    assert_eq!((focused("c1")?, focused("c2")?), (first, second.clone()));
+    // A step out of a zoomed pane ends the zoom.
+    server.ok(&[&zoom])?;
+    server.ok(&[&left("c2")])?;
+    let zoomed =
+        server.ok(&["(get (first (get (information (tab \"a\")) \"tabs\")) \"zoomed\")"])?;
+    assert_eq!(zoomed, "none\n");
+    Ok(())
+}
+
+/// Two clients shown different workspaces nested in one project step among
+/// their own siblings, each with its own place, and the project's words
+/// cover what is in the workspaces in it: their tabs, and what their
+/// clients were shown.
+#[test]
+fn clients_in_nested_workspaces_step_among_their_own_siblings() -> Outcome {
+    let server = Server::empty()?;
+    for tab in [
+        "(size (in (options) \"home\") 80 24)",
+        "(name (size (in (in (options) \"proj\") \"agent1\") 80 24) \"a\")",
+        "(name (size (in (in (options) \"proj\") \"agent2\") 80 24) \"b\")",
+        "(name (size (in (options) \"agent2\") 80 24) \"c\")",
+    ] {
+        server.ok(&[&format!("(new-tab {tab})")])?;
+    }
+    let _one = server.attach_to(30, 100, "agent1")?;
+    attached(&server, 1)?;
+    let _two = server.attach_to(20, 60, "agent2")?;
+    attached(&server, 2)?;
+    place_is(&server, "c1", "agent1", "a")?;
+    place_is(&server, "c2", "agent2", "b")?;
+    let cursor = server.ok(&["(get (information (workspace \"proj\")) \"cursor\")"])?;
+    server.ok(&["(step (client \"c1\") (workspace \"agent1\") \"next\") #inert"])?;
+    server.ok(&["(step (client \"c2\") (tab \"b\") \"next\") #inert"])?;
+    place_is(&server, "c1", "agent2", "b")?;
+    place_is(&server, "c2", "agent2", "c")?;
+    server.ok(&["(step (client \"c1\") (workspace \"agent2\") \"last\") #inert"])?;
+    place_is(&server, "c1", "agent1", "a")?;
+    place_is(&server, "c2", "agent2", "c")?;
+    let tabs = server.ok(&["(map (lambda! (t) (get t \"name\")) (tabs (workspace \"proj\")))"])?;
+    assert_eq!(tabs, "a\nb\nc\n");
+    let shown = server.ok(&[&format!(
+        "(define! batch (next-events (workspace \"proj\") {} 0)) \
+         (map (lambda! (e) (get e \"client\")) \
+         (filter (lambda! (e) (same? (get e \"event\") \"shown\")) (get batch \"events\")))",
+        fux::script::quoted(cursor.trim())
+    )])?;
+    assert!(shown.contains("c1") && shown.contains("c2"), "{shown}");
     Ok(())
 }

@@ -74,11 +74,11 @@ Each PR keeps the Linux and macOS CI jobs green and adds its checks to a Windows
 `windows-11-arm` (Windows 11 25H2) and `windows-2025` (Server 2025, the Windows 11 24H2 code base). The 30
 programs built on the libraries (below) are the acceptance test for the whole port.
 1. **Windows CI and the 32-bit fux-vt fix.** A CI job that builds and tests fux-vt and the language crates on
-   both images (then fuxth; fux's language is now grift, and fuxth is in `archived/`); `fux-vt/src/link.rs:141`'s size assert holds only on 64-bit (gate it on pointer width); a
+   both images (then fuxth; fux's language is now grift); `fux-vt/src/link.rs:141`'s size assert holds only on 64-bit (gate it on pointer width); a
    wasm32 build check for fux-vt; `.gitattributes` so CRLF checkouts don't break byte-exact test data.
    Done when: the Windows job is green and fux-vt builds for wasm32.
 2. **fuxix per module.** The "Linux, Android and macOS only" `compile_error!` (`fuxix/src/lib.rs:21-22`)
-   moves to each module; portable `Pid`, `Signal`, `Status`, `Errno`, `Allocation`; fux-wire's five
+   moves to each module; portable `Pid`, `Signal`, `Status`, `Errno`; fux-wire's five
    Windows errors fixed. Done when: fux-wire builds for Windows, and the Unix diff is types only.
 3. **`Job` on Unix**, and macOS `process::tree()` stops listing every process on the system. Done when: the
    pane code uses `Job` with identical behaviour, and a macOS test shows `tree()` returns descendants only.
@@ -90,7 +90,7 @@ programs built on the libraries (below) are the acceptance test for the whole po
    S1's byte-exactness check passes through the downloaded ConPTY, and S4's signal probes pass.
 7. **fux-server on Windows:** pane and connection processes, takeover, the signal mapping. Done when: S3's
    takeover probe passes against real fux (kill the server; a new one drives the live panes).
-8. **The client on Windows** (and the fuxth runner, since archived): console VT input and output, resize events, restore. Done when:
+8. **The client on Windows**: console VT input and output, resize events, restore. Done when:
    `fux` runs in Windows Terminal on a Windows 11 machine and the dogfood programs pass.
 
 ## The finish line, revised (PR 8)
@@ -222,7 +222,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   (`socket::start_pane`), never one its server made and handed over.
 - **The client is not built on Windows**: `src/client.rs`, `script`, `screens`, `keymap`,
   `client_state` and `help` are `cfg(unix)`; the binary runs `__serve`, `__pane PATH` and
-  `__conn taken`, and refuses anything else once. PR 8 removes those gates. The root `tests/*.rs`
+  `__conn`, and refuses anything else once. PR 8 removes those gates. The root `tests/*.rs`
   (they drive the client) are `#![cfg(unix)]` but `tests/windows.rs`, a small wire client.
 - **Names on Windows:** the socket path names a pipe, `\\.\pipe\fux-<path, \ as />-<SID>[-elevated]`
   (`socket::pipe_name`); no file is at the path. Beside it: `.starting` and `.lock` (opened with no
@@ -248,8 +248,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   `READY`. Notices before `READY` go to the server's log (`notice: ...`): the built-in ConPTY's
   losses, and a launcher job that binds the run (`process::job_fate`, D-135). PR 8's client should
   print them.
-- **No spare connection process on Windows** (`keep_spare` is Linux's): the server takes every
-  client and starts `fux __conn taken` with the client's instance on stdout and its link on stdin
+- **The server takes every client itself**, as on Unix, and starts `fux __conn` with the client's instance on stdout and its link on stdin
   (`io::pipe_for_fuxix_child`, both overlapped), handed through a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
   of exactly those handles (`process::start`).
 - **D-134:** a pane process sends `FromPane::Offer` (its program's pid, creation time and handle
@@ -286,15 +285,10 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   (from the socket path's name, say) and keeps the run record and lock beside it; takeover is PR 7's.
 - `socket::Listener::bind` fails with `Errno::ADDRINUSE` when any process holds the name (another
   server or a squatter): the server then reads the run record, as Unix reads its socket.
-- `Listener::accept` gives a `Connection` (to serve: `Connection::stream`; for `fux __conn taken`:
-  `OwnedHandle::from` then `Stdio::from`); `Listener::spare` gives the waiting `Spare` for
-  `fux __conn` (`OwnedHandle::try_from`). In the child, `Spare::try_from(handle)` or
-  `Connection::from(handle)`; both bind to the child's own port only when made a stream. Pass the
-  handle as a stdio the child's runtime doesn't write (Rust's test harness prints to stdout; fux's
-  `__conn` already moves its stdout aside, `conn::wait`).
-- Every instance takes a client: while a spare waits, the listener's own next instance can take one
-  too. On Linux, which alone has spares, the server accepts while one waits too (D-164); on Windows it must keep polling
-  its listener and hand such a client to a `__conn taken`.
+- `Listener::accept` gives a `Connection` (to serve: `Connection::stream`; for `fux __conn`:
+  `OwnedHandle::from` then `Stdio::from`). In the child, `Connection::from(handle)`, bound to the
+  child's own port only when made a stream. Pass the handle as a stdio the child's runtime doesn't
+  write (Rust's test harness prints to stdout; fux's `__conn` moves its stdout aside as it starts).
 - `socket::connect` checks the server's user before returning, and the pipe's owner against this
   process's default owner (`TokenOwner`; Administrators for an elevated admin), which a squatter of
   another user can't forge even should the server's pid be reused. It fails with `Errno::ACCES` (the

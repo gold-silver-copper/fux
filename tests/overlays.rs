@@ -250,7 +250,7 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
     client
-        .keys("(split (argument (program (axis (focused (me)) \"vertical\") \"echo\") \"from the prompt\"))\r")?;
+        .keys("(split (program (axis (focused (me)) \"vertical\") (list \"echo\" \"from the prompt\")))\r")?;
     client.wait("typed into the new pane", |t| {
         t.lines().any(|l| l == "from the prompt")
     })?;

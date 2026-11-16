@@ -268,17 +268,9 @@ pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows
     }
 }
 
-/// Feeds every byte of `bytes` to `p`, from each stop on: whether no call
-/// failed and no room was refused.
-pub fn fed(p: &mut Parser, bytes: &[u8], sink: &mut Record) -> bool {
-    let (mut rest, refused) = (bytes, p.refused());
-    loop {
-        match p.process_until_stop(rest, sink) {
-            Ok(Some((taken, _))) => rest = rest.get(taken..).unwrap_or_default(),
-            Ok(None) => return p.refused() == refused,
-            Err(_) => return false,
-        }
-    }
+/// Feeds every byte of `bytes` to `p`, from each stop on.
+pub fn fed(p: &mut Parser, bytes: &[u8], sink: &mut Record) {
+    p.process_all(bytes, sink);
 }
 
 /// Feeds `piece` to `p` by `process_until_stop`, given again from each
@@ -291,9 +283,7 @@ pub fn until_stops(p: &mut Parser, piece: &[u8], sink: &mut Record, mut each: im
     let (mut left, mut frame) = (piece, None::<(Option<usize>, usize)>);
     while !left.is_empty() || p.has_work_left() {
         reached("call process_until_stop");
-        let stop = p.process_until_stop(left, sink);
-        assert!(stop.is_ok());
-        let Ok(Some((taken, why))) = stop else {
+        let Some((taken, why)) = p.process_until_stop(left, sink) else {
             each(left.len());
             // The rest was read: a frame begun in it doesn't end there.
             if let Some((end, _)) = frame {

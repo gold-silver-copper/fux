@@ -153,7 +153,7 @@ impl Picture {
     /// Makes it ready for newer pictures to cover, if none covers it yet:
     /// of its pixels, those left of `right` on rows `top` to `bottom` are
     /// what the screen shows, which they may cover; the others never show
-    /// again. False if there is no memory for it.
+    /// again. False if its rows are more than can be counted.
     pub(crate) fn coverable(&mut self, (right, top, bottom): (u32, u32, u32)) -> bool {
         if self.covered.is_none() {
             let rows = bottom.min(self.height).saturating_sub(top);
@@ -226,13 +226,10 @@ impl Covered {
     /// The bytes it takes a row, before any of its pixels is covered.
     const ROW: usize = size_of::<Option<Box<[u64]>>>();
 
-    /// None of `right` pixels by `rows` rows from row `top` covered; none
-    /// if there is no memory for it.
+    /// None of `right` pixels by `rows` rows from row `top` covered.
     fn new(right: u32, top: u32, rows: u32) -> Option<Self> {
         let n = usize::try_from(rows).ok()?;
-        let mut list = Vec::new();
-        list.try_reserve_exact(n).ok()?;
-        list.resize(n, None);
+        let list = vec![None; n];
         let left = u64::from(right).saturating_mul(u64::from(rows));
         Some(Self {
             rows: list,
@@ -438,8 +435,7 @@ pub(crate) struct Decoder {
     background: bool,
     /// A sixel or a positioning command came: raster attributes are ignored.
     begun: bool,
-    /// Some of what it drew was not kept: past what a picture may keep, or
-    /// refused room.
+    /// Some of what it drew was not kept: past what a picture may keep.
     cut: bool,
     /// Whether its pixels may be given room: one no host draws is read
     /// only to tell whether it drew anything, and keeps none.
@@ -667,11 +663,7 @@ impl Decoder {
             return (self.across, self.down);
         };
         let pixels = usize::try_from(u64::from(cols).saturating_mul(u64::from(rows))).unwrap_or(0);
-        let mut grown = Vec::new();
-        if grown.try_reserve_exact(pixels.saturating_mul(4)).is_err() {
-            return (self.across, self.down);
-        }
-        grown.resize(pixels.saturating_mul(4), 0);
+        let mut grown = vec![0; pixels.saturating_mul(4)];
         // The new pixels zeroed, and the old ones copied into them.
         let (old, new) = (
             usize::try_from(self.across).unwrap_or(0).saturating_mul(4),
@@ -791,8 +783,7 @@ impl Decoder {
             usize::try_from(self.room.0).ok()?.checked_mul(4)?,
         );
         let rows = usize::try_from(self.down).ok()?;
-        let mut rgba = Vec::new();
-        rgba.try_reserve_exact(row.checked_mul(rows)?).ok()?;
+        let mut rgba = Vec::with_capacity(row.checked_mul(rows)?);
         crate::budget::spend(row.saturating_mul(rows) / 4);
         for y in 0..rows {
             let from = y.checked_mul(stride)?;
@@ -1298,7 +1289,7 @@ mod tests {
 
     /// What a picture drew past what one may keep is not kept, and the
     /// picture says it is not whole: a sixel past `MAX_SIDE` columns, an
-    /// extent past it, or pixels refused room. One that drew nothing is
+    /// extent past it. One that drew nothing is
     /// empty, not cut, a blank repeat past `MAX_SIDE` too.
     #[test]
     fn a_picture_cut_says_so() {

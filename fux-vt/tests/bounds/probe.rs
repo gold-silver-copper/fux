@@ -316,14 +316,10 @@ impl Probe {
         let (mut rest, mut idle) = (piece, 0u64);
         while !rest.is_empty() || self.parser.has_work_left() {
             let (before, started) = (fux_vt::work_spent(), Instant::now());
-            let stop = self
-                .parser
-                .process_until_stop(rest, &mut self.replies)
-                .map_err(|e| format!("a call failed: {e}"));
+            let stop = self.parser.process_until_stop(rest, &mut self.replies);
             let took = started.elapsed();
             let done = fux_vt::work_spent().saturating_sub(before);
             self.worst = (self.worst.0.max(done), self.worst.1.max(took));
-            let stop = stop?;
             let taken = stop.map_or(rest.len(), |(taken, _)| taken);
             let most = LIMIT.saturating_add(most(&self.setup));
             if done > most {

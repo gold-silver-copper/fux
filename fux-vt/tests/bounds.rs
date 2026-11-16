@@ -239,7 +239,6 @@ bound!(row_lookup_has_bounded_work, "B40");
 bound!(queue_append_cannot_remove_existing_bytes, "B41");
 bound!(tab_stops_have_bounded_storage, "B42");
 bound!(events_are_delivered_without_retention, "B43");
-bound!(allocation_refusal_preserves_parser_recovery, "B44");
 bound!(encoded_keys_and_mouse_fit_the_output_cap, "B45");
 bound!(picture_covering_has_bounded_work_and_memory, "B46");
 
@@ -302,7 +301,7 @@ mod quota {
             left = after;
             loop {
                 let before = fux_vt::work_spent();
-                let stop = parser.process_until_stop(rest, &mut replies)?;
+                let stop = parser.process_until_stop(rest, &mut replies);
                 since = since.saturating_add(fux_vt::work_spent().saturating_sub(before));
                 assert!(
                     since <= most,

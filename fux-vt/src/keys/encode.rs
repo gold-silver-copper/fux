@@ -114,22 +114,11 @@ pub(crate) const PASTE_START: &[u8] = b"\x1b[200~";
 pub(crate) const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// Appends a paste, whole, as the pane should receive it to `out`: what a
-/// [`PasteEncoder`] makes of it in one piece. A paste the OS refuses the
-/// memory for is not sent at all.
+/// [`PasteEncoder`] makes of it in one piece.
 pub fn paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
-    // Room for all of it first, what `push` asks and what `finish` does:
-    // then neither asks for any, and neither is refused. Never half a
-    // paste, its bracket left open.
-    let most = (text.len().saturating_add(PASTE_START.len())).saturating_add(HELD);
-    let room = most.saturating_add(PasteEncoder::CLOSING);
-    if crate::bytes::try_reserve(out, room).is_err() {
-        return;
-    }
-    let start = out.len();
     let mut encoder = PasteEncoder::new(bracketed);
-    if encoder.push(text.as_bytes(), out).is_err() || encoder.finish(out).is_err() {
-        out.truncate(start);
-    }
+    encoder.push(text.as_bytes(), out);
+    encoder.finish(out);
 }
 
 /// The most bytes of an end marker a [`PasteEncoder`] holds back: all but
@@ -182,12 +171,10 @@ impl PasteEncoder {
     }
 
     /// Appends what `text`, the paste's next bytes, adds to `out`, the
-    /// opening bracket before the first. Refused the memory, it leaves
-    /// `out` and itself as they were, to take `text` again.
-    pub fn push(&mut self, text: &[u8], out: &mut Vec<u8>) -> Result<(), crate::Error> {
+    /// opening bracket before the first.
+    pub fn push(&mut self, text: &[u8], out: &mut Vec<u8>) {
         // A byte taken sends one at most, after what is held and the bracket.
-        let most = (text.len().saturating_add(PASTE_START.len())).saturating_add(HELD);
-        crate::bytes::try_reserve(out, most)?;
+        out.reserve((text.len().saturating_add(PASTE_START.len())).saturating_add(HELD));
         if self.bracketed && !self.opened {
             out.extend_from_slice(PASTE_START);
         }
@@ -217,20 +204,11 @@ impl PasteEncoder {
                 false => self.send(&[byte], out),
             }
         }
-        Ok(())
     }
-
-    /// The most bytes `finish` appends: both brackets and what is held
-    /// back. One that keeps this much room in what it finishes into, from
-    /// before its paste's first byte is sent, can always close its paste
-    /// (`finish` asks for no room it has).
-    pub const CLOSING: usize = PASTE_START.len() + HELD + PASTE_END.len();
 
     /// Ends the paste: what is held back, then the closing bracket, after
     /// the opening one if nothing was taken. It is then a new paste's.
-    /// Refused the memory, it leaves `out` and itself as they were.
-    pub fn finish(&mut self, out: &mut Vec<u8>) -> Result<(), crate::Error> {
-        crate::bytes::try_reserve(out, Self::CLOSING)?;
+    pub fn finish(&mut self, out: &mut Vec<u8>) {
         if self.bracketed && !self.opened {
             out.extend_from_slice(PASTE_START);
         }
@@ -239,7 +217,6 @@ impl PasteEncoder {
             out.extend_from_slice(PASTE_END);
         }
         *self = Self::new(self.bracketed);
-        Ok(())
     }
 
     /// Whether `byte` is one `push` looks at alone: part of a line end, or
@@ -1671,9 +1648,9 @@ mod tests {
                         let cut = second.saturating_sub(first);
                         let (b, c) = rest.split_at_checked(cut).unwrap_or_default();
                         for piece in [a, b, c] {
-                            encoder.push(piece, &mut out)?;
+                            encoder.push(piece, &mut out);
                         }
-                        encoder.finish(&mut out)?;
+                        encoder.finish(&mut out);
                         assert_eq!(out, whole, "{text:?} cut at {first} and {second}");
                     }
                 }
@@ -1683,40 +1660,14 @@ mod tests {
     }
 
     /// A paste whose sender went part way through a marker is ended with
-    /// what it held and its closing bracket; one refused memory is as it
-    /// was, and goes on once memory is given.
+    /// what it held and its closing bracket.
     #[test]
-    fn a_paste_cut_short_is_closed() -> Result<(), crate::Error> {
+    fn a_paste_cut_short_is_closed() {
         let mut encoder = PasteEncoder::new(true);
         let mut out = Vec::new();
-        encoder.push(b"a\x1b[20", &mut out)?;
-        #[cfg(feature = "checks")]
-        {
-            crate::check::refuse_next(2);
-            assert!(encoder.push(b"1", &mut out).is_err());
-            assert!(encoder.finish(&mut out).is_err());
-            assert_eq!(out, b"\x1b[200~a");
-        }
-        encoder.finish(&mut out)?;
+        encoder.push(b"a\x1b[20", &mut out);
+        encoder.finish(&mut out);
         assert_eq!(out, b"\x1b[200~a\x1b[20\x1b[201~");
-        Ok(())
-    }
-
-    /// A paste given whole is sent whole or not at all: with room for its
-    /// text and opening bracket but not for its closing one, and no more
-    /// given, nothing is sent (it sent the text, its bracket left open).
-    #[cfg(feature = "checks")]
-    #[test]
-    fn a_whole_paste_refused_memory_for_its_end_sends_nothing() {
-        let text = "pasted";
-        let mut out = Vec::with_capacity(text.len() + PASTE_START.len() + HELD);
-        out.extend_from_slice(b"$ ");
-        crate::check::refuse_next(1);
-        paste(text, true, &mut out);
-        crate::check::refuse_next(0);
-        assert_eq!(out, b"$ ");
-        paste(text, true, &mut out);
-        assert_eq!(out, b"$ \x1b[200~pasted\x1b[201~");
     }
 
     #[test]

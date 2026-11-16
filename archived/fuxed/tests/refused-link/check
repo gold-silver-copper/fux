@@ -1,4 +1,0 @@
-# One test a line, as bash -e runs it.
-[ "$(readlink .notes.txt.fuxed-save)" = elsewhere ]
-[ ! -e elsewhere ]
-[ "$(ls -A | wc -l)" -eq 2 ]

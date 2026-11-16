@@ -61,14 +61,17 @@ pub struct Remote {
     pub stalled: bool,
     /// What waits while its link takes nothing more, in the order it was
     /// said, and goes in that order once its link took what was queued:
-    /// questions asked of it, each by its number, and what says how it is
-    /// to be now (its size, host, whether it is shown; no number). A
+    /// questions asked of it, each by its number, what says how it is
+    /// to be now (its size, host, whether it is shown; no number), and
+    /// whatever else is said to it while any of those wait, so that
+    /// nothing said later goes first (what a client typed, say). A
     /// question waits here for its asker, not in the queue to it, and one
     /// whose asker went first is let go (`Link::unask`). Of what says how
     /// it is to be, only the latest of each kind since the last question
     /// is kept: a question is answered as it was when it was asked, after
-    /// what was said before it and before what was said after. So what a
-    /// pane that reads nothing is owed grows only with those still asking.
+    /// what was said before it and before what was said after. What a
+    /// pane that reads nothing is owed grows with those still asking, and
+    /// with what else is said to it meanwhile (a key a client types).
     pub parked: Vec<(Option<u64>, ToPane)>,
     /// The program whose handle the server copied from it (Windows,
     /// D-134), till another takes its place or the pane ends.
@@ -97,7 +100,7 @@ impl Remote {
     fn park_state(&mut self, state: ToPane) {
         let kind = std::mem::discriminant(&state);
         let since = (self.parked.iter().rev())
-            .take_while(|(ask, _)| ask.is_none())
+            .take_while(|(_, waiting)| says_state(waiting))
             .count();
         let from = self.parked.len().saturating_sub(since);
         let stale = (self.parked.iter_mut().skip(from))
@@ -112,19 +115,16 @@ impl Remote {
     /// between two questions: a question let go leaves what was said on
     /// either side of it side by side.
     fn tidy(&mut self) {
-        let mut kept = Vec::new();
-        if kept.try_reserve(self.parked.len()).is_err() {
-            return;
-        }
+        let mut kept = Vec::with_capacity(self.parked.len());
         // From the last: one of a kind seen since the last question is
         // stale.
         let mut seen = Vec::new();
         while let Some((ask, message)) = self.parked.pop() {
             let kind = std::mem::discriminant(&message);
-            match ask {
-                Some(_) => seen.clear(),
-                None if seen.contains(&kind) => continue,
-                None => seen.push(kind),
+            match says_state(&message) {
+                false => seen.clear(),
+                true if seen.contains(&kind) => continue,
+                true => seen.push(kind),
             }
             kept.push((ask, message));
         }
@@ -139,6 +139,15 @@ impl Remote {
     }
 }
 
+/// Whether `message` says how a pane is to be now (its size, host,
+/// whether it is shown): of those only the latest matters.
+fn says_state(message: &ToPane) -> bool {
+    matches!(
+        message,
+        ToPane::Resize { .. } | ToPane::Host(_) | ToPane::Shown(_)
+    )
+}
+
 impl Link {
     /// Says `message` to it; a host held here answers into `inbox` at once.
     pub fn send(
@@ -151,16 +160,15 @@ impl Link {
         match self {
             Link::Remote(remote) if remote.closed => {}
             Link::Remote(remote) => {
-                let state = matches!(
-                    message,
-                    ToPane::Resize { .. } | ToPane::Host(_) | ToPane::Shown(_)
-                );
                 // What waits keeps the order it was said in: a size said
-                // after a question goes after it.
-                if state && (!remote.end.out.is_empty() || !remote.parked.is_empty()) {
+                // after a question goes after it, and so does all else.
+                let waits = !remote.parked.is_empty();
+                if says_state(&message) && (!remote.end.out.is_empty() || waits) {
                     remote.park_state(message);
                 } else if let (ToPane::Ask { ask, .. }, true) = (&message, remote.backed_up()) {
                     remote.parked.push((Some(*ask), message));
+                } else if waits {
+                    remote.parked.push((None, message));
                 } else {
                     remote.end.send(&message);
                 }
@@ -412,8 +420,6 @@ wired!(Expect {
 /// From a client's connection's own process to the server.
 #[derive(Debug)]
 pub enum FromConn {
-    /// It took its client at the server's socket: a spare's first word.
-    Accepted,
     /// A whole frame its client sent, decoded as the frame expected: sent
     /// again as it came, for the server to take, but for its inputs or
     /// paste text, which it keeps as `body` (`ToConn::Deliver`).
@@ -435,7 +441,6 @@ pub enum FromConn {
     Unreached { token: u64, pane: PaneId },
 }
 wired!(FromConn {
-    Accepted,
     Frame { frame, body },
     Flushed,
     Shut,
@@ -444,54 +449,15 @@ wired!(FromConn {
     Unreached { token, pane },
 });
 
-/// How the server starts a client's connection's own process, before its
-/// client comes: `fux __conn`, its link on stdin, the server's socket on
-/// stdout, where it takes its client (`conn::wait`); or, `fux __conn
-/// taken`, for a client the server took itself, on stdout (`conn::serve`).
+/// How the server starts a client's connection's own process, for a
+/// client it took: `fux __conn`, its link on stdin, its client on stdout
+/// (`conn::serve`).
 pub const CONN: &str = "__conn";
-pub const TAKEN: &str = "taken";
 
 #[cfg(test)]
 mod tests {
     use super::{BYTES, Message, Sending, ToConn};
     use fux_wire::protocol::{Decoder, Frame};
-
-    /// An end refused memory queues nothing of what it would send, and
-    /// leaves in its socket what it would read; both go on once memory is
-    /// given.
-    #[cfg(all(unix, feature = "checks"))]
-    #[test]
-    fn an_end_refused_memory_sends_and_reads_nothing_and_goes_on()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use super::{End, Read};
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
-        let (mut ours, mut theirs) = (End::new(ours)?, End::new(theirs)?);
-        fux_vt::refuse_next(1);
-        assert!(ours.try_send(&ToConn::Answered).is_err());
-        assert!(ours.queued::<ToConn>().is_empty());
-        fux_vt::refuse_next(1);
-        assert!(ours.try_send_whole(&ToConn::Answered).is_err());
-        assert!(ours.queued::<ToConn>().is_empty());
-        assert!(ours.try_send_whole(&ToConn::Answered)?);
-        let long = ToConn::Bytes(vec![7; BYTES * 2]);
-        assert!(!ours.try_send_whole(&long)?);
-        ours.try_send(&ToConn::Close)?;
-        ours.flush_all()?;
-        let mut buffer = [0u8; 4096];
-        fux_vt::refuse_next(1);
-        assert_eq!(theirs.try_read(&mut buffer), Read::Refused);
-        assert!(matches!(theirs.next_message::<ToConn>(), Ok(None)));
-        assert_eq!(theirs.try_read(&mut buffer), Read::More);
-        assert!(matches!(
-            theirs.next_message::<ToConn>(),
-            Ok(Some(ToConn::Answered))
-        ));
-        assert!(matches!(
-            theirs.next_message::<ToConn>(),
-            Ok(Some(ToConn::Close))
-        ));
-        Ok(())
-    }
 
     /// A thousand questions to a pane whose process reads nothing, each
     /// given up by its asker, leave nothing more queued to it: once its
@@ -613,7 +579,7 @@ mod tests {
         let question = |ask: u64| ToPane::Ask {
             ask,
             actor: Actor::Outside,
-            what: Ask::ClearHistory,
+            what: Ask::Signal(fuxix::process::Signal::Term),
         };
         let waiting = |link: &Link| match link {
             Link::Remote(remote) => remote.parked.len(),
@@ -666,6 +632,81 @@ mod tests {
             "size 14",
         ];
         assert_eq!(said, order);
+        Ok(())
+    }
+
+    /// What a client types at a pane whose link is backed up goes after a
+    /// question asked of it before: nothing said to a pane overtakes what
+    /// waits for it.
+    #[cfg(unix)]
+    #[test]
+    fn what_is_typed_goes_after_a_question_that_waits() -> Result<(), Box<dyn std::error::Error>> {
+        use super::{Ask, End, Link, Read, Remote, ToPane, Typed};
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        let mut theirs = End::new(theirs)?;
+        let pid = fuxix::process::Pid::from_i32(1).ok_or("a pid")?;
+        let mut link = Link::Remote(Remote::new(End::new(ours)?, pid, false));
+        let id = fux_wire::id::PaneId::of(1);
+        let (now, mut inbox) = (std::time::Instant::now(), std::collections::VecDeque::new());
+        // Something its link has not taken: a question asked now waits.
+        link.send(id, ToPane::Shown(true), now, &mut inbox);
+        let question = ToPane::Ask {
+            ask: 1,
+            actor: fux_wire::events::Actor::Outside,
+            what: Ask::Respawn {
+                kill: false,
+                argv: None,
+            },
+        };
+        link.send(id, question, now, &mut inbox);
+        let typed = ToPane::Typed {
+            client: fux_wire::id::ClientId::of(1),
+            typed: Typed::Focus(true),
+        };
+        link.send(id, typed, now, &mut inbox);
+        if let Link::Remote(remote) = &mut link {
+            remote.flush();
+        }
+        let mut buffer = [0u8; 4096];
+        assert_ne!(theirs.read(&mut buffer), Read::Closed);
+        let mut said = Vec::new();
+        while let Some(message) = theirs.next_message::<ToPane>()? {
+            said.push(std::mem::discriminant(&message));
+        }
+        let order = [
+            std::mem::discriminant(&ToPane::Shown(true)),
+            std::mem::discriminant(&ToPane::Ask {
+                ask: 0,
+                actor: fux_wire::events::Actor::Outside,
+                what: Ask::Respawn {
+                    kill: false,
+                    argv: None,
+                },
+            }),
+            std::mem::discriminant(&ToPane::Typed {
+                client: fux_wire::id::ClientId::of(1),
+                typed: Typed::Focus(true),
+            }),
+        ];
+        assert!(said == order, "typed went before the question that waited");
+        Ok(())
+    }
+
+    /// A read up to a limit reads no more than it: the rest stays in the
+    /// socket for the next read.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_up_to_a_limit_reads_no_more() -> Result<(), Box<dyn std::error::Error>> {
+        use super::{End, Read};
+        use std::io::{Read as _, Write as _};
+        let (ours, mut theirs) = std::os::unix::net::UnixStream::pair()?;
+        let mut end = End::new(ours)?;
+        theirs.write_all(&[0u8; 100])?;
+        drop(theirs);
+        assert_eq!(end.read_up_to(&mut [0u8; 64], 10), Read::More);
+        let mut rest = Vec::new();
+        (&end.stream).read_to_end(&mut rest)?;
+        assert_eq!(rest.len(), 90);
         Ok(())
     }
 

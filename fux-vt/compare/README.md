@@ -814,7 +814,7 @@ The axes:
 | `src/families.rs` | the families: generators, statuses and reasons (also included by `diff/oracle`) |
 | `src/cases.rs` | the named cases |
 | `src/snapshot.rs` | what is compared, field by field, and the side-by-side view |
-| `src/rng.rs` | splitmix64, as in `diff/`; also included by `diff/oracle` |
+| `src/rng.rs` | splitmix64; also included by `diff/oracle` |
 | `src/escape.rs` | bytes as replayable text, and back |
 | `src/record.rs` | `record` |
 | `src/corpus.rs` | the recordings: loading, replaying, their statuses |

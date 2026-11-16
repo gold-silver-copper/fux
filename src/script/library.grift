@@ -125,10 +125,8 @@
   (let! ((target (focused client))
          (editor (catch-kind! (environment-variable "EDITOR") unset-variable failure "vi"))
          (editor (if! (same? editor "") "vi" editor))
-         (builder (argument (program (axis target "vertical") "env") (join "FUX_TARGET=" (string target))))
-         (builder (argument builder (join "EDITOR=" editor)))
-         (builder (argument (argument builder "sh") "-c")))
-    (split (argument builder "printf '\\033]2;history\\007'; file=$(mktemp) && \"${FUX:-fux}\" '(capture (all-history (pane (first (arguments)))))' \"$FUX_TARGET\" >\"$file\" && $EDITOR \"+$(($(wc -l <\"$file\")))\" \"$file\" || read -r answer; rm -f \"$file\"; \"${FUX:-fux}\" '(kill (here))'"))
+         (script "printf '\\033]2;history\\007'; file=$(mktemp) && \"${FUX:-fux}\" '(capture (all-history (pane (first (arguments)))))' \"$FUX_TARGET\" >\"$file\" && $EDITOR \"+$(($(wc -l <\"$file\")))\" \"$file\" || read -r answer; rm -f \"$file\"; \"${FUX:-fux}\" '(kill (here))'"))
+    (split (program (axis target "vertical") (list "env" (join "FUX_TARGET=" (string target)) (join "EDITOR=" editor) "sh" "-c" script)))
     #inert)))
 ; The strict projection used when an event stream must not skip lost entries.
 (define! batch-events (lambda! (batch)

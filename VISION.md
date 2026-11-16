@@ -154,8 +154,7 @@ reference.
   message bus inside fux or grift. Agents coordinate through files and
   processes outside them.
 - **Not a judge of readiness,** ever.
-- **Not an editor.** `C-b c` hands a pane's history to yours. fuxed, the
-  editor written in fuxth, is kept in `archived/`.
+- **Not an editor.** `C-b c` hands a pane's history to yours.
 - **Not a clone** of tmux or Kernel. grift is a Lisp whose one primitive
   operative is `vau!`, with no macros: `if!` and `lambda!` are definitions a
   reader can read and replace. Its names are full English words, such as
@@ -181,7 +180,6 @@ The checkpoint, fux's next version, is reached when all of these hold:
 - **every changed contract has been shown working in the real program** on
   the release head (D-48);
 - **the local gate passes;**
-- **grift has replaced fuxth,** since fux's words are grift operations;
 - **fux is smaller than it was on 2026-10-31** (D-85): its production
   lines, not counting fux-vt and fuxix, end below master `1a8f860f`.
 

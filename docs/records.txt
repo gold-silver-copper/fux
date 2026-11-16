@@ -10,7 +10,7 @@ capture[pane].last-output: start end
 capture[pane].launch.directory: encoding text
 capture[pane].launch: choice directory
 capture[pane].links[]: row column length uri
-capture[pane].lost: copies-cut copies-not-text pictures memory
+capture[pane].lost: copies-cut copies-not-text pictures
 capture[pane].pictures[]: row column rows cropped columns width height
 capture[pane].program: pane generation arguments process-id state exited signal read-error input-unread foreground-group
 capture[pane].styles[][]: column length fg bg bold inverse hidden dim italic strikeout underline blink
@@ -35,7 +35,6 @@ events.events[][done]: event pane tab workspace status origin sequence next
 events.events[][exited]: event pane tab workspace exited input-unread origin sequence next
 events.events[][exited]: event pane tab workspace signal input-unread origin sequence next
 events.events[][history-budget]: event pane tab workspace history-bytes origin sequence next
-events.events[][history-cleared]: event pane tab workspace origin sequence next
 events.events[][hung-up]: event pane tab workspace origin sequence next
 events.events[][input]: event pane tab workspace generation kind bytes expected origin sequence next
 events.events[][input]: event pane tab workspace generation kind bytes origin sequence next
@@ -80,7 +79,7 @@ snapshot.facts.panes[].cell: width height
 snapshot.facts.panes[].last-output: start end
 snapshot.facts.panes[].launch.directory: encoding text
 snapshot.facts.panes[].launch: choice directory
-snapshot.facts.panes[].lost: copies-cut copies-not-text pictures memory
+snapshot.facts.panes[].lost: copies-cut copies-not-text pictures
 snapshot.facts.panes[].pictures[]: row column rows cropped columns width height
 snapshot.facts.panes[].program: pane generation arguments process-id state exited signal read-error input-unread foreground-group
 snapshot.facts.panes[]: id tab version respawns screen bells done ended name label title rows columns row column program launch alternate-screen mouse-mode mouse-encoding bracketed-paste focus-events application-cursor application-keypad keyboard-flags pictures lost cell cursor-visible history-bytes program-clipboard reflow alternate-scroll-lines picture-bytes history-lines command-running last-status last-output notification truncated input-queued
@@ -100,7 +99,7 @@ snapshot.recipe.panes[].directory[known]: status path
 snapshot.recipe.panes[].last-output: start end
 snapshot.recipe.panes[].launch.directory: encoding text
 snapshot.recipe.panes[].launch: choice directory
-snapshot.recipe.panes[].lost: copies-cut copies-not-text pictures memory
+snapshot.recipe.panes[].lost: copies-cut copies-not-text pictures
 snapshot.recipe.panes[].pictures[]: row column rows cropped columns width height
 snapshot.recipe.panes[].program: pane generation arguments process-id state exited signal read-error input-unread foreground-group
 snapshot.recipe.panes[]: id tab version respawns screen bells done ended name label title rows columns row column program launch alternate-screen mouse-mode mouse-encoding bracketed-paste focus-events application-cursor application-keypad keyboard-flags pictures lost cell cursor-visible history-bytes program-clipboard reflow alternate-scroll-lines picture-bytes history-lines command-running last-status last-output notification truncated input-queued directory

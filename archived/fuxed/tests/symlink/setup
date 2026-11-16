@@ -1,2 +1,0 @@
-# FILE is a symlink to the file it names.
-mv notes.txt target.txt && ln -s target.txt notes.txt

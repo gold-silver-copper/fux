@@ -1,7 +1,7 @@
 name: Fuzz
 
 # Nightly and on request: fux's targets replay their corpora, and each of
-# fux-vt's targets and the oracle explore for five minutes from their
+# fux-vt's targets explore for five minutes from their
 # corpus, their frozen seeds and what earlier nights found, which is kept
 # in the Actions cache between nights. `cargo test` runs none of them, and
 # a fuzz run is too long for every push. Each target is a job of its own,
@@ -83,7 +83,6 @@ jobs:
           - { target: keys, dir: fux-vt/fuzz }
           - { target: graphemes, dir: fux-vt/fuzz }
           - { target: cells, dir: fux-vt/fuzz }
-          - { target: oracle, dir: diff/fuzz }
     defaults:
       run:
         shell: bash
@@ -101,12 +100,6 @@ jobs:
           set -euo pipefail
           rustup toolchain install nightly --profile minimal
           cargo install cargo-fuzz --locked --version 0.13.2
-
-      # The oracle builds against fux-vt's base-vt pin, which must name this
-      # very commit for both sides to share one API (diff/README.md).
-      - name: The oracle's pin
-        if: matrix.target == 'oracle'
-        run: diff/oracle.sh --pin HEAD
 
       - name: Build
         run: cargo +nightly fuzz build "$TARGET" --fuzz-dir "$DIR" -O -a

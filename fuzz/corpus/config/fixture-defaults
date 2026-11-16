@@ -74,5 +74,5 @@
 (bind-in "line" "End" "end")
 (bind-in "line" "Backspace" "backspace")
 (bind-in "line" "Delete" "delete")
-(bind-action "r" (code! (lambda! (client target) (rename-prompt client target)))) (label "rename")
-(bind-action "x" (code! (lambda! (client target) (confirm-close client target)))) (label "close")
+(bind-in "list" "r" (code! (lambda! (client target) (rename-prompt client target)))) (label "rename")
+(bind-in "list" "x" (code! (lambda! (client target) (confirm-close client target)))) (label "close")

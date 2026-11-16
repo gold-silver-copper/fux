@@ -297,12 +297,6 @@ pub fn hand(accepted: Accepted) -> Handed {
     accepted.into()
 }
 
-/// Windows starts no connection's process before its client comes
-/// (`Server::keep_spare`): the server takes every client itself.
-pub fn spare(_listener: &Listener) -> std::io::Result<Handed> {
-    Err(std::io::ErrorKind::Unsupported.into())
-}
-
 /// Windows gives a process no limit on its handles to run into.
 pub fn out_of_descriptors(_error: &std::io::Error) -> bool {
     false
@@ -320,12 +314,11 @@ fn usable(handle: BorrowedHandle<'_>) -> Option<BorrowedHandle<'_>> {
     (!raw.is_null() && raw != invalid).then_some(handle)
 }
 
-/// Starts `fux __conn` from `exe` with `words`, its link on stdin and
-/// `out` on stdout: the server's end of its link.
-pub fn launch_conn(exe: &Path, words: &[&str], out: Handed) -> std::io::Result<Stream> {
+/// Starts `fux __conn` from `exe`, its link on stdin and `out` on stdout:
+/// the server's end of its link.
+pub fn launch_conn(exe: &Path, out: Handed) -> std::io::Result<(Stream, Option<Pid>)> {
     let (ours, theirs) = fuxix::io::pipe_for_fuxix_child()?;
-    let mut args = vec![std::ffi::OsStr::new(crate::link::CONN)];
-    args.extend(words.iter().map(std::ffi::OsStr::new));
+    let args = [std::ffi::OsStr::new(crate::link::CONN)];
     let log = std::io::stderr();
     let stdio = [
         Some(theirs.as_handle()),
@@ -333,7 +326,8 @@ pub fn launch_conn(exe: &Path, words: &[&str], out: Handed) -> std::io::Result<S
         usable(log.as_handle()),
     ];
     fuxix::process::start(exe, &args, stdio)?;
-    Ok(ours)
+    // Its handle is let go as it is started: nothing of it is left to reap.
+    Ok((ours, None))
 }
 
 /// How long a pane's process has to say it listens.
@@ -452,6 +446,12 @@ pub fn peer_pid(stream: &Stream) -> Option<Pid> {
 /// name while it runs, so no other pane's marker is at that path.
 pub struct Own;
 
+/// Whether the marker at `path` is still there: what a server taking its
+/// run back finds its pane by.
+pub fn own_at(_own: &Own, path: &Path) -> bool {
+    path.exists()
+}
+
 /// Removes the marker at `path`.
 pub fn unlink_own(_own: &Own, path: &Path) {
     let _ = fs::remove_file(path);
@@ -495,7 +495,7 @@ pub fn listen_at(path: &Path) -> std::io::Result<Listener> {
 }
 
 /// A connection's process's client and its link to its server, as `fux
-/// __conn taken` is given them: the client's pipe instance on stdout, the
+/// __conn` is given them: the client's pipe instance on stdout, the
 /// link on stdin, each a handle it inherited.
 pub fn taken_stdio() -> std::io::Result<(Stream, Stream)> {
     let server = std::io::stdin().as_handle().try_clone_to_owned()?;
@@ -657,7 +657,7 @@ pub struct Starting {
 const ENDING: Duration = Duration::from_secs(2);
 
 /// Starts `exe` with `args` in the background, its stderr `log`, its stdout
-/// a pipe to read; without the variable `unset`. Through
+/// a pipe to read. Through
 /// `fuxix::process::start`, whose handle list hands it these alone (D-140):
 /// with std's, it would inherit what the client inherited, and `fux start |
 /// findstr x` would never end. It runs in its socket's folder: a process's
@@ -667,12 +667,11 @@ pub fn start_server(
     args: &[&std::ffi::OsStr],
     socket: &SocketPath,
     log: File,
-    unset: &str,
 ) -> std::io::Result<Starting> {
     let (output, theirs) = std::io::pipe()?;
     let stdio = [None, Some(theirs.as_handle()), Some(log.as_handle())];
     let directory = Some(socket.directory());
-    let started = fuxix::process::start_in(exe, args, stdio, directory, &[unset])?;
+    let started = fuxix::process::start_in(exe, args, stdio, directory)?;
     Ok(Starting {
         pid: started.pid,
         output: Some(output),
@@ -699,39 +698,6 @@ impl Starting {
             }
         }
     }
-}
-
-/// The program process `pid` runs, to run it; its path, to say; and whether
-/// it is this very binary, by path, as `follow` asks.
-pub fn server_binary(pid: Pid) -> Result<(PathBuf, PathBuf, bool), String> {
-    let path = fuxix::process::image(pid).map_err(|e| format!("process {pid}: {e}"))?;
-    let ours = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-    let real = |path: &Path| fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()));
-    let same = real(&path)? == real(&ours)?;
-    Ok((path.clone(), path, same))
-}
-
-/// Runs `command`, having no `exec`: waits for it, and this process ends
-/// with its code. Returns only if it can't start. `arg0` has no place here:
-/// std names a program by its path.
-pub fn rerun(mut command: std::process::Command, _arg0: &std::ffi::OsStr) -> std::io::Error {
-    match command.status() {
-        // No terminal is raw here: a command line, ending as what took its
-        // place did.
-        Ok(status) => fuxix::process::end(status.code().unwrap_or(1)),
-        Err(error) => error,
-    }
-}
-
-/// The id a command that followed finds in its mark: its parent's, as there
-/// is no `exec` to keep one.
-pub fn follower_id() -> u32 {
-    fuxix::process::ancestry().get(1).copied().unwrap_or(0)
-}
-
-/// Windows starts no connection's process before its client.
-pub fn waiting_stdio() -> Result<(), String> {
-    Err("Windows starts no connection's process before its client".to_owned())
 }
 
 /// Where `fux help` says a server is found.

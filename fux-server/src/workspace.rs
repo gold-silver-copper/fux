@@ -449,15 +449,6 @@ struct Closing {
     closed: Option<(Option<WsId>, String, Close)>,
 }
 
-/// A tree as it was, to be put back (`Parts::structure`).
-pub(crate) struct Structure {
-    top: Stack<WsId>,
-    workspaces: BTreeMap<WsId, Workspace>,
-    tabs: BTreeMap<TabId, Tab>,
-    homes: BTreeMap<PaneId, TabId>,
-    names: BTreeMap<PaneId, Option<Rc<str>>>,
-}
-
 /// The workspaces a kill closes as it empties them: none (it kills a pane
 /// or a tab), those within one, or every one.
 #[derive(Clone, Copy)]
@@ -1075,11 +1066,6 @@ impl Parts {
         &self.journal
     }
 
-    /// Its journal's entries from `mark` on let go (`Journal::truncate`).
-    pub(crate) fn truncate_journal(&mut self, mark: crate::journal::Mark) {
-        self.journal.truncate(mark);
-    }
-
     /// The workspace and tab that hold pane `pane`.
     pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
         let tab = self.tabs.get(self.homes.get(&pane)?)?;
@@ -1096,13 +1082,13 @@ impl Parts {
     pub(crate) fn told(
         &mut self,
         id: PaneId,
-        told: crate::journal::Told,
+        mut told: crate::journal::Told,
         actor: Actor,
         counts: fux_wire::command::Counts,
     ) -> Option<()> {
         let at = self.locate(id)?;
         let pane = self.panes.get_mut(&id)?;
-        pane.told(&told, counts);
+        pane.told(&mut told, counts);
         let event = Event::Pane((at, id), PaneEvent::Told(told));
         self.journal.push_from(event, actor);
         Some(())
@@ -1615,17 +1601,13 @@ impl Parts {
 }
 
 impl Parts {
-    /// Its tree, as its run's record holds it (`record`): each name there
-    /// by the number `name` gives for it, said with what it names.
-    pub(crate) fn record(
-        &self,
-        name: &mut dyn FnMut(AnyRef, &Rc<str>) -> crate::record::NameId,
-    ) -> crate::record::Tree {
-        let mut named = |of: AnyRef, text: Option<&Rc<str>>| text.map(|text| name(of, text));
+    /// Its tree, as its run's record holds it (`record`).
+    pub(crate) fn record(&self) -> crate::record::Tree {
+        let named = |text: &Option<Rc<str>>| text.as_deref().map(String::from);
         let workspaces = (self.workspaces.values())
             .map(|ws| crate::record::Workspace {
                 id: ws.id,
-                name: named(AnyRef::Workspace(ws.id), ws.name.as_ref()),
+                name: named(&ws.name),
                 children: ws.children.children.clone(),
             })
             .collect();
@@ -1633,11 +1615,11 @@ impl Parts {
         for tab in self.tabs.values() {
             let panes = (tab.root.panes().into_iter())
                 .filter_map(|p| self.panes.get(&p))
-                .map(|pane| pane.record(named(AnyRef::Pane(pane.id()), pane.given_name())))
+                .map(|pane| pane.record())
                 .collect();
             tabs.push(crate::record::Tab {
                 id: tab.id,
-                name: named(AnyRef::Tab(tab.id), tab.name.as_ref()),
+                name: named(&tab.name),
                 nodes: tab.root.nodes(),
                 revision: tab.revision,
                 fixed: matches!(tab.fit, Fit::Fixed(_)),
@@ -1653,73 +1635,24 @@ impl Parts {
         }
     }
 
-    /// Its tree as it is: what `restructure` puts back.
-    pub(crate) fn structure(&self) -> Structure {
-        Structure {
-            top: self.top.clone(),
-            workspaces: self.workspaces.clone(),
-            tabs: self.tabs.clone(),
-            homes: self.homes.clone(),
-            names: (self.panes.iter())
-                .map(|(id, pane)| (*id, pane.given_name().cloned()))
-                .collect(),
-        }
-    }
-
-    /// Copies of panes closed, put back as a change is undone (`restructure`
-    /// places them again).
-    pub(crate) fn put_back(&mut self, panes: Vec<Pane>) {
-        for pane in panes {
-            self.panes.insert(pane.id(), pane);
-        }
-    }
-
-    /// Its tree as `structure` took it, the names its panes had then: the
-    /// panes made since are let go, and their ids given back.
-    pub(crate) fn restructure(&mut self, structure: Structure) -> Vec<PaneId> {
-        self.top = structure.top;
-        self.workspaces = structure.workspaces;
-        self.tabs = structure.tabs;
-        self.homes = structure.homes;
-        let made: Vec<PaneId> = (self.panes.keys())
-            .filter(|id| !structure.names.contains_key(id))
-            .copied()
-            .collect();
-        for id in &made {
-            self.panes.remove(id);
-        }
-        for (id, name) in structure.names {
-            if let Some(pane) = self.panes.get_mut(&id) {
-                pane.renamed(name);
-            }
-        }
-        made
-    }
-
-    /// The tree `tree` records (`record`), named as `names` says and
-    /// holding `panes`, its journal keeping `journal` bytes of events, no client
+    /// The tree `tree` records (`record`), holding `panes`, its journal keeping `journal` bytes of events, no client
     /// shown it yet: as a server takes a run back. One that is no tree (a
     /// child named twice or missing, a workspace with none, or one nothing
     /// holds from the top down) is refused.
     pub(crate) fn restore(
         journal: fux_wire::command::JournalBytes,
         tree: &crate::record::Tree,
-        names: &BTreeMap<crate::record::NameId, Rc<str>>,
         panes: BTreeMap<PaneId, Pane>,
     ) -> Result<Parts, fux_wire::code::Error> {
         use fux_wire::code::{Code, fail};
         let bad = |why: String| fail(Code::BadValue, format!("the run's record: {why}"));
-        let named = |name: Option<crate::record::NameId>| match name {
-            None => Ok(None),
-            Some(id) => (names.get(&id).cloned().map(Some))
-                .ok_or_else(|| bad(format!("name {id} is not there"))),
-        };
+        let named = |name: &Option<String>| name.as_deref().map(Rc::from);
         let mut parts = Parts::new(journal);
         for recorded in &tree.workspaces {
             let ws = Workspace {
                 id: recorded.id,
                 parent: None,
-                name: named(recorded.name)?,
+                name: named(&recorded.name),
                 children: Stack {
                     children: recorded.children.clone(),
                     shown: BTreeMap::new(),
@@ -1768,7 +1701,7 @@ impl Parts {
             let tab = Tab {
                 id: recorded.id,
                 ws,
-                name: named(recorded.name)?,
+                name: named(&recorded.name),
                 root: fux_wire::layout::from_nodes(&recorded.nodes, &ids)?,
                 revision: recorded.revision,
                 changed: true,
@@ -1777,6 +1710,12 @@ impl Parts {
                 seats: BTreeMap::new(),
                 typist: None,
             };
+            if let Some(zoomed) = tab.zoomed.filter(|zoomed| !tab.root.contains(*zoomed)) {
+                return Err(bad(format!(
+                    "{} is zoomed on {zoomed}, which is not in it",
+                    tab.id
+                )));
+            }
             for pane in ids {
                 if parts.homes.insert(pane, tab.id).is_some() || !panes.contains_key(&pane) {
                     return Err(bad(format!("{pane} is in two tabs, or is not there")));

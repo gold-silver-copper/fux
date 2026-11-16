@@ -9,13 +9,12 @@ impl Asks for NoRequests {
 #[test]
 fn one_argument_is_a_program() -> TestResult {
     let mut out = Vec::new();
-    assert_eq!(main(&["(add 1 2)".into()], None, &mut out)?, 0);
+    assert_eq!(main(&["(add 1 2)".into()], &mut out)?, 0);
     assert_eq!(out, b"3\n");
     out.clear();
     assert_eq!(
         main(
             &["(first (arguments))".into(), "(data \"quoted\")".into()],
-            None,
             &mut out
         )?,
         0
@@ -27,7 +26,7 @@ fn one_argument_is_a_program() -> TestResult {
 fn release_flags_bypass_the_operand_taking_version_word() -> TestResult {
     for flag in ["--version", "-V"] {
         let mut out = Vec::new();
-        assert_eq!(main(&[flag.into()], None, &mut out)?, 0);
+        assert_eq!(main(&[flag.into()], &mut out)?, 0);
         assert_eq!(
             String::from_utf8(out)?,
             format!("{}\n", fux_wire::protocol::Build::OURS)
@@ -38,10 +37,10 @@ fn release_flags_bypass_the_operand_taking_version_word() -> TestResult {
 #[test]
 fn a_list_left_prints_an_item_a_line() -> TestResult {
     let mut out = Vec::new();
-    main(&["(list 1 \"\" (list 2 \"x\") 3)".into()], None, &mut out)?;
+    main(&["(list 1 \"\" (list 2 \"x\") 3)".into()], &mut out)?;
     assert_eq!(out, b"1\n\n(2 \"x\")\n3\n");
     out.clear();
-    main(&["()".into()], None, &mut out)?;
+    main(&["()".into()], &mut out)?;
     assert!(out.is_empty());
     Ok(())
 }
@@ -59,7 +58,6 @@ fn a_caught_closed_pipe_still_ends_quietly() -> TestResult {
     assert_eq!(
         main(
             &["(catch-kind! (print \"x\") output failure #inert)".into()],
-            None,
             &mut Closed
         )?,
         141
@@ -77,7 +75,7 @@ fn final_output_reports_the_writers_failure() {
             Ok(())
         }
     }
-    let failure = main(&["1".into()], None, &mut Broken).err();
+    let failure = main(&["1".into()], &mut Broken).err();
     assert!(failure.is_some_and(|f| f.code == Code::Output && f.message.contains("broken writer")));
 }
 #[test]
@@ -126,6 +124,7 @@ fn held_answers_and_captures_project_without_refreshing() -> TestResult {
     let reply = Reply {
         run: Some(version.run),
         response: Response::Answered(PaneResults::One(PaneAnswer::Acted(version))),
+        warning: None,
     };
     let values = testing::held_reply(
         "(get (send-keys (text (pane 1) \"x\")) \"version\")",
@@ -157,7 +156,7 @@ fn the_default_keys_are_a_config_list_keys_prints() -> TestResult {
     // Whatever a label holds, in a binding's or a screen's key.
     let labels =
         "(bind-key \"F9\" (code! (lambda! () #inert))) (label \"\u{26a0}\u{fe0f} zap\u{ad}\")
-        (bind-action \"z\" (code! (lambda! (c p) #inert))) (label \"\u{200b}z\")";
+        (bind-in \"list\" \"z\" (code! (lambda! (c p) #inert))) (label \"\u{200b}z\")";
     let path = std::env::temp_dir().join(format!("label-keys-{}.grift", std::process::id()));
     std::fs::write(&path, labels)?;
     let labelled = run_file(&path)?;
@@ -172,7 +171,6 @@ fn an_exit_cannot_be_caught_as_an_ordinary_error() -> TestResult {
     let mut out = Vec::new();
     let status = main(
         &["(catch! (exit 7) failure (display \"continued\"))".into()],
-        None,
         &mut out,
     )?;
     assert_eq!(status, 7);
@@ -184,7 +182,6 @@ fn an_exit_runs_the_cleanups_around_it() -> TestResult {
     let mut out = Vec::new();
     let status = main(
         &["(finally! (exit 3) (display \"cleaned\"))".into()],
-        None,
         &mut out,
     )?;
     assert_eq!((status, out.as_slice()), (3, &b"cleaned"[..]));
@@ -193,7 +190,7 @@ fn an_exit_runs_the_cleanups_around_it() -> TestResult {
 #[test]
 fn explicit_code_runs_in_its_receiving_dictionary() -> TestResult {
     let mut out = Vec::new();
-    main(&["(define! receiver (lambda! (x) (add x 1))) (execute! (code! (lambda! (x) (receiver x))) 41)".into()],None,&mut out)?;
+    main(&["(define! receiver (lambda! (x) (add x 1))) (execute! (code! (lambda! (x) (receiver x))) 41)".into()],&mut out)?;
     assert_eq!(out, b"42\n");
     Ok(())
 }
@@ -287,6 +284,7 @@ fn ended_answers_expose_both_exit_fields() -> TestResult {
         let reply = Reply {
             run: Some(version.run),
             response: Response::Answered(PaneResults::One(answer)),
+            warning: None,
         };
         let values = held_reply(
             "(sequence! (define! variables-6 (context ())) (bind variables-6 (quote! held) (wait (timeout (pane 1) 0))) (define! value-10 (evaluate (quote! held) variables-6)) \"exited\" (define! value-12 (get value-10 \"exited\")) (define! value-13 (evaluate (quote! held) variables-6)) \"signal\" (list value-12 (get value-13 \"signal\")))",
@@ -1454,12 +1452,48 @@ fn a_cleanups_walk_goes_on_after_the_stop_that_let_it_run() -> TestResult {
 #[test]
 fn text_takes_an_integer_and_refuses_a_float_saying_so() -> TestResult {
     let mut out = Vec::new();
-    let taken = "(sequence! (argument (program (options) \"echo\") 1) #true)";
-    assert_eq!(main(&[taken.into()], None, &mut out)?, 0);
-    let refused = "(argument (program (options) \"echo\") 1.5)";
-    let failed = main(&[refused.into()], None, &mut out)
-        .err()
-        .ok_or("taken")?;
+    let taken = "(sequence! (text (options) 1) #true)";
+    assert_eq!(main(&[taken.into()], &mut out)?, 0);
+    let refused = "(text (options) 1.5)";
+    let failed = main(&[refused.into()], &mut out).err().ok_or("taken")?;
     assert!(failed.message.contains("an integer"), "{}", failed.message);
+    // A program's words are text too: a port is written as a number.
+    let taken = "(sequence! (program (options) (list \"app\" 8080 #true)) #true)";
+    assert_eq!(main(&[taken.into()], &mut out)?, 0);
+    // A shell's words are read by the same reader.
+    let taken = "(sequence! (shell-program (options) (list \"sh\" 8080 #true)) #true)";
+    assert_eq!(main(&[taken.into()], &mut out)?, 0);
+    for word in ["program", "shell-program"] {
+        let refused = format!("({word} (options) (list \"app\" 1.5))");
+        let failed = main(&[refused], &mut out).err().ok_or("taken")?;
+        assert!(failed.message.contains("integers"), "{}", failed.message);
+    }
+    Ok(())
+}
+/// A record is read one way: its kind is its `kind` field wherever that
+/// stands, and `get` reads a field only of what `kind` calls a record.
+#[test]
+fn a_records_kind_and_fields_are_read_one_way() -> TestResult {
+    let mut out = Vec::new();
+    let kinds = "(list (kind (quote! ((kind \"capture\") (text \"ok\")))) \
+                 (kind (quote! ((text \"ok\") (kind \"capture\")))))";
+    assert_eq!(main(&[kinds.into()], &mut out)?, 0);
+    assert_eq!(String::from_utf8(out)?, "capture\ncapture\n");
+    // `(x 1 2)` is no field, so the value is a list, which has none.
+    let mut out = Vec::new();
+    let listed = "(kind (quote! ((x 1 2))))";
+    assert_eq!(main(&[listed.into()], &mut out)?, 0);
+    assert_eq!(String::from_utf8(out)?, "list\n");
+    let read = "(get (quote! ((x 1 2))) \"x\")";
+    let failed = main(&[read.into()], &mut Vec::new()).err();
+    assert_eq!(failed.map(|f| f.code), Some(Code::Type), "{read}");
+    Ok(())
+}
+/// `word` names one word: a value that is no name is a type error, not
+/// the whole dictionary.
+#[test]
+fn word_refuses_what_is_no_name() -> TestResult {
+    let failed = main(&["(word 1)".into()], &mut Vec::new()).err();
+    assert_eq!(failed.map(|f| f.code), Some(Code::Type));
     Ok(())
 }

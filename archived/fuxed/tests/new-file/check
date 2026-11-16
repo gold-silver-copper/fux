@@ -1,3 +1,0 @@
-# The new file is private. One test a line, as bash -e runs it.
-[ "$(mode notes.txt)" = 600 ]
-[ "$(ls -A)" = notes.txt ]

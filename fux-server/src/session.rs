@@ -4,7 +4,7 @@ use crate::copy::Copy as Pane;
 use crate::journal::{Detach, ViewChange};
 use crate::link::{Answered, Ask, Begin, FromPane, Hosting, Link, Remote, ToPane};
 use crate::pane::{self, Runs};
-use crate::record::{NameId, Tracked};
+use crate::record::Tracked;
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Form, Pending, Waiting, Watches};
 use crate::workspace::{Destination, Fit, Parts, Split, Tab, Workspace};
@@ -14,8 +14,8 @@ use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
 use fux_wire::code::{Code, Error, fail};
 use fux_wire::command::Start;
 use fux_wire::command::{
-    self, AnyRef, Beside, ClientAction, Command, Extent, Input, Kind, Members, MoveTo, PaneResize,
-    Request, Resized, Sibling, SwapWith, Way, WsRef,
+    self, AnyRef, Beside, ClientAction, Command, Input, Kind, Members, MoveTo, PaneResize, Request,
+    Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
 use fux_wire::json::Json;
@@ -23,7 +23,6 @@ use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 #[cfg(test)]
 mod flat;
 mod inspect;
@@ -192,17 +191,6 @@ impl Here<'_> {
     }
 }
 
-/// What a change undoes, taken before it (`Session::transact`).
-struct Undo {
-    structure: crate::workspace::Structure,
-    ids: Ids,
-    views: BTreeMap<ClientId, View>,
-    journal: crate::journal::Mark,
-    outbox: usize,
-    /// The last question asked of a pane before it.
-    asked: u64,
-}
-
 /// A program whose pane's own process ended first, adopted by the server
 /// (`fuxix::process::adopt_orphans`): reaped, its status told; killed once
 /// its grace is over, as a closed pane's program is.
@@ -291,32 +279,18 @@ pub struct Session {
     /// What that record says beside its tree: the run, the ids given last
     /// and whether it ended. None till one is written.
     recorded_head: Option<(command::Run, Vec<u32>, bool)>,
-    /// The name files that record names (`record::name_file`): for each
-    /// workspace, tab or pane named there, its name's number and text.
-    named: BTreeMap<AnyRef, (NameId, Rc<str>)>,
-    /// The server its name files are numbered as (`NameId`): its process.
-    names_as: u32,
-    /// The next number of its own for a name's file: never one it gave,
-    /// nor one a server of its process number gave in the record it read.
-    next_name: u64,
     /// How many times its record was made (`commit`), for the tests of
     /// when it is.
     #[cfg(test)]
     pub(crate) encoded: u64,
-    /// It took its run back and has written no record since: with the
-    /// first it writes, the name files no structure names go (`commit`).
-    unswept: bool,
     recording: bool,
+    /// Its record is behind its tree: the last write of it failed, which
+    /// was said once (`record_change`), and the next change writes it.
+    behind: bool,
+    /// What the request being made has its asker told beside its reply:
+    /// that the record fell behind as it was made.
+    warning: Option<String>,
     ended: bool,
-    /// What it tells its panes while a change may still be undone
-    /// (`transact`): told once the change is recorded, else never.
-    staged: Option<Vec<(PaneId, ToPane)>>,
-    /// Why a change could not be recorded, which undoes it (`transact`).
-    unrecorded: Option<Error>,
-    /// The panes a change closes, their copies and links, kept whole till
-    /// it is recorded: told to close then, or put back (`transact`).
-    closing: Vec<(PaneId, Link, bool)>,
-    closed: Vec<Pane>,
     /// The body the frame being taken has, kept by its connection
     /// (`link::FromConn::Frame`), till a request or act takes it; the
     /// bodies to go to panes, each its connection's number, its token and
@@ -508,18 +482,12 @@ impl Session {
             entries: journal,
             recorded: Vec::new(),
             recorded_head: None,
-            named: BTreeMap::new(),
-            names_as: std::process::id(),
-            next_name: 0,
             #[cfg(test)]
             encoded: 0,
-            unswept: false,
             recording: true,
+            behind: false,
+            warning: None,
             ended: false,
-            staged: None,
-            unrecorded: None,
-            closing: Vec::new(),
-            closed: Vec::new(),
             prompted: std::collections::BTreeSet::new(),
             body: None,
             deliveries: Vec::new(),
@@ -659,8 +627,8 @@ impl Session {
                             // Or the program a respawn under way started.
                             self.parts.panes().get(p).is_some_and(|pane| {
                                 let current = match pane.respawning {
-                                    true => pane.respawns.checked_add(1),
-                                    false => Some(pane.respawns),
+                                    Some(_) => pane.respawns.checked_add(1),
+                                    None => Some(pane.respawns),
                                 };
                                 current == Some(generation)
                             })
@@ -707,9 +675,7 @@ impl Session {
 
     /// Says `message` to pane `id`'s own process, if it has one.
     pub(crate) fn tell_pane(&mut self, id: PaneId, message: ToPane, now: Instant) {
-        if let Some(staged) = &mut self.staged {
-            staged.push((id, message));
-        } else if let Some(link) = self.links.get_mut(&id) {
+        if let Some(link) = self.links.get_mut(&id) {
             link.send(id, message, now, &mut self.inbox);
         }
     }
@@ -768,13 +734,6 @@ impl Session {
             code: fux_wire::code::Code::Indeterminate,
             message: format!("{pane} never answered: it may have acted"),
         };
-        if let Form::Respawn(_) = form {
-            for (pane, _) in &answers {
-                if let Some(copy) = self.parts.pane_mut(*pane) {
-                    copy.respawning = false;
-                }
-            }
-        }
         let mut reply = match form {
             Form::Many => {
                 let (mut took, mut sent, mut refused) = (Vec::new(), Vec::new(), None);
@@ -801,20 +760,12 @@ impl Session {
                     }
                 }
             }
-            Form::One | Form::Capture | Form::Respawn(_) => {
+            Form::One | Form::Capture => {
                 let Some((pane, answer)) = answers.into_iter().next() else {
                     return Reply::default();
                 };
                 match answer {
-                    Some(Answered::Acted(version)) => {
-                        if let (Form::Respawn(Some(argv)), Some(copy)) =
-                            (form, self.parts.pane_mut(pane))
-                            && let Runs::Explicit(launch) = &mut copy.runs
-                        {
-                            launch.argv = argv.clone();
-                        }
-                        acted(version)
-                    }
+                    Some(Answered::Acted(version)) => acted(version),
                     Some(Answered::Done) => Reply::default(),
                     Some(Answered::Captured(captured)) => self.captured(pane, *captured),
                     Some(Answered::Held { token, cursor, .. }) => {
@@ -976,6 +927,13 @@ impl Session {
             };
             if let (Some(counts), Some(pane)) = (counts, self.parts.pane_mut(id)) {
                 pane.caught_up(counts);
+            }
+            // A respawn answered, done or refused, is under way no more,
+            // whether or not its asker still waits for the answer.
+            if let Some(pane) = self.parts.pane_mut(id)
+                && pane.respawning == Some(ask)
+            {
+                pane.respawning = None;
             }
             // One its asker gave up on is let go (`abandon`).
             if self.asks.remove(&ask).is_some() {
@@ -1518,17 +1476,13 @@ impl Session {
         pane: PaneId,
         area: Rect,
         axis: Axis,
-        extent: Extent,
+        len: u16,
     ) -> Result<(), Error> {
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(pane))?;
         let now = layout::place(&root, area)
             .rect(pane)
             .ok_or(Error::NoPane(pane))?;
-        let len = match extent {
-            Extent::Cells(n) => n,
-            Extent::Percent(p) => p.of(area.len(axis)),
-        };
         let want = match axis {
             Axis::Horizontal => (len, now.h()),
             Axis::Vertical => (now.w(), len),
@@ -1560,18 +1514,14 @@ impl Session {
 
     /// The directory pane `pane`'s program is in, if it can be read.
     fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
-        let mut allocation = usize::MAX;
-        self.dir_with(pane, &mut allocation).ok()?.ok().flatten()
+        self.dir_read(pane).ok().flatten()
     }
 
-    fn dir_with<A: fuxix::Allocation>(
-        &self,
-        pane: PaneId,
-        budget: &mut A,
-    ) -> Result<fuxix::Result<Option<PathBuf>>, A::Error> {
+    /// `dir_of`, or the system's error reading it.
+    fn dir_read(&self, pane: PaneId) -> fuxix::Result<Option<PathBuf>> {
         match self.parts.panes().get(&pane).and_then(Pane::pid) {
-            Some(pid) => fuxix::process::cwd_observed(pid, budget),
-            None => Ok(Ok(None)),
+            Some(pid) => fuxix::process::cwd_observed(pid),
+            None => Ok(None),
         }
     }
 
@@ -1876,7 +1826,8 @@ impl Session {
     pub fn attach_as(&mut self, attach: Attach, now: Instant) -> Result<ClientId, Error> {
         let client = self.ids.clone().client()?;
         let previous = self.parts.actor(fux_wire::events::Actor::Client(client));
-        let result = self.transact(now, |s| s.attach_checked(attach, now));
+        let result = self.attach_checked(attach, now);
+        self.record_change();
         self.parts.actor(previous);
         result
     }
@@ -2142,9 +2093,7 @@ impl Session {
         self.size_panes(now);
         self.host_panes(now);
         self.pump(now);
-        if let Err(error) = self.commit() {
-            log!("{error}");
-        }
+        self.record_change();
     }
 
     /// Tells each client a close moved, by a request it did not make, what
@@ -2198,9 +2147,7 @@ impl Session {
         if !ours {
             return;
         }
-        // Its names after its structure, which alone names them.
         let _ = std::fs::remove_file(panes.join("run"));
-        crate::record::sweep(&panes, &BTreeSet::new());
         for kept in [crate::record::ENDED, "exe"] {
             let _ = std::fs::remove_file(panes.join(kept));
         }
@@ -2218,23 +2165,12 @@ impl Session {
     /// Its run's record, written if it changed (`record`): before anything
     /// that changed it is told (D-124 (3)). It is made again only once
     /// the tree was handed out to change, or the run's own facts changed
-    /// (`Tracked`), and holds each name by its number: a name given since
-    /// the last record is written to its own file first, then the
-    /// structure, whole, and then the names it no longer has are removed
-    /// (D-175), with every name file no structure names, the first time
-    /// since the run was taken back. The run is this server's alone
-    /// (`socket::bind_socket`: its lock), so every file there is its own
-    /// to keep or remove, the last server's too. Its own names are
-    /// numbered as its process, and no number is given twice, so it
-    /// writes over no file a structure names. So what is written follows
-    /// the tree's rows, not its names'
-    /// lengths, and a crash at any step leaves a structure whose names are
-    /// all there.
+    /// (`Tracked`), and written whole, names and all, over the last
+    /// (`record::write`), so a crash leaves the one or the other.
     ///
-    /// One that can't be written fails, and the change it was for is
-    /// undone (`transact`); outside a change, a pane's end say, it is
-    /// logged, and the record stays as it was: a server taking the run
-    /// back finds such a pane gone.
+    /// One that can't be written fails, and the tree stays unsettled, so
+    /// the next change or settle writes it again: a server taking the run
+    /// back meanwhile finds the record as it was last written.
     fn commit(&mut self) -> Result<(), Error> {
         let Some(socket) = self.launch.as_ref().filter(|_| self.recording) else {
             return Ok(());
@@ -2243,98 +2179,30 @@ impl Session {
         if !Tracked::stale(&self.parts) && self.recorded_head.as_ref() == Some(&head) {
             return Ok(());
         }
-        let panes = crate::socket::panes(socket);
+        let path = crate::socket::panes(socket).join("run");
         #[cfg(test)]
         {
             self.encoded = self.encoded.saturating_add(1);
         }
-        // Each name as the last record has it keeps its number, and its
-        // file; another takes the next number, and is written.
-        let (tree, named, fresh) = self.numbered();
-        let record = |tree| crate::record::Record {
+        let bytes = fux_wire::wire::encode(&crate::record::Record {
             run: head.0,
             ids: head.1.clone(),
-            tree,
+            tree: self.parts.record(),
             ended: head.2,
-        };
-        let bytes = fux_wire::wire::encode(&record(tree));
-        if bytes == self.recorded {
-            Tracked::settled(&mut self.parts);
-            self.recorded_head = Some(head);
-            return Ok(());
-        }
-        let path = panes.join("run");
-        let numbers = u64::try_from(fresh.len()).unwrap_or(u64::MAX);
-        self.next_name = self.next_name.saturating_add(numbers);
-        let written = (fresh.iter())
-            .try_for_each(|(id, text)| {
-                crate::record::write(&crate::record::name_file(&panes, *id), text.as_bytes())
-            })
-            .and_then(|()| crate::record::write(&path, &bytes));
-        match written {
-            Ok(()) => {
-                let kept: BTreeSet<NameId> = named.values().map(|(id, _)| *id).collect();
-                // What it names no more goes at once; and once, with the
-                // first record of a run taken back, what its last
-                // server's crash left over.
-                let old = self.named.values().filter(|(id, _)| !kept.contains(id));
-                for (id, _) in old {
-                    let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
-                }
-                if std::mem::take(&mut self.unswept) {
-                    crate::record::sweep(&panes, &kept);
-                }
-                self.named = named;
-                self.recorded = bytes;
-                self.recorded_head = Some(head);
-                Tracked::settled(&mut self.parts);
-                Ok(())
-            }
-            // What was written of it stays: a name's file no structure
-            // names, its number not given again, which goes as the files
-            // no structure names do. Nothing is removed for a write that
-            // failed but what that write was making (`record::write`).
-            Err(error) => {
-                let why = format!(
-                    "the run's record, {}, could not be written ({error}): nothing changed",
-                    path.display()
-                );
-                if self.staged.is_some() {
-                    self.unrecorded = Some(fail(Code::Client, why.clone()));
-                }
-                Err(fail(Code::Client, why))
-            }
-        }
-    }
-
-    /// The tree as its record holds it, each name by a number, the names
-    /// by what they name, and those to be written: a name as the last
-    /// record has it keeps its number, and its file; any other takes the
-    /// next number of this server's.
-    #[expect(clippy::type_complexity, reason = "three lists, made together")]
-    fn numbered(
-        &self,
-    ) -> (
-        crate::record::Tree,
-        BTreeMap<AnyRef, (NameId, Rc<str>)>,
-        Vec<(NameId, Rc<str>)>,
-    ) {
-        let (server, mut number) = (self.names_as, self.next_name);
-        let (mut named, mut fresh) = (BTreeMap::new(), Vec::new());
-        let tree = self.parts.record(&mut |of, text| {
-            let id = match self.named.get(&of) {
-                Some((id, had)) if had == text => *id,
-                Some(_) | None => {
-                    let id = NameId { server, number };
-                    number = number.saturating_add(1);
-                    fresh.push((id, text.clone()));
-                    id
-                }
-            };
-            named.insert(of, (id, text.clone()));
-            id
         });
-        (tree, named, fresh)
+        if bytes != self.recorded
+            && let Err(error) = crate::record::write(&path, &bytes)
+        {
+            let why = format!(
+                "the run's record, {}, could not be written ({error})",
+                path.display()
+            );
+            return Err(fail(Code::Client, why));
+        }
+        self.recorded = bytes;
+        self.recorded_head = Some(head);
+        Tracked::settled(&mut self.parts);
+        Ok(())
     }
 
     /// Pane `id` says the server with pid `by` holds it: this one leaves
@@ -2343,95 +2211,55 @@ impl Session {
         self.holder = Some((id, by));
     }
 
-    /// Makes a change (`change`), told only once its record is written: one
-    /// that can't be is undone, as though never made, and fails. What the
-    /// change tells its panes waits till then.
-    fn transact<T>(
-        &mut self,
-        now: Instant,
-        change: impl FnOnce(&mut Self) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        // Only a run with a record has one to write first: a session that
-        // starts no programs (the tests', the tools') records nothing.
-        if self.staged.is_some() || self.launch.is_none() || !self.recording {
-            return change(self);
-        }
-        let undo = Undo {
-            structure: self.parts.structure(),
-            ids: self.ids.clone(),
-            views: self.views.clone(),
-            journal: self.parts.journal().mark(),
-            outbox: self.outbox.len(),
-            asked: self.asked_pane,
-        };
-        self.staged = Some(Vec::new());
-        let mut done = change(self);
-        if self.unrecorded.is_none()
-            && let Err(error) = self.commit()
-        {
-            done = Err(error);
-        }
-        let staged = self.staged.take().unwrap_or_default();
-        match self.unrecorded.take() {
-            Some(error) => {
-                self.roll_back(undo, now);
-                Err(error)
+    /// A change made, its record written (`commit`). One that can't be
+    /// stands, and is written by the next that can; that the record fell
+    /// behind is said once, to the log, to every attached client and to
+    /// the asker of the request being made. That it caught up is logged.
+    fn record_change(&mut self) {
+        match self.commit() {
+            Ok(()) if std::mem::take(&mut self.behind) => {
+                log!("the run's record is written again");
             }
-            None => {
-                for (id, message) in staged {
-                    self.tell_pane(id, message, now);
+            Ok(()) => {}
+            Err(_) if self.behind => {}
+            Err(error) => {
+                self.behind = true;
+                let why = format!(
+                    "{error}: what changed stands and is written with the next change; a server \
+                     that takes the run back before then finds it as last written"
+                );
+                log!("{why}");
+                for view in self.views.values_mut() {
+                    view.notify(why.clone(), true);
                 }
-                self.closed.clear();
-                for (id, link, closed) in std::mem::take(&mut self.closing) {
-                    self.unlink(id, link, closed, now);
-                }
-                done
+                self.warning = Some(why);
             }
-        }
-    }
-
-    /// A change undone (`transact`): the tree, ids, views and names as they
-    /// were, what it journaled, queued for clients or asked of panes let go
-    /// untold, and the panes it made closed.
-    fn roll_back(&mut self, undo: Undo, now: Instant) {
-        // What it closed comes back whole, untold.
-        self.parts.put_back(std::mem::take(&mut self.closed));
-        for (id, link, _) in std::mem::take(&mut self.closing) {
-            self.links.insert(id, link);
-        }
-        let made = self.parts.restructure(undo.structure);
-        self.ids = undo.ids;
-        self.views = undo.views;
-        self.parts.truncate_journal(undo.journal);
-        self.outbox.truncate(undo.outbox);
-        self.asks.retain(|ask, _| *ask <= undo.asked);
-        self.answers.retain(|ask, _| *ask <= undo.asked);
-        self.inbox.retain(|(id, _)| !made.contains(id));
-        for id in made {
-            if let Some(link) = self.links.remove(&id) {
-                self.unlink(id, link, true, now);
-            }
-        }
-        for view in self.views.values_mut() {
-            view.dirty = true;
-        }
-        if let Err(error) = self.commit() {
-            log!("{error}");
         }
     }
 
     /// Pane `id`, placed, starts: its place and id written in the record
     /// first, so that once its program runs a crash finds it there
     /// (D-124 (3)); a crash before leaves a pane the next server finds
-    /// gone. One that can't start fails, and undoes the change.
+    /// gone. One whose record can't be written, or that can't start,
+    /// fails, and is closed.
     fn start_pane(&mut self, id: PaneId, begin: Begin, now: Instant) -> Result<(), Error> {
-        self.commit()?;
+        if let Err(error) = self.commit() {
+            self.close_pane(id, None, now);
+            let why = format!("{error}: no program starts in a pane its record lacks");
+            return Err(fail(Code::Client, why));
+        }
         let link = match (&self.launch, &self.exe) {
             (Some(socket), Some(exe)) => {
                 let at = crate::socket::panes(socket).join(id.number().to_string());
                 Link::start(exe, &at, begin)
             }
+            // A session held in one process (the tests', the tools') holds
+            // its panes' hosts itself. A server never does: a pane there
+            // would have a terminal nothing reads.
+            #[cfg(any(test, feature = "in-process"))]
             _ => crate::host::Host::begin(begin, now).map(|host| Link::Local(Box::new(host))),
+            #[cfg(not(any(test, feature = "in-process")))]
+            _ => Err("the server has no fux to run a pane's own process with".to_owned()),
         };
         match link {
             Ok(link) => {
@@ -2439,10 +2267,7 @@ impl Session {
                 Ok(())
             }
             Err(why) => {
-                match self.staged.is_some() {
-                    true => self.unrecorded = Some(fail(Code::Start, why.clone())),
-                    false => self.close_pane(id, None, now),
-                }
+                self.close_pane(id, None, now);
                 Err(fail(Code::Start, why))
             }
         }
@@ -2478,16 +2303,13 @@ impl Session {
             ));
         };
         let panes = crate::socket::panes(&socket);
-        // Read whole before any pane is asked: a record with a name gone,
-        // or one that is no tree, refuses the run with nothing changed.
-        let names = crate::record::read_names(&panes, &record.tree)
-            .map_err(|e| fail(Code::Start, format!("its record's names: {e}")))?;
+        // Read whole before any pane is asked: one that is no tree refuses
+        // the run with nothing changed.
         let recorded = record.tree.panes();
-        let name = |pane: &crate::record::Pane| pane.name.and_then(|n| names.get(&n).cloned());
         let copies: BTreeMap<PaneId, Pane> = (recorded.iter())
-            .map(|pane| (pane.id, Pane::recorded(pane, name(pane))))
+            .map(|pane| (pane.id, Pane::recorded(pane)))
             .collect();
-        let parts = Parts::restore(self.entries, &record.tree, &names, copies)?;
+        let parts = Parts::restore(self.entries, &record.tree, copies)?;
         let mut sockets = crate::takeover::sockets(&panes);
         for pane in &recorded {
             (sockets.entry(pane.id)).or_insert_with(|| panes.join(pane.id.number().to_string()));
@@ -2509,21 +2331,6 @@ impl Session {
         // As it is written: written again only once it differs.
         self.recorded = fux_wire::wire::encode(&record);
         self.recorded_head = None;
-        self.named = (record.tree.named())
-            .filter_map(|(of, id)| Some((of, (id, names.get(&id)?.clone()))))
-            .collect();
-        // What a crash left between a name's writing and the structure's
-        // goes with the first record written, not now: a takeover writes
-        // nothing till something changes.
-        self.unswept = true;
-        // The names it read are in other servers' files, or in files of
-        // its own number an earlier server wrote: it keeps them as they
-        // are, and numbers its own past them.
-        let past = (self.named.values())
-            .filter(|(id, _)| id.server == self.names_as)
-            .map(|(id, _)| id.number.saturating_add(1))
-            .max();
-        self.next_name = self.next_name.max(past.unwrap_or(0));
         self.parts = Tracked::new(parts);
         self.awaited = asked;
         for id in gone {
@@ -3023,10 +2830,6 @@ impl Session {
                 notice = Some((told, failed.is_some()));
             }
             self.end_pane(id, closed, now);
-            // A change's close is undone if its record can't be written.
-            if self.staged.is_some() {
-                self.closed.push(pane);
-            }
         }
         // Before it settles: one a close moved is told that instead.
         if let Some((told, failed)) = notice {
@@ -3048,10 +2851,7 @@ impl Session {
     /// Ends pane `id`'s process, its pane closed (by fux if `closed`).
     fn end_pane(&mut self, id: PaneId, closed: bool, now: Instant) {
         if let Some(link) = self.links.remove(&id) {
-            match self.staged.is_some() {
-                true => self.closing.push((id, link, closed)),
-                false => self.unlink(id, link, closed, now),
-            }
+            self.unlink(id, link, closed, now);
         }
     }
 
@@ -3228,9 +3028,13 @@ impl Session {
         let again = (!self.awaited.is_empty() && self.body.is_none()).then(|| request.clone());
         self.waits_on.set(None);
         let asked = self.asked_pane;
-        let begun = self
-            .transact(now, |s| s.begin_request(request, origin, now))
-            .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)));
+        self.warning = None;
+        let begun = self.begin_request(request, origin, now);
+        self.record_change();
+        let mut begun = begun.unwrap_or_else(|error| Begun::Done(failure(error, origin, self)));
+        if let Begun::Done(reply) = &mut begun {
+            reply.warning = self.warning.take();
+        }
         // It failed for a pane not linked yet, having asked no pane
         // anything: it waits for that pane, and is made then, as though
         // asked then. Its asker's going ends the wait (D-159).
@@ -3410,7 +3214,6 @@ impl Session {
                 col,
             } => one(self, target, Ask::Mouse { mouse, row, col }),
             Command::Signal { target, signal } => one(self, target, Ask::Signal(signal)),
-            Command::ClearHistory { target } => one(self, target, Ask::ClearHistory),
             Command::HistoryBudget { target, bytes } => one(self, target, Ask::HistoryBytes(bytes)),
             Command::Respawn {
                 target,
@@ -3422,10 +3225,10 @@ impl Session {
                     argv: argv.clone(),
                 };
                 let asked = self.ask_pane(target, what, now);
-                if let (Ok(_), Some(copy)) = (&asked, self.parts.pane_mut(target)) {
-                    copy.respawning = true;
+                if let (Ok(ask), Some(copy)) = (&asked, self.parts.pane_mut(target)) {
+                    copy.respawning = Some(*ask);
                 }
-                asked.map(|ask| Pending::new(vec![(target, ask)], Form::Respawn(argv.clone())))
+                asked.map(|ask| Pending::new(vec![(target, ask)], Form::One))
             }
             Command::CapturePane {
                 target,
@@ -3649,7 +3452,6 @@ impl Session {
             | Command::SendMouse { .. }
             | Command::Signal { .. }
             | Command::Respawn { .. }
-            | Command::ClearHistory { .. }
             | Command::HistoryBudget { .. }
             | Command::CapturePane { .. } => Err(fail(
                 Code::NotHere,
@@ -3840,8 +3642,8 @@ impl Session {
                     format!("{pane} cannot move {way}: {why}"),
                 ))
             }
-            PaneResize::To(axis, extent) => {
-                (self.resize_pane_to(pane, area, axis, extent)).map(|()| Reply::default())
+            PaneResize::To(axis, cells) => {
+                (self.resize_pane_to(pane, area, axis, cells)).map(|()| Reply::default())
             }
         }
     }
@@ -3930,7 +3732,7 @@ impl Session {
                 }
                 let mut grid = crate::render::Grid::default();
                 crate::render::compose_scene(&scene, &|id| self.screen(id), &mut grid)
-                    .map_err(|e| fail(Code::Memory, format!("capturing {client}: {e}")))?;
+                    .map_err(|e| fail(Code::Size, format!("capturing {client}: {e}")))?;
                 let captured = crate::capture::client(client, &grid);
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
@@ -4234,6 +4036,14 @@ fn found(found: AnyRef) -> Reply {
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
         return Err(fail(Code::BadName, "a name cannot be empty or blank"));
+    }
+    if name.len() > crate::record::MAX_NAME {
+        let message = format!(
+            "a name can be at most {} bytes; this one is {}",
+            crate::record::MAX_NAME,
+            name.len()
+        );
+        return Err(fail(Code::BadName, message));
     }
     // An id's sigils, and what a destination reads as the request for a
     // fresh workspace.
@@ -4909,6 +4719,20 @@ mod tests {
     #[cfg(unix)]
     use std::time::Duration;
 
+    /// A name is at most `record::MAX_NAME` bytes, which the record
+    /// holds whole on every write; a longer one is refused, saying so.
+    #[test]
+    fn a_name_longer_than_the_limit_is_refused() {
+        let at: String = std::iter::repeat_n('n', crate::record::MAX_NAME).collect();
+        assert!(check_name(&at).is_ok());
+        let over = check_name(&format!("{at}n")).err().map(|e| e.to_string());
+        assert!(
+            over.as_deref()
+                .is_some_and(|e| e.contains("at most 1024 bytes")),
+            "{over:?}"
+        );
+    }
+
     /// Pane `id`'s host, held here, changed by `change`: what it tells
     /// then is taken in.
     fn host<T>(
@@ -4951,7 +4775,7 @@ mod tests {
         let (mut s, _) = attached(12, 50)?;
         run(
             &mut s,
-            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
+            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\"))) #inert)",
         )?;
         s.end_program(PaneId::of(2), Ended::Lost);
         for code in [
@@ -5013,7 +4837,7 @@ mod tests {
         for _ in 0..2 {
             run(
                 &mut s,
-                "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+                "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
             )?;
         }
         for pane in [2, 3] {
@@ -5123,13 +4947,13 @@ mod tests {
         assert_eq!(
             output(
                 &mut s,
-                "(sequence! (define! variables-1755 (context ())) (bind variables-1755 (quote! held) (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))) (define! value-1763 (evaluate (quote! held) variables-1755)) \"version\" (bind variables-1755 (quote! before) (get value-1763 \"version\")) (kill (pane (evaluate (quote! held) variables-1755))) (define! value-1769 (evaluate (quote! held) variables-1755)) \"version\" (equal? (get value-1769 \"version\") (evaluate (quote! before) variables-1755)))"
+                "(sequence! (define! variables-1755 (context ())) (bind variables-1755 (quote! held) (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))) (define! value-1763 (evaluate (quote! held) variables-1755)) \"version\" (bind variables-1755 (quote! before) (get value-1763 \"version\")) (kill (pane (evaluate (quote! held) variables-1755))) (define! value-1769 (evaluate (quote! held) variables-1755)) \"version\" (equal? (get value-1769 \"version\") (evaluate (quote! before) variables-1755)))"
             )?,
             "#true\n"
         );
         run(
             &mut s,
-            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
+            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\"))) #inert)",
         )?;
         assert_eq!(
             output(
@@ -6358,7 +6182,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
         let pasted = run(&mut s, "(send-keys (paste (pane 2) \"x\"))");
@@ -6373,7 +6197,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -6409,7 +6233,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
@@ -6514,22 +6338,6 @@ mod tests {
                 assert!(session.outbox.iter().any(|out| matches!(out, Outgoing::Shutdown(why, _) if why.contains(&fuxix::Errno::SRCH.to_string()))));
             }
         }
-        Ok(())
-    }
-
-    #[cfg(feature = "checks")]
-    #[test]
-    fn refused_client_capture_returns_an_error() -> TestResult {
-        let (mut session, client) = attached(10, 40)?;
-        fux_vt::refuse_next(1);
-        let result = session.client(
-            Some(client),
-            &ClientAction::Capture,
-            Here::Cli(None, None),
-            Instant::now(),
-        );
-        let error = result.err().ok_or("capture succeeded")?;
-        assert_eq!(error.code(), Code::Memory);
         Ok(())
     }
 
@@ -7066,7 +6874,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07");
@@ -7078,7 +6886,7 @@ mod tests {
         let lines = told(&mut s, |s| {
             let respawn = run(
                 s,
-                "(respawn (kill-first (program (pane 2) \"/no/such/bin\")))",
+                "(respawn (kill-first (program (pane 2) (list \"/no/such/bin\"))))",
             );
             refused = respawn.err().unwrap_or_default();
         });
@@ -7134,7 +6942,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         let left: Vec<_> = std::iter::repeat_n(crate::pane::testing::spends_the_budget(24, 80), 4)
@@ -7192,7 +7000,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (program-clipboard (picture-bytes (alternate-scroll-lines (reflow (history-bytes (size (in (options) \"agent\") 80 24) 4096) #false) 3) 1024) #false) \"/bin/cat\"))",
+            "(new-tab (program (program-clipboard (picture-bytes (alternate-scroll-lines (reflow (history-bytes (size (in (options) \"agent\") 80 24) 4096) #false) 3) 1024) #false) (list \"/bin/cat\")))",
         )?;
         let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
         let mut stream = crate::journal::Reader::new(
@@ -7259,7 +7067,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7321,7 +7129,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         // One that ignores the hangup, with a title and a bell left unread
@@ -7370,7 +7178,7 @@ mod tests {
             let mut s = started()?;
             run(
                 &mut s,
-                "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+                "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
             )?;
             let id = PaneId::of(2);
             let argv = ["/bin/cat".to_owned()];
@@ -7420,7 +7228,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026hheld");
@@ -7440,7 +7248,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::testing::spends_the_budget(24, 80));
@@ -7462,7 +7270,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::testing::spends_the_budget(24, 80));
@@ -7529,7 +7337,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7653,7 +7461,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7678,7 +7486,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7763,7 +7571,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7789,7 +7597,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let lines = told(&mut s, |s| {
             s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
@@ -7800,6 +7608,50 @@ mod tests {
         Ok(())
     }
 
+    /// A respawn whose asker left before any reply was made of its answer
+    /// is known as its pane tells it: the program started is the one the
+    /// server's copy names (its label, its record), and one refused leaves
+    /// the pane's own commands taken as its program's.
+    #[test]
+    fn a_respawn_whose_asker_left_is_known_as_its_pane_tells_it() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
+        )?;
+        let now = Instant::now();
+        let asked_and_left = |s: &mut Session, target: PaneId, argv| -> TestResult {
+            let respawn = Command::Respawn {
+                target,
+                kill: false,
+                argv,
+            };
+            let Done::Asked(pending) = s.run(&respawn, &Origin::Cli(Caller::default()), now) else {
+                return Err("its pane was not asked".into());
+            };
+            s.abandon(&pending.asks, &[], now);
+            s.pump(now);
+            Ok(())
+        };
+        let echo = command::Program::new("/bin/echo".into(), Vec::new())?;
+        asked_and_left(&mut s, PaneId::of(2), Some(echo))?;
+        let copy = s.parts.panes().get(&PaneId::of(2)).ok_or("its copy")?;
+        assert_eq!(copy.runs.launch().argv.program(), "/bin/echo");
+        // Refused: a shell's pane is not respawned.
+        asked_and_left(&mut s, PaneId::of(1), None)?;
+        let caller = Caller {
+            gave: Some((PaneId::of(1), 0)),
+            within: Within::This,
+            ..Caller::default()
+        };
+        let origin = Origin::Cli(caller);
+        assert!(
+            matches!(s.here(&origin)?, Here::Cli(Some(_), _)),
+            "its command was taken for a program that never came"
+        );
+        Ok(())
+    }
+
     // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
     #[cfg(unix)]
     #[test]
@@ -7807,7 +7659,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         // A test's session starts no program: each is put in the pane.
         let argv = ["/bin/cat".to_owned()];
@@ -7876,7 +7728,7 @@ mod tests {
             let mut s = started()?;
             run(
                 &mut s,
-                "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
+                "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/true\")))",
             )?;
             let id = PaneId::of(2);
             if !held {
@@ -7952,7 +7804,7 @@ mod tests {
         let (mut s, _) = super::testing::attached(201, 200)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 200 200) \"/bin/true\"))",
+            "(new-tab (program (size (in (options) \"agent\") 200 200) (list \"/bin/true\")))",
         )?;
         let id = PaneId::of(2);
         let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
@@ -8031,7 +7883,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/true\")))",
         )?;
         let id = PaneId::of(2);
         run(&mut s, "(respawn (pane 2))")?;
@@ -8067,7 +7919,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/true\")))",
         )?;
         let id = PaneId::of(2);
         run(&mut s, "(respawn (pane 2))")?;
@@ -8115,7 +7967,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/true\")))",
         )?;
         let id = PaneId::of(2);
         // Its terminal empty as the exit is told: the server's own read
@@ -8144,7 +7996,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(sequence! (split (program (axis (pane 1) \"horizontal\") \"/bin/cat\")) #inert)",
+            "(sequence! (split (program (axis (pane 1) \"horizontal\") (list \"/bin/cat\"))) #inert)",
         )?;
         // Its program has ended, and the pane stays: nothing takes input there.
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
@@ -8189,7 +8041,7 @@ mod tests {
         // A program's end is a change too: stale, not `not_running`.
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let seen = s.pane(PaneId::of(2))?.version(s.run);
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
@@ -8331,9 +8183,9 @@ mod tests {
             "(sequence! (set \"bar\" (list \"bottom\" (list \"unknown\") () #false)) #inert)".to_owned(),
             "(sequence! (set \"bar\" (list \"bottom\" (list \"pane\") (list \"pane\") #false)) #inert)".to_owned(),
             format!("str bar list str bottom list {too_many} end list end false end set"),
-            "(sequence! (set \"bar\" (list \"top\" (list (list \"slot\" 16)) () #false)) #inert)".to_owned(),
-            "(sequence! (set \"bar-slots\" (list (list 0 \"one\") (list 0 \"two\"))) #inert)".to_owned(),
-            "(sequence! (set \"bar-slots\" (list (list 0 (code-point-to-string 10)))) #inert)".to_owned(),
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"slot\" 0)) () #false)) #inert)".to_owned(),
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" \"one\") (list \"text\" \"one\")) () #false)) #inert)".to_owned(),
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" (code-point-to-string 10))) () #false)) #inert)".to_owned(),
         ];
         for invalid in cases {
             // A valid preceding change is discarded with the refused draft.
@@ -9209,7 +9061,7 @@ mod tests {
         }
         run(
             &mut s,
-            "(sequence! (rename (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) \"web\") #inert)",
+            "(sequence! (rename (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\"))) \"web\") #inert)",
         )?;
         assert_eq!(
             output(
@@ -9286,20 +9138,20 @@ mod tests {
             ),
             (
                 "(options)",
-                "(program {} \"cat\")",
-                "(program {} \"sh\")",
+                "(program {} (list \"cat\"))",
+                "(program {} (list \"sh\"))",
                 "new-tab",
             ),
             (
                 "(options)",
-                "(program {} \"cat\")",
+                "(program {} (list \"cat\"))",
                 "(shell-program {} (list \"sh\"))",
                 "new-tab",
             ),
             (
                 "(options)",
                 "(shell-program {} (list \"sh\"))",
-                "(program {} \"cat\")",
+                "(program {} (list \"cat\"))",
                 "new-tab",
             ),
             (
@@ -9423,19 +9275,31 @@ mod tests {
         Ok(())
     }
 
+    /// A handle written as text is the handle: `tab` of a pane's text is
+    /// that pane's tab, as `tab` of the pane is, and never the pane.
+    #[test]
+    fn a_handles_text_is_checked_for_its_kind_as_the_handle_is() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        let said = output(
+            &mut s,
+            "(sequence! (define! run (get (information (all)) \"run\")) \
+             (define! p (join \"%1:\" run)) (define! t (join \"@1:\" run)) \
+             (list (kind (tab p)) (same? (string (tab p)) (string (tab (pane 1)))) \
+             (catch-kind! (kind (pane t)) no-target failure \"refused, as (pane (tab 1)) is\")))",
+        )?;
+        assert_eq!(said, "tab\n#true\nrefused, as (pane (tab 1)) is\n");
+        Ok(())
+    }
+
     #[test]
     fn structural_and_context_recovery_codes_are_shared() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
-        for source in [
-            "(new-tab (argument (options) \"x\"))",
-            "(send-keys (pane 1))",
-        ] {
-            let caught = output(
-                &mut s,
-                &format!("(catch-kind! (sequence! {source} #inert) usage failure \"recovered\")"),
-            )?;
-            assert_eq!(caught, "recovered\n", "{source}");
-        }
+        let source = "(send-keys (pane 1))";
+        let caught = output(
+            &mut s,
+            &format!("(catch-kind! (sequence! {source} #inert) usage failure \"recovered\")"),
+        )?;
+        assert_eq!(caught, "recovered\n", "{source}");
         assert_eq!(
             output(&mut s, "(catch-kind! (me) not-here failure \"recovered\")")?,
             "recovered\n"
@@ -9463,7 +9327,7 @@ mod tests {
             ),
             (
                 Some(c),
-                "(new-tab (program (directory (size (options) 100 30) \"/\") \"cat\"))",
+                "(new-tab (program (directory (size (options) 100 30) \"/\") (list \"cat\")))",
                 true,
                 (100, 30),
                 true,
@@ -9477,7 +9341,7 @@ mod tests {
             ),
             (
                 None,
-                "(new-tab (program (directory (size (in (options) \"agent\") 100 30) \"/\") \"cat\"))",
+                "(new-tab (program (directory (size (in (options) \"agent\") 100 30) \"/\") (list \"cat\")))",
                 false,
                 (100, 30),
                 true,
@@ -9496,7 +9360,7 @@ mod tests {
         // command line, and a name another tab or a workspace has.
         output(
             &mut s,
-            "(sequence! (new-tab (program (name (size (in (options) \"agent\") 80 24) \"web\") \"cat\")) #inert)",
+            "(sequence! (new-tab (program (name (size (in (options) \"agent\") 80 24) \"web\") (list \"cat\"))) #inert)",
         )?;
         for (source, code) in [
             ("(new-tab (size (options) 80 24))", "no-target:"),
@@ -10120,42 +9984,6 @@ mod tests {
         Ok(())
     }
 
-    /// A paste whose next piece the OS gives no memory for is closed where
-    /// it is, in room made before its first byte was queued, and its asker
-    /// told: its bracket is never left open (D-181).
-    #[cfg(feature = "checks")]
-    #[test]
-    fn a_paste_refused_memory_part_way_is_closed() -> TestResult {
-        let mut s = started()?;
-        let id = PaneId::of(1);
-        let to = command::To::Now(AnyRef::Pane(id));
-        let now = Instant::now();
-        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
-        s.give_body(Some(7));
-        let pending = s.send_keys(to, &[], now).map_err(|e| e.to_string())?;
-        let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
-        let [(_, ask)] = pending.asks.as_slice() else {
-            return Err("one ask".into());
-        };
-        host(&mut s, id, |h| {
-            h.piece(token, &[Input::Pasting("one".into()), Input::More]);
-        })?;
-        fux_vt::refuse_next(u32::MAX);
-        let refused = host(&mut s, id, |h| {
-            h.piece(token, &[Input::Pasting("two".into()), Input::More])
-        });
-        fux_vt::refuse_next(0);
-        refused?;
-        assert_eq!(queued(&mut s, id)?, b"\x1b[200~one\x1b[201~");
-        assert!(s.answered_yet(*ask), "its asker is told it was refused");
-        // What is left of it is let go.
-        host(&mut s, id, |h| {
-            h.piece(token, &[Input::Paste("three".into())])
-        })?;
-        assert!(queued(&mut s, id)?.is_empty());
-        Ok(())
-    }
-
     /// Questions whose asker is gone are waited for no more: an answer
     /// that comes after is let go, not kept (D-123).
     #[test]
@@ -10686,14 +10514,14 @@ mod tests {
         run(
             &mut source,
             &format!(
-                "(new-tab (argument (argument (program (directory (size (in (options) \"new-workspace\") 150 40) {}) \"/bin/cat\") \"\") {}))",
+                "(new-tab (program (directory (size (in (options) \"new-workspace\") 150 40) {}) (list \"/bin/cat\" \"\" {})))",
                 fux::script::quoted(&directory),
                 fux::script::quoted(value)
             ),
         )?;
         run(
             &mut source,
-            "(sequence! (split (shell-program (shares (axis (pane 2) \"vertical\") 5 3) (list \"/bin/sh\" \"-l\" \"\"))) (split (program (shares (axis (pane 2) \"horizontal\") 7 2) \"/bin/cat\")) (rename (tab 2) \"given\") (rename (pane 2) \"sh\") #inert)",
+            "(sequence! (split (shell-program (shares (axis (pane 2) \"vertical\") 5 3) (list \"/bin/sh\" \"-l\" \"\"))) (split (program (shares (axis (pane 2) \"horizontal\") 7 2) (list \"/bin/cat\"))) (rename (tab 2) \"given\") (rename (pane 2) \"sh\") #inert)",
         )?;
         let dump = output(&mut source, "(dump (tab 2))")?;
         let mut again = started()?;
@@ -10778,7 +10606,7 @@ mod tests {
         )?;
         run(
             &mut source,
-            "(sequence! (define! value-4559 (new-tab (program (size (in (options) (workspace 1)) 80 24) \"/bin/cat\"))) (rename value-4559 \"cat\") (move value-4559 \"new-workspace\") #inert)",
+            "(sequence! (define! value-4559 (new-tab (program (size (in (options) (workspace 1)) 80 24) (list \"/bin/cat\")))) (rename value-4559 \"cat\") (move value-4559 \"new-workspace\") #inert)",
         )?;
         run(
             &mut source,
@@ -11246,7 +11074,7 @@ mod tests {
             "(sequence! (resize-pane (pane 2) 37 \"horizontal\") #inert)",
             "(sequence! (resize-pane (pane 5) 7 \"vertical\") #inert)",
             "(sequence! (move-border (pane 6) \"left\" 3) #inert)",
-            "(sequence! (resize-pane (pane 2) (percent 30) \"horizontal\") #inert)",
+            "(sequence! (resize-pane (pane 2) 29 \"horizontal\") #inert)",
             "(sequence! (swap-with (pane 2) (pane 6)) #inert)",
             "(sequence! (move (pane 4) \"left\") #inert)",
             "(sequence! (kill (pane 5)) #inert)",
@@ -11447,17 +11275,10 @@ mod journal_tests {
         )?;
         run(
             &mut s,
-            "(sequence! (move-border (pane 2) \"right\" 3) (history-budget (pane 1) 128) (clear-history (pane 1)) (notify (all) \"note\") #inert)",
+            "(sequence! (move-border (pane 2) \"right\" 3) (history-budget (pane 1) 128) (notify (all) \"note\") #inert)",
         )?;
         let b = batch(&s, from)?;
-        for name in [
-            "laid_out",
-            "reordered",
-            "shown",
-            "zoomed",
-            "history_budget",
-            "history_cleared",
-        ] {
+        for name in ["laid_out", "reordered", "shown", "zoomed", "history_budget"] {
             assert!(!named(&b, name).is_empty(), "missing {name}: {b:?}");
         }
         let from = b.next;
@@ -11471,7 +11292,7 @@ mod journal_tests {
         let (mut s, client) = testing::attached(24, 80)?;
         run(
             &mut s,
-            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
+            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\"))) #inert)",
         )?;
         let id = PaneId::of(2);
         let from = s.parts.journal().end(s.run);

@@ -342,7 +342,7 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
 fn a_layout_as_deep_as_its_panes_is_laid_out_on_a_small_stack() -> Outcome {
     const PANES: u32 = 600;
     let server = Server::start_limited("", "-s 256")?;
-    let stack = "(sequence! (stack (program (pane \"%1\") \"true\")) #inert)";
+    let stack = "(sequence! (stack (program (pane \"%1\") (list \"true\"))) #inert)";
     let stacked: String = std::iter::repeat_n(stack, PANES as usize - 1).collect();
     let out = server.piped(fux().as_ref(), &["-"], &stacked)?;
     assert_eq!(out.status, 0, "{}", out.stderr);

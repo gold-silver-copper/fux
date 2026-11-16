@@ -4,7 +4,7 @@ What a program in a pane can make fux-vt do, and the numbers that hold
 it back: the threat model (1), every bound with its test (2), memory
 (3), work and the quota a call spends (4), and the
 checker's invariants (6). The code and tests cite it by row (B01 to
-B46 but B07, B10 and B29, which are gone, and B34a) and by section number.
+B46 but B07, B10, B29 and B44, which are gone, and B34a) and by section number.
 
 "The defaults" are fux's: a 50×200 screen (N = 10,000 cells, R = 50
 rows, C = 200 columns) and H = 8 MiB of history.
@@ -78,25 +78,10 @@ memory.
 
 ### 1.3 What happens when an allocation fails
 
-The program-sized allocations are fallible: each degrades where it
-happens, counts one in `Parser::refused()`, and the call reads every
-byte it was given. It returns `Err(Error::Capacity)` only to say that a
-refusal happened in it.
-
-| Site | Degrade |
-|---|---|
-| A row scrolled into history | The row goes as with no history; the screen still scrolls |
-| The alternate screen | The primary stays shown, and the mode reads reset |
-| RIS or a clear, with no room for new grids | History goes, then the grids are blanked in place |
-| The sixel decoder's growth | The picture keeps what it has, as at the budget (B03) |
-| The ring or a map shrinking | It keeps its room until the next trim (B17) |
-| A prompt mark's or a picture's line feed | The parser's state is set first, so it is never stuck in the string |
-
-Everything else allocates infallibly, and a failure there aborts the
-process (no unwinding). Those allocations are bounded by the screen's
-size and the crate's constants, not by what a program sends (a row's
-text, its link runs, the style table's screen share, DECCRA's copy, the
-OSC buffer, tab stops, the key decoder's buffers): a program can fill
+Every allocation is infallible: a failure aborts the process (no
+unwinding), and nothing degrades in its place. What a program can make
+fux-vt hold is bounded instead, by the screen's size, the budgets
+(history, pictures, links) and the crate's constants: a program can fill
 them, not grow them. The bounds keep both the abort and the OOM killer
 away; infallible allocation is no safety proof.
 
@@ -181,8 +166,7 @@ B26 and B41 bound host-side objects or host calls.
 | B40 | Row lookups by id (host call) | Work ≤ R + ⌊log2(history rows + 1)⌋ + 1 a call; the index's first 256 spans are free (20 KiB a grid), each past costs 80 B of history's budget | `None` for a row that is gone | 8 MiB of empty history; `x ESC[L CR LF` repeated | `b40`; `row_lookup.rs` |
 | B41 | `ByteQueue::push_with` (host call) | After the closure, what was taken ≤ the buffer's length | — | A closure that clears the vector, then a push | `b41` |
 | B42 | Small fixed state | Tab stops a byte a column; the palette about 1.3 KB; kitty stacks 32 entries | — | HTS at every column | `b42` |
-| B43 | Events | Delivered synchronously; fux-vt keeps none but the last window title (`Screen::title`, ≤ `OSC_PAYLOAD_LIMIT`) | — | 400 × OSC 9 | `b43` |
-| B44 | Refused allocations | Each refusal counts in `Parser::refused()` and degrades as 1.3 says; every later byte is read | 1.3's table | `ESC]133;A BEL hello` with a refusal forced (`refuse_next`) | `b44` |
+| B43 | Events | Delivered synchronously; fux-vt keeps none | — | 400 × OSC 9 | `b43` |
 | B45 | Key and mouse encoders (host calls) | ≤ 64 B per key, mouse report or `Screen::encode_mouse` chunk; alternate scroll ≤ 32,767 arrows | Default/UTF-8 positions past their limits emit a 0 byte; hosts admit or refuse each whole scroll expansion | Every key, modifier and mode; mouse at each encoding's edges; negotiated scroll expansion at maximum height | `b45`; `alternate_scroll_keeps_negotiated_arrows_in_bounded_chunks` |
 | B46 | Covering | A placement covers ≤ `COVER_WORDS` = 4,000,000 words of 64 pixels of the pictures under it, the room to note them included (16 B a row shown of each picture covered, and the covered rows' words) and a copy of what was noted of one the host holds; the room, the words promised included, is inside P (B01). It reads the newer picture's drawn grid positions on the rows of those under it, once a grid row: ≤ the positions it drew (B04) | One under it past the words, or past P, goes whole, the newest covered first | 64 pictures, each a column right of the last, opaque (P2 0) and drawn (P2 1) | `b46`; `a_picture_covers_only_the_pixels_it_lies_on` |
 
@@ -375,7 +359,6 @@ the tests check instead.
 - **3a** An XTGETTCAP is answered only while its string is read.
 - **4** A UTF-8 partial holds fewer bytes than its lead byte announces.
 - **5** `FrameScan` resumes inside the bytes held, in a reachable state.
-- **6** `refused()` never decreases. (Not checked yet.)
 - **7** A grid's `order` is a permutation of its slots.
 - **8** One record, text and link list per slot.
 - **9** Every cell past a row's `used` is blank.

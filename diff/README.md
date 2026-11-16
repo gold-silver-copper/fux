@@ -1,74 +1,9 @@
-# fux-diff: fux beside its last release
+# The oracle: fux-vt beside a commit
 
-An excluded workspace with its own lockfile. It holds two tools for changes
-meant to leave behaviour as it was (a refactor, a speed-up, a rewrite):
-
-- **`fux-diff`** builds the working tree's `fux`, `fux-vt` and `fuxix` and
-  their last releases from crates.io (`baseline`, `baseline-vt`,
-  `baseline-ix` in `Cargo.toml`) into one binary, feeds both the same
-  random inputs and compares everything each gives back.
-- **The oracle** (`oracle/`, `oracle.sh`, fuzz target in `fuzz/`) compares
-  the working tree's fux-vt with fux-vt at the latest `main`: see
-  [The oracle](#the-oracle-fux-vt-beside-a-commit).
-
-It forbids the same lints as fux, and its release profile checks arithmetic
-for overflow. CI checks that the oracle passes clippy against the commit
-under test, and that `fux-diff` passes fmt and clippy.
-
-## fux-diff
-
-```sh
-cargo build --release --manifest-path diff/Cargo.toml
-diff/target/release/fux-diff                                # every area
-diff/target/release/fux-diff --scale 10 --seed 7 terminal layout
-diff/target/release/fux-diff --list                         # what each area compares
-```
-
-| Flag | Meaning |
-| --- | --- |
-| `AREA...` | the areas to run; all if none |
-| `--seed N` | the seed (default 1). Each area derives its own from it, so one area run alone replays exactly |
-| `--scale N` | multiplies each area's number of cases (default 1) |
-
-Each area prints how much it found alike, or stops at its first difference
-and prints the seed, both sides and what led to it (a session's last 40
-events, a tree and its changes, a terminal's output). Exit status: 1 if an
-area differed, 2 for a bad argument.
-
-### Areas
-
-| Area | Input | Compared |
-| --- | --- | --- |
-| `layout` | random trees of halved splits, areas up to `u16::MAX` wide (differs from 0.33.1, whose n-ary weights the binary tree replaced) | placements, neighbours, resizes, splits, removals and swaps |
-| `protocol` | random frames (made by the current fux's frame types: hellos, attaches, resizes, detaches, paints, exits, stdout, reply parts) and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces, each kind as the frame type of the stage it is allowed in; an attached client's `Act` and a command's request are typed values fux's own tests decode |
-| `terminal` | fux-vt fed random output in pieces, with resizes | after every piece: replies, events, errors, every retained row, the cursor, modes, the cursor's shape, scroll region, changed rows. Leaves out what fux-vt 0.2.0 changed on purpose (SGR 5, 6, 8, 9, 25, 28, 29, 58, 59; CSI f, s, u; characters that join a cluster), and a DECSCUSR Ps ctlseqs lists no style for; the shape is compared as its Ps, the terminal's own (`Initial`) as 0 |
-| `input` | client input in pieces with Escape timeouts, key names, pastes, held command lines, pane input queues | decoded input and the Escape deadline, encoded keys and pastes, the queues |
-| `text` | random words and key names | `quote`, key names, JSON strings, base64 |
-| `system` | errnos, nonblocking requests on pipes, sockets and PTYs | fuxix's results, and the config file's path for every mix of `XDG_CONFIG_HOME` and `HOME` |
-
-Not covered: the server's connection handling in `server.rs` (the walk,
-`walk/`, and the integration tests cover it), and performance (see
-`bench/`: `fux-bench --against REF` counts fux-vt's instructions against
-any commit, in paired rounds). Nor whole sessions, command lines, or config
-files: the baseline (0.31.0) speaks fuxth and this tree grift, so they take
-different inputs.
-
-### The baseline
-
-The baseline is the last release, so every deliberate change since then
-differs too:
-
-- **A change meant to alter behaviour** differs in the areas it touches;
-  the others should still agree.
-- **A change to fux's library API** can stop an area building for both
-  copies. Each area's code is one macro (`stack!`) used for both: give the
-  current side what it needs there and compare both in the same form. CI's
-  "fux-diff builds" step may fail until then.
-- **After each release,** bump the three `baseline` versions in
-  `Cargo.toml` and `cargo update -p` them. They are fux 0.33.1, fux-vt
-  0.12.1 and fuxix 0.6.2.
-
-## The oracle: fux-vt beside a commit
+An excluded workspace with its own lockfile, for changes meant to leave
+fux-vt's behaviour as it was (a refactor, a speed-up, a rewrite). It
+forbids the same lints as fux, and its release profile checks arithmetic
+for overflow. CI checks that it passes clippy against the commit under test.
 
 `fux-vt-oracle` holds the working tree's fux-vt to what fux-vt does at a
 commit, by default the latest `main`. Both get the same bytes, resizes and

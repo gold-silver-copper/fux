@@ -62,8 +62,7 @@ fn internal() -> Option<ExitCode> {
     match (first.as_str(), rest) {
         (SERVE, rest) => Some(serve(rest)),
         (fux_server::link::PANE, rest) => Some(pane(rest)),
-        (fux_server::link::CONN, []) => Some(conn(false)),
-        (fux_server::link::CONN, [taken]) if taken == fux_server::link::TAKEN => Some(conn(true)),
+        (fux_server::link::CONN, []) => Some(conn()),
         _ => None,
     }
 }
@@ -82,7 +81,7 @@ fn client() -> ExitCode {
     });
     let ran = match args {
         // It tells its own failure.
-        Ok(args) => script::main(&args, Some(argv), &mut std::io::stdout()),
+        Ok(args) => script::main(&args, &mut std::io::stdout()),
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
             let _ = writeln!(std::io::stderr(), "fux: {failed}");
@@ -141,7 +140,8 @@ fn pane(args: &[String]) -> ExitCode {
                 socket::unlink_own(&own, socket);
             }
         };
-        fux_server::host::serve(listener, &unlink)
+        let findable = || (socket.as_deref()).is_some_and(|socket| socket::own_at(&own, socket));
+        fux_server::host::serve(listener, &unlink, &findable)
     });
     match served {
         Ok(()) => ExitCode::SUCCESS,
@@ -152,16 +152,12 @@ fn pane(args: &[String]) -> ExitCode {
     }
 }
 
-/// A client's connection's own process, started by its server: its link
-/// on stdin, and on stdout the server's socket, where it takes its client
-/// (`server::Conn::spare`), or, `taken`, a client the server took itself.
-fn conn(taken: bool) -> ExitCode {
-    let served = match taken {
-        true => socket::taken_stdio()
-            .map_err(|e| format!("its sockets: {e}"))
-            .and_then(|(client, server)| fux_server::conn::taken(client, server)),
-        false => socket::waiting_stdio(),
-    };
+/// A client's connection's own process, started by its server for a
+/// client it took: its link on stdin, its client on stdout.
+fn conn() -> ExitCode {
+    let served = socket::taken_stdio()
+        .map_err(|e| format!("its sockets: {e}"))
+        .and_then(|(client, server)| fux_server::conn::taken(client, server));
     match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

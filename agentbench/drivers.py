@@ -663,10 +663,7 @@ class Fux(Driver):
     @staticmethod
     def program(options, argv):
         """`options` given a program and its arguments."""
-        options = f"(program {options} {string(argv[0])})"
-        for a in argv[1:]:
-            options = f"(argument {options} {string(a)})"
-        return options
+        return f"(program {options} (list {' '.join(string(a) for a in argv)}))"
 
     def spawn(self, argv, size=None, name=None):
         # fux makes no size up, and no client is attached here: with none
@@ -733,7 +730,10 @@ class Fux(Driver):
         self.fux(f"(resize (tab {self.pane(pane)}) {cols} {rows})")
 
     def resize_pct(self, pane, pct):
-        self.fux(f'(resize-pane {self.pane(pane)} (percent {pct}) "horizontal")')
+        # fux sizes in cells: the share is worked out from the tab's width.
+        tab = f'(first (get (snapshot (tab {self.pane(pane)}) "topology") "tabs"))'
+        cols = int(self.fux(f'(get {tab} "columns")').stdout.split()[0])
+        self.fux(f'(resize-pane {self.pane(pane)} {max(1, cols * pct // 100)} "horizontal")')
 
     def split(self, pane, argv):
         axis = f'(axis {self.pane(pane)} "horizontal")'

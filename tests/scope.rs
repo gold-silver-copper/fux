@@ -11,8 +11,9 @@ use support::*;
 fn another_runs_handles_are_refused_before_mutating() -> Outcome {
     let a = Server::start("")?;
     let b = Server::start("")?;
-    let theirs = a.words("(new-tab (program (size (in (options) \"agent\") 80 24) \"cat\"))")?;
-    b.words("(new-tab (program (size (in (options) \"agent\") 80 24) \"cat\"))")?;
+    let theirs =
+        a.words("(new-tab (program (size (in (options) \"agent\") 80 24) (list \"cat\")))")?;
+    b.words("(new-tab (program (size (in (options) \"agent\") 80 24) (list \"cat\")))")?;
     let version = fux::script::quoted(theirs.trim());
     for action in [
         format!("(send-keys (text (expect {version}) \"forbidden\"))"),
@@ -47,13 +48,16 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
         status.display()
     );
     let script = format!("setsid sh -c '{descendant}' & echo \"$FUX_PANE\"; exec cat");
-    server.ok(&[&format!("(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") {}))", fux::script::quoted(&script))])?;
+    server.ok(&[&format!(
+        "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"sh\" \"-c\" {})))",
+        fux::script::quoted(&script)
+    )])?;
     let descendant = pid_in(&pid)?;
     let _reap = Reap(vec![descendant]);
     eventually("the initial program identity", || {
         Ok(server.ok(&["(capture (pane 2))"])?.contains("%2:0"))
     })?;
-    server.ok(&["(respawn (kill-first (argument (argument (program (pane 2) \"sh\") \"-c\") \"echo \\\"$FUX_PANE\\\"; exec cat\")))"])?;
+    server.ok(&["(respawn (kill-first (program (pane 2) (list \"sh\" \"-c\" \"echo \\\"$FUX_PANE\\\"; exec cat\"))))"])?;
     eventually("the replacement's program identity", || {
         Ok(server.ok(&["(capture (pane 2))"])?.contains("%2:1"))
     })?;

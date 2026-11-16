@@ -306,7 +306,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> Strin
             rng.chance(50)
         ),
         5 => format!(
-            r#"(split (argument (program (axis (pane "{}") "vertical") "echo") "split-typed"))"#,
+            r#"(split (program (axis (pane "{}") "vertical") (list "echo" "split-typed")))"#,
             pane(rng)
         ),
         6 if panes > 2 => format!(r#"(kill (pane "{}"))"#, pane(rng)),

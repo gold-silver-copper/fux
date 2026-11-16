@@ -263,7 +263,12 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     // the terminal, so only cat can make the pane read.
     let code = "mkfifo \"$0\"; (cat </dev/tty & echo $! > \"$1\"); read x <> \"$0\"";
     let (fifo, pidfile) = (fifo.to_string_lossy(), pidfile.to_string_lossy());
-    let answer = server.ok(&[&format!("(new-tab (argument (argument (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") {}) {}) {}))", fux::script::quoted(code), fux::script::quoted(&fifo), fux::script::quoted(&pidfile))])?;
+    let answer = server.ok(&[&format!(
+        "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"sh\" \"-c\" {} {} {})))",
+        fux::script::quoted(code),
+        fux::script::quoted(&fifo),
+        fux::script::quoted(&pidfile)
+    )])?;
     let pane = answer
         .split_whitespace()
         .next()

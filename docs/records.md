@@ -70,7 +70,7 @@ one field of it now. In order:
 | `application-keypad` | the keypad sends its application sequences (DECKPAM, `ESC =`) |
 | `keyboard-flags` | the kitty keyboard protocol flags in force (`CSI > FLAGS u`), 0 for legacy keys |
 | `pictures` | the pictures it shows (sixel), oldest first, a newer one covering the pixels of an older one that its own lie on, each at cell `row`, `column`, over `rows` by `columns` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
-| `lost` | what fux let go of its program's since it started, each kind counted (`((copies-cut 0) (copies-not-text 0) (pictures 0) (memory 0))`): `copies-cut` and `copies-not-text`, its copies (OSC 52) that copied nothing, longer than the 64 KiB a string may be, or not base64 (RFC 4648, padded or not) of UTF-8 text (none is counted for a pane created with `program-clipboard` false, which copies nothing); `pictures`, sixel pictures it drew that were not kept whole, each counted as it ends: begun while its host drew no sixel (its tab not shown, or its host draws no sixel or said no cell size), ended once it did not, lifted past a scroll region's top as it was placed, or cut: what it drew past what a picture may keep (4,096 pixels a side, 8,847,360 pixels in all, and the pictures' memory budget) was not kept, placed or not. One that drew nothing, or that CAN ended, is none; one placed whole and let go later, the oldest first as newer ones need the room, is not counted, as history let go is not; `memory`, times reading its output, or a resize, was refused memory (fux-vt's limits, `fux-vt/THREATS.md` 1.3), each losing only what it was for: history a resize let go counts too, and a size refused counts once until another size is asked or the pane keeps its own. A client showing it is told each kind, with how many, once a run of losses of that kind, which a success of the kind ends: a run of copies ends at a copy made; of pictures, at one placed whole; of memory, at a read of its output or a resize that refused none (a read: a frame and what follows it, or output once all of it is read); a program's end or a respawn starts every run anew |
+| `lost` | what fux let go of its program's since it started, each kind counted (`((copies-cut 0) (copies-not-text 0) (pictures 0))`): `copies-cut` and `copies-not-text`, its copies (OSC 52) that copied nothing, longer than the 64 KiB a string may be, or not base64 (RFC 4648, padded or not) of UTF-8 text (none is counted for a pane created with `program-clipboard` false, which copies nothing); `pictures`, sixel pictures it drew that were not kept whole, each counted as it ends: begun while its host drew no sixel (its tab not shown, or its host draws no sixel or said no cell size), ended once it did not, lifted past a scroll region's top as it was placed, or cut: what it drew past what a picture may keep (4,096 pixels a side, 8,847,360 pixels in all, and the pictures' memory budget) was not kept, placed or not. One that drew nothing, or that CAN ended, is none; one placed whole and let go later, the oldest first as newer ones need the room, is not counted, as history let go is not. A client showing it is told each kind, with how many, once a run of losses of that kind, which a success of the kind ends: a run of copies ends at a copy made; of pictures, at one placed whole; a program's end or a respawn starts every run anew |
 | `cell` | the size of a cell in pixels its program was last told, `((width 9) (height 18))`: its tab's host's (`CSI 16 t`, asked again each time that terminal is resized, as a font zoom resizes it); `none` while it is told none (no terminal shows its tab, or its host said none): then it places no pictures |
 | `cursor-visible` | the cursor shows |
 | `history-bytes` | the pane's current history budget, retained across respawn |
@@ -401,8 +401,12 @@ not grow. A
 journal is its server process's, ordered as each pane's process reported: a server that takes a run
 back after a crash (`(start)`) keeps one of its own, and refuses a cursor from the one before
 (`bad-value`), saying that what came between is lost: resnapshot. A change to the tree (a name, a
-layout, a new pane) is told only once the run's record holds it: one whose record can't be written (a
-full disk) fails `client`, saying so, and is not made.
+layout, a new pane) is made and told whether or not the run's record could be written: one whose
+record can't be (a full disk) stands, its asker, the attached clients and the log told once that the
+record is behind, and the next change writes it. A server that takes the run back before then finds
+the tree as last written, and may give again the ids given since: a pane, tab or workspace made while
+the record was behind is not one a later id of the same number names. A new pane alone waits for the
+record: with none written, its program is not started, and the request fails `client`.
 
 The journal guarantees ordered invalidations, not complete state replication: a later snapshot can
 already contain newer state. Foreground process groups and continuous terminal cell changes are
@@ -446,7 +450,6 @@ The finite coverage schema is:
 | `view-resized` | `client` and its terminal's new `columns`, `rows` |
 | `screen` | `client` and the `kind` of screen it now shows (`"column"`, `"repeat"`, `"list"` or `"prompt"`), `none` once none: a fresh opening or a close |
 | `history-budget` | pane's new `history-bytes` |
-| `history-cleared` | pane history invalidated |
 | `respawned` | the new program's `generation`; optional `input-unread`, the old program's input not written to its terminal |
 | `hung-up` | its program closed its terminal and runs on (`"hung_up"`) |
 | `read-failed` | `read-error`, the errno text of an unexpected PTY read failure, or how its pane's own process ended; then its program's `exited`, with the status its program really ended with when it can be read, else lost, and its role's rule (a shell's pane closes) |
@@ -502,8 +505,8 @@ program may raise any kind: `(raise (error (quote! my-kind) 1 2))`.
 fux sets no limits of its own: memory, time and steps are the user's and the OS's to bound (`ulimit`,
 cgroups, `timeout`), and a program that loops is stopped as any program is. At its descriptor or
 process limit a server refuses a new client with the cause
-(`the server can serve no new client now: …`), and a change whose record would pass its file-size
-limit is refused with nothing changed. The refusal does not come, and the client waits out its own
+(`the server can serve no new client now: …`), and a change made while the run's record can't be written (a full disk, a file-size limit) stands: its
+asker, the attached clients and the log are told once that the record is behind, and the next change writes it. The server's refusal of a new client does not come, and the client waits out its own
 timeout, when the whole system has no descriptor left, or when a running server's descriptor limit is
 lowered below the few it opened as it started. A connection the server ends is told why first; so is
 one whose server's process ended (killed, or refused memory), by the connection's own process, with
@@ -514,25 +517,15 @@ the server refuses it. So does a request longer than one frame (1 MiB), its keys
 (a name, a directory or a program of that length): its client's own connection process refuses it,
 and the server is sent none of it. A pane's program and directory together are 262,143 bytes at most (a
 quarter of a frame's 1,048,575 bytes, as its facts say them): `new-tab`, `split` or `respawn` with more fails `too-long`. A layout is a flat list of nodes, so it nests as deep as its panes take it,
-with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
-handler catches. Some of fux's own code refuses too, and goes on. A client joining a reply's parts (a capture
-too large for its memory, say) fails that request `out-of-memory`, and the next is served. Any process of fux
-reading a frame's texts and lists, the server too, takes the refusal as a frame it can't read: that
-connection or link ends, with the reason. A connection's process joining the pieces of a screen or a
-capture ends that connection the same way. Keys and pastes are joined nowhere: what is longer than a frame
+with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. A name is at most 1,024 bytes: a longer one fails `bad-name`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
+handler catches. fux's own code takes memory as it needs it: refused, that process aborts, whether a pane's, a
+connection's, a client's or the server's, and a run whose server ended so is taken back (`start`). Keys and pastes are joined nowhere: what is longer than a frame
 goes to its pane a piece at a time, each sent once the pane's terminal took the one before, so a large
 `send-keys` or paste to a program that isn't reading blocks its sender until the program reads, as a terminal
 would, and that sender's later keys wait behind it; a short one answers at once while the terminal has room
 for it (a few thousand bytes), and waits like the rest once it has none. If the sender goes, its keys end
 where they are, a paste it had begun closed. `input` is told once a piece. A pane holds one
 frame of answers to its program's own queries, and reads that program's output no more till it reads them.
-A pane's own process refuses memory in most of what it does, and goes on: reading its program's output, or a
-resize, it loses only what that was for, and counts it (`lost`, `memory`), as it does output it could not
-set aside for its next turn; keys or a paste it can't encode or queue fail `out-of-memory` to whoever sent
-them, once, a paste it had begun closed; a connection that reaches it when it can keep no more is let go;
-and what it could not read or say for want of memory it reads or says again after a rest. It still aborts,
-refused memory, as it draws its screen for a client that shows it (more so with pictures), as it makes a
-capture, and in the small things it builds to say what it is (its first words to a server, its facts).
 What is typed at an attached terminal goes to the pane its client focuses, at once and in order with its
 bindings. A frame of it (1 MiB) is the most that waits unread for a pane's program: past that, what is
 typed is not taken, and its client is told (`%N isn't reading what is typed`); a paste, which waits for its
@@ -541,11 +534,9 @@ detach) always run; only its pastes wait for one another, the second sent once t
 another sent a client (`send-keys` to a client), more than 64 keys of it in a row, goes on from that client
 as a paste's text does, a piece at a time, and the request is answered once the program took it. While
 a paste is open or its text still to come, whatever else its program is to read (another client's keys, the
-answers to its own queries) waits behind the paste's closing bracket, a frame of it at most. Every other allocation
-fux's own code makes is infallible, and a refusal there aborts that process: what a decoded frame is
-made of beyond its texts and lists, what waits to be written to a socket in the server, a connection or a
-client, the server's tree and journal, a connection's composed screen, and a reply as the client prints it.
-The server and a connection's process may end so; a run whose server ended is taken back (`start`).
+answers to its own queries) waits behind the paste's closing bracket, a frame of it at most: past
+that, what is typed is not taken and its typist is told, and an answer to the program's own query is
+let go, counted nowhere.
 [`codes.txt`](codes.txt) lists every kind with its exit status.
 
 A program catches a failure by kind with `(catch-kind! EXPRESSION KIND NAME HANDLER...)`, or any with
@@ -557,14 +548,14 @@ that had taken effect by then, as an uncaught failure lists them on stderr.
 ## `status`
 
 ```text
-((socket "/run/user/1000/fux/server.sock") (release "0.37.0") (protocol 79)
- (server-release "0.37.0") (server-protocol 79) (server-process-id 4242) (compatible #true))
+((socket "/run/user/1000/fux/server.sock") (release "0.37.0") (protocol 80)
+ (server-release "0.37.0") (server-protocol 80) (server-process-id 4242) (compatible #true))
 ```
 
 `(status)` returns an ordinary record with these locally readable fields, including `(compatible
 #false)` for a protocol mismatch. `server-process-id` is the server's process, as the system recorded
 it for the socket; where it says none (macOS), the field is left out. A command line against a server
-of another protocol runs again with that process's binary.
+of another protocol fails `mismatch`.
 
 With no server, `status` fails (`no-server`), saying the socket and whether a server that stopped left
 it there. Every server in fux's directory: `(status)` on each socket there (`(explain "servers")`).
@@ -595,8 +586,8 @@ A client's keys and preferences are its own: the server keeps no copy, and relay
 the column open, `"C-b r"` in the resize repeat mode. `keymap` is the root's keys in the order bound,
 each a `key` that runs a `binding`, with its `code`, `label` and `group`, or holds a `map` of more
 keys, which says whether it `repeat`s and has a `keymap` of its own, as deep as the keys go. `list`
-and `line` are the keys of fux's own screens: each its screen's `action`, or for a list's `bind-action`
-key its `code`, and its `label` or `none`. `(list-keys)` prints the same keys as config lines.
+and `line` are the keys of fux's own screens: each its screen's `action`, or for a list's key that runs
+code its `code`, and its `label` or `none`. `(list-keys)` prints the same keys as config lines.
 
 A `code` is the form the binding's `code!` holds, and reading it runs nothing. It evaluates in the
 program that runs it, asking nothing of the server and reading no file: a name that program lacks
@@ -611,8 +602,8 @@ the prompt's program has. A callback, `bind-key` or another client takes it as i
 ((name "line") (provenance "library") (effect "(target text-value)")
  (documentation "line\nParameters: (target text-value)\n\n(lambda! ...)\n")
  (definition "#[applicative #[operative (target text-value) #ignore (send-keys ...)]]") (codes none))
-((name "percent") (provenance "fux") (effect "n -- size") (documentation "percent\nn percent of the tab...")
- (definition "#[applicative #[host percent]]") (codes ("type-error" "unused" ...)))
+((name "kill") (provenance "fux") (effect "scope --") (documentation "kill\nclose a pane, tab or workspace...")
+ (definition "#[applicative #[host kill]]") (codes ("type-error" "unused" ...)))
 ((name "double") (provenance "run") (effect none) (documentation none)
  (definition "#[applicative #[operative (x) #ignore (multiply x 2)]]") (codes none))
 ```

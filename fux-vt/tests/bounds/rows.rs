@@ -12,7 +12,7 @@ use fux_vt::{
 };
 
 use super::Heap;
-use super::probe::{Bound, CHUNKS, PICTURE_BYTES, Probe, Scale, Setup, pieces, repeat, steady};
+use super::probe::{Bound, CHUNKS, PICTURE_BYTES, Probe, Scale, Setup, repeat, steady};
 
 /// What a row's probe found: nothing, or how it broke its bound.
 pub type Found = Result<(), String>;
@@ -858,7 +858,7 @@ pub fn b19(scale: Scale, chunk: usize) -> Found {
     held.extend_from_slice(b"\x1b[");
     let mut probe = Probe::new(&setup, bound, chunk, 1)?;
     let begun = probe.host(0, |p| p.process_until_stop(b"\x1b[?2026h", &mut ()))?;
-    if !matches!(begun, Ok(Some((_, fux_vt::Stop::Begun)))) {
+    if !matches!(begun, Some((_, fux_vt::Stop::Begun))) {
         return Err(format!("no frame begun: {begun:?}"));
     }
     let mut scan = probe.parser.frame_scan();
@@ -2019,172 +2019,6 @@ pub fn b43(scale: Scale, chunk: usize) -> Found {
     )
 }
 
-// B44: a refused allocation loses only what it was for, and every later
-// byte is read, each site by its degrade.
-pub fn b44(_: Scale, chunk: usize) -> Found {
-    // A prompt mark's fresh line, and a picture's placement, scroll the
-    // row into history, whose first block is refused. At BASE the parser
-    // stayed in the OSC (`hello` went into it) or in sixel with no
-    // decoder (`hello` was swallowed). The picture's graphics new lines
-    // take the cursor down a row, past the 20-pixel cell its one band
-    // fits in (the cursor goes where the sixel motion went).
-    for string in [
-        &b"\x1b]133;A\x07"[..],
-        b"\x1b]133;A\x1b\\",
-        b"\x1bPq#1~~---\x1b\\",
-    ] {
-        let mut parser = refusing(1)?;
-        let failed = (pieces(&[string, b"hello"].concat(), chunk))
-            .filter(|piece| parser.process(piece).is_err())
-            .count();
-        fux_vt::refuse_next(0);
-        let text: String = parser.screen().main_rows().map(|r| r.text()).collect();
-        let shown = string.escape_ascii();
-        if !text.contains("hello") {
-            return Err(format!(
-                "{shown}: the text after the refusal was lost: {text:?}"
-            ));
-        }
-        if (failed, parser.refused()) != (1, 1) {
-            return Err(format!(
-                "{shown}: {failed} calls failed and {} refusals were counted, not 1 and 1",
-                parser.refused()
-            ));
-        }
-        let report = parser.check();
-        if !report.is_clean() {
-            return Err(format!("{shown}: the checker found: {report}"));
-        }
-    }
-    // Two refusals are counted as two: the alternate screen's grid too.
-    let mut parser = refusing(2)?;
-    let _ = parser.process(b"\x1b]133;A\x07");
-    let _ = parser.process(b"\x1b[?1049h");
-    fux_vt::refuse_next(0);
-    match parser.refused() {
-        2 => {}
-        n => return Err(format!("two refusals counted as {n}")),
-    }
-    // A resize refused room leaves the screen as it was, and is counted.
-    let mut parser = refusing(u32::MAX)?;
-    let wider = Size::new(1, 20).map_err(|e| e.to_string())?;
-    let resized = parser.resize(wider);
-    fux_vt::refuse_next(0);
-    if resized.is_ok() || parser.refused() != 1 || parser.screen().size().cols() != 10 {
-        return Err(format!(
-            "a refused resize: {resized:?}, {} refusals, {} columns",
-            parser.refused(),
-            parser.screen().size().cols()
-        ));
-    }
-    modes_past_a_refusal()?;
-    degrades(chunk)
-}
-
-/// A refusal inside a mode sequence loses only the mode it was for: the
-/// alternate screen 1049 asks room for. Synchronized output, before it or
-/// after it, is set, and the frame it begins is told.
-fn modes_past_a_refusal() -> Found {
-    for sequence in [&b"\x1b[?2026;1049h"[..], b"\x1b[?1049;2026h"] {
-        let shown = sequence.escape_ascii();
-        let mut parser = refusing(1)?;
-        let stop = parser.process_until_stop(sequence, &mut ());
-        fux_vt::refuse_next(0);
-        let length = sequence.len();
-        if !matches!(stop, Ok(Some((n, fux_vt::Stop::Begun))) if n == length) {
-            return Err(format!("{shown}: {stop:?}, not the frame begun"));
-        }
-        let screen = parser.screen();
-        let modes = (
-            screen.mode(Mode::SynchronizedOutput),
-            screen.mode(Mode::AlternateScreenSaveCursor),
-            parser.refused(),
-        );
-        if modes != (true, false, 1) {
-            return Err(format!(
-                "{shown}: (2026, 1049, refusals) {modes:?}, not (true, false, 1)"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Each site's degrade, the checker clean after it and the bytes
-/// after it read: a row history has no room for goes as with no history,
-/// the screen scrolling still; a RIS with no room for grids made anew
-/// blanks them in place, history gone, and resets the rest; a refused
-/// alternate screen leaves the primary shown, the mode reset.
-fn degrades(chunk: usize) -> Found {
-    let lines = |parser: &Parser| -> Vec<String> {
-        let rows = parser.screen().rows();
-        rows.map(|r| r.text().trim_end().to_owned()).collect()
-    };
-    let fed = |n: u32, before: &[u8], after: &[u8]| -> Result<Parser, String> {
-        let options = Feature::ALL.into_iter().collect();
-        let size = Size::new(2, 10).map_err(|e| e.to_string())?;
-        let mut parser = Parser::with_options(size, 1 << 20, options).map_err(|e| e.to_string())?;
-        parser.process(before).map_err(|e| e.to_string())?;
-        fux_vt::refuse_next(n);
-        for piece in pieces(after, chunk) {
-            let _ = parser.process(piece);
-        }
-        fux_vt::refuse_next(0);
-        let report = parser.check();
-        match report.is_clean() {
-            true => Ok(parser),
-            false => Err(format!(
-                "{}: the checker found: {report}",
-                after.escape_ascii()
-            )),
-        }
-    };
-    let want = |parser: &Parser, rows: &[&str], refused: u64, what: &str| -> Result<(), String> {
-        let got = lines(parser);
-        match (got == rows, parser.refused() == refused) {
-            (true, true) => Ok(()),
-            _ => Err(format!(
-                "{what}: rows {got:?} and {} refusals, not {rows:?} and {refused}",
-                parser.refused()
-            )),
-        }
-    };
-    // History's first block refused: `a` goes as with no history, and the
-    // screen scrolls for `c` (at BASE the line feed was lost, `c` over `b`).
-    let parser = fed(1, b"a\r\nb", b"\r\nc")?;
-    want(&parser, &["b", "c"], 1, "a row history had no room for")?;
-    // A RIS with history held: grids made anew, then made again for the
-    // clear, refused; both blanked in place, history gone, and the modes
-    // reset, autowrap among them (at BASE the RIS was lost whole).
-    let parser = fed(2, b"a\r\nb\r\nc\x1b[?7l", b"\x1bcz")?;
-    want(&parser, &["z", ""], 1, "a RIS with no room")?;
-    if !parser.screen().mode(fux_vt::Mode::Autowrap) {
-        return Err("a RIS with no room left autowrap off".into());
-    }
-    // The alternate screen refused: the primary stays shown, the mode
-    // reset, and what follows is printed there.
-    let parser = fed(1, b"a", b"\x1b[?1049hz")?;
-    want(&parser, &["az", ""], 1, "a refused alternate screen")?;
-    match parser
-        .screen()
-        .mode(fux_vt::Mode::AlternateScreenSaveCursor)
-    {
-        false => Ok(()),
-        true => Err("a refused alternate screen reads set".into()),
-    }
-}
-
-/// A parser of 1 row by 10 columns, with history and every feature, sixel
-/// shown, an `x` printed, and its next `n` allocations refused.
-fn refusing(n: u32) -> Result<Parser, String> {
-    let size = Size::new(1, 10).map_err(|e| e.to_string())?;
-    let options = Feature::ALL.into_iter().collect();
-    let mut parser = Parser::with_options(size, 1 << 20, options).map_err(|e| e.to_string())?;
-    parser.set_host_graphics(fux_vt::CellSize::new(10, 20).map_or(Graphics::Text, Graphics::Sixel));
-    parser.process(b"x").map_err(|e| e.to_string())?;
-    fux_vt::refuse_next(n);
-    Ok(parser)
-}
-
 // B45: each encoded key or mouse event is at most 64 bytes: every key with
 // every modifier, a kitty report of the largest code points with every
 // modifier bit, in every key mode; every mouse event at the edges of each
@@ -2397,7 +2231,6 @@ pub const ROWS: &[(&str, Row)] = &[
     ("B41", b41),
     ("B42", b42),
     ("B43", b43),
-    ("B44", b44),
     ("B45", b45),
     ("B46", b46),
 ];
@@ -2422,6 +2255,6 @@ pub fn run(row: Row, scale: Scale) -> Result<(), Vec<String>> {
 
 /// How many rows `THREATS.md` 2 has: B01 to B46 but B07, B10 and B29, and
 /// B34a.
-pub const COUNT: usize = 44;
+pub const COUNT: usize = 43;
 
 const _: () = assert!(ROWS.len() == COUNT);

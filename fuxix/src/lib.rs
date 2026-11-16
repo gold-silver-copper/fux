@@ -1,7 +1,7 @@
 //! The system calls fux makes, on Linux, Android and macOS, over `libc`.
 //! On Windows, the types every OS shares (a [`process::Pid`], a
-//! [`process::Signal`]'s name, a [`process::Status`], an [`Errno`] and
-//! [`Allocation`]), the event loop: [`poll`], [`signal::Pipe`] and
+//! [`process::Signal`]'s name, a [`process::Status`] and an [`Errno`]), the
+//! event loop: [`poll`], [`signal::Pipe`] and
 //! [`io`]'s reads and writes, over one I/O completion port per process,
 //! [`socket`]'s named pipes, and [`pty`]'s pseudo consoles with their
 //! [`process::Job`]s and sizes ([`terminal`]), with `windows-sys`; the
@@ -33,7 +33,6 @@
 )))]
 compile_error!("fuxix supports Linux, Android, macOS and Windows");
 
-mod allocation;
 mod errno;
 pub mod file;
 pub mod io;
@@ -44,5 +43,4 @@ pub mod signal;
 pub mod socket;
 pub mod terminal;
 
-pub use allocation::Allocation;
 pub use errno::{Errno, Result};

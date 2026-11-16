@@ -63,19 +63,6 @@ impl Errno {
         Self(code.cast_signed())
     }
 
-    /// The system's description and code, its bytes admitted under
-    /// `budget` before they are kept.
-    pub fn message<A: crate::Allocation>(
-        self,
-        budget: &mut A,
-    ) -> std::result::Result<String, A::Error> {
-        let text = self.to_string();
-        let mut kept = Vec::new();
-        budget.reserve(&mut kept, text.len())?;
-        kept.extend_from_slice(text.as_bytes());
-        Ok(String::from_utf8(kept).unwrap_or(text))
-    }
-
     /// The code behind an I/O error, if it came from the system.
     pub(crate) fn from_io_error(error: &std::io::Error) -> Option<Self> {
         error.raw_os_error().map(Self)

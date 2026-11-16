@@ -26,7 +26,7 @@ use fux_server::socket::SocketPath;
 use fux_wire::answer::{PaneAnswer, PaneResults};
 use fux_wire::code::Code;
 use fux_wire::command::{
-    AnyRef, Extent, HistoryBytes, Input, Limit, Program, Request, Run, Version, WsRef,
+    AnyRef, HistoryBytes, Input, Limit, Program, Request, Run, Version, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::Axis;
@@ -78,8 +78,6 @@ pub enum Fux {
     /// wait, for the word that acts on it after
     /// (`%2 str ls text str Enter key send-keys`).
     Opts(Rc<Opts>),
-    /// A width or height: cells, or a share of the tab.
-    Extent(Extent),
     /// A code value another client sent, as its form: `execute!` evaluates
     /// it in the caller's context, then calls it.
     Code(Rc<Sent>),
@@ -116,7 +114,6 @@ impl Fux {
                 Some(On::Changed(_)) => "changed-request",
                 Some(On::Seen(_)) => "expected-request",
             },
-            Fux::Extent(_) => "size",
             Fux::Code(_) => "code",
         }
     }
@@ -130,8 +127,6 @@ impl Fux {
             Fux::Tab(t, _) => write!(out, "{t}"),
             Fux::Workspace(w, _) => write!(out, "{w}"),
             Fux::Client(c, _) => write!(out, "{c}"),
-            Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
-            Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
             Fux::All => write!(out, "all"),
             Fux::Opts(_) => write!(out, "({})", self.kind()),
             Fux::Code(code) => out.write_str(&code.text()),
@@ -213,9 +208,6 @@ pub struct Opts {
     pub view: fux_wire::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,
-    /// The words given, for the word they go on to refuse any it would not
-    /// use.
-    pub given: Vec<words::Opt>,
     /// What it goes on, as it was given, and what it was built with: its
     /// grift data, which `words::replayed` makes it again from.
     pub subject: Option<Value<Fux>>,
@@ -223,6 +215,12 @@ pub struct Opts {
 }
 
 impl Opts {
+    /// The words given, for the word they go on to refuse any it would not
+    /// use.
+    pub(crate) fn given(&self) -> impl Iterator<Item = words::Opt> {
+        self.steps.iter().map(|(opt, _)| *opt)
+    }
+
     pub(crate) fn pane_options(
         &self,
         defaults: fux_wire::command::PaneOptions,
@@ -569,46 +567,14 @@ pub struct Server {
     pub after: Option<std::rc::Rc<std::cell::Cell<fux_wire::protocol::Fence>>>,
     /// What stops a run from another thread: nothing does, unless `stoppable`.
     stop: Stop,
-    /// Whether a server of another protocol is followed.
-    follow: Follow,
     /// A command line's: set once its stdout's reader is gone.
     out: Option<Rc<std::cell::Cell<bool>>>,
 }
 
-/// Whether a run follows a server of another protocol: runs its command
-/// line again with the server's own binary (`client::follow`).
-#[derive(Default)]
-enum Follow {
-    /// Not a command line's: a key's or a config's program, whose client
-    /// stays.
-    #[default]
-    Never,
-    /// The `fux` binary's command line, until it has acted.
-    Command { rerun: client::Rerun, acted: Acted },
-}
-
-/// Whether a command line's program did anything outside its process yet,
-/// which running it again would do twice. Everything it does outside goes
-/// through one of two places, which mark it: its requests and local actions
-/// (`Cli`'s `Asks`), each once done, so that the connection that met another
-/// protocol is not one; and its stdout (`Watched`), before each write.
-#[derive(Clone, Default)]
-struct Acted(Rc<std::cell::Cell<bool>>);
-
-impl Acted {
-    fn mark(&self) {
-        self.0.set(true);
-    }
-    fn marked(&self) -> bool {
-        self.0.get()
-    }
-}
-
-/// A command line's stdout, where all it prints goes: which marks its
-/// program acted, and notes its reader gone (a closed pipe).
+/// A command line's stdout, where all it prints goes: which notes its
+/// reader gone (a closed pipe).
 struct Watched<'a> {
     out: &'a mut dyn Write,
-    acted: Acted,
     closed: Rc<std::cell::Cell<bool>>,
 }
 
@@ -625,7 +591,6 @@ impl Watched<'_> {
 
 impl Write for Watched<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.acted.mark();
         let wrote = self.out.write(bytes);
         self.noted(wrote)
     }
@@ -783,28 +748,6 @@ impl Server {
     pub fn socket(&self) -> Result<SocketPath, Failed> {
         fux_server::socket::socket_path(self.socket.as_deref()).map_err(|e| client_failed(e.into()))
     }
-
-    /// A connection's failure, as a run's: a server of another protocol is
-    /// followed first, if this run follows one.
-    fn failed(&self, error: client::Error) -> Failed {
-        client_failed(match (&self.follow, error) {
-            (Follow::Command { rerun, acted }, client::Error::Mismatch { said, server })
-                if !acted.marked() =>
-            {
-                client::follow(said, server, rerun)
-            }
-            (Follow::Command { .. }, client::Error::Mismatch { said, .. }) => {
-                client::Error::Unfollowed {
-                    said,
-                    why: "the program already did something outside fux's own process \
-                          (printed, warned, asked a server, started or stopped one, or read \
-                          stdin), which running it again would do twice"
-                        .to_owned(),
-                }
-            }
-            (_, error) => error,
-        })
-    }
 }
 
 /// A run stopped from another thread (`Stop`).
@@ -869,7 +812,7 @@ impl Asks for Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                let opened = client::Requests::open(&socket).map_err(|e| self.failed(e))?;
+                let opened = client::Requests::open(&socket).map_err(client_failed)?;
                 self.requests.insert(opened)
             }
         };
@@ -879,6 +822,12 @@ impl Asks for Server {
             true => Err(cancelled()),
             false => (requests.ask(asked, self.out.as_deref())).map_err(client_failed),
         };
+        // What its server says beside a reply (its run's record fell
+        // behind) is a command line's to print. An attached client's
+        // requests print nothing over its screen: it is shown the notice.
+        if let (Some(_), Ok(Some(warning))) = (&self.out, reply.as_ref().map(|r| &r.warning)) {
+            let _ = writeln!(io::stderr(), "fux: {warning}");
+        }
         // A failed request's connection is not asked again, nor one a stop
         // may have shut, however the request ended; a stop from here on
         // cannot shut what is kept.
@@ -890,12 +839,11 @@ impl Asks for Server {
 }
 
 /// The command line's: a server, the client's own words, where the program
-/// came from, the status `exit` gave, once it has, and whether it acted.
+/// came from, and the status `exit` gave, once it has.
 pub struct Cli {
     server: Server,
     from: Given,
     status: Option<u8>,
-    acted: Acted,
 }
 
 /// Where a command line's program came from.
@@ -911,9 +859,7 @@ enum Given {
 
 impl Asks for Cli {
     fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
-        let reply = self.server.ask(asked);
-        self.acted.mark();
-        reply
+        self.server.ask(asked)
     }
     fn local(
         &mut self,
@@ -921,20 +867,7 @@ impl Asks for Cli {
         state: Option<&mut Draft>,
         _out: &mut dyn Write,
     ) -> Result<Vec<Value<Fux>>, Failed> {
-        let values = self.local_act(what, state);
-        // What only reads leaves the program as it was to run again; so does
-        // a start, which starts nothing where a server answers. A file
-        // that may not read the same again marks it itself (`read_file`).
-        let reads = matches!(
-            what,
-            Local::Start
-                | Local::Status
-                | Local::Shell(Shell::Args | Shell::ReadFile(_) | Shell::Getenv(_))
-        );
-        if !reads {
-            self.acted.mark();
-        }
-        values
+        self.local_act(what, state)
     }
 }
 
@@ -968,7 +901,7 @@ impl Cli {
                 }
                 Given::Words | Given::File(_) => string(&read_text("stdin", io::stdin())?),
             },
-            Shell::ReadFile(path) => string(&read_file(path.as_ref(), &self.acted)?),
+            Shell::ReadFile(path) => string(&read_file(path.as_ref())?),
             Shell::Getenv(name) => string(&getenv(name)?),
             Shell::Warn(line) => {
                 writeln!(io::stderr(), "{line}")
@@ -1178,7 +1111,8 @@ fn local(
                 Some(_) | None if typing => configured(&defaults),
                 Some(_) | None => (defaults, None),
             };
-            let explicit = target.is_some() || creation.given.contains(&words::Opt::Name);
+            let named = creation.given().any(|given| given == words::Opt::Name);
+            let explicit = target.is_some() || named;
             let target = if explicit {
                 target.clone()
             } else {
@@ -1191,7 +1125,7 @@ fn local(
                     .map_err(|why| Failed::new(Code::BadValue, why.message))?
             };
             let mut creation = creation.as_ref().clone();
-            if !creation.given.contains(&words::Opt::Name) {
+            if !named {
                 creation.name = committed.attach.name.clone();
             }
             words::check_attach_creation(&creation, target.is_some(), *read_only)
@@ -1215,7 +1149,7 @@ fn local(
                 problem,
                 notices,
             };
-            client::attach(&socket, attach, *size).map_err(|e| server.failed(e))?;
+            client::attach(&socket, attach, *size).map_err(client_failed)?;
         }
         Local::Start => {
             let draft = draft.ok_or_else(|| {
@@ -1451,12 +1385,9 @@ fn read_text(name: &str, mut from: impl Read) -> Result<String, Failed> {
         .map_err(|e| read_failed(name, &e.to_string()))?;
     String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
 }
-fn read_file(path: &std::path::Path, acted: &Acted) -> Result<String, Failed> {
+fn read_file(path: &std::path::Path) -> Result<String, Failed> {
     let file = std::fs::File::open(path)
         .map_err(|e| read_failed(&path.display().to_string(), &e.to_string()))?;
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        acted.mark();
-    }
     read_text(&path.display().to_string(), file)
 }
 /// Evaluate a program against a host. Grift runs on the existing client worker.
@@ -1474,15 +1405,10 @@ pub fn run(
 /// A request left unasked at a program's end did nothing, which it says.
 pub fn refuse_unfinished(values: &[Value<Fux>], host: &Host<'_>) -> Result<(), Failed> {
     for value in values {
-        let items = match value {
-            Value::List(items) => items.items(),
-            value @ Value::Int(_)
-            | value @ Value::Float(_)
-            | value @ Value::Bool(_)
-            | value @ Value::Str(_)
-            | value @ Value::Symbol(_)
-            | value @ Value::App(_)
-            | value @ Value::Bytes(_) => std::slice::from_ref(value),
+        let items = if let Value::List(items) = value {
+            items.items()
+        } else {
+            std::slice::from_ref(value)
         };
         for item in items {
             if let Value::App(Fux::Opts(options)) = item {
@@ -1501,36 +1427,27 @@ pub fn refuse_unfinished(values: &[Value<Fux>], host: &Host<'_>) -> Result<(), F
     Ok(())
 }
 /// One quoted grift program; every following shell argument stays a string.
-pub fn main(
-    args: &[String],
-    argv: Option<Vec<std::ffi::OsString>>,
-    out: &mut dyn Write,
-) -> Result<u8, Failed> {
-    let result = main_program(args, argv, out);
+pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
+    let result = main_program(args, out);
     if let Err(failure) = &result {
         let _ = writeln!(io::stderr(), "fux: {failure}");
     }
     result
 }
-fn main_program(
-    args: &[String],
-    argv: Option<Vec<std::ffi::OsString>>,
-    out: &mut dyn Write,
-) -> Result<u8, Failed> {
+fn main_program(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     if matches!(args,[v] if v=="--version"||v=="-V") {
         writeln!(out, "{}", fux_wire::protocol::Build::OURS).map_err(output_failed)?;
         return Ok(0);
     }
-    let (mut machine, from, program) = match args {
+    let (mut machine, from) = match args {
         [] => (
             Machine::source("command line", "(attach (options))"),
             Given::Words,
-            None,
         ),
         [p, rest @ ..] if p == "-" => {
             let text = read_text("stdin", io::stdin())?;
             let given = Given::Stdin(rest.to_vec());
-            (Machine::source("stdin", &text), given, Some(text))
+            (Machine::source("stdin", &text), given)
         }
         [flag] if flag == "--file" => {
             return Err(Failed::new(Code::Usage, "--file needs a FILE"));
@@ -1541,61 +1458,32 @@ fn main_program(
             let text = source::read(&path).map_err(|e| read_failed(file, &e.to_string()))?;
             let mut m = Machine::source(&path.display().to_string(), &text);
             m.path = Some(path);
-            (m, Given::File(rest.to_vec()), None)
+            (m, Given::File(rest.to_vec()))
         }
-        [flag] if flag == "--help" || flag == "-h" => (
-            Machine::source("command line", "(help)"),
-            Given::Words,
-            None,
-        ),
+        [flag] if flag == "--help" || flag == "-h" => {
+            (Machine::source("command line", "(help)"), Given::Words)
+        }
         [program, rest @ ..] => (
             Machine::source("command line", program),
             Given::File(rest.to_vec()),
-            None,
         ),
     };
-    let again = argv.clone().map(|argv| client::Rerun {
-        argv,
-        program: program.clone(),
-    });
-    let acted = Acted::default();
-    if machine
-        .path
-        .as_ref()
-        .is_some_and(|path| !path.metadata().is_ok_and(|metadata| metadata.is_file()))
-    {
-        acted.mark();
-    }
     let closed = Rc::new(std::cell::Cell::new(false));
     let mut watched = Watched {
         out,
-        acted: acted.clone(),
         closed: closed.clone(),
     };
     let mut cli = Cli {
         server: Server {
-            follow: argv.map_or(Follow::Never, |argv| Follow::Command {
-                rerun: client::Rerun { argv, program },
-                acted: acted.clone(),
-            }),
             out: Some(closed.clone()),
             ..Server::default()
         },
         from,
         status: None,
-        acted: acted.clone(),
     };
     let mut state = Draft::default();
     let mut host = Host::cli(client::context(), &mut state, &mut watched);
-    host.files.acted = Some(acted);
     let result = run(&mut machine, &mut host, &mut cli, None)
-        .map_err(|failed| {
-            if failed.code == Code::UnknownWord && !cli.acted.marked() {
-                uncompiled(failed, again.as_ref())
-            } else {
-                failed
-            }
-        })
         .and_then(|values| {
             for v in &values {
                 if matches!(v, Value::App(Fux::Opts(_))) {
@@ -1860,27 +1748,5 @@ pub mod testing {
             | other @ Value::App(_)
             | other @ Value::Bytes(_) => other.write_data(out),
         }
-    }
-}
-
-fn uncompiled(failed: Failed, rerun: Option<&client::Rerun>) -> Failed {
-    let Some(rerun) = rerun else {
-        return failed;
-    };
-    let greeted = Server::default()
-        .socket()
-        .map(|socket| client::greet(&socket));
-    let Ok(Err(client::Error::Mismatch { said, server })) = greeted else {
-        return failed;
-    };
-    let unfollowed = client_failed(client::follow(said, server, rerun));
-    // Its cause: a message is one line.
-    let cause = Failed {
-        trace: Vec::new(),
-        ..failed
-    };
-    Failed {
-        message: format!("{}; this fux cannot read it: {cause}", unfollowed.message),
-        ..unfollowed
     }
 }

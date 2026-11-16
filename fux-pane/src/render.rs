@@ -1,11 +1,6 @@
 //! A grid of cells: a pane's screen composed on one, and the bytes that
 //! turn the grid a terminal shows into another. Every paint leaves the
 //! terminal's attributes at their default, which the next one assumes.
-#![expect(
-    clippy::disallowed_macros,
-    clippy::disallowed_methods,
-    reason = "a grid and the bytes that paint it are built in plain vectors, and abort if the OS refuses them memory: left, D-194"
-)]
 use fux_vt::clusters;
 use fux_vt::sixel::Picture;
 use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};

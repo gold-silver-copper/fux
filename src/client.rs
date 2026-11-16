@@ -58,12 +58,6 @@ pub enum Error {
         said: Mismatch,
         server: Option<fuxix::process::Pid>,
     },
-    /// And this command could not run with the server's own binary
-    /// instead (`follow`): why.
-    Unfollowed {
-        said: Mismatch,
-        why: String,
-    },
     Protocol(fux_wire::protocol::Error),
     NotATerminal,
     /// The terminal on stdin can't be waited on (`waitable`).
@@ -81,12 +75,8 @@ impl Error {
     pub fn code(&self) -> Code {
         match self {
             Error::Socket(socket::Error::NoServer(_)) | Error::Connect { .. } => Code::NoServer,
-            Error::Mismatch { .. } | Error::Unfollowed { .. } => Code::Mismatch,
+            Error::Mismatch { .. } => Code::Mismatch,
             Error::Output(_) => Code::Output,
-            Error::Protocol(
-                fux_wire::protocol::Error::Memory(_)
-                | fux_wire::protocol::Error::Wire(fux_wire::wire::Error::Memory(_)),
-            ) => Code::Memory,
             Error::Socket(_)
             | Error::Refused(_)
             | Error::Protocol(_)
@@ -116,9 +106,6 @@ impl std::fmt::Display for Error {
             }
             Error::Refused(reason) => f.write_str(reason),
             Error::Mismatch { said, .. } => said.fmt(f),
-            Error::Unfollowed { said, why } => {
-                write!(f, "{said}. Running the server's own binary instead cannot be: {why}")
-            }
             Error::Protocol(error) => error.fmt(f),
             Error::NotATerminal => write!(
                 f,
@@ -378,24 +365,13 @@ impl Requests {
                 },
             );
         }
-        // Its reply, joined from its parts as far as the OS gives memory:
-        // a refusal is this request's failure, said once the rest of the
-        // reply is read and let go, so that the next request meets its own.
+        // Its reply, joined from its parts.
         let mut parts = Joining::default();
-        let mut refused = None;
         loop {
             while let Some(frame) = self.decoder.frame()? {
                 match frame {
-                    ToCommand::Part(_) if refused.is_some() => {}
-                    ToCommand::Part(bytes) => {
-                        if let Err(error) = parts.push(&bytes) {
-                            (parts, refused) = (Joining::default(), Some(error));
-                        }
-                    }
+                    ToCommand::Part(bytes) => parts.push(&bytes),
                     ToCommand::PartsEnd => {
-                        if let Some(error) = refused {
-                            return Err(error.into());
-                        }
                         let reply = fux_wire::wire::Reader::new(parts.as_slice()).whole::<Reply>();
                         return Ok(reply.map_err(fux_wire::protocol::Error::Wire)?);
                     }
@@ -491,7 +467,9 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
             pid: socket::client_peer(&stream).ok().and_then(|peer| peer.pid),
         }),
         Err(Error::Mismatch {
-            said: Mismatch { protocol, version },
+            said: Mismatch {
+                protocol, version, ..
+            },
             server,
         }) => Ok(Probe::Server {
             protocol,
@@ -510,106 +488,6 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
         }
         Err(error) => Err(error),
     }
-}
-
-/// A command line as it runs again with another binary (`follow`): the
-/// process's arguments, its first among them, and the program it read
-/// from stdin, if it did.
-pub struct Rerun {
-    pub argv: Vec<std::ffi::OsString>,
-    pub program: Option<String>,
-}
-
-/// Runs a command line, `rerun`, again in this process, with the binary of
-/// the server that answered it in another protocol (`Error::Mismatch`),
-/// which speaks the server's: its process's `/proc/PID/exe`, which is the
-/// file it runs even once that was replaced or removed. The same
-/// arguments, environment, stdout and stderr, and the same stdin, or the
-/// program as stdin where the command line read it from there; the
-/// binary's exit status is this command's. Said on stderr first. A
-/// command follows once: the binary runs with `FUX_FOLLOWED` set to this
-/// process's ID, which an exec keeps, so a process that finds its own ID
-/// there followed already; a process it starts has another. Returns only
-/// if it cannot be, saying why.
-pub fn follow(said: Mismatch, server: Option<fuxix::process::Pid>, rerun: &Rerun) -> Error {
-    let Err(why) = followed(&said, server, rerun);
-    Error::Unfollowed { said, why }
-}
-
-fn followed(
-    said: &Mismatch,
-    server: Option<fuxix::process::Pid>,
-    rerun: &Rerun,
-) -> Result<std::convert::Infallible, String> {
-    once(
-        std::env::var_os(FOLLOWED).as_deref(),
-        &socket::follower_id().to_string(),
-    )?;
-    // A plain attach hands it no grift, and is how a server whose file was
-    // replaced is reached: that binary is only left at /proc/PID/exe.
-    if said.protocol < fux_wire::protocol::GRIFT && rerun.argv.len() > 1 {
-        return Err("it reads no grift, which this client speaks: stop it to go on".to_owned());
-    }
-    let pid = server.ok_or("the system does not say which process the server is")?;
-    let (exe, path, same) = socket::server_binary(pid)?;
-    // Run again, it would meet the same server, and follow it again.
-    if same {
-        return Err(format!(
-            "the server runs this same binary, {}",
-            path.display()
-        ));
-    }
-    let (arg0, args) = rerun.argv.split_first().ok_or("no command line to run")?;
-    let mut command = std::process::Command::new(&exe);
-    command
-        .args(args)
-        .env(FOLLOWED, std::process::id().to_string());
-    if let Some(program) = &rerun.program {
-        let file = program_file(program).map_err(|e| format!("keeping the program: {e}"))?;
-        command.stdin(file);
-    }
-    let theirs = fux_wire::protocol::Build {
-        version: &said.version,
-        protocol: said.protocol,
-    };
-    let ours = fux_wire::protocol::Build::OURS;
-    let _ = writeln!(
-        io::stderr(),
-        "fux: the server runs {theirs} and this client {ours}: running the server's own binary, {}",
-        path.display()
-    );
-    let error = socket::rerun(command, arg0);
-    Err(format!("running {}: {error}", path.display()))
-}
-
-/// The variable a followed command runs with: the ID of its process.
-const FOLLOWED: &str = "FUX_FOLLOWED";
-
-/// Whether this process, of ID `us`, may follow, `FOLLOWED` being `marked`:
-/// not once it has.
-fn once(marked: Option<&std::ffi::OsStr>, us: &str) -> Result<(), String> {
-    match marked.is_some_and(|marked| marked == us) {
-        true => Err(format!(
-            "this command already runs with another server's binary ({FOLLOWED}), and follows once"
-        )),
-        false => Ok(()),
-    }
-}
-
-/// A file holding `program`, open to read from its start, for this
-/// process alone (`fuxix::file::anonymous`).
-fn program_file(program: &str) -> io::Result<std::fs::File> {
-    use std::io::Seek;
-    let mut file = fuxix::file::anonymous("fux-program")?;
-    file.write_all(program.as_bytes())?;
-    file.rewind()?;
-    Ok(file)
-}
-
-/// Whether the server at `socket` speaks this protocol: one Hello, then
-/// nothing; `Error::Mismatch` where it does not.
-pub fn greet(socket: &SocketPath) -> Result<(), Error> {
-    connect(socket, Role::Command).map(drop)
 }
 
 /// Whether a server answers on `socket` (`socket::owned`).
@@ -641,9 +519,8 @@ pub fn start_server(
         socket.path().as_os_str(),
         std::ffi::OsStr::new(&entries),
     ];
-    // A follow's mark is this command's, not its panes' (`follow`).
-    let mut child = socket::start_server(&exe, &args, socket, output, FOLLOWED)
-        .map_err(failed("starting a server"))?;
+    let mut child =
+        socket::start_server(&exe, &args, socket, output).map_err(failed("starting a server"))?;
     let mut said = Vec::new();
     let mut notices = Vec::new();
     if let Some(stdout) = child.output() {
@@ -2078,42 +1955,6 @@ mod tests {
         Ok(())
     }
 
-    /// A client refused memory while it joins a reply's parts fails that
-    /// request, with the out-of-memory code: it aborted. Given the memory,
-    /// it reads the same reply.
-    #[cfg(all(unix, feature = "checks"))]
-    #[test]
-    fn refused_memory_joining_a_reply_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
-        let (mine, mut server) = std::os::unix::net::UnixStream::pair()?;
-        let reply: Reply = fux_wire::protocol::Body::Empty.into();
-        let mut answer = fux_vt::bytes::ByteQueue::default();
-        fux_wire::protocol::split_into(
-            &fux_wire::wire::encode(&reply),
-            ToCommand::Part,
-            &mut answer,
-        );
-        answer.push_with(|frames| ToCommand::PartsEnd.encode_into(frames));
-        // Two answers, each read by the request it is met with.
-        server.write_all(answer.as_slice())?;
-        server.write_all(answer.as_slice())?;
-        let asked = Asked {
-            after: None,
-            request: fux_wire::command::Command::Inspect {
-                scope: fux_wire::inspect::Scope::All,
-                projection: fux_wire::inspect::Projection::Facts,
-            }
-            .into(),
-            context: Context::default(),
-        };
-        let mut requests = Requests::over(mine);
-        fux_vt::refuse_next(1);
-        let refused = requests.ask(&asked, None);
-        fux_vt::refuse_next(0);
-        assert_eq!(refused.err().map(|e| e.code()), Some(Code::Memory));
-        assert_eq!(requests.ask(&asked, None)?, reply);
-        Ok(())
-    }
-
     /// A socket no server is at, absolute on each OS.
     const NOWHERE: &str = if cfg!(windows) {
         r"C:\nowhere\fux\s.sock"
@@ -2227,7 +2068,7 @@ mod tests {
         let effects = admitted(
             &mut keyboard,
             Job::from(
-                "(sequence! (define! variables-2 (context ())) (define! value-3 \"terminal-clipboard\") (define! value-4 (set value-3 #false)) (define! value-5 \"styles\") (define! value-8 \"bar\") (define! value-9 (list value-8 7 8)) (define! value-10 (list value-9)) (define! value-11 (set value-5 value-10)) (define! value-12 \"bar-slots\") (define! value-15 \"inert\") (define! value-16 (list 0 value-15)) (define! value-17 (list value-16)) (define! value-18 (set value-12 value-17)) (define! value-19 \"show-column\") (define! value-20 (set value-19 #false)) (define! value-21 (pane 1)) (define! value-22 \"Enter\") (define! value-23 (key value-21 value-22)) (define! value-24 (send-keys value-23)) #inert)",
+                "(sequence! (define! variables-2 (context ())) (define! value-3 \"terminal-clipboard\") (define! value-4 (set value-3 #false)) (define! value-5 \"styles\") (define! value-8 \"bar\") (define! value-9 (list value-8 7 8)) (define! value-10 (list value-9)) (define! value-11 (set value-5 value-10)) (define! value-18 (set \"bar\" (list \"top\" (list (list \"text\" \"inert\")) () #false))) (define! value-19 \"show-column\") (define! value-20 (set value-19 #false)) (define! value-21 (pane 1)) (define! value-22 \"Enter\") (define! value-23 (key value-21 value-22)) (define! value-24 (send-keys value-23)) #inert)",
             ),
         );
         let [Dispatch::Run(job)] = effects.as_slice() else {
@@ -2269,7 +2110,10 @@ mod tests {
         };
         assert!(!p.terminal_clipboard && !p.show_column);
         assert_eq!(p.styles.bar.foreground, fux_vt::Color::Idx(7));
-        assert_eq!(p.slots.text(0), Some("inert"));
+        assert_eq!(
+            p.bar.left(),
+            [fux_wire::presentation::Field::Text("inert".to_owned())]
+        );
         assert_ne!(fuxix::poll::poll(&mut requests, Some(ANSWER))?, 0);
         let (mut peer, _) = listener.accept()?;
         let mut decoder = Frames::default();
@@ -2986,45 +2830,6 @@ mod tests {
     #[cfg(unix)]
     fn write(peer: &mut Client, frame: &Greeting) {
         let _ = peer.write_all(&frame.encode());
-    }
-
-    /// A process follows once: not one that finds its own ID marked, which
-    /// an exec kept; a process it started, of another ID, still may.
-    #[test]
-    fn a_command_follows_once() {
-        let marked = std::ffi::OsStr::new("42");
-        assert!(once(None, "42").is_ok());
-        assert!(once(Some(marked), "43").is_ok());
-        let again = once(Some(marked), "42").err().unwrap_or_default();
-        assert!(again.contains("follows once"), "{again}");
-    }
-
-    /// A server whose process is not known, or which runs this same
-    /// binary, is not followed: it is said why, and nothing runs.
-    // Unix alone: /proc.
-    #[cfg(unix)]
-    #[test]
-    fn a_server_that_cannot_be_followed_is_refused() {
-        let said = Mismatch {
-            protocol: PROTOCOL + 1,
-            version: "0".into(),
-        };
-        let rerun = Rerun {
-            argv: vec!["fux".into(), "ls".into()],
-            program: None,
-        };
-        let unknown = followed(&said, None, &rerun).err();
-        let why = "the system does not say which process the server is";
-        assert_eq!(unknown.as_deref(), Some(why));
-        if cfg!(target_os = "macos") {
-            return;
-        }
-        let us = fuxix::process::Pid::from_raw(std::process::id().cast_signed());
-        let same = followed(&said, us, &rerun).err().unwrap_or_default();
-        assert!(
-            same.starts_with("the server runs this same binary, "),
-            "{same}"
-        );
     }
 
     /// A server that refuses says why; one that says nothing times out;

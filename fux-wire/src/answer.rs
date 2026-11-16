@@ -488,9 +488,7 @@ impl Captured {
 
     pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         // All flags and three RGB colours fit in the declared scratch space.
-        let mut sgr = Vec::new();
-        sgr.try_reserve_exact(self.text_scratch())
-            .map_err(|_| std::fmt::Error)?;
+        let mut sgr = Vec::with_capacity(self.text_scratch());
         let mut rows = self.changed_rows.iter().flatten();
         for (i, line) in self.lines.iter().enumerate() {
             if i > 0 {

@@ -106,22 +106,6 @@ fn events_report_titles_icons_bells_and_clipboard_sets() -> Result {
     Ok(())
 }
 
-/// The screen keeps the window title OSC 0 or OSC 2 set last, as
-/// `Event::Title` tells it: OSC 1 names only the icon, and a title past
-/// the limit is kept cut.
-#[test]
-fn the_screen_keeps_the_title_set_last() -> Result {
-    let mut parser = Parser::with_options(Size::new(2, 20)?, 0, EVENTS)?;
-    let title = |p: &Parser| (p.screen().title().bytes.to_vec(), p.screen().title().cut);
-    assert_eq!(title(&parser), (b"".to_vec(), false));
-    parser.process_into(b"\x1b]0;both\x07\x1b]2;title\x1b\\\x1b]1;icon\x07", &mut ())?;
-    assert_eq!(title(&parser), (b"title".to_vec(), false));
-    let long = [&b"\x1b]2;"[..], &vec![b'x'; OSC_PAYLOAD_LIMIT], b"\x07"].concat();
-    parser.process_into(&long, &mut ())?;
-    assert_eq!(title(&parser), (vec![b'x'; OSC_PAYLOAD_LIMIT - 2], true));
-    Ok(())
-}
-
 #[test]
 fn osc_payloads_are_bounded_and_cancellable() -> Result {
     let mut parser = Parser::with_options(Size::new(4, 20)?, 0, EVENTS)?;
@@ -331,10 +315,10 @@ fn process_until_stop_stops_at_frame_boundaries() -> Result {
             let mut sink = Record::default();
             p.process(setup.as_bytes())?;
             let (head, tail) = sequence.as_bytes().split_at_checked(split).ok_or("split")?;
-            assert_eq!(p.process_until_stop(head, &mut sink)?, None);
+            assert_eq!(p.process_until_stop(head, &mut sink), None);
             let rest = [tail, b"\x1b]2;hello h\x07tail"].concat();
             assert_eq!(
-                p.process_until_stop(&rest, &mut sink)?,
+                p.process_until_stop(&rest, &mut sink),
                 Some((tail.len(), stop))
             );
             assert_eq!(
@@ -351,7 +335,7 @@ fn process_until_stop_stops_at_frame_boundaries() -> Result {
         let mut p = Parser::new(Size::new(2, 20)?, 0)?;
         p.process(setup.as_bytes())?;
         assert_eq!(
-            p.process_until_stop(input.as_bytes(), &mut Record::default())?,
+            p.process_until_stop(input.as_bytes(), &mut Record::default()),
             None
         );
     }
@@ -368,7 +352,7 @@ fn process_all_reads_past_every_stop() -> Result {
     bytes.extend_from_slice(b"\x1b[4l\x1b[?2026h\ry\x1b[?2026lz");
     let mut p = Parser::new(Size::new(1, 4096)?, 0)?;
     assert_eq!(
-        p.clone().process_until_stop(&bytes, &mut ())?.map(|s| s.1),
+        p.clone().process_until_stop(&bytes, &mut ()).map(|s| s.1),
         Some(Stop::Budget)
     );
     p.process_into(&bytes, &mut ())?;

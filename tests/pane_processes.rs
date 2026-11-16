@@ -10,14 +10,11 @@ use support::*;
 
 /// A new pane, through one grift program with each executable argument quoted.
 fn program(builder: &str, argv: &[&str]) -> String {
-    let Some((first, rest)) = argv.split_first() else {
+    if argv.is_empty() {
         return builder.to_owned();
-    };
-    let mut expression = format!("(program {builder} {})", fux::script::quoted(first));
-    for argument in rest {
-        expression = format!("(argument {expression} {})", fux::script::quoted(argument));
     }
-    expression
+    let words: Vec<String> = argv.iter().map(|word| fux::script::quoted(word)).collect();
+    format!("(program {builder} (list {}))", words.join(" "))
 }
 fn pane(server: &Server, ws: &str, argv: &[&str]) -> Result<String, String> {
     let builder = format!("(size (in (options) {}) 80 24)", fux::script::quoted(ws));
@@ -61,6 +58,40 @@ fn processes() -> Vec<(i32, i32, String)> {
         .collect()
 }
 
+/// How many children of `parent` have ended and are not reaped, as `ps`
+/// says.
+fn zombies(parent: i32) -> usize {
+    let listed = std::process::Command::new("ps")
+        .args(["-A", "-o", "ppid=,stat="])
+        .output();
+    let Ok(out) = listed else {
+        return 0;
+    };
+    (String::from_utf8_lossy(&out.stdout).lines())
+        .filter(|line| {
+            let mut words = line.split_whitespace();
+            words.next().and_then(|p| p.parse().ok()) == Some(parent)
+                && words.next().is_some_and(|stat| stat.starts_with('Z'))
+        })
+        .count()
+}
+
+/// Each connection's own process is reaped once it ends: commands leave
+/// no zombie under their server (on macOS the server reaped none, and
+/// kept one for every command till it ended).
+#[test]
+fn commands_leave_no_zombie_under_their_server() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    for _ in 0..20 {
+        server.ok(&["(status)"])?;
+    }
+    eventually(
+        "its connections' processes reaped",
+        || Ok(zombies(pid) == 0),
+    )
+}
+
 /// A process's parent, as `ps` says.
 fn parent(pid: i32) -> Result<i32, String> {
     (processes().into_iter())
@@ -90,20 +121,11 @@ fn children(pid: i32, word: &str) -> Vec<i32> {
         .collect()
 }
 
-/// The processes of the server `pid`'s connections that have a client:
-/// those it took itself (`__conn taken`), and those that took one at its
-/// socket, whose stdout then points elsewhere; not the one waiting for the
-/// next, which holds the socket on its stdout (`Server::spare`).
+/// The processes of the server `pid`'s connections, each of which has a
+/// client.
 #[cfg(target_os = "linux")]
 fn connections(pid: i32) -> Vec<i32> {
-    let taken = children(pid, "taken");
-    (children(pid, "__conn").into_iter())
-        .filter(|conn| {
-            taken.contains(conn)
-                || std::fs::read_link(format!("/proc/{conn}/fd/1"))
-                    .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
-        })
-        .collect()
+    children(pid, "__conn")
 }
 
 /// The server's process.
@@ -456,77 +478,6 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
 
 /// Stops a server however its test ends: one that took a run back is no
 /// child of the test's.
-/// 6b. A crashed server's run is taken back though the connection's
-///     process it started for its next client, which holds its socket till
-///     it sees its server go, is stopped meanwhile: a socket whose server
-///     is gone is no server's (`socket::owned`), with room in its backlog
-///     or none.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_crashed_servers_run_is_taken_back_while_its_waiting_connection_is_stopped() -> Outcome {
-    taken_back_with_its_spare_stopped(false)
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_crashed_servers_run_is_taken_back_with_its_stopped_connections_backlog_full() -> Outcome {
-    taken_back_with_its_spare_stopped(true)
-}
-
-#[cfg(target_os = "linux")]
-fn taken_back_with_its_spare_stopped(full: bool) -> Outcome {
-    let started = Server::start("")?;
-    let _stop = Stop(&started);
-    let server = &started;
-    let shell = pane(server, "work", &["sh"])?;
-    server.type_line(&shell, "echo MARK-BEFORE")?;
-    server.shows(&shell, "MARK-BEFORE")?;
-    let before = layout(server)?;
-    let pid = server_pid(server)?;
-    let waiting: Vec<i32> = (children(pid, "__conn").into_iter())
-        .filter(|conn| !connections(pid).contains(conn))
-        .collect();
-    let [spare] = waiting[..] else {
-        return Err(format!("the connection waiting for a client: {waiting:?}"));
-    };
-    signal(spare, Signal::Stop);
-    signal(pid, Signal::Kill);
-    // Clients come while no server serves, till the socket takes no more.
-    let mut queued = Vec::new();
-    while full && queued.len() < 100_000 {
-        let fd = fuxix::socket::stream().map_err(e)?;
-        fuxix::io::set_nonblocking(&fd, true).map_err(e)?;
-        match fuxix::socket::connect(&fd, &server.socket) {
-            Ok(()) => queued.push(fd),
-            Err(fuxix::Errno::AGAIN) => break,
-            Err(error) => return Err(format!("queueing a client: {error}")),
-        }
-    }
-    // Asked with a bound: a client of the old socket would wait for good.
-    let taken = server.ok(&["(sequence! (start) #inert)"]).and_then(|_| {
-        let status = within(server, 30, &["(status)"])?;
-        match status.status {
-            0 => layout(server),
-            _ => Err(format!("no server took the run back: {}", status.stderr)),
-        }
-    });
-    let still = processes().into_iter().any(|(p, ..)| p == spare)
-        && std::fs::read_to_string(format!("/proc/{spare}/stat")).is_ok_and(|stat| {
-            stat.rsplit_once(") ")
-                .is_some_and(|(_, r)| r.starts_with('T'))
-        });
-    signal(spare, Signal::Cont);
-    drop(queued);
-    assert_eq!(taken?, before);
-    assert!(still, "the spare ran meanwhile");
-    assert!(
-        server
-            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(&shell))])?
-            .contains("MARK-BEFORE")
-    );
-    eventually("the old connection's process gone", || Ok(!alive(spare)))
-}
-
 struct Stop<'a>(&'a Server);
 
 impl Drop for Stop<'_> {
@@ -927,124 +878,83 @@ fn a_close_read_after_its_server_went_ends_the_pane() -> Outcome {
     })
 }
 
-/// 15. A change whose record can't be written fails, and is not made: the
-///     tree a crash takes back is the one anyone saw (D-124 (3)).
+/// 15. A change made while the run's record can't be written stands, and
+///     its asker is told once that the record is behind: a tab killed so
+///     is gone with its panes, every listing still works and every pane
+///     listed answers; the next change that can be written writes them
+///     all, and a crash then takes back the tree as it was changed.
 #[test]
-fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
+fn a_change_whose_record_cannot_be_written_stands_and_is_said_once() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let kept_pane = pane(server, "a", &["sh"])?;
+    let killed = pane(server, "b", &["sh"])?;
+    let _reap = reap_run(server)?;
+    // Where its server writes a record first, before it renames it.
+    let blocked = kept(server).join(format!("run.new.{}", server_pid(server)?));
+    std::fs::create_dir(&blocked).map_err(e)?;
+    let kill = server.fux(&[&format!(
+        "(sequence! (kill (tab (pane {}))) #inert)",
+        fux::script::quoted(&killed)
+    )])?;
+    let rename = server.fux(&[&format!(
+        "(sequence! (rename (pane {}) \"one\") #inert)",
+        fux::script::quoted(&kept_pane)
+    )])?;
+    std::fs::remove_dir(&blocked).map_err(e)?;
+    // Whatever the kill answered, the session is whole: it lists, and a
+    // pane it lists answers.
+    let listed = server.ok(&["(listing (list-session))"])?;
+    assert!(listed.contains(&kept_pane), "{listed}");
+    server.ok(&[&format!(
+        "(sequence! (capture (pane {})) #inert)",
+        fux::script::quoted(&kept_pane)
+    )])?;
+    // The kill and the rename were made, and the first said the record
+    // fell behind; the second said nothing more.
+    assert_eq!(kill.status, 0, "{}", kill.stderr);
+    assert!(
+        kill.stderr.contains("could not be written"),
+        "{}",
+        kill.stderr
+    );
+    assert_eq!((rename.status, rename.stderr.as_str()), (0, ""));
+    assert!(!listed.contains(&format!("{killed} ")), "{listed}");
+    // Written by the next change: a crash takes back what was changed.
+    server.ok(&[&format!(
+        "(sequence! (rename (pane {}) \"two\") #inert)",
+        fux::script::quoted(&kept_pane)
+    )])?;
+    crash(server)?;
+    server.ok(&["(sequence! (start) #inert)"])?;
+    let listing = server.ok(&["(listing (list-session))"])?;
+    assert!(
+        listing.contains(" two ") && !listing.contains(&format!("{killed} ")),
+        "{listing}"
+    );
+    Ok(())
+}
+
+/// A resize asked while the run's record can't be written reaches its
+/// pane: none is remembered as sent that was not.
+#[test]
+fn a_resize_asked_while_the_record_cannot_be_written_reaches_its_pane() -> Outcome {
     let started = Server::start("")?;
     let _stop = Stop(&started);
     let server = &started;
     let shell = pane(server, "a", &["sh"])?;
-    server.ok(&[&format!(
-        "(sequence! (rename (pane {}) \"one\") #inert)",
+    let resize = format!(
+        "(sequence! (resize (tab (pane {})) 90 24) #inert)",
         fux::script::quoted(&shell)
-    )])?;
-    // Where its server writes a record first, before it renames it.
+    );
     let blocked = kept(server).join(format!("run.new.{}", server_pid(server)?));
     std::fs::create_dir(&blocked).map_err(e)?;
-    let refused = server.fux(&[&format!(
-        "(sequence! (rename (pane {}) \"two\") #inert)",
-        fux::script::quoted(&shell)
-    )])?;
-    assert_ne!(refused.status, 0);
-    assert!(
-        refused.stderr.contains("could not be written"),
-        "{}",
-        refused.stderr
-    );
-    let listing = server.ok(&["(listing (list-session))"])?;
-    assert!(
-        listing.contains(" one ") && !listing.contains(" two "),
-        "{listing}"
-    );
-    // A close is undone whole: its pane stays, and takes input.
-    let refused = server.fux(&[&format!(
-        "(sequence! (kill (pane {})) #inert)",
-        fux::script::quoted(&shell)
-    )])?;
-    assert_ne!(refused.status, 0, "{}", refused.stdout);
-    assert!(
-        server
-            .ok(&["(listing (list-session))"])?
-            .contains(&shell.to_string())
-    );
+    let _ = server.fux(&[&resize])?;
     std::fs::remove_dir(&blocked).map_err(e)?;
-    server.type_line(&shell, "echo still-here")?;
-    server.shows(&shell, "still-here")?;
-    signal(server_pid(server)?, Signal::Kill);
-    server.ok(&["(sequence! (start) #inert)"])?;
-    let listing = server.ok(&["(listing (list-session))"])?;
-    assert!(listing.contains(" one "), "{listing}");
-    Ok(())
-}
-
-/// The numbers of the name files a run keeps (`record::name_file`): each
-/// its server's process and which of its names it is.
-fn name_files(server: &Server) -> Vec<String> {
-    let entries = std::fs::read_dir(kept(server)).into_iter().flatten();
-    let mut names: Vec<String> = (entries.flatten())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter_map(|name| name.strip_prefix("name.").map(str::to_owned))
-        .filter(|number| !number.ends_with(".new"))
-        .collect();
-    names.sort();
-    names
-}
-
-/// 15b. A server killed between writing a name and writing the structure
-///     that names it leaves a run the next start takes back, with the
-///     names anyone saw; the name's file, which no structure names, goes
-///     with the first record the new server writes (D-175). The moment is held, not raced: a structure is written to
-///     `run.new.PID` first, and a FIFO put there holds the server at its
-///     opening, the name's file written, till it is killed.
-#[cfg(unix)]
-#[test]
-fn a_server_killed_between_a_name_and_the_structure_is_taken_back() -> Outcome {
-    let started = Server::start("")?;
-    let _stop = Stop(&started);
-    let server = &started;
-    let pane = pane(server, "a", &["sleep", "1016"])?;
-    let _reap = reap_run(server)?;
-    let rename = |name: &str| {
-        let pane = fux::script::quoted(&pane);
-        format!("(sequence! (rename (pane {pane}) \"{name}\") #inert)")
-    };
-    server.ok(&[&rename("one")])?;
-    let recorded = name_files(server);
-    // Found while it answers: held at the FIFO, it answers no one.
-    let serving = serving(server)?;
-    let held = kept(server).join(format!("run.new.{serving}"));
-    let made = std::process::Command::new("mkfifo").arg(&held).status();
-    assert!(
-        made.map_err(|error| format!("mkfifo: {error}"))?.success(),
-        "mkfifo {}",
-        held.display()
-    );
-    let mut renaming = server.spawn(&[&rename("two")])?;
-    let written = eventually("the new name's file written", || {
-        Ok(name_files(server).len() > recorded.len())
-    });
-    signal(serving, Signal::Kill);
-    let crashed = written.and(eventually("the server gone", || Ok(!alive(serving))));
-    let _ = end(&mut renaming);
-    std::fs::remove_file(&held).map_err(e)?;
-    crashed?;
-    let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
-    assert_eq!(taken.status, 0, "{}", taken.stderr);
-    let listing = server.ok(&["(listing (list-session))"])?;
-    assert!(
-        listing.contains(" one ") && !listing.contains(" two "),
-        "{listing}"
-    );
-    // And it is the run still, and this server's: its pane takes a name,
-    // and with that record the file no structure names goes.
-    server.ok(&[&rename("three")])?;
-    assert!(
-        server
-            .ok(&["(listing (list-session))"])?
-            .contains(" three ")
-    );
-    assert_eq!(name_files(server).len(), recorded.len(), "a name, a file");
+    server.ok(&[&resize])?;
+    server.type_line(&shell, "echo size=$(stty size)")?;
+    server.shows(&shell, "size=24 90")?;
     Ok(())
 }
 
@@ -1069,8 +979,9 @@ fn a_pane_is_recorded_before_its_program_starts() -> Outcome {
         "a pane's process started"
     );
     std::fs::remove_dir(&blocked).map_err(e)?;
-    // The next pane's socket, a process listening at it.
-    let next = kept(&server).join("2");
+    // The next pane's socket, a process listening at it: the refused pane
+    // took id 2, never given again.
+    let next = kept(&server).join("3");
     let listener = std::os::unix::net::UnixListener::bind(&next).map_err(e)?;
     let refused = server.fux(&[format!(
         "(new-tab {})",
@@ -1408,22 +1319,8 @@ fn limit(pid: i32, which: &str, soft: u64) -> Outcome {
     }
 }
 
-/// The connection's process that waits at `pid`'s socket for the next
-/// client (`Server::spare`).
-#[cfg(target_os = "linux")]
-fn spare(pid: i32) -> Result<i32, String> {
-    let mut found = None;
-    eventually("a connection waiting for a client", || {
-        let taken = connections(pid);
-        found = (children(pid, "__conn").into_iter()).find(|conn| !taken.contains(conn));
-        Ok(found.is_some())
-    })?;
-    found.ok_or_else(|| "a connection waiting for a client".into())
-}
-
 /// Three clients, one after another, of a server that has met a limit
-/// (`ulimit`): the one its waiting connection's process takes may be
-/// served; each one refused is told `cause`, and two are, the second by a
+/// (`ulimit`): each one refused is told `cause`, and two are, the second by a
 /// server that was ready to tell again.
 #[cfg(target_os = "linux")]
 fn refused_naming(server: &Server, cause: &str) -> Outcome {
@@ -1448,7 +1345,6 @@ fn refused_naming(server: &Server, cause: &str) -> Outcome {
 fn a_server_out_of_descriptors_tells_a_client_so() -> Outcome {
     let server = Server::start("")?;
     let pid = server_pid(&server)?;
-    spare(pid)?;
     no_descriptor_free(pid)?;
     refused_naming(&server, "Too many open files")
 }
@@ -1466,28 +1362,6 @@ fn no_descriptor_free(pid: i32) -> Outcome {
     limit(pid, "nofile", free)
 }
 
-/// So is a client its waiting connection's process would have taken, had
-/// it not been stopped: left to that process once, it is told by the
-/// server, which does not wait on it for good.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_server_out_of_descriptors_tells_a_client_its_stopped_connection_left() -> Outcome {
-    let server = Server::start("")?;
-    let pid = server_pid(&server)?;
-    let stopped = spare(pid)?;
-    signal(stopped, Signal::Stop);
-    no_descriptor_free(pid)?;
-    let asked = within(&server, 30, &["(length (panes (all)))"]);
-    signal(stopped, Signal::Cont);
-    let asked = asked?;
-    assert!(
-        asked.stderr.contains("Too many open files"),
-        "{}",
-        asked.stderr
-    );
-    Ok(())
-}
-
 /// A server that can start no process tells a client it can give none so,
 /// which fails at once naming the cause, not with a connection reset.
 #[cfg(target_os = "linux")]
@@ -1499,30 +1373,14 @@ fn a_server_out_of_processes_tells_a_client_so() -> Outcome {
     }
     let server = Server::start("")?;
     let pid = server_pid(&server)?;
-    spare(pid)?;
     limit(pid, "nproc", 1)?;
     refused_naming(&server, "starting a connection's process")
 }
 
-/// A connection's process that waits at the socket and is stopped holds up
-/// no client: the server takes there what it has not taken.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_stopped_waiting_connection_holds_up_no_client() -> Outcome {
-    let server = Server::start("")?;
-    let stopped = spare(server_pid(&server)?)?;
-    signal(stopped, Signal::Stop);
-    let asked = within(&server, 30, &["(length (panes (all)))"]);
-    signal(stopped, Signal::Cont);
-    let asked = asked?;
-    assert_eq!(asked.status, 0, "{}", asked.stderr);
-    Ok(())
-}
-
 /// A write past a file-size limit (`ulimit -f`) fails as a write, where it
 /// is told, and ends no process of fux: a tree change whose record can't be
-/// written so is refused, and the server lives; a client whose output
-/// can't be says so.
+/// written so is made all the same, the write logged, and the server
+/// lives; a client whose output can't be says so.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_write_past_the_file_size_limit_is_refused_not_fatal() -> Outcome {
@@ -1530,18 +1388,12 @@ fn a_write_past_the_file_size_limit_is_refused_not_fatal() -> Outcome {
     let pid = server_pid(&server)?;
     let shell = pane(&server, "a", &["sh"])?;
     limit(pid, "fsize", 16)?;
-    let refused = server.fux(&[&format!(
+    server.ok(&[&format!(
         "(sequence! (rename (pane {}) \"renamed\") #inert)",
         fux::script::quoted(&shell)
     )])?;
-    assert_ne!(refused.status, 0);
-    assert!(
-        refused.stderr.contains("could not be written"),
-        "{}",
-        refused.stderr
-    );
     let listing = server.ok(&["(listing (list-session))"])?;
-    assert!(!listing.contains(" renamed "), "{listing}");
+    assert!(listing.contains(" renamed "), "{listing}");
     assert!(alive(pid), "the server");
     let saved = server.dir.join("saved");
     let dump = (server.command("/bin/sh"))
@@ -1648,6 +1500,56 @@ fn capturing(server: &Server, pane: &str) -> Result<std::process::Child, String>
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(e)
+}
+
+/// One that reaches a pane, asks who it is and reads no answer holds the
+/// pane up no more than its own answer: an answer larger than its socket
+/// takes used to be written till it all went, and the pane did nothing
+/// else meanwhile, for its server or its program.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_peer_that_reads_no_answer_does_not_stop_the_pane() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    // Its launch is in its answer: more than a socket's buffer holds, in
+    // two arguments, each under what the system takes as one.
+    let piece: String = std::iter::repeat_n('x', 64).collect();
+    let long = format!("(apply join (map (lambda! (#ignore) \"{piece}\") (range 0 1875)))");
+    let id = id(&server.ok(&[format!(
+        "(sequence! (define! long {long}) (new-tab (program (size (in (options) \"w\") 80 24) (list \"sh\" \"-c\" \"sleep 1030\" long long))))"
+    )])?);
+    let _reap = reap_run(server)?;
+    let stream = std::os::unix::net::UnixStream::connect(pane_socket(server, &id)).map_err(e)?;
+    let mut silent = fux_server::link::End::new(stream).map_err(e)?;
+    silent.send(&fux_server::link::ToPane::Who);
+    silent.flush_all().map_err(e)?;
+    let asked = format!("(capture (pane {}))", fux::script::quoted(&id));
+    let answered = within(server, 10, &[&asked])?;
+    assert_eq!(answered.status, 0, "{}", answered.stderr);
+    drop(silent);
+    Ok(())
+}
+
+/// A pane whose socket's file is gone ends when it loses its server: no
+/// server could find it again, and it and its program would run on with
+/// no way to reach them. Another pane of the run is taken back.
+#[test]
+fn a_pane_whose_socket_file_is_gone_ends_when_its_server_does() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let kept_pane = pane(server, "w", &["sleep", "1020"])?;
+    let lost = pane(server, "w", &["sleep", "1021"])?;
+    let _reap = reap_run(server)?;
+    let (own, program) = (own_process(server, &lost)?, program_pid(server, &lost)?);
+    std::fs::remove_file(kept(server).join(lost.trim_start_matches('%'))).map_err(e)?;
+    crash(server)?;
+    eventually("the pane no server can find, and its program, gone", || {
+        Ok(!alive(own) && !alive(program))
+    })?;
+    server.ok(&["(sequence! (start) #inert)"])?;
+    capture(server, &kept_pane).map(drop)
 }
 
 /// 26. A pane's process stopped as its server crashes holds up neither the
@@ -1838,11 +1740,9 @@ fn a_run_a_live_server_holds_is_refused_whatever_was_removed_beside_it() -> Outc
 
 /// 29b. A run is its server's while that server lives, though it is
 ///     stopped and a pane of it gone meanwhile: a `start` then is refused
-///     too, and neither writes a record nor removes a name's file (D-180;
-///     a second server once took such a run, recorded the pane gone and
-///     wrote names of its own beside the first's, D-175).
+///     too, and writes no record (D-180).
 #[test]
-fn a_stopped_servers_run_is_refused_with_its_record_and_names_as_they_were() -> Outcome {
+fn a_stopped_servers_run_is_refused_with_its_record_as_it_was() -> Outcome {
     let server = Server::start("")?;
     let stays = pane(&server, "w", &["sleep", "1017"])?;
     let goes = pane(&server, "w", &["sleep", "1018"])?;
@@ -1852,8 +1752,6 @@ fn a_stopped_servers_run_is_refused_with_its_record_and_names_as_they_were() -> 
         fux::script::quoted(&stays)
     )])?;
     let (own, pid) = (own_process(&server, &goes)?, server_pid(&server)?);
-    let names = name_files(&server);
-    assert!(!names.is_empty(), "{names:?}");
     // Stopped: what follows it does not see, nor record.
     signal(pid, Signal::Stop);
     let _resume = Resumed(pid);
@@ -1865,7 +1763,6 @@ fn a_stopped_servers_run_is_refused_with_its_record_and_names_as_they_were() -> 
     let said = refused_start(&server)?;
     assert!(said.contains("another fux server"), "{said}");
     assert_eq!(std::fs::read(&record).map_err(e)?, before, "its record");
-    assert_eq!(name_files(&server), names, "its names' files");
     signal(pid, Signal::Cont);
     signal(pid, Signal::Term);
     eventually("the first server gone", || Ok(!alive(pid)))
@@ -2605,66 +2502,6 @@ fn a_program_that_writes_ten_megabytes_before_it_reads_gets_all_it_was_sent() ->
         capture(&server, &writer)?.stdout.contains("WROTE-ALL"),
         "its output was not read to its end"
     );
-    Ok(())
-}
-
-/// 29. A pane's process given no more memory once it is warm, every
-///     allocation refused (its address space held to what it has): its
-///     program floods it with output while it is sent keys over and over,
-///     each on a link of its own, opened and closed, and clients attach
-///     and leave; it lives, the same process, and once
-///     it is given memory again it serves, its flood read to its end
-///     (owner answer 2: a pane's process never ends for memory; it aborted
-///     on the first keys it could not queue). What is asked of it
-///     meanwhile is refused or waits: each is given two seconds and let
-///     go, as its asker would. Not yet so, and so not asked here: a pane
-///     refused memory as it makes a capture still ends, and one refused it
-///     as it draws its screen for a client can (D-186): this run's clients
-///     show a screen small enough to be drawn in what the pane has.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pane_process_refused_all_memory_lives_through_floods_and_side_links() -> Outcome {
-    let server = Server::start("")?;
-    let go = server.dir.join("go");
-    let script = format!(
-        "stty raw -echo; printf WARM-%s NOW; until [ -e {go} ]; do sleep 0.05; done; \
-         (cat >/dev/null) & yes flood-of-output | head -c 8000000; printf DONE-%s ALL; sleep 1000",
-        go = go.display()
-    );
-    let flood = pane(&server, "a", &["sh", "-c", &script])?;
-    let own = own_process(&server, &flood)?;
-    // Warm: shown to a client, captured, typed at.
-    let mut client = server.attach_to(24, 80, "a")?;
-    client.wait_for("WARM-NOW")?;
-    server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(&flood))])?;
-    drop(client);
-    let status = std::fs::read_to_string(format!("/proc/{own}/status")).map_err(e)?;
-    let size: u64 = (status.lines())
-        .find_map(|line| line.strip_prefix("VmSize:"))
-        .and_then(|kib| kib.trim().trim_end_matches("kB").trim().parse().ok())
-        .ok_or("its size")?;
-    // Not a byte more than it has.
-    limit(own, "as", size.saturating_mul(1024))?;
-    std::fs::write(&go, b"").map_err(e)?;
-    let typed: String = std::iter::repeat_n('k', 4000).collect();
-    let keys = format!(
-        "(send-keys (text (pane {}) {}))",
-        fux::script::quoted(&flood),
-        fux::script::quoted(&typed)
-    );
-    for _ in 0..12 {
-        let _ = within(&server, 2, &[&keys])?;
-        if let Ok(mut client) = server.attach_to(24, 80, "a") {
-            let _ = client.pump();
-        }
-        assert!(alive(own), "its pane's process ended, refused memory");
-    }
-    limit(own, "as", u64::MAX)?;
-    eventually("its flood read to its end", || {
-        Ok(capture(&server, &flood)?.stdout.contains("DONE-ALL"))
-    })?;
-    assert!(alive(own));
-    assert_eq!(own_process(&server, &flood)?, own);
     Ok(())
 }
 

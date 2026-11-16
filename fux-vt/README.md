@@ -116,7 +116,7 @@ by default; `()` is the sink that discards them all.
 
 | Feature | Behaviour | Tests |
 | --- | --- | --- |
-| `Events` | OSC 0 → `IconName`, `Title`; OSC 1 → `IconName`; OSC 2 → `Title`, the last title kept as `Screen::title`; OSC 52 `Pc;Pd` → `Clipboard { selection, data }` unless `Pd` is `?`; OSC 10–19 → `ColorQuery { number, bel }` for each `?`, each parameter being the next colour; BEL in ground, escape or CSI state → `Bell`; with `PromptMarks`, OSC 133 `D`, or `N`, ending a command that ran → `CommandEnded(status)`. Payloads are raw bytes (`Kept`). An OSC over `OSC_PAYLOAD_LIMIT` (64 KiB) gives the event its start makes, `cut` set, and nothing past the limit is buffered; the palette's, OSC 10–19's and a link's (OSC 8) are none. | `opt_in::events_*`, `opt_in::osc_payloads_*` |
+| `Events` | OSC 0 → `IconName`, `Title`; OSC 1 → `IconName`; OSC 2 → `Title`; OSC 52 `Pc;Pd` → `Clipboard { selection, data }` unless `Pd` is `?`; OSC 10–19 → `ColorQuery { number, bel }` for each `?`, each parameter being the next colour; BEL in ground, escape or CSI state → `Bell`; with `PromptMarks`, OSC 133 `D`, or `N`, ending a command that ran → `CommandEnded(status)`. Payloads are raw bytes (`Kept`). An OSC over `OSC_PAYLOAD_LIMIT` (64 KiB) gives the event its start makes, `cut` set, and nothing past the limit is buffered; the palette's, OSC 10–19's and a link's (OSC 8) are none. | `opt_in::events_*`, `opt_in::osc_payloads_*` |
 | `ExtendedReplies` | DECXCPR `CSI ? 6 n` → `CSI ? row ; col R`, as DSR 6; DA2 `CSI > c` → `CSI > 1 ; 10 ; 0 c`; DECRQM as `ModeReports`. The DSRs of DEC's other devices, which fux-vt has none of (DEC STD 070, DSR, and its extensions): `?15` → `?13` (no printer), `?25` → `?23` (no UDK extension, where xterm says unlocked), `?26` → `?27;0` (keyboard language unknown, as a VT220 reports it), `?55` → `?53` (no locator), `?56` → `?57;0`, `?62` → `CSI 0 * {` (no macro space), `?63;Pid` → `DCS Pid ! ~ 0000 ST` (no macros), `?75` → `?73` (power-up) until reported once after the screen is made or RIS, then `?70` (xterm answers 70 at once), `?85` → `?83` (no sessions). | `opt_in::extended_replies_*` |
 | `ModeReports` | DECRQM alone. `CSI ? Ps $ p` → `CSI ? Ps ; Pm $ y`: 1 set or 2 reset for 1, 4, 5, 6, 7, 9, 25, 41, 45, 47, 66, 67, 69, 80, 1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1015, 1045, 1047, 1049, 2004, 2026, 2031 (with `ColorSchemeUpdates`), 2048 (with `InBandResize`); 4 for 8, 60 (DECHCCM, DEC STD 070's VT420 table, DECRQM p. 5-194) and 1016 (no pixel is known); 3 for 2027 (`Mode::GraphemeClustering`, permanently set); 0 otherwise, each a `ModeStatus`. `CSI Ps $ p`: 1 or 2 for IRM (4) and LNM (20); 4 (permanently reset) for GATM, KAM, CRM, SRTM, ERM, VEM, BDSM, DCSM, HEM, PUM, FEAM, FETM, MATM, TTM, SATM and TSM (1 to 3, 5 to 11, 13 to 18), which have the reset state only (ECMA-48 7.1), and EBM (19), the 4th edition's, which the 5th removed (F.5.1) but DEC STD 070's VT420 table answers so (DECRQM, p. 5-194): the keyboard is never locked, controls are performed, ED, EL and ECH spare a guarded area, there is no implicit bidirectional processing and no data component; 3 (permanently set) for SRM (12), GRCM (21) and ZDM (22), which have the set state only: SIMULTANEOUS (ECMA-48 7.2.15; DEC STD 070's SRM, local echo off, the default), as fux-vt never images what is typed; CUMULATIVE (7.2.8), as an SGR changes only the renditions it names; DEFAULT (F.4.2), as a parameter of 0 is its default; else 0. | `opt_in::mode_reports_*`, `modes::grapheme_clustering_*`, `modes::decrqm_*` |
 | `InBandResize` | Mode 2048 (see its row). Off: unrecognized, DECRQM 0. | `opt_in::in_band_resize_*` |
@@ -447,7 +447,7 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   refused one changes nothing.
 - **`Cells`** (B39) holds at most 64 Mi cells, as a screen does:
   `Cells::new` and `Cells::reset` refuse more
-  with `Error::Capacity`, and so does a lack of memory, the cells left
+  with `Error::Capacity`, the cells left
   as they were.
 - **Listing pictures** (B09) doesn't search history: each picture's top
   row is followed into history as it scrolls there, by its number in the
@@ -570,19 +570,16 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   copies left), even with no byte left. A host that holds no frames and
   spreads no work over turns (a replay, a converter, a test) calls
   `Parser::process_all`, which makes those calls itself until every byte
-  is read and no work is owed, and gives how many times room was refused
-  on the way (B44): the screen is good to read whatever the count.
+  is read and no work is owed.
 - **Encoding a picture** (B08): `sixel::encode` reads each pixel of its
   crop twice and sets each sixel once, whatever its colours, and writes at
   most 12 bytes a pixel and 6 a colour a band of six rows.
-- **Running out of memory** (B44): what grows with a program's output is
-  asked for so that a refusal can be taken: history's rows, a screen's
-  cells, a picture's pixels. A refusal loses only what it was for, the rest
-  of the input is read, and `Parser::refused` counts it. Everything else
-  fux-vt allocates is bounded by the screen's size and the limits above (a
-  row's text and links, the style table, the OSC buffer, tab stops, the
-  colours, DECCRA's copy of the screen); if the system can't give one of
-  those, the process aborts, as Rust's allocations do.
+- **Running out of memory**: what fux-vt allocates is bounded by the
+  screen's size and the limits above (history's rows, a screen's cells, a
+  picture's pixels, a row's text and links, the style table, the OSC
+  buffer, tab stops, the colours, DECCRA's copy of the screen); if the
+  system can't give one of those, the process aborts, as Rust's
+  allocations do.
 
 ## Verification
 
@@ -604,7 +601,7 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
 - **Fuzzing**: five targets in
   [`fuzz/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/fuzz/README.md)
   (`terminal`, `deep`, `keys`, `graphemes` and `cells`), explored nightly
-  in CI from cached corpora (`fuzz.yml`), beside the oracle's.
+  in CI from cached corpora (`fuzz.yml`).
 - **Other terminals**:
   [`compare/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md)
   runs fux-vt beside Ghostty, alacritty, libvterm, avt, wezterm, vt100,

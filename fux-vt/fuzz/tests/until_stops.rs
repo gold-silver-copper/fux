@@ -16,11 +16,7 @@ fn a_piece_s_last_rep_is_finished() -> Result {
     let size = Size::new(3, 511)?;
     let piece = b"\x1b[4hx\x1b[65535b";
     let mut whole = Parser::with_options(size, 8 << 20, Options::default())?;
-    assert!(common::fed(
-        &mut whole,
-        piece,
-        &mut common::Record::default()
-    ));
+    common::fed(&mut whole, piece, &mut common::Record::default());
     let mut fed = Parser::with_options(size, 8 << 20, Options::default())?;
     let mut calls = 0usize;
     common::until_stops(&mut fed, piece, &mut common::Record::default(), |_| {

@@ -165,7 +165,7 @@ an item a line; a capture prints as its text, and a record as one line of
 grift data.
 
 ```sh
-fux '(rename (new-tab (program (size (in (options) "agent") 80 24) "sh")) "sh1")'
+fux '(rename (new-tab (program (size (in (options) "agent") 80 24) (list "sh"))) "sh1")'
 A=$(fux '(line (pane "sh1") (first (arguments)))' 'sleep 1; echo "six times seven: $((6*7))"')
 fux '(wait (changed (first (arguments))))' "$A"
 fux '(shows (pane "sh1") "seven: 42" 30)'
@@ -206,8 +206,8 @@ A handle names everything under it: `information`, `dump`, `events`, `panes`,
 the whole of it, so `kill` on a project closes its agents' workspaces too.
 
 ```sh
-fux '(new-tab (program (size (in (in (options) "proj") "agent1") 80 24) "sh"))' > /dev/null
-fux '(new-tab (program (size (in (in (options) "proj") "agent2") 80 24) "sh"))' > /dev/null
+fux '(new-tab (program (size (in (in (options) "proj") "agent1") 80 24) (list "sh")))' > /dev/null
+fux '(new-tab (program (size (in (in (options) "proj") "agent2") 80 24) (list "sh")))' > /dev/null
 fux '(length (panes (workspace "proj")))'
 fux '(kill (workspace "proj"))'
 ```
@@ -251,10 +251,6 @@ fux '(get (word "line") "definition")'
   after the program, `(input)` the rest of stdin, `(read-file PATH)` a file's
   text, `(environment-variable NAME)` a variable (one not set fails
   `unset-variable`), `(warn VALUE)` prints on stderr and `(exit N)` ends with status N.
-
-fuxth, the Forth fux was written in before grift, its `fuxth` runner and fuxed, the
-screen editor written in it, are kept in [archived/](archived): fux neither
-builds nor runs them.
 
 ## Records and events
 
@@ -307,7 +303,7 @@ grift: write them again in grift.
 (bind-key "C-a v" (code! (lambda! () (split-right))))
 (bind-key "C-a r l" (code! (lambda! () (move-border (focused (me)) "right" 1))))
 (repeat "C-a r")
-(bind-key "C-a g" (code! (lambda! () (split (program (axis (focused (me)) "vertical") "top")) #inert)))
+(bind-key "C-a g" (code! (lambda! () (split (program (axis (focused (me)) "vertical") (list "top"))) #inert)))
 (label "top")
 (group "Tools")
 (bind-key "M-h" (code! (lambda! () (step (me) (focused (me)) "left"))))
@@ -347,15 +343,14 @@ grift: write them again in grift.
 
   `shell`, `history-bytes`, `program-clipboard`, `reflow`, `alternate-scroll-lines`
   and `picture-bytes` supply this client's future launches. `bell`, `titles`,
-  `terminal-clipboard`, `cell-placement`, `styles`, `bar`, `bar-slots` and
+  `terminal-clipboard`, `cell-placement`, `styles`, `bar` and
   `show-column` affect only this client's view. `set` and config evaluation send
   no requests.
 - **The bar's place, fields and styles** are settings too.
   `(set "bar" (quote! ("bottom" ("workspace" "tabs") ("pane") #false)))` is
   top, bottom or off, the left fields, the right fields and whether tabs are
-  numbered; a field is `"workspace"`, `"tabs"`, `"pane"` or `("slot" N)`, 0 to 15,
-  each once. Off, the default, takes no row. `bar-slots` replaces all slots with
-  `(N "text")` rows, inert text with no controls, each slot once. `styles` rows are
+  numbered; a field is `"workspace"`, `"tabs"`, `"pane"` or `("text" "any text")`, inert
+  text with no controls, each once. Off, the default, takes no row. `styles` rows are
   `(ROLE FOREGROUND BACKGROUND FLAG...)`: roles `bar`, `tab`, `keys`, `notice`,
   `error`, `panel`, `border`, `border-focus`; colours 0 to 255, `"default"` or
   `"#rrggbb"`; flags `"bold"`, `"dim"`, `"italic"`, `"underline"`. A subset changes
@@ -385,10 +380,8 @@ its socket, which takes them back with their screens and ids (the
 cookbook's "Take a crashed server's panes back"); it keeps its run's own
 fux to do it with, so an upgrade waits for the next fresh run. Detaching, or a client's crash, leaves the server and its
 programs running. A command line against a server of another fux protocol
-runs again with that server's own binary, saying so on stderr; where that
-cannot be, it fails `mismatch`, saying why. A server from before grift reads
-no grift, so no program runs with its binary, only a plain `fux`, which attaches
-with it: to run a program, stop it, and `(status)` says which process it is.
+fails `mismatch`, naming both builds: stop that server, or use its own
+binary; `(status)` says which process it is.
 
 ## Terminal features
 
@@ -433,7 +426,7 @@ unanswered question stays unknown.
 
 | For | Use |
 | --- | --- |
-| a program's environment | `env(1)`: `(new-tab (argument (argument (program OPTIONS "env") "PORT=8080") "./app"))`; `env -u NAME` removes one |
+| a program's environment | `env(1)`: `(new-tab (program OPTIONS (list "env" "PORT=8080" "./app")))`; `env -u NAME` removes one |
 | a time limit | `timeout(1)`, on a fux command or as a pane's program |
 | a file into a pane | `fux '(send-keys (paste (pane 2) (input)))' < FILE` |
 | what a pane runs, and where | `ps`, `/proc` and `pgrep` on its program's `foreground-group` (`fux '(explain "agents")'`) |
@@ -490,8 +483,8 @@ The tests start real servers and shells: they need `/bin/sh`, `/bin/bash`
 and `python3`, use `dash` if it is on `PATH`, and with `FUX_TEST_SHELLS=1`
 also zsh and fish. Tools outside the workspace, each with a README:
 [`fux-vt/compare`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md) (fux's terminal emulator
-beside other terminals), [`diff`](https://github.com/gold-silver-copper/fux/blob/master/diff/README.md) (fux beside its last
-release), [`bench`](https://github.com/gold-silver-copper/fux/blob/master/bench/README.md) (speed, latency and footprint),
+beside other terminals), [`diff`](https://github.com/gold-silver-copper/fux/blob/master/diff/README.md) (fux-vt beside
+an earlier commit of itself), [`bench`](https://github.com/gold-silver-copper/fux/blob/master/bench/README.md) (speed, latency and footprint),
 [`fuzz`](https://github.com/gold-silver-copper/fux/blob/master/fuzz/README.md) (libFuzzer targets) and [`walk`](https://github.com/gold-silver-copper/fux/blob/master/walk/README.md)
 (scripted runs of the real binary).
 

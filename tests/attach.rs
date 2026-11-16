@@ -369,7 +369,7 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
     for program in [attach.to_owned(), behind, orphaned] {
         let server = Server::start("")?;
         let launch = [&format!(
-            "(new-tab (argument (argument (program (size (in (options) \"viewer\") 60 12) \"sh\") \"-c\") {}))",
+            "(new-tab (program (size (in (options) \"viewer\") 60 12) (list \"sh\" \"-c\" {})))",
             fux::script::quoted(&program)
         )];
         let pane = server.ok(&launch)?;
@@ -407,7 +407,7 @@ fn a_headless_client_in_its_own_pane_keeps_its_capture_and_sizing() -> Outcome {
     let server = Server::start("")?;
     let attach = "unset FUX_PANE; \"$FUX\" \"(attach (in (size (options) 50 10) \\\"viewer\\\"))\"; sleep 60";
     let launch = [&format!(
-        "(new-tab (argument (argument (program (size (in (options) \"viewer\") 60 12) \"sh\") \"-c\") {}))",
+        "(new-tab (program (size (in (options) \"viewer\") 60 12) (list \"sh\" \"-c\" {})))",
         fux::script::quoted(attach)
     )];
     let pane = server.ok(&launch)?;
@@ -628,10 +628,9 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
 }
 
 /// A client of another protocol is answered the server's `Hello`, then its
-/// mismatch, so that it can follow: whatever role it says, one this
-/// protocol has (attach) or not (byte 3, protocol 57's headless attach).
-/// An older protocol's kill (byte 2) is answered an `Exit` alone, which its
-/// client reports as a failure, and the server lives.
+/// mismatch, which names both builds and says what to do: whatever role
+/// it says, one this protocol has (attach) or not (bytes 2 and 3, an older
+/// protocol's kill and headless attach). The server lives.
 #[test]
 fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
     use fux_wire::protocol::{Frame, Greeting, Hello, Role};
@@ -640,7 +639,7 @@ fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
     for (protocol, role) in [
         (999, Role::Attach),
         (57, Role::Unknown(3)),
-        (57, Role::RETIRED_KILL),
+        (57, Role::Unknown(2)),
     ] {
         let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
         // Set before writing: macOS refuses a timeout on a socket its peer
@@ -672,28 +671,22 @@ fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
                 });
             }
         }
-        if role == Role::RETIRED_KILL {
-            let [Err(reason)] = frames.as_slice() else {
-                return Err(format!("a kill: not an Exit alone: {frames:?}"));
-            };
-            assert!(reason.contains("takes no kill"), "{reason}");
-            assert!(
-                server.ok(&["(listing (list-session))"])?.contains("%1"),
-                "the server lives"
-            );
-            continue;
-        }
         let [Ok(theirs), Err(reason)] = frames.as_slice() else {
             return Err(format!("{role:?}: not a Hello then an Exit: {frames:?}"));
         };
         assert_eq!(*theirs, fux_wire::protocol::PROTOCOL, "{role:?}");
         assert!(
             reason.contains(&format!("protocol {}", fux_wire::protocol::PROTOCOL))
-                && reason.contains("use a matching client")
+                && reason.contains(&format!("fux 0.36.0 (protocol {protocol})"))
+                && reason.contains("stop the server, or use its own binary")
                 && reason.contains("`kill` on its process")
                 && reason.contains("stops it and its panes")
                 && reason.contains("a new server does not resume them"),
             "{reason}"
+        );
+        assert!(
+            server.ok(&["(listing (list-session))"])?.contains("%1"),
+            "the server lives"
         );
     }
     Ok(())
@@ -874,7 +867,7 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     // stdin, with the program's own group in the foreground. (Without one,
     // macOS names some other terminal, and Linux none.)
     let server = Server::start("")?;
-    let pane = server.ok(&["(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"/bin/sh\") \"-c\") \"echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60\"))"])?;
+    let pane = server.ok(&["(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/sh\" \"-c\" \"echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60\")))"])?;
     let pane = pane.split(':').next().unwrap_or_default();
     let mut fields = Vec::new();
     eventually("the program's report", || {
@@ -963,7 +956,16 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     std::fs::set_permissions(&script, executable).map_err(e)?;
     let (here, nowhere) = (&server.dir, &server.dir.join("no-such-dir"));
     let not_found = "No such file or directory (os error 2)";
-    let before = server.ok(&["(listing (list-session))"])?;
+    // The tree, without the journal's cursor: a pane made and closed as
+    // its start failed is journaled, as it happened.
+    let tree = || -> Result<String, String> {
+        let listing = server.ok(&["(listing (list-session))"])?;
+        Ok((listing.lines())
+            .filter(|line| !line.starts_with("cursor "))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    };
+    let before = tree()?;
     for (program, cwd, error) in [
         (&missing, here, not_found),
         (&not_executable, here, "Permission denied (os error 13)"),
@@ -988,7 +990,7 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
         );
     }
     // Nothing a failed start made is left.
-    assert_eq!(server.ok(&["(listing (list-session))"])?, before);
+    assert_eq!(tree()?, before);
     // The server is unharmed, and a good shell starts again.
     server.ok(&["(sequence! (set \"shell\" (list \"/bin/sh\")) #inert)"])?;
     server.ok(&["(new-tab (size (in (options) \"new-workspace\") 80 24))"])?;
@@ -1527,7 +1529,7 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
         40,
         &[
             fux(),
-            "(sequence! (attach (directory (program (options) \"\") \"/no/such/directory\")) #inert)",
+            "(sequence! (attach (directory (program (options) (list \"\")) \"/no/such/directory\")) #inert)",
         ],
         |command| {
             command
@@ -1567,7 +1569,7 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
             Some("no room for a pane below its bar"),
         ),
     ] {
-        let program = format!("(attach (program {size} \"\"))");
+        let program = format!("(attach (program {size} (list \"\")))");
         let args = [program.as_str()];
         let panes = server.panes()?.len();
         let mut terminal = Terminal::attach(server, 10, 80, &args)?;
@@ -1603,11 +1605,11 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
     let server = Server::empty()?;
     for (args, said) in [
         (
-            &["(sequence! (attach (program (options) \"\")) #inert)"][..],
+            &["(sequence! (attach (program (options) (list \"\"))) #inert)"][..],
             true,
         ),
         (
-            &["(sequence! (attach (in (program (options) \"\") \"work\")) #inert)"],
+            &["(sequence! (attach (in (program (options) (list \"\")) \"work\")) #inert)"],
             false,
         ),
     ] {
@@ -1658,8 +1660,8 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
 fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
     let server = Server::start("(sequence! (attach-defaults (in (options) \"main\")) #inert)")?;
     for args in [
-        &["(sequence! (attach (program (options) \"/bin/sh\")) #inert)"][..],
-        &["(sequence! (attach (program (in (options) \"main\") \"/bin/sh\")) #inert)"][..],
+        &["(sequence! (attach (program (options) (list \"/bin/sh\"))) #inert)"][..],
+        &["(sequence! (attach (program (in (options) \"main\") (list \"/bin/sh\"))) #inert)"][..],
     ] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
         assert!(!terminal.wait_exit()?.success());

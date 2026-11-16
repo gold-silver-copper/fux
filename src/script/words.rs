@@ -10,9 +10,9 @@ use fux_vt::keys::Direction;
 use fux_wire::callback::Open;
 use fux_wire::code::Code;
 use fux_wire::command::{
-    AnyRef, Beside, Button, ClientAction, ClientRead, Command, Extent, HistoryBytes, Input, Kind,
-    Limit, Members, Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since,
-    Source, SwapWith, To, Usage, Wait, Way, Wheel, WsRef,
+    AnyRef, Beside, Button, ClientAction, ClientRead, Command, HistoryBytes, Input, Kind, Limit,
+    Members, Mouse, MoveTo, PaneResize, Program, Request, Resized, Sibling, Since, Source,
+    SwapWith, To, Usage, Wait, Way, Wheel, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Axis;
@@ -170,6 +170,14 @@ pub struct Row {
     pub example: &'static str,
 }
 
+impl Row {
+    /// What it takes, each value's name in order: its effect before `--`.
+    pub fn takes(&self) -> std::str::SplitWhitespace<'static> {
+        let (takes, _) = self.effect.split_once("--").unwrap_or_default();
+        takes.split_whitespace()
+    }
+}
+
 /// The codes a word fails with as it runs: its own, and, if it `asks`,
 /// those asking a request fails with (`Code::asked`); one that takes values
 /// fails `stack_underflow` given too few, and `bad_value` given handles of
@@ -183,10 +191,7 @@ impl Word {
     /// The codes it fails with, as `Raises` says, each once.
     pub fn codes(self) -> Vec<Code> {
         let row = self.row();
-        let takes = row
-            .effect
-            .split_once("--")
-            .is_some_and(|(t, _)| !t.trim().is_empty());
+        let takes = row.takes().next().is_some();
         let taking = [Code::StackUnderflow, Code::BadValue]
             .into_iter()
             .filter(|_| takes);
@@ -263,10 +268,10 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 21] = [
+pub const KINDS: [(&str, &str, Option<&str>); 20] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("all", "the whole session", None),
-    ("client", "a client", None), ("size", "a size (from percent)", None),
+    ("client", "a client", None),
     ("answer", "an action's answer", None),
     ("closed-answer", "a closed pane's answer", None),
     ("client-capture", "a client's capture", None),
@@ -311,7 +316,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("seen", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("readable", "a handle or held observation"),
     ("snapshot-scope", "a snapshot scope"),
-    ("extent", "cells, or a percent"),
+    ("extent", "a width or height, in cells"),
     ("pane-or-seen", "a pane, an action's or wait's answer, a pane capture, or version text"),
     ("counterpart", "a pane or a direction"),
     ("sized", "a pane, tab, workspace or headless client"),
@@ -332,11 +337,11 @@ words! {
         Finding Tabs "tabs" "scope -- list" raises(Type asks) "the tabs in a tab (itself), a workspace or all, in order; a pane holds none" "fux '(for-each (lambda! (t) (print (get t \"name\"))) (tabs (workspace \"agent\")))'" [];
         Finding All "all" "-- all" raises() "the whole session, for the words that take a scope: information, panes, tabs, kill, notify, events and dump" "fux '(information (all))'" [];
         Finding Focused "focused" "client -- pane" raises(Type asks) "the pane a client focuses: its tab's zoomed one while it has one" "fux '(capture (focused (client \"c1\")))'" [];
-        Starting Opts "options" "-- options" raises() "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) \"./app\"))'" [];
-        Starting Split "split" "subject -- answer" raises(Type Unused Usage Config asks) "split a pane along its required axis: a shell, or the program given" "fux '(split (axis (pane 3) \"vertical\"))'" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
-        Starting Stack "stack" "subject -- answer" raises(Type Unused Config asks) "an alternative to a pane on its rectangle, in the stack it is a child of, else a new one: a shell, or the program given; each client is shown one child of a stack (step, show)" "fux '(stack (program (pane 3) \"/bin/sh\"))'" [Pane: Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
-        Starting NewTab "new-tab" "options -- answer" raises(Type Unused Config asks) "a tab with the client's shell or explicit launch, in the workspace in names (made if it is not there; (in builder \"new-workspace\") makes an unnamed one), else the caller's" "fux '(new-tab (in (size (name (options) \"logs\") 80 24) \"agent\"))'" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
-        Starting Respawn "respawn" "subject -- answer" raises(Type Unused asks) "start again in its pane the program it was given (new-tab, split), or the one given now" "fux '(respawn (kill-first (pane 3)))'" [Pane: KillFirst Program Arg];
+        Starting Opts "options" "-- options" raises() "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) (list \"./app\")))'" [];
+        Starting Split "split" "subject -- answer" raises(Type Unused Usage Config asks) "split a pane along its required axis: a shell, or the program given" "fux '(split (axis (pane 3) \"vertical\"))'" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram];
+        Starting Stack "stack" "subject -- answer" raises(Type Unused Config asks) "an alternative to a pane on its rectangle, in the stack it is a child of, else a new one: a shell, or the program given; each client is shown one child of a stack (step, show)" "fux '(stack (program (pane 3) (list \"/bin/sh\")))'" [Pane: Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram];
+        Starting NewTab "new-tab" "options -- answer" raises(Type Unused Config asks) "a tab with the client's shell or explicit launch, in the workspace in names (made if it is not there; (in builder \"new-workspace\") makes an unnamed one), else the caller's" "fux '(new-tab (in (size (name (options) \"logs\") 80 24) \"agent\"))'" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram In];
+        Starting Respawn "respawn" "subject -- answer" raises(Type Unused asks) "start again in its pane the program it was given (new-tab, split), or the one given now" "fux '(respawn (kill-first (pane 3)))'" [Pane: KillFirst Program];
         Waiting Wait "wait" "place -- place" raises(Type Unused asks) "wait until the pane's version differs from the one changed gives, else an action's answer's (wait (line (pane 2) \"y\")), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux '(line (pane 3) \"y\")'); fux '(wait (timeout (changed (first (arguments))) 60))' \"$A\"" [Pane: Changed Timeout];
         Input SendKeys "send-keys" "target -- target" raises(Type Unused Usage asks) "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal" "fux '(send-keys (key (text (pane 3) \"ls -l\") \"Enter\"))'" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" raises(Type Range asks) "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux '(send-mouse (pane 3) \"click\" 2 10)'" [];
@@ -353,17 +358,15 @@ words! {
         Changing Notify "notify" "scope text --" raises(Type asks) "a notice on the clients showing it, or every client with all" "fux '(sequence! (notify (all) \"done\") #inert)'" [];
         Changing Resize "resize" "sized columns rows --" raises(Type Size asks) "a tab layout or headless client size, each at least 1, as large as a screen's grid holds; a pane selects its tab" "fux '(sequence! (resize (tab 2) 120 40) #inert)'" [];
         Changing ResizeAuto "resize-auto" "handle --" raises(Type asks) "a tab laid out on the screens of the clients showing it again (at its size until one shows it)" "fux '(sequence! (resize-auto (tab 2)) #inert)'" [];
-        Changing ResizePane "resize-pane" "pane extent way --" raises(Type Range asks) "a pane's horizontal or vertical extent: cells, or a percent" "fux '(sequence! (resize-pane (pane 3) (percent 30) \"horizontal\") #inert)'" [];
-        Changing Percent "percent" "n -- size" raises(Type Range) "n percent of the tab, for resize-pane" "fux '(sequence! (resize-pane (pane 3) (percent 30) \"horizontal\") #inert)'" [];
+        Changing ResizePane "resize-pane" "pane extent way --" raises(Type Range asks) "a pane's horizontal or vertical extent, in cells" "fux '(sequence! (resize-pane (pane 3) 40 \"horizontal\") #inert)'" [];
         Changing Arrange "arrange" "tab revision tree --" raises(Type Range asks) "replace the whole layout at a run-qualified structural revision" "fux '(sequence! (arrange (tab 2) \"REVISION\" (list (pane 3))) #inert)'" [];
         Changing MoveBorder "move-border" "pane way cells --" raises(Type Range asks) "move the pane's nearest border: left right up down" "fux '(sequence! (move-border (pane 3) \"left\" 5) #inert)'" [];
         Changing Move "move" "subject where --" raises(Type asks) "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down; or a workspace into another, after what it holds, or to the top with all" "fux '(sequence! (move (workspace \"agent1\") (workspace \"proj\")) #inert)'" [];
         Changing SwapWith "swap-with" "pane counterpart --" raises(Type asks) "swap a pane with another pane or its neighbour: left right up down" "fux '(sequence! (swap-with (pane 3) (pane 4)) #inert)'" [];
         Changing Reorder "reorder" "handle way --" raises(Type asks) "move one place: next or previous" "fux '(sequence! (reorder (tab 2) \"next\") #inert)'" [];
         Changing HistoryBudget "history-budget" "pane integer --" raises(Type Range asks) "change this pane's history budget in bytes; lowering evicts old rows" "fux '(sequence! (history-budget (pane 3) 4194304) #inert)'" [];
-        Changing ClearHistory "clear-history" "pane --" raises(Type asks) "drop the pane's history" "fux '(sequence! (clear-history (pane 3)) #inert)'" [];
         Changing Zoom "zoom" "pane --" raises(Type asks) "fill its tab with the pane on every screen showing it, or restore the tab if it does" "fux '(sequence! (zoom (pane 3)) #inert)'" [];
-        Clients Attach "attach" "attachable --" raises(Type Unused Nested NotHere asks) "show the server in this terminal (bare fux runs (attach (options))); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux '(attach (tab 2))'" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
+        Clients Attach "attach" "attachable --" raises(Type Unused Nested NotHere asks) "show the server in this terminal (bare fux runs (attach (options))); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux '(attach (tab 2))'" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Name];
         Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it, a pane's stacks too" "fux '(sequence! (show (client \"c1\") (pane 3)) #inert)'" [];
         Clients Step "step" "client handle way --" raises(Type asks) "show a client the next, previous or last shown of the handle's siblings (a pane's: the children of the stack nearest it, else its tab's panes shown), or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux '(sequence! (step (client \"c1\") (tab 2) \"next\") #inert)'" [];
         Clients Detach "detach" "client --" raises(Type asks) "detach a client" "fux '(sequence! (detach (client \"c1\")) #inert)'" [];
@@ -389,17 +392,16 @@ words! {
         Help Explain "explain" "word --" raises(Type UnknownWord Output) "one operation at length, or where a name of grift's is described; data describes printed data and errors, records every record and field; agents is the first screen of the agent guide, each topic (recipes typing read shells programs servers recipe-examples) a part of it, and guide all of it; cookbook has recipes to copy" "fux '(sequence! (explain \"capture\") #inert)'" [];
     }
     Opt {
-        Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux '(new-tab (program (size (name (in (options) \"agent\") \"web\") 80 24) \"./app\"))'";
-        Starting Size "size" "x columns rows -- x" raises(Type Unused Size) "what its tab is always laid out on, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) \"./app\"))'";
-        Starting Cwd "directory" "x dir -- x" raises(Type Unused) "where it starts. With none, a command line's program (run from a pane too) starts in the directory fux ran in, not the pane's it splits; a key's or prompt's in that pane's. A relative one is from the directory fux ran in, or a key's client's focused pane's" "fux '(new-tab (program (size (directory (in (options) \"agent\") \"/srv\") 80 24) \"./app\"))'";
-        Starting Program "program" "x path -- x" raises(Type Unused) "the program to start, in place of a shell; its pane stays once it exits" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) \"./app\"))'";
-        Starting HistoryBytes "history-bytes" "x integer -- x" raises(Type Unused Range) "history budget for the new pane, in bytes" "fux '(new-tab (program (history-bytes (in (options) \"agent\") 0) \"/bin/cat\"))'";
-        Starting Reflow "reflow" "x boolean -- x" raises(Type Unused) "whether the new pane rewraps primary-screen lines on resize" "fux '(new-tab (program (reflow (in (options) \"agent\") #false) \"/bin/cat\"))'";
-        Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" raises(Type Unused Range) "arrows per alternate-screen wheel action (0 to 32767)" "fux '(new-tab (program (alternate-scroll-lines (in (options) \"agent\") 3) \"/bin/cat\"))'";
-        Starting PictureBytes "picture-bytes" "x integer -- x" raises(Type Unused Range) "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux '(new-tab (program (picture-bytes (in (options) \"agent\") 0) \"/bin/cat\"))'";
-        Starting ProgramClipboard "program-clipboard" "x boolean -- x" raises(Type Unused) "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux '(new-tab (program (program-clipboard (in (options) \"agent\") #false) \"/bin/cat\"))'";
+        Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux '(new-tab (program (size (name (in (options) \"agent\") \"web\") 80 24) (list \"./app\")))'";
+        Starting Size "size" "x columns rows -- x" raises(Type Unused Size) "what its tab is always laid out on, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) (list \"./app\")))'";
+        Starting Cwd "directory" "x dir -- x" raises(Type Unused) "where it starts. With none, a command line's program (run from a pane too) starts in the directory fux ran in, not the pane's it splits; a key's or prompt's in that pane's. A relative one is from the directory fux ran in, or a key's client's focused pane's" "fux '(new-tab (program (size (directory (in (options) \"agent\") \"/srv\") 80 24) (list \"./app\")))'";
+        Starting Program "program" "x list -- x" raises(Type Unused) "the program to start and its arguments, in place of a shell; its pane stays once it exits" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) (list \"./app\" \"-v\")))'";
+        Starting HistoryBytes "history-bytes" "x integer -- x" raises(Type Unused Range) "history budget for the new pane, in bytes" "fux '(new-tab (program (history-bytes (in (options) \"agent\") 0) (list \"/bin/cat\")))'";
+        Starting Reflow "reflow" "x boolean -- x" raises(Type Unused) "whether the new pane rewraps primary-screen lines on resize" "fux '(new-tab (program (reflow (in (options) \"agent\") #false) (list \"/bin/cat\")))'";
+        Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" raises(Type Unused Range) "arrows per alternate-screen wheel action (0 to 32767)" "fux '(new-tab (program (alternate-scroll-lines (in (options) \"agent\") 3) (list \"/bin/cat\")))'";
+        Starting PictureBytes "picture-bytes" "x integer -- x" raises(Type Unused Range) "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux '(new-tab (program (picture-bytes (in (options) \"agent\") 0) (list \"/bin/cat\")))'";
+        Starting ProgramClipboard "program-clipboard" "x boolean -- x" raises(Type Unused) "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux '(new-tab (program (program-clipboard (in (options) \"agent\") #false) (list \"/bin/cat\")))'";
         Starting ShellProgram "shell-program" "x list -- x" raises(Type Unused) "the checked argv list to start with shell role; its exit closes the pane" "fux '(new-tab (shell-program (size (options) 80 24) (list \"/bin/sh\")))'";
-        Starting Arg "argument" "x text -- x" raises(Type Unused Usage) "an argument for the program" "fux '(new-tab (argument (program (size (in (options) \"agent\") 80 24) \"./app\") \"-v\"))'";
         Starting Axis "axis" "x way -- x" raises(Type Unused) "horizontal (side by side) or vertical (stacked); split requires it" "fux '(split (axis (pane 3) \"horizontal\"))'";
         Starting Shares "shares" "x n n -- x" raises(Type Unused Range) "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux '(split (shares (axis (pane 3) \"horizontal\") 2 1))'";
         Starting In "in" "x workspace -- x" raises(Type Unused) "the workspace for new-tab, attach or attach-defaults; again, one in the one before, for new-tab: it makes each from the first not there (a missing name, or a fresh unnamed one with (in builder \"new-workspace\")), the first at the top" "fux '(new-tab (size (in (in (options) \"proj\") \"agent1\") 80 24))'";
@@ -436,8 +438,7 @@ words! {
         Config Group "group" "name --" raises(Type NotConfig BadBinding) "the column's heading for the last binding" "(sequence! (bind-key \"C-b g v\" (code! (lambda! () (sequence! (split (axis (focused (me)) \"horizontal\")) #inert)))) (group \"panes\") #inert)";
         Config Repeat "repeat" "keys --" raises(Type NotConfig BadBinding) "the map the keys hold repeats: it stays after a key of it runs, until Esc (config)" "(sequence! (bind-key \"C-b g h\" (code! (lambda! () (sequence! (move-border (focused (me)) \"left\" 2) #inert)))) (repeat \"C-b g\") #inert)";
         Config Unbind "unbind" "keys --" raises(Type NotConfig BadBinding) "keys run or hold nothing, and a map they leave empty goes. It hides grift's (unbind context symbol), the one name of grift's fux takes: (lookup (standard-context) (quote! unbind) #inert) is grift's" "(sequence! (unbind \"C-b g v\") #inert)";
-        Config BindAction "bind-action" "key code --" raises(Type NotConfig BadBinding) "a list's key runs code, receiving client payload; Escape cannot be bound" "(sequence! (bind-action \"r\" (code! (lambda! (client target) (rename-prompt client target)))) (label \"rename\") #inert)";
-        Config BindIn "bind-in" "screen key action --" raises(Type NotConfig BadBinding) "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "(sequence! (bind-in \"list\" \"g\" \"first\") (label \"first\") #inert)";
+        Config BindIn "bind-in" "screen key action --" raises(Type NotConfig BadBinding) "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each; a list's key may run code instead, receiving client payload" "(sequence! (bind-in \"list\" \"g\" \"first\") (label \"first\") #inert)";
         Config UnbindIn "unbind-in" "screen key --" raises(Type NotConfig BadBinding) "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "(sequence! (unbind-in \"list\" \"g\") #inert)";
         Config UnbindAll "unbind-all" "--" raises(NotConfig) "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "(sequence! (unbind-all) #inert)";
     }
@@ -451,11 +452,8 @@ fn fail(code: Code, message: impl Into<String>) -> Failure {
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
-    let row = Word::named(word)?.row();
-    Some(format!(
-        "({word} {})",
-        row.effect.split_once("--")?.0.trim()
-    ))
+    let takes: Vec<&str> = Word::named(word)?.row().takes().collect();
+    Some(format!("({word} {})", takes.join(" ")))
 }
 
 /// `failure`, a value of a kind the word doesn't take, told as the word's
@@ -467,12 +465,7 @@ fn described(word: Word, taken: Option<(usize, &'static str)>, mut failure: Fail
     let Some((at, kind)) = taken else {
         return failure;
     };
-    let effect = word
-        .row()
-        .effect
-        .split_once("--")
-        .map_or("", |(takes, _)| takes);
-    let name = effect.split_whitespace().nth(at).unwrap_or_default();
+    let name = word.row().takes().nth(at).unwrap_or_default();
     let said = match name {
         "integer" => Some("an integer"),
         "string" => Some("a string"),
@@ -638,17 +631,10 @@ fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
 }
 
 fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
-    match value {
-        Value::App(Fux::All) => Ok(None),
-        value @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Int(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::List(_)
-        | Value::App(_)) => target(value).map(Some),
+    if let Value::App(Fux::All) = value {
+        return Ok(None);
     }
+    target(value).map(Some)
 }
 
 /// A snapshot or journal scope: the session, a client, or a target.
@@ -681,12 +667,12 @@ fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
 /// Options a word would leave unused, refused rather than ignored: it
 /// takes those `help` lists for it.
 fn unused(word: Act, built: &Opts) -> Result<(), Failure> {
-    let Some(option) = built.given.iter().find(|o| !word.options().contains(o)) else {
+    let Some(option) = built.given().find(|o| !word.options().contains(o)) else {
         return Ok(());
     };
     let instead = format!(
         "takes no {option}: {option} goes on {}",
-        takers(Some(Word::Opt(*option)))
+        takers(Some(Word::Opt(option)))
     );
     Err(fail(Code::Unused, instead))
 }
@@ -733,21 +719,15 @@ const EXPECTED: &str = "takes no request expect made: only send-keys checks a ve
 /// The version `value` holds (`Answer::version`), or is as text.
 fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
     let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
-    let text: &str = match value {
-        Value::App(Fux::Record(record)) if record.is_held() => {
-            return record.version().ok_or_else(|| wrong(wanted, value));
-        }
-        Value::Str(text) => text,
-        other @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Int(_)
-        | Value::Bool(_)
-        | Value::List(_)
-        | Value::App(_)) => {
-            return Err(wrong(wanted, other));
-        }
+    if let Value::App(Fux::Record(record)) = value
+        && record.is_held()
+    {
+        return record.version().ok_or_else(|| wrong(wanted, value));
+    }
+    let Value::Str(text) = value else {
+        return Err(wrong(wanted, value));
     };
+    let text: &str = text;
     text.parse().map_err(|()| {
         let why = format!(
             "{:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it",
@@ -761,26 +741,16 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
 /// goes on (a pane, tab, workspace or client, an action's answer) becomes
 /// a request on that.
 fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
-    let built = match value {
-        Value::App(Fux::Opts(built)) => built,
-        other @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Int(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::List(_)
-        | Value::App(_)) => {
-            let on = on(&other)
-                .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
-            std::rc::Rc::new(Opts {
-                on: Some(on),
-                subject: Some(other),
-                ..Opts::default()
-            })
-        }
-    };
-    Ok(built)
+    if let Value::App(Fux::Opts(built)) = value {
+        return Ok(built);
+    }
+    let on =
+        on(&value).map_err(|_| wrong("a pane, tab, workspace or client, or options", &value))?;
+    Ok(std::rc::Rc::new(Opts {
+        on: Some(on),
+        subject: Some(value),
+        ..Opts::default()
+    }))
 }
 
 /// The request or options `steps` make of `subject`, as grift data says
@@ -966,15 +936,14 @@ fn add(
 ) -> Result<(), Failure> {
     if !matches!(
         opt,
-        Opt::Arg | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes | Opt::In
-    ) && built.given.iter().any(|given| given.slot() == opt.slot())
+        Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes | Opt::In
+    ) && built.given().any(|given| given.slot() == opt.slot())
     {
         return Err(fail(
             Code::Unused,
             format!("{opt}: {} is already given", opt.slot()),
         ));
     }
-    built.given.push(opt);
     let mut arguments = Vec::new();
     let mut taken = || {
         let value = next()?;
@@ -1041,22 +1010,21 @@ fn apply(
             };
             built.inputs.push(Input::Bytes((*bytes).clone()));
         }
-        Opt::Program | Opt::ShellProgram => {
-            let shell = opt == Opt::ShellProgram;
-            built.shell = Some(shell);
-            if shell {
-                let program = read::<Program>(&next()?, Code::BadValue)?;
-                built.argv = program.into_argv();
-                return Ok(());
-            }
-            built.argv.push(string(&next()?)?);
+        // A shell's list is checked here; a program's when it is started,
+        // where a launch that cannot be made is said or left out.
+        Opt::ShellProgram => {
+            built.shell = Some(true);
+            built.argv = read::<Program>(&next()?, Code::BadValue)?.into_argv();
         }
-        Opt::Arg => {
-            let arg = text(&next()?)?;
+        Opt::Program => {
+            built.shell = Some(false);
+            // Read as a shell's list is (`settings::words`): a port or a
+            // count is written as the number it is.
+            let argv = super::settings::words(&next()?);
+            built.argv = argv.map_err(|unread| refused(unread, Code::BadValue))?;
             if built.argv.is_empty() {
-                return Err(fail(Code::Usage, "comes after program"));
+                return Err(fail(Code::BadValue, "takes a program, then its arguments"));
             }
-            built.argv.push(arg);
         }
         Opt::MainScreen => built.view.source = Source::Main,
         Opt::AltScreen => built.view.source = Source::Alternate,
@@ -1102,19 +1070,13 @@ fn span(
 /// tab, workspace or client alone, given nothing. Refused if `word`
 /// leaves something given unused.
 fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
-    let mut built = match value {
-        Value::App(Fux::Opts(built)) => owned(built),
-        other @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Int(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::List(_)
-        | Value::App(_)) => Opts {
-            on: Some(on(&other)?),
+    let mut built = if let Value::App(Fux::Opts(built)) = value {
+        owned(built)
+    } else {
+        Opts {
+            on: Some(on(&value)?),
             ..Opts::default()
-        },
+        }
     };
     let Some(on) = built.on.take() else {
         let why = format!(
@@ -1202,7 +1164,7 @@ pub(super) fn check_attach_creation(
     watch: bool,
 ) -> Result<(), Failure> {
     if (targeted || watch)
-        && let Some(option) = built.given.iter().find(|option| {
+        && let Some(option) = built.given().find(|option| {
             matches!(
                 option,
                 Opt::Name
@@ -1214,7 +1176,6 @@ pub(super) fn check_attach_creation(
                     | Opt::ProgramClipboard
                     | Opt::Program
                     | Opt::ShellProgram
-                    | Opt::Arg
             )
         })
     {
@@ -1242,23 +1203,11 @@ pub(super) fn takers(word: Option<Word>) -> String {
     fux_wire::words::listed(&names, "or")
 }
 
-/// `resize-pane`: an explicit axis and extent, cells or a percent.
+/// `resize-pane`: an explicit axis and extent, in cells.
 fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Done<Ask>, Failure> {
     let target = pane(&next()?)?;
-    let extent = match next()? {
-        Value::App(Fux::Extent(e)) => e,
-        v @ Value::Int(_) => Extent::Cells(within(&v, CELL)?),
-        other @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::List(_)
-        | Value::App(_)) => {
-            return Err(wrong("cells or a percent", &other));
-        }
-    };
-    let by = PaneResize::To(axis(&next()?)?, extent);
+    let cells = within(&next()?, CELL)?;
+    let by = PaneResize::To(axis(&next()?)?, cells);
     tell(Command::ResizePane { target, by })
 }
 
@@ -1748,16 +1697,11 @@ impl Host<'_> {
             }
             Act::Resize => {
                 // Checked before the size is taken.
-                let sized = match next()? {
-                    Value::App(Fux::Client(c, _)) => Err(c),
-                    value @ (Value::Float(_)
-                    | Value::Symbol(_)
-                    | Value::Bytes(_)
-                    | Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::Str(_)
-                    | Value::List(_)
-                    | Value::App(_)) => Ok(target(&value)?),
+                let sized = next()?;
+                let sized = if let Value::App(Fux::Client(c, _)) = sized {
+                    Err(c)
+                } else {
+                    Ok(target(&sized)?)
                 };
                 let size = laid_out(&next()?, &next()?)?;
                 let resized = match sized {
@@ -1768,11 +1712,6 @@ impl Host<'_> {
             }
             Act::ResizeAuto => tell(Command::Resize(Resized::Tabs(target(&next()?)?, None))),
             Act::ResizePane => resize_to(&mut next),
-            Act::Percent => {
-                let n = within(&next()?, Percent::SHARES)?;
-                let share = Percent::new(n).ok_or_else(|| fail(Code::Range, "no share"))?;
-                now(out, Value::App(Fux::Extent(Extent::Percent(share))))
-            }
             Act::Arrange => {
                 let tab = next()?;
                 let Value::App(Fux::Tab(target, _)) = tab else {
@@ -1904,15 +1843,9 @@ impl Host<'_> {
             Act::SwapWith => {
                 let target = pane(&next()?)?;
                 let value = next()?;
-                let with = match value {
-                    Value::Str(_) => SwapWith::Toward(direction(&value)?),
-                    value @ (Value::Float(_)
-                    | Value::Symbol(_)
-                    | Value::Bytes(_)
-                    | Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::List(_)
-                    | Value::App(_)) => SwapWith::Pane(pane(&value)?),
+                let with = match matches!(value, Value::Str(_)) {
+                    true => SwapWith::Toward(direction(&value)?),
+                    false => SwapWith::Pane(pane(&value)?),
                 };
                 tell(Command::SwapPane { target, with })
             }
@@ -1926,9 +1859,6 @@ impl Host<'_> {
                 let bytes = read::<HistoryBytes>(&next()?, Code::Range)?;
                 tell(Command::HistoryBudget { target, bytes })
             }
-            Act::ClearHistory => tell(Command::ClearHistory {
-                target: pane(&next()?)?,
-            }),
             Act::Zoom => tell(Command::Zoom {
                 target: pane(&next()?)?,
             }),
@@ -1978,7 +1908,7 @@ impl Host<'_> {
                 let value = next()?;
                 let of = super::checked_scope(&value)?;
                 let (target, built) = attach_options(act, value)?;
-                if target.is_some() && built.given.contains(&Opt::Name) {
+                if target.is_some() && built.given().any(|given| given == Opt::Name) {
                     return Err(fail(
                         Code::BadValue,
                         "attach-defaults takes no name with a target",
@@ -2276,23 +2206,21 @@ impl Host<'_> {
             }
             Keys::Unbind => keymap.unbind(&pressed()?).map_err(refused)?,
             Keys::Repeat => keymap.set_repeat(&pressed()?).map_err(refused)?,
-            Keys::BindAction => {
-                let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
-                let action = super::callback::code(&next()?)?.into();
-                let keymap = &mut state.keys;
-                keymap
-                    .modes
-                    .list
-                    .bind_action(key, action)
-                    .map_err(refused)?;
-                self.last_bound = Some(Bound::In(crate::keymap::Modal::List, key));
-            }
             Keys::BindIn | Keys::UnbindIn => {
                 let modal = one_of(&next()?, crate::keymap::Modal::ALL)?;
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
                 let table = keymap.modes.table(modal);
                 match keys == Keys::BindIn {
-                    true => table.bind(key, &string(&next()?)?).map_err(refused)?,
+                    true => {
+                        use crate::keymap::Does;
+                        let does = next()?;
+                        let does = if let Value::Str(name) = &does {
+                            Does::Named(name)
+                        } else {
+                            Does::Runs(super::callback::code(&does)?.into())
+                        };
+                        table.bind(key, does).map_err(refused)?;
+                    }
                     false => table.unbind(key).map_err(refused)?,
                 }
                 self.last_bound = Some(Bound::In(modal, key));
@@ -2398,9 +2326,12 @@ mod tests {
     fn accumulating_options_preserve_order() -> TestResult {
         let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
         for (opt, values) in [
-            (Opt::Program, vec![Value::str("cat")]),
-            (Opt::Arg, vec![Value::str("a")]),
-            (Opt::Arg, vec![Value::str("b")]),
+            (
+                Opt::Program,
+                vec![Value::List(Rc::new(super::super::List::new(
+                    ["cat", "a", "b"].map(Value::str).to_vec(),
+                )))],
+            ),
             (Opt::Text, vec![Value::str("a")]),
             (Opt::Key, vec![Value::str("Enter")]),
             (Opt::Paste, vec![Value::str("b")]),
@@ -2499,10 +2430,10 @@ mod tests {
                     Opt::Reflow => vec![Value::Bool(false)],
                     Opt::AlternateScrollLines | Opt::PictureBytes => vec![Value::Int(0)],
                     Opt::ProgramClipboard => vec![Value::Bool(false)],
-                    Opt::Name | Opt::Cwd | Opt::Program | Opt::Arg | Opt::Text | Opt::Paste => {
+                    Opt::Name | Opt::Cwd | Opt::Text | Opt::Paste => {
                         vec![Value::str("x")]
                     }
-                    Opt::ShellProgram => {
+                    Opt::Program | Opt::ShellProgram => {
                         vec![Value::List(std::rc::Rc::new(super::super::List::new(
                             vec![Value::str("sh")],
                         )))]
@@ -2527,15 +2458,7 @@ mod tests {
                     | Opt::Changed
                     | Opt::Expect => vec![],
                 };
-                // `arg` requires a program first, which preserves the same kind.
-                let initial = if opt == Opt::Arg {
-                    let mut built = expected.clone();
-                    std::rc::Rc::make_mut(&mut built).argv.push("sh".into());
-                    Fux::Opts(built)
-                } else {
-                    target.clone()
-                };
-                let mut values = std::iter::once(Value::App(initial)).chain(args.clone());
+                let mut values = std::iter::once(Value::App(target.clone())).chain(args.clone());
                 let actual = modify(opt, &mut || {
                     values
                         .next()
@@ -2574,18 +2497,13 @@ mod tests {
             Value::App(Fux::Null),
             Value::App(Fux::Opts(opts)),
             Value::App(Fux::Opts(Rc::new(on_pane))),
-            Value::App(Fux::Extent(Extent::Cells(3))),
         ];
         let mut draft = crate::script::default_state()?.draft();
         let mut seed = 1u64;
         let mut wrong = Vec::new();
         for &word in Word::ALL {
             let codes = word.codes();
-            let takes = word
-                .row()
-                .effect
-                .split_once("--")
-                .map_or(0, |(t, _)| t.split_whitespace().count());
+            let takes = word.row().takes().count();
             for _ in 0..500 {
                 let mut stack = Vec::new();
                 for _ in 0..takes {
@@ -2704,7 +2622,7 @@ mod tests {
             // An element of a list of the wrong kind is a list it refuses.
             (
                 Code::BadValue,
-                "(shell-program (options) (list 1))".to_owned(),
+                "(shell-program (options) (list 1.5))".to_owned(),
             ),
         ];
         // all-history's guard, whatever comes after it.
@@ -2811,8 +2729,8 @@ mod tests {
             r#"(set "styles" (list 1))"#,
             r#"(set "styles" (list (list 5 1 2)))"#,
             r#"(set "bar" (list 1))"#,
-            r#"(set "bar-slots" (list 1))"#,
-            r#"(set "shell" (list 1))"#,
+            r#"(set "bar" (list "top" (list (list "text" 1)) () #false))"#,
+            r#"(set "shell" (list 1.5))"#,
         ] {
             let (failed, _, text) = offline(&format!(
                 "(catch-kind! {expression} config failure (print \"caught\"))"
@@ -2849,9 +2767,9 @@ mod tests {
                 r#"(directory B "/")"#,
                 "(history-bytes B 0)",
                 "(program-clipboard B #false)",
-                r#"(program B "")"#,
+                r#"(program B (list ""))"#,
                 r#"(shell-program B (list "/bin/sh"))"#,
-                r#"(argument (program B "/bin/sh") "-l")"#,
+                r#"(program B (list "/bin/sh" "-l"))"#,
             ] {
                 let program = format!(
                     "(set \"bell\" #false) (attach (size {} 80 24))",

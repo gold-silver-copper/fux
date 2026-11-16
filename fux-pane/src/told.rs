@@ -33,10 +33,6 @@ impl<'a> Teller<'a> {
     }
 
     /// The pane tells `what`.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (push): left, D-194"
-    )]
     pub fn tell(&mut self, what: Told) {
         let actor = match what {
             Told::Bell
@@ -51,7 +47,6 @@ impl<'a> Teller<'a> {
             | Told::Respawned { .. }
             | Told::Resized(_)
             | Told::HistoryBudget(_)
-            | Told::HistoryCleared
             | Told::Input { .. }
             | Told::Signalled { .. } => self.actor,
         };
@@ -65,10 +60,12 @@ pub enum Told {
     /// Named otherwise: its new name.
     Renamed(String),
     /// Its program started again (`respawn`), as generation `generation`,
-    /// over one that ran: what that one left.
+    /// over one that ran: what that one left, and what was started, which
+    /// its server's copy takes (the journal keeps the event without it).
     Respawned {
         left: Left,
         generation: u64,
+        argv: Option<Box<fux_wire::command::Program>>,
     },
     Bell,
     Notification(Said),
@@ -80,7 +77,6 @@ pub enum Told {
     Resized(fux_vt::Size),
     /// The pane's retained history budget changed.
     HistoryBudget(usize),
-    HistoryCleared,
     /// Its program closed its terminal and runs on.
     HungUp,
     /// Reading its program's terminal failed unexpectedly, so; or its
@@ -117,7 +113,7 @@ pub enum Sent {
 
 wired!(Told {
     Renamed(name),
-    Respawned { left, generation },
+    Respawned { left, generation, argv },
     Bell,
     Notification(said),
     Title(said),
@@ -125,7 +121,6 @@ wired!(Told {
     Done(status),
     Resized(size),
     HistoryBudget(bytes),
-    HistoryCleared,
     HungUp,
     ReadFailed(error),
     Input { kind, bytes, expected, generation },

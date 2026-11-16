@@ -127,73 +127,6 @@ fn repeat_makes_its_ascii_copies_and_returns() -> Result {
 #[global_allocator]
 static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
 
-/// Types `row` on a one-row screen and ends its line with history's next
-/// allocation refused (`fux_vt::refuse_next`): whether the line feed needed
-/// room for the row's cells (a block made or grown), which the refusal then
-/// cost the row, as if there were no history. The row is then typed and
-/// ended again, with room.
-#[cfg(feature = "checks")]
-fn needs_room(p: &mut Parser, row: &str) -> Result<bool> {
-    p.process(row.as_bytes())?;
-    let (held, refused) = (p.screen().history_len(), p.refused());
-    fux_vt::refuse_next(1);
-    let failed = p.process(b"\r\n").is_err();
-    fux_vt::refuse_next(0);
-    let needed = p.refused() > refused;
-    let kept = p.screen().history_len() > held;
-    if failed != needed || kept == needed {
-        return Err(format!("failed {failed}, refused {needed}, kept {kept}").into());
-    }
-    if needed {
-        p.process(row.as_bytes())?;
-        p.process(b"\r\n")?;
-    }
-    Ok(needed)
-}
-
-/// `process_all` reads every byte past a refusal of room and says how many
-/// there were: the screen is good to read.
-#[cfg(feature = "checks")]
-#[test]
-fn process_all_reads_past_a_refusal_and_counts_it() -> Result {
-    let mut p = Parser::new(Size::new(1, 10)?, 1 << 20)?;
-    fux_vt::refuse_next(1);
-    let refused = p.process_all(b"lost\r\nshown", &mut ());
-    fux_vt::refuse_next(0);
-    assert_eq!((refused, p.refused()), (1, 1));
-    assert_eq!(p.screen().history_len(), 0);
-    assert_eq!(lines::lines(&p), ["shown"]);
-    Ok(())
-}
-
-/// B17: the newest block doubles up to a block, a row half a block long starts a whole block, and a row that fits needs no room.
-#[cfg(feature = "checks")]
-#[test]
-fn history_blocks_double_to_a_block_and_rows_fill_their_room() -> Result {
-    // 1 MiB of history: a block is 4,096 cells. One-cell rows: the first
-    // block is the first row's 1 cell, then it doubles (2, 4, 8) as rows
-    // overflow it; rows 4, 6, 7 and 8 fit in the room it has.
-    let mut p = Parser::new(Size::new(1, 2048)?, 1 << 20)?;
-    let made = (0..9)
-        .map(|_| needs_room(&mut p, "a"))
-        .collect::<Result<Vec<_>>>()?;
-    assert_eq!(
-        made,
-        [true, true, true, false, true, false, false, false, true]
-    );
-    // Rows of 2,048 cells, half a block: the first block is the first
-    // row's, doubled to a block for the second; the third starts a block of
-    // a block's cells (it is not longer than half a block), which the
-    // fourth fits in; and so on.
-    let mut p = Parser::new(Size::new(1, 2048)?, 1 << 20)?;
-    let half = times("x", 2048);
-    let made = (0..6)
-        .map(|_| needs_room(&mut p, &half))
-        .collect::<Result<Vec<_>>>()?;
-    assert_eq!(made, [true, true, true, false, true, false]);
-    Ok(())
-}
-
 /// B17/B38: a history whose budget holds them keeps exactly `MAX_ROWS` (1,048,576) rows.
 #[test]
 fn history_keeps_the_most_rows_a_grid_holds() -> Result {
@@ -453,14 +386,14 @@ fn a_host_cell_under_a_band_high_is_refused() -> Result {
 fn an_escape_with_an_intermediate_before_a_bracket_ends_no_frame() -> Result {
     let mut p = Parser::new(Size::new(4, 10)?, 0)?;
     assert_eq!(
-        p.process_until_stop(b"\x1b[?2026h", &mut ())?,
+        p.process_until_stop(b"\x1b[?2026h", &mut ()),
         Some((8, Stop::Begun))
     );
     let held = b"\x1b([?2026l";
     assert_eq!(p.frame_scan().end(held), None);
     assert_eq!(p.frame_scan().end(b"\x1b[?2026l"), Some(8));
     // The parser reads it so too: no frame ends in it.
-    assert_eq!(p.process_until_stop(held, &mut ())?, None);
+    assert_eq!(p.process_until_stop(held, &mut ()), None);
     Ok(())
 }
 
@@ -809,7 +742,7 @@ fn a_repeat_with_no_copy_to_a_row_spends_nothing() -> Result {
     // call may.
     let mut p = Parser::new(Size::new(2, 1)?, 0)?;
     let input = times("\u{4e00}\x1b[65535b", 2000);
-    assert_eq!(p.process_until_stop(input.as_bytes(), &mut ())?, None);
+    assert_eq!(p.process_until_stop(input.as_bytes(), &mut ()), None);
     Ok(())
 }
 

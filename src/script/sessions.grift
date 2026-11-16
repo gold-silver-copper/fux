@@ -51,7 +51,7 @@
   (define! builder (program-clipboard builder (get pane-record "program-clipboard")))
   (define! builder (directory builder place))
   (if! (same? (get launch "choice") "shell") (shell-program builder program-arguments)
-    (fold (lambda! (builder value) (argument builder value)) (program builder (first program-arguments)) (rest program-arguments)))))
+    (program builder program-arguments))))
 (define! restore-session (lambda! (recipe)
   (when! (not? (same? (get recipe "projection") "recipe")) (raise (error (quote! type-error) recipe)))
   (define! workspaces (get recipe "workspaces"))

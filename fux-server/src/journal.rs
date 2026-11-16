@@ -113,8 +113,8 @@ struct Entry {
 }
 
 /// A time in the journal: before entry `seq` and before the `moves`th
-/// workspace to leave where it was. What `truncate` takes it back to,
-/// and how the workspaces were nested then (`Journal::above`).
+/// workspace to leave where it was: how the workspaces were nested
+/// then (`Journal::above`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Mark {
     seq: Seq,
@@ -446,22 +446,6 @@ impl Journal {
             moves: self.moved,
         }
     }
-    /// Its entries from `mark` on, never read, let go, and the moves since
-    /// with them: a change undone before it was told
-    /// (`Session::transact`). What they evicted is gone.
-    pub(crate) fn truncate(&mut self, mark: Mark) {
-        while let Some(entry) = self.entries.pop_back_if(|entry| entry.seq >= mark.seq) {
-            self.text = self.text.saturating_sub(entry.event.stored());
-        }
-        while (self.thens.pop_back_if(|then| then.entry >= mark.seq)).is_some() {}
-        while let Some(moved) = self.moves.pop_back_if(|moved| moved.at.moves >= mark.moves) {
-            self.was.remove(&(moved.ws, moved.at));
-        }
-        self.moved = self.moved.min(mark.moves);
-        if mark.seq < self.next {
-            self.next = mark.seq;
-        }
-    }
     /// The oldest entry it still holds, or its end when it holds none.
     fn first(&self) -> Seq {
         self.entries.front().map_or(self.next, |entry| entry.seq)
@@ -593,7 +577,6 @@ fn told_stored(told: &Told) -> usize {
             | Told::Done(_)
             | Told::Resized(_)
             | Told::HistoryBudget(_)
-            | Told::HistoryCleared
             | Told::HungUp
             | Told::Signalled { .. }
             | Told::Exited(_) => 0,
@@ -614,7 +597,9 @@ fn told_said(told: &Told) -> (&'static str, Fields) {
         };
         match told {
             Told::Renamed(name) => ("renamed", named(name)),
-            Told::Respawned { left, generation } => {
+            Told::Respawned {
+                left, generation, ..
+            } => {
                 let generation = ("generation", Json::uint(*generation));
                 (
                     "respawned",
@@ -633,7 +618,6 @@ fn told_said(told: &Told) -> (&'static str, Fields) {
                 "history_budget",
                 vec![("history_bytes", Json::count(*bytes))],
             ),
-            Told::HistoryCleared => ("history_cleared", Vec::new()),
             Told::HungUp => ("hung_up", Vec::new()),
             Told::ReadFailed(error) => (
                 "read_failed",
@@ -800,6 +784,7 @@ pub fn every_kind(
         Told::Respawned {
             left,
             generation: i64::MAX.unsigned_abs(),
+            argv: None,
         },
         Told::Bell,
         notification,
@@ -810,7 +795,6 @@ pub fn every_kind(
         Told::Resized(size),
         // The most a pane's budget is (`command::HistoryBytes`).
         Told::HistoryBudget(isize::MAX.unsigned_abs()),
-        Told::HistoryCleared,
         Told::HungUp,
         Told::ReadFailed(fuxix::Errno::SRCH.to_string()),
         // The most a grift integer says, as it reads them.
@@ -1294,7 +1278,6 @@ mod tests {
                         | Told::Done(_)
                         | Told::Resized(_)
                         | Told::HistoryBudget(_)
-                        | Told::HistoryCleared
                         | Told::HungUp
                         | Told::ReadFailed(_)
                         | Told::Input { .. }
@@ -1634,15 +1617,6 @@ mod tests {
         assert_eq!(read(&journal, &now, a)?, [0, 1, 3, 4]);
         assert_eq!(read(&journal, &now, b)?, [0, 1, 3, 4]);
         assert_eq!(read(&journal, &now, d)?, [1, 2]);
-        // A change undone takes its moves back with its entries.
-        let mark = journal.mark();
-        now.insert(b, d);
-        journal.left(b, Some(a));
-        journal.push(Event::Workspace((Some(d), b), Change::Moved(Some(a))));
-        now.insert(b, a);
-        journal.truncate(mark);
-        assert_eq!(read(&journal, &now, d)?, [1, 2]);
-        assert_eq!(read(&journal, &now, a)?, [0, 1, 3, 4]);
         // The moves go with the entries from before them, and are counted.
         assert_eq!(journal.moves.len(), 4);
         assert_eq!((journal.was.len(), journal.text), (4, 0));

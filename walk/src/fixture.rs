@@ -513,7 +513,7 @@ fn feed(terminal: &mut fux_vt::Parser, bytes: &[u8]) {
     struct Deaf;
     impl fux_vt::Sink for Deaf {}
     let mut rest = bytes;
-    while let Ok(Some((taken, _))) = terminal.process_until_stop(rest, &mut Deaf) {
+    while let Some((taken, _)) = terminal.process_until_stop(rest, &mut Deaf) {
         rest = rest.get(taken..).unwrap_or_default();
     }
 }

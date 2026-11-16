@@ -592,3 +592,39 @@ fn the_records_page_lists_the_code_s_fields() -> Outcome {
     );
     Ok(())
 }
+
+/// Every program in `examples/` prints what its header says, a line each
+/// (`; expect:`), and exits with its status (`; status:`, else 0).
+#[test]
+fn every_program_in_examples_prints_what_its_header_says() -> Outcome {
+    let server = Server::start("")?;
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut ran = 0;
+    for entry in std::fs::read_dir(&examples).map_err(e)? {
+        let path = entry.map_err(e)?.path();
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "grift")
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).map_err(e)?;
+        let header =
+            |key: &'static str| text.lines().filter_map(move |line| line.strip_prefix(key));
+        let expect: String = header("; expect: ")
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let status = header("; status: ").next().unwrap_or("0");
+        let out = server.fux(&["--file", &path.display().to_string()])?;
+        assert_eq!(
+            (out.stdout.as_str(), out.status.to_string().as_str()),
+            (expect.as_str(), status),
+            "{}: {}",
+            path.display(),
+            out.stderr
+        );
+        ran += 1;
+    }
+    assert!(ran > 0, "no programs in {}", examples.display());
+    Ok(())
+}

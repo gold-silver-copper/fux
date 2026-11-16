@@ -2,7 +2,7 @@
 //! as the same value, so that the server receives what a client's words
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
-use crate::command::{Limit, Percent};
+use crate::command::Limit;
 use fux_vt::keys::mouse::MouseButton;
 use fux_vt::keys::{Direction, KeyPress};
 use fuxix::process::Signal;
@@ -24,9 +24,6 @@ pub enum Error {
     Bad(&'static str),
     /// Bytes after the value.
     Trailing,
-    /// The OS refused the memory to hold a text or a list of this many
-    /// bytes.
-    Memory(usize),
 }
 
 impl std::fmt::Display for Error {
@@ -37,7 +34,6 @@ impl std::fmt::Display for Error {
             Error::NotUtf8 => f.write_str("a text that is not UTF-8"),
             Error::Bad(what) => write!(f, "{what} out of range"),
             Error::Trailing => f.write_str("bytes after the value"),
-            Error::Memory(bytes) => write!(f, "the OS refused memory for its {bytes} bytes"),
         }
     }
 }
@@ -61,9 +57,7 @@ impl<'a> Reader<'a> {
         if count > self.0.len() {
             return Err(Error::Truncated);
         }
-        let mut out = Vec::new();
-        out.try_reserve_exact(count)
-            .map_err(|_| Error::Memory(count.saturating_mul(size_of::<T>())))?;
+        let mut out = Vec::with_capacity(count);
         for _ in 0..count {
             out.push(read(self)?);
         }
@@ -90,26 +84,6 @@ impl<'a> Reader<'a> {
 pub trait Wire: Sized {
     fn put(&self, out: &mut impl crate::wire::Sink);
     fn get(r: &mut Reader<'_>) -> Result<Self, Error>;
-}
-
-/// fuxix's allocations, with no limit of fux's own: only the OS refuses
-/// one, as `memory`.
-pub struct Memory;
-
-impl fuxix::Allocation for Memory {
-    type Error = crate::code::Error;
-    fn remaining(&self) -> usize {
-        usize::MAX
-    }
-    fn charge(&mut self, _bytes: usize) -> Result<(), Self::Error> {
-        Ok(())
-    }
-    fn release(&mut self, _bytes: usize) -> Result<(), Self::Error> {
-        Ok(())
-    }
-    fn exceeded() -> Self::Error {
-        crate::code::fail(crate::code::Code::Memory, "the OS refused memory")
-    }
 }
 
 /// Where wire bytes go.
@@ -249,12 +223,7 @@ impl Wire for String {
         let len = length(r)?;
         let bytes = r.bytes(len)?;
         let text = std::str::from_utf8(bytes).map_err(|_| Error::NotUtf8)?;
-        let mut owned = String::new();
-        owned
-            .try_reserve_exact(text.len())
-            .map_err(|_| Error::Memory(text.len()))?;
-        owned.push_str(text);
-        Ok(owned)
+        Ok(text.to_owned())
     }
 }
 
@@ -450,6 +419,8 @@ impl Wire for crate::command::Screen {
 /// past 256 does not compile), then its fields in the order listed. `Ty<T>`
 /// is `Wire` where `T` is. For a type declared in another crate; fux's own
 /// are declared in `wire!`, which writes this list from the declaration.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! wire_enum {
     ($ty:ident $(<$g:ident>)? {
         $($var:ident $(( $($p:ident),+ ))? $({ $($f:ident),* })?),* $(,)?
@@ -460,7 +431,7 @@ macro_rules! wire_enum {
                 $($var),*
             }
             impl$(<$g: $crate::wire::Wire>)? $crate::wire::Wire for $ty$(<$g>)? {
-                fn put(&self, out: &mut impl crate::wire::Sink) {
+                fn put(&self, out: &mut impl $crate::wire::Sink) {
                     match self {$(
                         Self::$var $(( $($p),+ ))? $({ $($f),* })? => {
                             out.push(Tag::$var as u8);
@@ -489,10 +460,12 @@ pub(crate) use wire_enum;
 /// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields,
 /// one at least, in order, by name or tuple index (`Ty { 0 }`). For a type
 /// declared elsewhere; one declared here says its fields once, in `wire!`.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! wire_struct {
     ($ty:path { $($f:tt),+ $(,)? }) => {
         impl $crate::wire::Wire for $ty {
-            fn put(&self, out: &mut impl crate::wire::Sink) {
+            fn put(&self, out: &mut impl $crate::wire::Sink) {
                 $($crate::wire::Wire::put(&self.$f, out);)*
             }
             fn get(
@@ -751,7 +724,6 @@ leaves!(
     usize,
     std::num::NonZeroU32,
     crate::command::Limit,
-    crate::command::Percent,
     crate::command::ScrollLines,
     // A flag.
     bool,
@@ -815,19 +787,10 @@ impl<A: Reach, B: Reach, C: Reach> Reach for (A, B, C) {
     }
 }
 
-impl Wire for Percent {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.get().put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Percent::new(u8::get(r)?).ok_or(Error::Bad("percent"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{Command, Extent, Program};
+    use crate::command::{Command, Program};
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
@@ -1023,12 +986,5 @@ mod tests {
             .is_err()
         );
         Ok(())
-    }
-
-    #[test]
-    fn a_percent_past_100_is_refused() {
-        let read = |n: u8| Extent::get(&mut Reader::new(&[1, n])).ok();
-        assert!(read(250).is_none() && read(0).is_none());
-        assert_eq!(read(100).map(|e| encode(&e)), Some(vec![1, 100]));
     }
 }

@@ -1,6 +1,6 @@
 //! Grift evaluates policy; native calls marshal into the existing request vocabulary.
 use super::*;
-use fux_wire::command::{Command, Percent};
+use fux_wire::command::Command;
 use grift::{Answer, Error, Grift, HostCall, Kind, Ran, Value as G};
 
 #[derive(Clone, Debug)]
@@ -371,22 +371,14 @@ fn kind<'a, 'b, A: Asks + ?Sized>(
     if let Some(held) = held_kind(g, v)? {
         return g.string(&held);
     }
-    if matches!(v, G::Pair(_))
-        && let Ok(items) = g.list_items(v)
-        && fields(g, &items)?.is_some()
-    {
+    if record_fields(g, v)?.is_some() {
         return g.string("record");
     }
     let v = from_grift(g, state.stop, v)?;
-    let name = match &v {
-        Value::App(a) => a.name(),
-        Value::Int(_)
-        | Value::Float(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::Symbol(_)
-        | Value::List(_)
-        | Value::Bytes(_) => v.kind(),
+    let name = if let Value::App(a) = &v {
+        a.name()
+    } else {
+        v.kind()
     };
     g.string(name)
 }
@@ -409,17 +401,24 @@ fn text_of<'a, 'b, A: Asks + ?Sized>(
 /// The kind of the server's answer `v` is, its first field: read without
 /// making a whole capture a value to ask it.
 fn held_kind<T>(g: &Grift<T>, v: &G) -> Result<Option<String>, Error> {
-    let Some((first, _)) = g.as_pair(v)? else {
+    let Some(fields) = record_fields(g, v)? else {
         return Ok(None);
     };
-    let Some((key, value)) = field(g, &first)? else {
+    let Some((_, value)) = fields.iter().find(|(key, _)| key == "kind") else {
         return Ok(None);
     };
-    let kind = g
-        .as_str(&value)?
-        .map(str::to_owned)
-        .filter(|kind| key == "kind" && record::HELD.iter().any(|(name, _)| name == kind));
-    Ok(kind)
+    let kind = g.as_str(value)?.map(str::to_owned);
+    Ok(kind.filter(|kind| record::HELD.iter().any(|(name, _)| name == kind)))
+}
+
+/// `v`'s fields, if it is a record: the one reader `kind`, `string` and
+/// `get` share, so that none reads as a record what another calls a list.
+/// A list whose first item is no field is told so at once, however long.
+fn record_fields<T>(g: &Grift<T>, v: &G) -> Result<Option<Vec<(String, G)>>, Error> {
+    match g.as_pair(v)? {
+        Some((first, _)) if field(g, &first)?.is_some() => fields(g, &g.list_items(v)?),
+        Some(_) | None => Ok(None),
+    }
 }
 
 /// A held answer's text, as `Record::write_held` says it.
@@ -463,21 +462,11 @@ fn field_of<T>(g: &mut HostCall<'_, T>, record: &G, field: &G) -> Result<Option<
             }
         };
     }
-    if !matches!(record, G::Pair(_)) {
+    let Some(fields) = record_fields(g, record)? else {
         return Ok(None);
-    }
-    if let Some((G::Symbol(head), _)) = g.as_pair(record)?
-        && [CODE, REQUEST].contains(&g.symbol_name(&head)?)
-    {
-        return Ok(None);
-    }
-    for entry in g.list_items(record)? {
-        if let Some((G::Symbol(key), rest)) = g.as_pair(&entry)?
-            && key == name
-            && let Some((value, _)) = g.as_pair(&rest)?
-        {
-            return Ok(Some(value));
-        }
+    };
+    if let Some((_, value)) = fields.into_iter().find(|(key, _)| *key == field_name) {
+        return Ok(Some(value));
     }
     let about = g.string(&field_name)?;
     Err(g.error("no-field", &[about]))
@@ -554,12 +543,7 @@ fn asked<'a, 'b, A: Asks + ?Sized>(
     args: &[G],
 ) -> Result<G, Error> {
     let name = word.row().name;
-    let takes = word
-        .row()
-        .effect
-        .split_once("--")
-        .map_or(0, |(s, _)| s.split_whitespace().count());
-    if args.len() != takes {
+    if args.len() != word.row().takes().count() {
         return Err(g.arity_error(args));
     }
     if matches!(word, Word::Act(Act::Word | Act::Dictionary)) {
@@ -601,13 +585,25 @@ fn asked<'a, 'b, A: Asks + ?Sized>(
         word,
         Word::Act(Act::Pane | Act::Tab | Act::Workspace | Act::Client)
     ) {
-        // An id as fux prints it, its run in it, is that handle (D-26).
+        // An id as fux prints it, its run in it, is that handle (D-26):
+        // of the word's kind it is itself, its run kept; of another, the
+        // word finds its own of it, as it does of the handle.
         if let Some(Value::Str(s)) = values.first()
             && s.contains(':')
             && let Some(found) = from_handle_name(s).or_else(|| from_handle_name(&format!("w{s}")))
             && scope(&Value::App(found.clone())).is_some()
         {
-            return to_grift(g, &Value::App(found));
+            let own = matches!(
+                (word, &found),
+                (Word::Act(Act::Pane), Fux::Pane(..))
+                    | (Word::Act(Act::Tab), Fux::Tab(..))
+                    | (Word::Act(Act::Workspace), Fux::Workspace(..))
+                    | (Word::Act(Act::Client), Fux::Client(..))
+            );
+            if own {
+                return to_grift(g, &Value::App(found));
+            }
+            values = vec![Value::App(found)];
         }
         if let Some(Value::Int(n)) = values.first() {
             let prefix = match word {
@@ -768,7 +764,10 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Call<'_, '_, '_, A>, args: &[G]) -> Resu
     let mut entries = Vec::new();
     let wanted = match args {
         [] => None,
-        [v] => g.as_str(v)?.map(str::to_owned),
+        [v] => match g.as_str(v)? {
+            Some(name) => Some(name.to_owned()),
+            None => return Err(g.type_error(*v)),
+        },
         _ => return Err(g.arity_error(args)),
     };
     let built_in = g.symbol("built-in-names")?;
@@ -1286,7 +1285,7 @@ pub(super) fn run(
 
 /// The symbol a handle is as grift data, its server run in it: `%3:RUN`,
 /// `@3:RUN`, `w+3:RUN`, `c3:RUN` (`c3:` and `w+3:` with no run, as `+3` reads
-/// as a number and `c3` is any symbol); `%all`; a share, `percent:30`.
+/// as a number and `c3` is any symbol); `%all`.
 pub(super) fn handle_name(app: &Fux, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
     let run = |out: &mut dyn std::fmt::Write, run: &Option<Run>| match run {
         Some(run) => write!(out, ":{run}"),
@@ -1316,8 +1315,6 @@ pub(super) fn handle_name(app: &Fux, out: &mut dyn std::fmt::Write) -> std::fmt:
             }
         }
         Fux::All => out.write_str("%all"),
-        Fux::Extent(Extent::Percent(n)) => write!(out, "percent:{}", n.get()),
-        Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
         Fux::Null => out.write_str("none"),
         Fux::Record(_) | Fux::Opts(_) | Fux::Code(_) => Ok(()),
     }
@@ -1328,11 +1325,6 @@ pub(super) fn handle_name(app: &Fux, out: &mut dyn std::fmt::Write) -> std::fmt:
 pub(crate) fn from_handle_name(name: &str) -> Option<Fux> {
     if name == "%all" {
         return Some(Fux::All);
-    }
-    if let Some(share) = name.strip_prefix("percent:") {
-        return Some(Fux::Extent(Extent::Percent(Percent::new(
-            share.parse().ok()?,
-        )?)));
     }
     let (id, run) = match name.split_once(':') {
         Some((id, "")) => (id, None),
@@ -1412,7 +1404,6 @@ fn to_grift<T>(g: &mut HostCall<'_, T>, v: &Value<Fux>) -> Result<G, Error> {
             }
             g.list(&items)?
         }
-        Value::App(Fux::Extent(Extent::Cells(n))) => G::Integer(i64::from(*n)),
         Value::App(app) => {
             let mut name = String::new();
             handle_name(app, &mut name).map_err(|_| g.error("output", &[]))?;
@@ -1568,17 +1559,8 @@ fn from_grift_at<T>(
                     })))
                 }
                 (REQUEST, [_, subject, steps @ ..]) => {
-                    let subject = match from_grift_at(g, stop, subject, depth)? {
-                        Value::App(Fux::Null) => None,
-                        subject @ Value::Int(_)
-                        | subject @ Value::Float(_)
-                        | subject @ Value::Bool(_)
-                        | subject @ Value::Str(_)
-                        | subject @ Value::Symbol(_)
-                        | subject @ Value::List(_)
-                        | subject @ Value::App(_)
-                        | subject @ Value::Bytes(_) => Some(subject),
-                    };
+                    let subject = Some(from_grift_at(g, stop, subject, depth)?)
+                        .filter(|subject| !matches!(subject, Value::App(Fux::Null)));
                     let mut replayed = Vec::with_capacity(steps.len());
                     for step in steps {
                         let items = g.list_items(step)?;

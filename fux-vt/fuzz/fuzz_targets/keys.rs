@@ -30,7 +30,7 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 fn reporting() -> Option<Parser> {
     let mut p = Parser::with_options(Size::new(1, 1).ok()?, 0, Options::new()).ok()?;
     let read = p.process_until_stop(b"\x1b[?1003h\x1b[?1006h", &mut ());
-    matches!(read, Ok(None)).then_some(p)
+    read.is_none().then_some(p)
 }
 
 /// Fails on any fault the decoder's checker finds.

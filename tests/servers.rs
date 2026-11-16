@@ -127,7 +127,7 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     );
     // From one of its own panes, kill-server is refused as well.
     let sh =
-        server.words("(sequence! (define! value-661 (new-tab (program (size (in (options) \"agent\") 80 24) \"sh\"))) (rename value-661 \"sh\") value-661)")?;
+        server.words("(sequence! (define! value-661 (new-tab (program (size (in (options) \"agent\") 80 24) (list \"sh\")))) (rename value-661 \"sh\") value-661)")?;
     let sh = first_word(&sh);
     let line = format!("'{FUX}' '(kill-server)'; echo status=$?");
     let sent = server.ok(&[&format!(
@@ -259,7 +259,7 @@ fn events_tell_what_happens() -> Outcome {
         )],
     )?;
     let told = (|| {
-        let pane = server.ok(&["(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") \"printf '\\\\a'; exit 7\"))"])?;
+        let pane = server.ok(&["(new-tab (program (size (in (options) \"agent\") 80 24) (list \"sh\" \"-c\" \"printf '\\\\a'; exit 7\")))"])?;
         let pane = first_word(&pane);
         let created = next("created", None)?;
         assert!(
@@ -342,9 +342,12 @@ fn a_stream_from_ls_misses_nothing() -> Outcome {
 #[test]
 fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let server = Server::start("")?;
-    let a = server.ok(&[r#"(new-tab (argument (argument (program (name (size (in (options) "agent") 80 24) "a") "bash") "--norc") "-i"))"#])?;
+    let a = server.ok(&[r#"(new-tab (program (name (size (in (options) "agent") 80 24) "a") (list "bash" "--norc" "-i")))"#])?;
     let a = first_word(&a);
-    let b=server.ok(&[&format!("(split (argument (argument (program (axis {} \"horizontal\") \"bash\") \"--norc\") \"-i\"))",support::reference(a))])?;
+    let b = server.ok(&[&format!(
+        "(split (program (axis {} \"horizontal\") (list \"bash\" \"--norc\" \"-i\")))",
+        support::reference(a)
+    )])?;
     let b = first_word(&b);
     // Each pane takes them, answering its version before them, and writes
     // the command's output.
@@ -365,11 +368,11 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
 #[test]
 fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     let server = Server::start("")?;
-    let run = [r#"(new-tab (program (size (in (options) "agent") 80 24) "cat"))"#];
+    let run = [r#"(new-tab (program (size (in (options) "agent") 80 24) (list "cat")))"#];
     let a = server.ok(&run)?;
     let a = first_word(&a);
     let b = server.ok(&[&format!(
-        "(split (program (axis {} \"horizontal\") \"cat\"))",
+        "(split (program (axis {} \"horizontal\") (list \"cat\")))",
         support::reference(a)
     )])?;
     let c = server.ok(&run)?;
@@ -671,7 +674,7 @@ fn a_client_that_sends_no_frame_is_told_why() -> Outcome {
 fn a_dump_makes_its_workspace_again() -> Outcome {
     let server = Server::start("")?;
     let pane = server.words("(new-tab (in (size (options) 80 24) \"build\"))")?;
-    let worker = server.ok(&[&format!("(split (argument (argument (program (axis (pane {}) \"vertical\") \"sh\") \"-c\") \"echo built; sleep 60\"))", fux::script::quoted(first_word(&pane)))])?;
+    let worker = server.ok(&[&format!("(split (program (axis (pane {}) \"vertical\") (list \"sh\" \"-c\" \"echo built; sleep 60\")))", fux::script::quoted(first_word(&pane)))])?;
     server.ok(&[&format!(
         "(sequence! (rename (pane {}) \"worker\") #inert)",
         fux::script::quoted(first_word(&worker))
@@ -700,7 +703,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     // A workspace new-tab made: its dump takes the workspace from the answer
     // new-tab leaves.
     server
-        .words("(sequence! (rename (new-tab (argument (program (in (size (options) 80 24) \"jobs\") \"sleep\") \"60\")) \"job\") #inert)")?;
+        .words("(sequence! (rename (new-tab (program (in (size (options) 80 24) \"jobs\") (list \"sleep\" \"60\"))) \"job\") #inert)")?;
     let dump = server.ok(&["(dump (workspace \"jobs\"))"])?;
     server.ok(&["(sequence! (kill (workspace \"jobs\")) #inert)"])?;
     std::fs::write(&file, &dump).map_err(e)?;
@@ -721,7 +724,7 @@ fn a_nested_dump_replays_under_another_workspace() -> Outcome {
     let server = Server::start("")?;
     let create = |builder: &str| {
         server.words(&format!(
-            "(new-tab (argument (program {builder} \"sleep\") \"60\"))"
+            "(new-tab (program {builder} (list \"sleep\" \"60\")))"
         ))
     };
     create(r#"(in (size (options) 80 24) "home")"#)?;
@@ -729,7 +732,7 @@ fn a_nested_dump_replays_under_another_workspace() -> Outcome {
     create(r#"(in (in (size (options) 80 24) "proj") "agent1")"#)?;
     let p = create(r#"(name (in (in (size (options) 80 24) "proj") "agent2") "a2")"#)?;
     server.words(&format!(
-        "(split (argument (program (shares (axis {} \"vertical\") 2 1) \"sleep\") \"60\"))",
+        "(split (program (shares (axis {} \"vertical\") 2 1) (list \"sleep\" \"60\")))",
         support::reference(first_word(&p))
     ))?;
     create(r#"(in (in (size (options) 80 24) "agent1") "deep")"#)?;
@@ -839,7 +842,7 @@ fn a_session_that_goes_round_is_refused() -> Outcome {
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
     source.words(
-        "(sequence! (rename (new-tab (argument (program (in (size (options) 80 24) \"main\") \"sleep\") \"60\")) \"tab-2\") #inert)",
+        "(sequence! (rename (new-tab (program (in (size (options) 80 24) \"main\") (list \"sleep\" \"60\"))) \"tab-2\") #inert)",
     )?;
     source.ok(&["(sequence! (move (pane \"tab-2\") \"new-workspace\") #inert)"])?;
     let dump = source.ok(&["(dump (all))"])?;
@@ -868,7 +871,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 #[test]
 fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
     let source = Server::start("")?;
-    source.words(r#"(define! p (new-tab (program (size (in (options) "new-workspace") 80 24) "cat"))) (rename p "first") (define! p2 (split (program (axis (pane "first") "horizontal") "cat"))) (rename p2 "second") (rename (new-tab (program (size (in (options) (workspace (pane "first"))) 80 24) "cat")) "third")"#)?;
+    source.words(r#"(define! p (new-tab (program (size (in (options) "new-workspace") 80 24) (list "cat")))) (rename p "first") (define! p2 (split (program (axis (pane "first") "horizontal") (list "cat")))) (rename p2 "second") (rename (new-tab (program (size (in (options) (workspace (pane "first"))) 80 24) (list "cat"))) "third")"#)?;
     let dump = source.ok(&[r#"(dump (workspace (pane "first")))"#])?;
     for shell in [
         r#"(list "/no/such/fux-shell")"#,
@@ -903,7 +906,7 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let server = Server::start("")?;
     let pane = server.words(
-        "(new-tab (argument (program (in (size (options) 80 24) \"moved\") \"sleep\") \"60\"))",
+        "(new-tab (program (in (size (options) 80 24) \"moved\") (list \"sleep\" \"60\")))",
     )?;
     server.ok(&[&format!(
         "(sequence! (move (pane {}) \"new-tab\") #inert)",
@@ -1008,8 +1011,8 @@ fn a_socket_served_by_another_uid_is_refused() -> Outcome {
 fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcome {
     use std::os::unix::fs::PermissionsExt;
     for command in [
-        r#"(argument (program B "/bin/sh") "worker.sh")"#,
-        r#"(program B "./worker.sh")"#,
+        r#"(program B (list "/bin/sh" "worker.sh"))"#,
+        r#"(program B (list "./worker.sh"))"#,
     ] {
         let server = Server::start("")?;
         let directory = server.dir.join("launch");

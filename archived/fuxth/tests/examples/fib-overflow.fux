@@ -1,5 +1,0 @@
-# Fibonacci 93 is past what an integer holds: the addition wraps around.
-# expect: -6246583658587674878
-define fib-step dup 1 eq if drop nip else -rot swap over add rot 1 sub recurse then end
-define fib dup 0 eq if else 0 1 rot fib-step then end
-93 fib

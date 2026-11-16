@@ -170,10 +170,9 @@ preferences! {
     titles "titles": bool;
     /// Painter roles; changes may supply a subset of the initialized roles.
     styles "styles": fux_wire::presentation::Styles;
-    /// Position, ordered left and right fields, and tab numbering.
+    /// Position, ordered left and right fields (fux's own, or inert text
+    /// this client gave, never evaluated on paint), and tab numbering.
     bar "bar": fux_wire::presentation::Bar;
-    /// Inert text supplied explicitly by this client, never evaluated on paint.
-    slots "bar-slots": fux_wire::presentation::Slots;
     /// Whether the prefix column is drawn; dispatch and bar feedback stay active.
     show_column "show-column": bool;
 }
@@ -200,7 +199,6 @@ impl PreferenceDraft {
     pub fn presentation(&mut self, p: fux_wire::presentation::Presentation) {
         self.styles = Some(p.styles);
         self.bar = Some(p.bar);
-        self.slots = Some(p.slots);
         self.show_column = Some(p.show_column);
         self.cell_placement = Some(p.cell_placement);
         self.bell = Some(p.bell);
@@ -236,7 +234,6 @@ impl Preferences {
         fux_wire::presentation::Presentation {
             styles: self.styles,
             bar: self.bar.clone(),
-            slots: self.slots.clone(),
             show_column: self.show_column,
             cell_placement: self.cell_placement,
             bell: self.bell,

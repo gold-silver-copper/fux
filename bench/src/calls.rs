@@ -66,8 +66,8 @@ fn fed_longest(parser: &mut fux_vt::Parser, input: &[u8]) -> Duration {
             let stop = parser.process_until_stop(std::hint::black_box(rest), &mut Deaf);
             most = most.max(started.elapsed());
             match stop {
-                Ok(Some((taken, _))) if taken > 0 => rest = rest.get(taken..).unwrap_or_default(),
-                Ok(_) | Err(_) => break,
+                Some((taken, _)) if taken > 0 => rest = rest.get(taken..).unwrap_or_default(),
+                Some(_) | None => break,
             }
         }
     }

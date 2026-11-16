@@ -635,8 +635,8 @@ fn bar_fields(
                     );
                 }
             }
-            Field::Slot(id) => {
-                if let Some(text) = view.presentation.slots.text(*id).filter(|t| !t.is_empty()) {
+            Field::Text(text) => {
+                if !text.is_empty() {
                     push(&mut parts, &mut room, format!(" {text} "), base);
                 }
             }
@@ -1070,27 +1070,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "checks")]
-    #[test]
-    fn refused_grid_allocation_preserves_the_previous_screen() -> Result<(), fux_vt::Error> {
-        fux_vt::refuse_next(1);
-        assert!(matches!(
-            super::Grid::new(24, 80),
-            Err(fux_vt::Error::Capacity)
-        ));
-        let mut grid = super::Grid::new(2, 3)?;
-        grid.cells.set(
-            0,
-            fux_vt::CellRef::new("K", false, fux_vt::Attributes::default()),
-        );
-        grid.cursor = Some((1, 2));
-        let before = grid.clone();
-        fux_vt::refuse_next(1);
-        assert_eq!(grid.reset(24, 80, true), Err(fux_vt::Error::Capacity));
-        assert_eq!(grid, before);
-        Ok(())
-    }
-
     fn new_grid(rows: u16, cols: u16) -> super::Grid {
         let grid = super::Grid::new(rows, cols);
         assert!(grid.is_ok(), "{grid:?}");
@@ -1496,7 +1475,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "(sequence! (new-tab (program (directory (in (options) \"agent\") \"/\") \"x\")) #inert)",
+            "(sequence! (new-tab (program (directory (in (options) \"agent\") \"/\") (list \"x\"))) #inert)",
         )?;
         let id = s.focused(c).ok_or("the pane")?;
         let respawn = format!(
@@ -1765,13 +1744,13 @@ mod tests {
     }
 
     #[test]
-    fn bar_fields_follow_client_data_and_slots_stay_inert() -> Result<(), String> {
+    fn bar_fields_follow_client_data_and_text_stays_inert() -> Result<(), String> {
         use crate::session::testing::{attached, output_as};
         let (mut session, client) = attached(8, 100)?;
         output_as(
             &mut session,
             Some(client),
-            "(sequence! (set \"bar-slots\" (list (list 0 \"me detach\"))) (set \"bar\" (list \"top\" (list (list \"slot\" 0) \"tabs\" \"workspace\") (list \"pane\") #true)) #inert)",
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" \"me detach\") \"tabs\" \"workspace\") (list \"pane\") #true)) #inert)",
         )?;
         let view = session.views.get(&client).ok_or("view")?;
         assert_eq!((view.pane_area().y(), view.pane_area().h()), (1, 7));
@@ -1792,7 +1771,7 @@ mod tests {
         output_as(
             &mut session,
             Some(client),
-            "(sequence! (set \"bar\" (list \"top\" (list (list \"slot\" 0)) (list \"pane\") #false)) #inert)",
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" \"first\")) (list \"pane\") #false)) #inert)",
         )?;
         let mut shown = Grid::default();
         assert!(compose_into(
@@ -1801,17 +1780,17 @@ mod tests {
             &mut shown,
             &mut Placement::default()
         ));
-        for change in ["notice", "slot", "title"] {
+        for change in ["notice", "text", "title"] {
             if let Some(view) = session.views.get_mut(&client) {
                 view.notice = None;
             }
             match change {
                 "notice" => session.notify_to(client, "top error", true),
-                "slot" => {
+                "text" => {
                     output_as(
                         &mut session,
                         Some(client),
-                        "(sequence! (set \"bar-slots\" (list (list 0 \"updated\"))) #inert)",
+                        "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" \"updated\")) (list \"pane\") #false)) #inert)",
                     )?;
                 }
                 _ => session.out(PaneId::of(1), b"\x1b]2;new title\x07"),

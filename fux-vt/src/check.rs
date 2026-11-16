@@ -5,26 +5,7 @@
 //! as work. Each check is shown a state with its one fault by a test
 //! beside it (`mod faults`), so a check that stops checking fails there.
 
-use std::{cell::Cell, fmt};
-
-thread_local! {
-    /// How many more of `crate::reserve`'s allocations on this thread are
-    /// refused.
-    static REFUSE: Cell<u32> = const { Cell::new(0) };
-}
-
-/// Refuses the next `n` allocations fux-vt makes on this thread, as if
-/// memory had run out, to test what a refusal leaves (THREATS.md B44).
-pub fn refuse_next(n: u32) {
-    REFUSE.set(n);
-}
-
-/// Whether this allocation is one `refuse_next` refuses; it counts one.
-pub(crate) fn refusing() -> bool {
-    let n = REFUSE.get();
-    REFUSE.set(n.saturating_sub(1));
-    n > 0
-}
+use std::fmt;
 
 /// What a check found wrong.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,13 +16,11 @@ pub struct Fault {
     pub(crate) detail: String,
 }
 
-/// What the checker did: the checks that ran, the faults found, and the
-/// invariants it cannot check yet.
+/// What the checker did: the checks that ran and the faults found.
 #[derive(Clone, Debug, Default)]
 pub struct Checked {
     ran: Vec<&'static str>,
     faults: Vec<Fault>,
-    waiting: Vec<(&'static str, &'static str)>,
 }
 
 impl Checked {
@@ -60,9 +39,6 @@ impl Checked {
             self.faults.push(Fault { check, detail });
         }
     }
-    pub(crate) fn wait(&mut self, check: &'static str, on: &'static str) {
-        self.waiting.push((check, on));
-    }
     pub(crate) fn merge(&mut self, other: Self) {
         for check in other.ran {
             if !self.ran.contains(&check) {
@@ -70,7 +46,6 @@ impl Checked {
             }
         }
         self.faults.extend(other.faults);
-        self.waiting.extend(other.waiting);
     }
     /// Whether no check found a fault.
     pub fn is_clean(&self) -> bool {
@@ -92,10 +67,6 @@ impl Checked {
     /// The faults found.
     pub(crate) fn faults(&self) -> &[Fault] {
         &self.faults
-    }
-    /// The invariants not checked yet, each with what it waits on.
-    pub(crate) fn waiting(&self) -> &[(&'static str, &'static str)] {
-        &self.waiting
     }
 }
 

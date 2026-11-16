@@ -23,11 +23,8 @@ use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 79;
+pub const PROTOCOL: u32 = 80;
 
-/// The first protocol whose command line is grift: an older server's binary
-/// reads none.
-pub const GRIFT: u32 = 77;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -52,9 +49,6 @@ pub enum Error {
     Wire(crate::wire::Error),
     /// A piece of a longer message, where a message is one frame at most.
     Piece,
-    /// The OS refused the memory to join, hold or send a message of more
-    /// than this many bytes.
-    Memory(usize),
 }
 
 impl std::fmt::Display for Error {
@@ -71,12 +65,6 @@ impl std::fmt::Display for Error {
                 "a piece of a longer message, where a message is one frame \
                  ({MAX_FRAME} bytes) at most"
             ),
-            Error::Memory(bytes) => {
-                write!(
-                    f,
-                    "the OS refused memory for a message of over {bytes} bytes"
-                )
-            }
         }
     }
 }
@@ -90,6 +78,9 @@ impl std::error::Error for Error {}
 pub struct Mismatch {
     pub protocol: u32,
     pub version: String,
+    /// The client's own, which the server's differs from.
+    pub client_protocol: u32,
+    pub client_version: String,
 }
 
 impl Mismatch {
@@ -102,6 +93,8 @@ impl Mismatch {
         Err(Self {
             protocol: server.protocol,
             version: server.version.clone(),
+            client_protocol: client.protocol,
+            client_version: client.version.clone(),
         })
     }
 }
@@ -112,9 +105,13 @@ impl std::fmt::Display for Mismatch {
             version: &self.version,
             protocol: self.protocol,
         };
+        let ours = Build {
+            version: &self.client_version,
+            protocol: self.client_protocol,
+        };
         write!(
             f,
-            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on its process stops it and its panes (`fux '(status)'` gives its `server-process-id`, where the system says it); a new server does not resume them",
+            "the server runs {theirs} and this client is {ours}: stop the server, or use its own binary to keep its panes running (the run keeps a copy, `exe` in the directory named as its socket with `.panes` after it). `kill` on its process stops it and its panes (`fux '(status)'` gives its `server-process-id`, where the system says it); a new server does not resume them",
         )
     }
 }
@@ -175,14 +172,6 @@ impl Wire for Role {
     }
 }
 
-impl Role {
-    /// The byte an older protocol's kill said, which a server of that
-    /// protocol obeyed whatever the client's protocol. Its client takes any
-    /// `Hello` as leave to have stopped the server, but reports an `Exit`
-    /// before one as a failure: so it is answered that alone.
-    pub const RETIRED_KILL: Role = Role::Unknown(2);
-}
-
 // Its shape is its byte's.
 #[cfg(test)]
 impl crate::wire::Reach for Role {}
@@ -215,36 +204,6 @@ pub trait Frame<'a>: Sized {
         out.truncate(start);
         out.reserve(framed(payload));
         pieces(self, payload, out);
-    }
-
-    /// The bytes `encode_into` appends: the frame's, or its pieces'.
-    fn encoded_len(&self) -> usize {
-        let mut count = Count(0);
-        self.write(&mut count);
-        framed(count.0)
-    }
-
-    /// `encode_into`, once the OS gave room for all of it: refused
-    /// (`Error::Memory`), `out` is as it was. The room is reserved first,
-    /// and what is written within it allocates nothing, so a process that
-    /// must not die of a refusal (a pane's own) sends so.
-    fn try_encode_into(&self, out: &mut Vec<u8>) -> Result<(), Error> {
-        let mut count = Count(0);
-        self.write(&mut count);
-        let bytes = framed(count.0);
-        fux_vt::bytes::try_reserve(out, bytes).map_err(|_| Error::Memory(bytes))?;
-        pieces(self, count.0, out);
-        Ok(())
-    }
-}
-
-/// Counts the bytes written to it: a payload's length, before room is made
-/// for it.
-struct Count(usize);
-
-impl Sink for Count {
-    fn extend_from_slice(&mut self, bytes: &[u8]) {
-        self.0 = self.0.saturating_add(bytes.len());
     }
 }
 
@@ -760,11 +719,14 @@ impl OneKind for Asked {
 
 wire! {
     /// A request's reply and the server run that answered it. A local
-    /// config collector has no run.
+    /// config collector has no run. `warning` is what its asker is told
+    /// beside the reply: the request was made, and something it does not
+    /// answer for went wrong (the run's record could not be written).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Reply {
         pub run: Option<crate::command::Run>,
         pub response: Response,
+        pub warning: Option<String>,
     }
 }
 
@@ -831,11 +793,11 @@ impl Reply {
     /// A failure of kind `code`, with its exit status, and why.
     pub fn failed(code: Code, message: impl Into<String>) -> Self {
         Self {
-            run: None,
             response: Response::Failed {
                 code,
                 message: message.into(),
             },
+            ..Self::default()
         }
     }
 
@@ -877,8 +839,8 @@ impl Default for Response {
 impl From<Body> for Reply {
     fn from(body: Body) -> Self {
         Self {
-            run: None,
             response: Response::Returned(body),
+            ..Self::default()
         }
     }
 }
@@ -886,8 +848,8 @@ impl From<Body> for Reply {
 impl From<crate::answer::PaneResults> for Reply {
     fn from(answers: crate::answer::PaneResults) -> Self {
         Self {
-            run: None,
             response: Response::Answered(answers),
+            ..Self::default()
         }
     }
 }
@@ -1001,8 +963,7 @@ pub struct Decoder {
 
 /// The pieces of one long message, joined as they come: held only by a
 /// reader that asked for something long (a client its reply, a connection's
-/// process a pane's screen or capture), never by the server. It grows as
-/// the OS gives it memory, and a refusal is an error, not an abort.
+/// process a pane's screen or capture), never by the server..
 #[derive(Default)]
 pub struct Joining {
     pieces: Vec<u8>,
@@ -1012,10 +973,9 @@ pub struct Joining {
 }
 
 impl Joining {
-    /// Adds `piece` to the message, if the OS gives the memory.
-    pub fn push(&mut self, piece: &[u8]) -> Result<(), Error> {
-        fux_vt::bytes::try_extend(&mut self.pieces, piece)
-            .map_err(|_| Error::Memory(self.pieces.len()))
+    /// Adds `piece` to the message.
+    pub fn push(&mut self, piece: &[u8]) {
+        self.pieces.extend_from_slice(piece);
     }
 
     /// The pieces joined so far.
@@ -1036,20 +996,6 @@ impl Joining {
 impl Decoder {
     pub fn push(&mut self, bytes: &[u8]) {
         self.buffer.push(bytes);
-    }
-
-    /// `push`, if the OS gives the room (`Error::Memory`): refused, it
-    /// holds what it held.
-    pub fn try_push(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        (self.buffer.try_push(bytes)).map_err(|_| Error::Memory(self.buffer.len()))
-    }
-
-    /// Makes room for `additional` more bytes, or says the OS gave none
-    /// (`Error::Memory`): a push within it allocates nothing, so a reader
-    /// that must not die of a refusal makes room before it reads its
-    /// socket, and leaves there what it has no room for.
-    pub fn try_reserve(&mut self, additional: usize) -> Result<(), Error> {
-        (self.buffer.try_reserve(additional)).map_err(|_| Error::Memory(self.buffer.len()))
     }
 
     /// Gives back memory beyond `keep` bytes once no more is pending.
@@ -1094,8 +1040,7 @@ impl Decoder {
     }
 
     /// `frame`, for a reader that asked for something long: a message sent
-    /// in pieces is joined into `joining`, as far as the OS gives memory
-    /// (`Error::Memory`), and lent from it.
+    /// in pieces is joined into `joining`, and lent from it.
     pub fn long<'a, F: Frame<'a>>(
         &'a mut self,
         joining: &'a mut Joining,
@@ -1111,7 +1056,7 @@ impl Decoder {
                 break whole;
             }
             let piece = self.buffer.take_front(whole);
-            joining.push(piece.get(5..).unwrap_or_default())?;
+            joining.push(piece.get(5..).unwrap_or_default());
         };
         let frame = self.buffer.take_front(whole);
         // A whole frame has its kind byte.
@@ -1122,7 +1067,7 @@ impl Decoder {
         if joining.pieces.is_empty() {
             return F::decode(*kind, payload).map(Some);
         }
-        joining.push(payload)?;
+        joining.push(payload);
         joining.whole = true;
         F::decode(*kind, &joining.pieces).map(Some)
     }
@@ -1271,68 +1216,6 @@ mod tests {
         Ok(())
     }
 
-    /// A frame encoded into room made first is the frame as it is encoded
-    /// otherwise, a long one in the same pieces, which a reader that asked
-    /// for it joins; and its length is known before.
-    #[test]
-    fn a_frame_encoded_into_room_made_first_is_the_same_frame() -> Result<(), Error> {
-        for payload in [
-            0,
-            1,
-            MAX_PAYLOAD,
-            MAX_PAYLOAD + 1,
-            2 * MAX_PAYLOAD,
-            2 * MAX_PAYLOAD + 7,
-        ] {
-            let bytes: Vec<u8> = (0u8..251).cycle().take(payload).collect();
-            let frame = ToCommand::Part(Cow::Borrowed(&bytes));
-            let (mut plain, mut tried) = (vec![9], vec![9]);
-            frame.encode_into(&mut plain);
-            frame.try_encode_into(&mut tried)?;
-            assert!(plain == tried, "{payload}");
-            assert_eq!(frame.encoded_len(), tried.len() - 1, "{payload}");
-            let (mut decoder, mut joining) = (Decoder::default(), Joining::default());
-            decoder.push(tried.get(1..).unwrap_or_default());
-            let joined = decoder.long::<ToCommand>(&mut joining)?;
-            assert!(joined == Some(frame), "{payload}");
-        }
-        let mut bare = Vec::new();
-        ToCommand::PartsEnd.try_encode_into(&mut bare)?;
-        assert_eq!(bare, ToCommand::PartsEnd.encode());
-        Ok(())
-    }
-
-    /// Refused memory, an encoding leaves what it would append to as it
-    /// was, and a decoder holds what it held; both go on after.
-    #[cfg(feature = "checks")]
-    #[test]
-    fn an_encoding_or_a_push_refused_memory_changes_nothing() -> Result<(), Error> {
-        // Longer than the room a short vector has: only what needs room
-        // can be refused it.
-        let why: String = std::iter::repeat_n('y', 200).collect();
-        let frame = ToCommand::Exit(&why);
-        let mut out = vec![1, 2, 3];
-        out.shrink_to_fit();
-        fux_vt::refuse_next(1);
-        let refused = frame.try_encode_into(&mut out);
-        assert_eq!(refused, Err(Error::Memory(frame.encoded_len())));
-        assert_eq!(out, [1, 2, 3]);
-        frame.try_encode_into(&mut out)?;
-        let encoded = out.get(3..).unwrap_or_default().to_vec();
-        assert_eq!(encoded, frame.encode());
-        let mut decoder = Decoder::default();
-        let (half, rest) = encoded.split_at_checked(4).unwrap_or_default();
-        decoder.try_push(half)?;
-        fux_vt::refuse_next(1);
-        assert_eq!(decoder.try_push(rest), Err(Error::Memory(4)));
-        assert_eq!(decoder.buffered(), 4);
-        fux_vt::refuse_next(1);
-        assert_eq!(decoder.try_reserve(rest.len()), Err(Error::Memory(4)));
-        decoder.try_push(rest)?;
-        assert_eq!(decoder.frame::<ToCommand>()?, Some(frame));
-        Ok(())
-    }
-
     /// A client goes on with a server of its own protocol, whatever either's
     /// release; with one of another, it is told the server's protocol and
     /// release; a kill goes on with any.
@@ -1346,6 +1229,8 @@ mod tests {
         let theirs = |protocol, version: &str| Mismatch {
             protocol,
             version: version.into(),
+            client_protocol: 54,
+            client_version: "0.36.0".into(),
         };
         let client = hello(54, "0.36.0", Role::Command);
         let between = |server: &Hello| Mismatch::between(&client, server);
@@ -1355,6 +1240,17 @@ mod tests {
         assert_eq!(other, Err(theirs(55, "0.36.0")));
         let both = between(&hello(23, "0.37.0", Role::Command));
         assert_eq!(both, Err(theirs(23, "0.37.0")));
+        // What it says names both builds and what to do: nothing runs the
+        // command again with another binary.
+        let said = theirs(23, "0.37.0").to_string();
+        for part in [
+            "fux 0.37.0 (protocol 23)",
+            "fux 0.36.0 (protocol 54)",
+            "stop the server",
+            "its own binary",
+        ] {
+            assert!(said.contains(part), "{part}: {said}");
+        }
     }
 
     /// A frame decodes only from the bytes it encodes to: an `Act` whose

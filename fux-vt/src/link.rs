@@ -529,7 +529,7 @@ impl Links {
             return None;
         }
         if grows {
-            self.ids.try_reserve(1).ok()?;
+            self.ids.reserve(1);
             // A fresh table has no tombstones, so capacity gives its buckets.
             let made = buckets(self.ids.capacity());
             self.held =

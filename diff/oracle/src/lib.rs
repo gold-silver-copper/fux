@@ -52,8 +52,7 @@ pub trait Side: Clone {
     fn new(rows: u16, cols: u16, history_bytes: usize, setup: &Setup) -> Result<Self, Error>;
     /// Every byte of `bytes` read, as a host reads them:
     /// `Parser::process_until_stop` again after each stop. What it gave
-    /// the host, and `Error::Capacity` if room was refused on the way
-    /// (`Parser::refused`).
+    /// the host.
     fn process(&mut self, bytes: &[u8], heard: &mut Vec<Heard>) -> Result<(), Error>;
     /// `Parser::process_until_stop`: how many bytes it took if it
     /// stopped, and why: a frame began or ended, or the budget was spent.

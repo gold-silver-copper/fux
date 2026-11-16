@@ -147,7 +147,6 @@ pub enum Ask {
         kill: bool,
         argv: Option<Program>,
     },
-    ClearHistory,
     HistoryBytes(HistoryBytes),
     /// A capture, its observation's place and name left for the server:
     /// it is in tab `tab` as it is asked. Held, it is kept for its asker's
@@ -164,7 +163,6 @@ wired!(Ask {
     Mouse { mouse, row, col },
     Signal(s),
     Respawn { kill, argv },
-    ClearHistory,
     HistoryBytes(b),
     Capture { history, view, tab, hold },
 });
@@ -196,10 +194,6 @@ pub struct Refusal {
 wired!(struct Refusal { code, message });
 
 impl From<fux_wire::code::Error> for Refusal {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (to_string): left, D-194"
-    )]
     fn from(error: fux_wire::code::Error) -> Refusal {
         Refusal {
             code: error.code(),
@@ -518,11 +512,6 @@ pub const LAUNCH: usize = MAX_PAYLOAD / 4;
 
 /// Whether a pane may run `argv` in `cwd`: they take no more than `LAUNCH`
 /// in its reports, as its facts say them.
-#[expect(
-    clippy::disallowed_macros,
-    clippy::disallowed_methods,
-    reason = "aborts if the OS refuses it memory (collect, fux_wire::wire::encode, format!): left, D-194"
-)]
 pub fn launch_fits(
     argv: &fux_wire::command::Program,
     cwd: &std::path::Path,
@@ -557,9 +546,6 @@ pub enum Read {
     More,
     /// The other end is gone: what it said before is still to take.
     Closed,
-    /// The OS refused room for more (`End::try_read`): what was not read
-    /// is still in the socket.
-    Refused,
 }
 
 impl End {
@@ -576,48 +562,13 @@ impl End {
     /// Queues `message`, sent as the socket takes it (`flush`). One longer
     /// than a frame goes in pieces, which only an end that asked for
     /// something long joins (`next_long`); any other refuses the first.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the twin that aborts if the OS refuses it memory, for the server's side and a pane's small messages (D-194): what a pane reports goes through `try_send`"
-    )]
     pub fn send(&mut self, message: &impl Wire) {
         let message = Sending(message);
         self.out.push_with(|out| message.encode_into(out));
     }
 
-    /// `send`, once the OS gave room for all of `message` as it is queued:
-    /// refused, nothing of it is queued. What it writes within that room
-    /// allocates nothing; a pane's own process, which must not die of a
-    /// refusal, sends so.
-    pub fn try_send(&mut self, message: &impl Wire) -> Result<(), fux_wire::protocol::Error> {
-        let message = Sending(message);
-        let bytes = message.encoded_len();
-        let refused = fux_wire::protocol::Error::Memory(bytes);
-        match (self.out).try_push_with(bytes, |out| message.try_encode_into(out)) {
-            Ok(queued) => queued,
-            Err(_) => Err(refused),
-        }
-    }
-
-    /// `try_send`, of a message that is one frame, as the server takes
-    /// them: whether it was queued, one longer not.
-    pub fn try_send_whole(
-        &mut self,
-        message: &impl Wire,
-    ) -> Result<bool, fux_wire::protocol::Error> {
-        let whole = MAX_PAYLOAD.saturating_add(5);
-        if Sending(message).encoded_len() > whole {
-            return Ok(false);
-        }
-        self.try_send(message).map(|()| true)
-    }
-
     /// Queues `message` if it is one frame, as the server takes them:
     /// whether it was queued.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the twin that aborts if the OS refuses it memory, for the server's side: a pane's process uses `try_send_whole`"
-    )]
     pub fn send_whole(&mut self, message: &impl Wire) -> bool {
         let message = Sending(message);
         self.out.push_with(|out| {
@@ -660,43 +611,19 @@ impl End {
     /// Reads what the socket holds, at most `buffer` at a time, until it
     /// would wait.
     pub fn read(&mut self, buffer: &mut [u8]) -> Read {
-        self.read_as(buffer, usize::MAX, false)
+        self.read_up_to(buffer, usize::MAX)
     }
 
     /// `read`, till `limit` bytes are read, the rest left for the next.
     pub fn read_up_to(&mut self, buffer: &mut [u8], limit: usize) -> Read {
-        self.read_as(buffer, limit, false)
-    }
-
-    /// `read`, with room made for each read before it is made: one the OS
-    /// refuses room for is not made (`Read::Refused`), and what it would
-    /// have read stays in the socket for a later one. For a pane's own
-    /// process, which must not die of a refusal.
-    pub fn try_read(&mut self, buffer: &mut [u8]) -> Read {
-        self.read_as(buffer, usize::MAX, true)
-    }
-
-    /// `try_read`, till `limit` bytes are read, the rest left for the next.
-    pub fn try_read_up_to(&mut self, buffer: &mut [u8], limit: usize) -> Read {
-        self.read_as(buffer, limit, true)
-    }
-
-    /// Reads till `limit` bytes are read or the socket would wait; if
-    /// `refusable`, each read only once there is room for it.
-    fn read_as(&mut self, buffer: &mut [u8], limit: usize, refusable: bool) -> Read {
         let mut read = 0usize;
         while read < limit {
-            if refusable && self.decoder.try_reserve(buffer.len()).is_err() {
-                return Read::Refused;
-            }
+            let room = buffer.len().min(limit.saturating_sub(read));
+            let buffer = buffer.get_mut(..room).unwrap_or_default();
             match fuxix::io::read(&self.stream, buffer) {
                 Ok(0) => return Read::Closed,
                 Ok(n) => {
                     read = read.saturating_add(n);
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "into the room made above if `refusable`; else this is `read`, the twin that aborts, for the server's side and a link's first word"
-                    )]
                     self.decoder.push(buffer.get(..n).unwrap_or_default());
                 }
                 Err(fuxix::Errno::INTR) => {}
@@ -710,7 +637,6 @@ impl End {
     /// The messages queued to go, as the other end will read them: for the
     /// tests.
     #[cfg(any(test, feature = "testing"))]
-    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
     pub fn queued<T: Wire>(&self) -> Vec<T> {
         let (mut decoder, mut joining) = (Decoder::default(), Joining::default());
         decoder.push(self.out.as_slice());
@@ -729,7 +655,7 @@ impl End {
 
     /// `next_message`, for what this end asked for and may be long (a
     /// pane's screen or capture) and, for now, a paste's body: its pieces
-    /// joined into `joining`, as far as the OS gives memory.
+    /// joined into `joining`.
     pub fn next_long<T: Wire>(
         &mut self,
         joining: &mut Joining,
@@ -740,10 +666,6 @@ impl End {
     /// Waits for the next whole message: for a link's first word alone,
     /// from a process just started, as its start waits today
     /// (`process::spawn`). None once the other end is gone first.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "a link's first word, before a pane serves, read with the twin that aborts if the OS refuses it memory: left, D-194"
-    )]
     pub fn wait<T: Wire>(&mut self) -> Result<Option<T>, fux_wire::protocol::Error> {
         let mut buffer = [0u8; 4096];
         loop {

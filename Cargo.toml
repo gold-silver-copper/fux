@@ -1,6 +1,6 @@
 [workspace]
 members = ["fux-wire", "fux-pane", "fux-server", "fux-vt", "fux-vt/peak", "fuxix"]
-exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench", "archived/fuxth", "archived/fuxth-run", "archived/fuxed"]
+exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench"]
 resolver = "3"
 
 # fux's four crates share one release: the server tells it to programs
@@ -26,8 +26,6 @@ include = ["/src/**", "/tests/**", "/README.md", "/WINDOWS.md", "/docs/records.t
 # (`InProcess`), with fux-server's own `in-process` items: for the fuzz
 # targets.
 in-process = ["fux-server/in-process"]
-# `fux_vt::refuse_next`, for the tests of what a refusal of memory leaves.
-checks = ["fux-vt/checks", "fux-wire/checks"]
 
 [dependencies]
 fux-server = { path = "fux-server", version = "0.37.0" }
@@ -41,19 +39,9 @@ fux-server = { path = "fux-server", features = ["in-process"] }
 fux-wire = { path = "fux-wire", features = ["testing"] }
 fux-vt-peak = { path = "fux-vt/peak" }
 
-# Replays tests/cassettes/ with its own arguments (tests/cassettes/README.md).
-[[test]]
-name = "cassettes"
-harness = false
-
 # It plays a console's terminal, shell and pane, so it has a main of its own.
 [[test]]
 name = "console"
-harness = false
-
-# Its binary plays the one a client follows, so it has a main of its own.
-[[test]]
-name = "follow"
 harness = false
 
 [profile.dev]
@@ -77,16 +65,14 @@ codegen-units = 1
 [lints]
 workspace = true
 
-# The lints fux's crates (fux, fux-wire, fux-server), fux-vt and fuxth's
-# (fuxth, fuxth-core) share, on every target: library, binary, examples
-# and tests. What else differs is an attribute in a library's lib.rs:
-# `missing_docs` in fux-vt, and `print_stderr` forbidden in fux-vt, fuxth
-# and fuxth-core (fux's crates keep it denied: its tests' server log is
-# printed with `eprintln!`, which alone the test harness captures). fuxix, where
-# fux's `unsafe` lives, keeps its own table: Cargo cannot lift a workspace
-# lint for one crate. fux-vt/peak, which uses `unsafe`, keeps its own too.
-# So does fux-pane, which denies `disallowed_methods` where these forbid
-# it: its list bans allocations too, and one kept says why where it is.
+# The lints fux's crates (fux, fux-wire, fux-pane, fux-server) and fux-vt
+# share, on every target: library, binary, examples and tests. What else
+# differs is an attribute in a library's lib.rs: `missing_docs` in fux-vt,
+# and `print_stderr` forbidden there (fux's crates keep it denied: its
+# tests' server log is printed with `eprintln!`, which alone the test
+# harness captures). fuxix, where fux's `unsafe` lives, keeps its own
+# table: Cargo cannot lift a workspace lint for one crate. fux-vt/peak,
+# which uses `unsafe`, keeps its own too.
 [workspace.lints.rust]
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"

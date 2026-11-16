@@ -876,7 +876,6 @@ pub struct Parser {
     /// Where this thread's spending reaches the budget in the call of
     /// `process_until_stop` under way; `u64::MAX` between calls.
     end: u64,
-    refused: u64,
 }
 #[cfg(test)]
 mod tests;
@@ -906,7 +905,6 @@ impl Parser {
             termcap: false,
             spent: 0,
             end: u64::MAX,
-            refused: 0,
         })
     }
     /// Checks every invariant of the parser and its screen that the state
@@ -921,7 +919,6 @@ impl Parser {
             report.record("parser.sixel", "", self.check_sixel());
             report.record("parser.utf8", "", self.check_utf8());
             report.record("parser.termcap", "", self.check_termcap());
-            report.wait("parser.refused", "B44: Parser::refused");
             report.merge(self.screen.check());
             report
         })
@@ -1038,17 +1035,10 @@ impl Parser {
         self.screen.set_graphics(shown);
     }
     /// Resizes the terminal, reflowing the primary screen with
-    /// [`Feature::Reflow`]. A resize refused room leaves the screen as it
-    /// was, and history a resize could not keep is let go; each counts in
-    /// [`Parser::refused`].
+    /// [`Feature::Reflow`]. A size of more cells than a grid may hold is
+    /// refused, and the screen is left as it was.
     pub fn resize(&mut self, size: Size) -> Result<(), Error> {
-        let degrades = crate::degrades();
-        let resized = self.screen.resize(size, self.options.has(Feature::Reflow));
-        self.count_degrades(degrades);
-        if resized.is_err() {
-            self.refused = self.refused.saturating_add(1);
-        }
-        resized
+        self.screen.resize(size, self.options.has(Feature::Reflow))
     }
     /// The primary screen's current history budget, in bytes.
     pub fn history_bytes(&self) -> usize {
@@ -1067,11 +1057,6 @@ impl Parser {
         self.screen
             .mode(Mode::InBandResize)
             .then(|| self.screen.size_report().as_bytes().to_vec())
-    }
-    /// How many times carrying out output, or a resize, was refused room
-    /// (THREATS.md 1.3). Each refusal loses only what it was for.
-    pub fn refused(&self) -> u64 {
-        self.refused
     }
     /// Process output, delivering replies and (with [`Feature::Events`])
     /// events to `sink`, and stop right after a sequence that begins or ends a frame drawn in synchronized output
@@ -1096,34 +1081,22 @@ impl Parser {
     /// most the one indivisible operation that crossed it (THREATS.md 4). A
     /// call that ends a frame ([`Stop::Begun`], [`Stop::Ended`]) past the
     /// budget leaves its stop to the next, which makes it before any byte.
-    ///
-    /// A refusal of room is counted ([`Parser::refused`]) and the rest
-    /// read; `Err(Error::Capacity)` says
-    /// one happened in a call that read every byte.
     pub fn process_until_stop(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
-    ) -> Result<Option<(usize, Stop)>, Error> {
+    ) -> Option<(usize, Stop)> {
         self.run(bytes, sink)
     }
     /// Reads every byte of `bytes`, calling [`Parser::process_until_stop`]
     /// again after each stop until none is left and no work is owed: for
     /// a host that holds no frames and spreads no work over turns, as a
-    /// replay, a converter or a test does. It gives how many times room was
-    /// refused on the way ([`Parser::refused`] counts them all), most often
-    /// 0: every byte is read all the same, and each refusal lost only what
-    /// it was for (a row of history, a picture, a resize; THREATS.md 1.3),
-    /// so the screen is good to read whatever the count.
-    #[must_use = "a refusal lost what it was for (a row of history, a picture): count it, or say why not"]
-    pub fn process_all(&mut self, bytes: &[u8], sink: &mut impl Sink) -> u64 {
-        let refused = self.refused;
+    /// replay, a converter or a test does.
+    pub fn process_all(&mut self, bytes: &[u8], sink: &mut impl Sink) {
         let mut rest = bytes;
-        // `run` errs only at the end of `bytes`, every byte read.
-        while let Ok(Some((taken, _))) = self.run(rest, sink) {
+        while let Some((taken, _)) = self.run(rest, sink) {
             rest = rest.get(taken..).unwrap_or_default();
         }
-        self.refused.saturating_sub(refused)
     }
     /// Whether the last call of [`Parser::process_until_stop`] stopped at
     /// its budget with work left to do: another call is owed, of no bytes
@@ -1143,36 +1116,28 @@ impl Parser {
         }
     }
     /// Processes `bytes`, stopping as `process_until_stop` does.
-    fn run(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<Option<(usize, Stop)>, Error> {
+    fn run(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Option<(usize, Stop)> {
         let ran = self.run_on(bytes, sink);
         // Every byte is read but those after a stop.
-        let read = match ran {
-            Ok(Some((taken, _))) => taken,
-            Ok(None) | Err(_) => bytes.len(),
-        };
-        self.screen.read(read);
+        self.screen
+            .read(ran.map_or(bytes.len(), |(taken, _)| taken));
         ran
     }
     /// `run`, but for counting the bytes read.
-    fn run_on(
-        &mut self,
-        bytes: &[u8],
-        sink: &mut impl Sink,
-    ) -> Result<Option<(usize, Stop)>, Error> {
+    fn run_on(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Option<(usize, Stop)> {
         // No bytes: only what the last call left at its budget, if any.
         if bytes.is_empty() && !self.screen.left_over() {
-            return Ok(None);
+            return None;
         }
         self.screen.begin();
-        let (start, refused) = (crate::budget::spent(), self.refused);
-        let degrades = crate::degrades();
+        let start = crate::budget::spent();
         // Every call leaves `end` and `stop_at` at u64::MAX: no budget.
         // A call that ended a frame past the budget owes its stop: this one
         // makes it before anything, so a frame's boundary is no way past
         // the budget.
         if self.spent >= crate::budget::LIMIT {
             self.spent = 0;
-            return Ok(Some((0, Stop::Budget)));
+            return Some((0, Stop::Budget));
         }
         self.end = start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent));
         (self.screen.stop_at, self.screen.stopped) = (self.end, false);
@@ -1180,14 +1145,11 @@ impl Parser {
         if self.screen.left_over() && self.resume() {
             (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
             self.spend_since(start, Stop::Budget);
-            self.count_degrades(degrades);
-            return Ok(Some((0, Stop::Budget)));
+            return Some((0, Stop::Budget));
         }
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = matches!(self.state, State::Ground);
-            // A refusal degrades what it was for, and the rest is read
-            // (`count_degrades`, THREATS.md 1.3, B44).
             let framed = if ground && (0x20..=0x7e).contains(&byte) {
                 let length = printable(remaining);
                 let (run, rest) = remaining
@@ -1248,33 +1210,13 @@ impl Parser {
             if let Some(stop) = framed {
                 (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
                 self.spend_since(start, stop);
-                self.count_degrades(degrades);
                 let taken = bytes.len().saturating_sub(remaining.len());
-                return Ok(Some((taken, stop)));
+                return Some((taken, stop));
             }
         }
         (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
         self.spend_since(start, Stop::Ended);
-        self.count_degrades(degrades);
-        match self.refused == refused {
-            true => Ok(None),
-            false => Err(Error::Capacity),
-        }
-    }
-    /// Counts in [`Parser::refused`] the refusals this call went on past by
-    /// degrading (`crate::degraded`) since `degrades`; out of line, as a
-    /// call seldom meets one.
-    #[inline]
-    fn count_degrades(&mut self, degrades: u64) {
-        if crate::degrades() != degrades {
-            self.count_degrades_met(degrades);
-        }
-    }
-    #[cold]
-    #[inline(never)]
-    fn count_degrades_met(&mut self, degrades: u64) {
-        let met = crate::degrades().saturating_sub(degrades);
-        self.refused = self.refused.saturating_add(met);
+        None
     }
     /// Spending carries over calls until a stop at the budget.
     fn spend_since(&mut self, start: u64, stop: Stop) {
@@ -1801,8 +1743,6 @@ impl Parser {
             self.screen.mode(Mode::SynchronizedOutput),
         );
         let dispatch = (self.screen).csi(&self.params, intermediates, byte, &self.options);
-        // A frame begun or ended is told even if room was refused on the
-        // way: the refusal loses only what it was for.
         let framed = if self.screen.frames_begun() != begun {
             Some(Stop::Begun)
         } else {
@@ -1907,15 +1847,11 @@ impl Parser {
         let kept = |bytes| Kept { bytes, cut: !whole };
         match command {
             b"0" => {
-                self.screen.set_title(kept(rest));
                 sink.event(Event::IconName(kept(rest)));
                 sink.event(Event::Title(kept(rest)));
             }
             b"1" => sink.event(Event::IconName(kept(rest))),
-            b"2" => {
-                self.screen.set_title(kept(rest));
-                sink.event(Event::Title(kept(rest)));
-            }
+            b"2" => sink.event(Event::Title(kept(rest))),
             // OSC 9 ; 4 is ConEmu's progress report, not a notification.
             b"9" if !rest.starts_with(b"4;") => sink.event(Event::Notification(kept(rest))),
             b"777" => {
@@ -2035,8 +1971,6 @@ mod faults {
         ];
         assert_eq!(report.ran(), every.as_slice(), "{report}");
         assert!(report.is_clean(), "{report}");
-        let waiting: Vec<&str> = report.waiting().iter().map(|(check, _)| *check).collect();
-        assert!(waiting.contains(&"parser.refused"));
         Ok(())
     }
 

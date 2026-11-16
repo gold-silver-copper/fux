@@ -39,9 +39,10 @@ pub struct Copy {
     options: PaneOptions,
     /// How many times its program was started again.
     pub respawns: u64,
-    /// It was asked to respawn, and has not said it did: a program at the
-    /// next generation may be its already.
-    pub respawning: bool,
+    /// It was asked to respawn, by the question of this number, and has
+    /// neither said it did nor answered: a program at the next generation
+    /// may be its already.
+    pub respawning: Option<u64>,
     counts: Counts,
     state: State,
     facts: Facts,
@@ -75,7 +76,7 @@ impl Copy {
             runs,
             options,
             respawns: 0,
-            respawning: false,
+            respawning: None,
             counts: Counts::default(),
             state: State::Running,
             facts: Facts {
@@ -119,7 +120,7 @@ impl Copy {
     /// Pane `recorded`, as its run's record keeps it, its own process gone
     /// while no server ran: as it ended, if it had; else running, at the
     /// respawns it was at, its screen blank.
-    pub fn recorded(recorded: &crate::record::Pane, name: Option<std::rc::Rc<str>>) -> Copy {
+    pub fn recorded(recorded: &crate::record::Pane) -> Copy {
         let launch = crate::pane::Launch {
             argv: recorded.argv.clone(),
             cwd: recorded.cwd.clone(),
@@ -129,7 +130,7 @@ impl Copy {
             false => Runs::Explicit(launch),
         };
         let mut copy = Copy::new(recorded.id, runs, recorded.size, recorded.options);
-        copy.name = name;
+        copy.name = recorded.name.as_deref().map(std::rc::Rc::from);
         copy.respawns = recorded.respawns;
         copy.counts.respawns = recorded.respawns;
         copy.read_error.clone_from(&recorded.read_error);
@@ -163,13 +164,12 @@ impl Copy {
         copy
     }
 
-    /// It as its run's record keeps it (`Copy::recorded`), its name there
-    /// by number `name`.
-    pub fn record(&self, name: Option<crate::record::NameId>) -> crate::record::Pane {
+    /// It as its run's record keeps it (`Copy::recorded`).
+    pub fn record(&self) -> crate::record::Pane {
         let launch = self.runs.launch();
         crate::record::Pane {
             id: self.id,
-            name,
+            name: self.given_name().map(|name| name.to_string()),
             shell: matches!(self.runs, Runs::Shell(_)),
             argv: launch.argv.clone(),
             cwd: launch.cwd.clone(),
@@ -263,8 +263,10 @@ impl Copy {
         Some(fail(Code::NotRunning, format!("{}: {why}", self.id)))
     }
 
-    /// It told `told`, which left it at `counts`.
-    pub(crate) fn told(&mut self, told: &Told, counts: Counts) {
+    /// It told `told`, which left it at `counts`. What a respawn started
+    /// is taken out of `told` and kept here: no reply need be made of the
+    /// respawn's answer for the copy to know its program.
+    pub(crate) fn told(&mut self, told: &mut Told, counts: Counts) {
         self.counts = counts;
         match told {
             Told::Title(title) => self.title = title.clone(),
@@ -304,9 +306,14 @@ impl Copy {
                     ("foreground_group", Json::Null),
                 ]);
             }
-            Told::Respawned { generation, .. } => {
+            Told::Respawned {
+                generation, argv, ..
+            } => {
+                if let (Some(argv), Runs::Explicit(launch)) = (argv.take(), &mut self.runs) {
+                    launch.argv = *argv;
+                }
                 self.respawns = *generation;
-                self.respawning = false;
+                self.respawning = None;
                 self.read_error = None;
                 self.state = State::Running;
                 self.title = Said::default();
@@ -321,7 +328,6 @@ impl Copy {
             | Told::Notification(_)
             | Told::CommandStarted
             | Told::Done(_)
-            | Told::HistoryCleared
             | Told::Input { .. }
             | Told::Signalled { .. } => {}
         }
