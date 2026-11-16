@@ -16,9 +16,9 @@ testing = []
 in-process = []
 
 [dependencies]
-fux-vt = { path = "../fux-vt", version = "0.16.0" }
-fux-wire = { path = "../fux-wire", version = "0.37.0" }
-fuxix = { path = "../fuxix", version = "0.9.0" }
+fux-vt = { path = "../fux-vt", version = "0.17.0" }
+fux-wire = { path = "../fux-wire", version = "0.38.0" }
+fuxix = { path = "../fuxix", version = "0.10.0" }
 
 # A test reads fux's default history size; the tests name ids by number.
 [dev-dependencies]
