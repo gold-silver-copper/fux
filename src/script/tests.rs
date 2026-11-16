@@ -1460,9 +1460,14 @@ fn text_takes_an_integer_and_refuses_a_float_saying_so() -> TestResult {
     // A program's words are text too: a port is written as a number.
     let taken = "(sequence! (program (options) (list \"app\" 8080 #true)) #true)";
     assert_eq!(main(&[taken.into()], &mut out)?, 0);
-    let refused = "(program (options) (list \"app\" 1.5))";
-    let failed = main(&[refused.into()], &mut out).err().ok_or("taken")?;
-    assert!(failed.message.contains("an integer"), "{}", failed.message);
+    // A shell's words are read by the same reader.
+    let taken = "(sequence! (shell-program (options) (list \"sh\" 8080 #true)) #true)";
+    assert_eq!(main(&[taken.into()], &mut out)?, 0);
+    for word in ["program", "shell-program"] {
+        let refused = format!("({word} (options) (list \"app\" 1.5))");
+        let failed = main(&[refused], &mut out).err().ok_or("taken")?;
+        assert!(failed.message.contains("integers"), "{}", failed.message);
+    }
     Ok(())
 }
 /// A record is read one way: its kind is its `kind` field wherever that

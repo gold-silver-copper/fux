@@ -74,32 +74,31 @@ fn int(value: &Value<Fux>) -> Result<i64, Unread> {
     Ok(*n)
 }
 
-/// The strings a list holds, borrowed, and how many: checked to be all
-/// strings before any is copied.
-fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), Unread> {
-    let takes = "a list of strings";
+/// The words of a command a list holds, each as words that take text read
+/// it (a string as it is, an integer or a boolean as it is written), in a
+/// vector of exactly their number: checked to be all such before any is
+/// copied. The one reader of a program's list, a shell's or any other.
+pub(super) fn words(value: &Value<Fux>) -> Result<Vec<String>, Unread> {
+    let takes = "a list of strings, integers or booleans";
     let Value::List(list) = value else {
         return Err(wrong(takes, value));
     };
-    if let Some(item) = list.items().iter().find(|i| !matches!(i, Value::Str(_))) {
-        return Err(format!("takes {takes}, not one holding {}", item.kind()).into());
-    }
-    let words = (list.items().iter()).filter_map(|item| {
-        if let Value::Str(s) = item {
-            Some(&***s)
-        } else {
+    let text = |item: &Value<Fux>| match item {
+        Value::Str(s) => Some((**s).to_string()),
+        Value::Int(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Symbol(_) | Value::Float(_) | Value::Bytes(_) | Value::List(_) | Value::App(_) => {
             None
         }
-    });
-    Ok((list.items().len(), words))
-}
-
-/// A list of strings, each as it is, in a vector of exactly their number.
-pub(super) fn strings(value: &Value<Fux>) -> Result<Vec<String>, Unread> {
-    let (n, words) = checked(value)?;
-    let mut strings = Vec::with_capacity(n);
-    strings.extend(words.map(str::to_owned));
-    Ok(strings)
+    };
+    let is_text =
+        |item: &&Value<Fux>| matches!(item, Value::Str(_) | Value::Int(_) | Value::Bool(_));
+    if let Some(item) = list.items().iter().find(|item| !is_text(item)) {
+        return Err(format!("takes {takes}, not one holding {}", item.kind()).into());
+    }
+    let mut words = Vec::with_capacity(list.items().len());
+    words.extend(list.items().iter().filter_map(text));
+    Ok(words)
 }
 
 impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
@@ -132,13 +131,13 @@ impl Reads for bool {
     }
 }
 
-/// The program, then its arguments: a list of strings, not empty.
+/// The program, then its arguments: a list of words (`words`), not empty.
 impl Reads for Program {
     fn takes() -> String {
-        "a list of strings: a program, then its arguments".to_owned()
+        "a list of strings, integers or booleans: a program, then its arguments".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Program, Unread> {
-        Ok(Program::from_argv(strings(value)?)?)
+        Ok(Program::from_argv(words(value)?)?)
     }
     fn data(&self) -> Data {
         Data::List(self.argv().into_iter().map(Data::Text).collect())
