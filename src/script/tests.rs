@@ -1010,8 +1010,10 @@ fn layout_scalar_refusals_do_not_copy_retained_strings() -> TestResult {
         evaluate(&source, None, &mut scalars, &mut Vec::new())?;
         peaks.push(scalars.peak);
     }
+    // Well under the 500,000-byte string: a refusal that copied it would pass this. Not tighter,
+    // because grift's heap grows by 64 KiB chunks and keeps 64 KiB of slack, which a run may take.
     assert!(
-        peaks.iter().all(|peak| *peak < 64 << 10),
+        peaks.iter().all(|peak| *peak < 250_000),
         "scalar refusal peaks: {peaks:?}"
     );
     Ok(())

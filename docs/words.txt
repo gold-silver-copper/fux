@@ -276,6 +276,7 @@ string-repeat
 string-split
 string-starts-with?
 string-to-bytes
+string-to-characters
 string-to-float
 string-to-integer
 string-to-lowercase
