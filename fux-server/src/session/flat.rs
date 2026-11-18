@@ -2,8 +2,6 @@
 //! and what the journal lets go.
 use super::*;
 use crate::session::testing::TestResult;
-#[cfg(unix)]
-use fux_wire::command::Beside;
 use fux_wire::command::{Command, Program, Screen};
 
 /// What a test's panes run, and its journal's room: read where the stack
@@ -185,7 +183,8 @@ fn the_record_is_made_only_when_the_tree_may_have_changed() -> TestResult {
     s.settle(Instant::now());
     assert_eq!(s.encoded, made, "nothing changed the tree");
     let split = Command::Split {
-        beside: Beside::Split(Axis::Horizontal, None),
+        axis: Axis::Horizontal,
+        shares: None,
         target: pane,
         start: command::Start::Program(Program::new("cat".into(), Vec::new())?),
         cwd: Some(dir.clone()),

@@ -55,7 +55,7 @@ reference.
 |---|---|---|---|
 | server | owns everything for one run; a crashed server process is replaced by the next `fux '(start)'`, and the run goes on (D-124) | its socket and its run | start until told to stop |
 | workspace | an ordered group of tabs, seen one at a time (tmux: session) | `+N` plus run; a name or none | until its last tab closes |
-| tab | panes laid out together, split side by side or stacked one at a time, seen one at a time (tmux: window) | `@N` plus run; a name or none | until its last pane closes |
+| tab | panes laid out together, split side by side or one above the other, seen one at a time (tmux: window) | `@N` plus run; a name or none | until its last pane closes |
 | pane | a terminal that outlives its programs | `%N` plus run; a name or none | until killed |
 | program | one run of a process in a pane; a respawn is the next generation | pane plus generation | start to exit |
 | client | an attached terminal, or a headless stand-in | `cN` plus run | attach to detach |

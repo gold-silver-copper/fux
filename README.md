@@ -50,16 +50,12 @@ and it never starts a server. Inside a fux pane, `fux` refuses to attach.
   program's stays, its exit told, until `kill` closes it or `respawn`
   starts its program again. A pane's lines re-wrap when its width
   changes, history included.
-- **Tabs** lay out panes, split side by side or stacked one at a time. A
+- **Tabs** lay out panes, split side by side or one above the other. A
   tab closes with its last pane.
 - **Workspaces** are ordered groups of tabs, one per project or agent. A
   workspace closes with its last tab.
 - **Each client is shown its own** workspace, tab and pane, and remembers
-  the one it was shown before at each level. A tab's layout may hold
-  **stacks**: `(stack PANE)` puts a new pane on that pane's rectangle, as
-  `split` puts one beside it, and each client is shown one child of a
-  stack, its own. Every child keeps its size, so choosing one resizes no
-  program. In a stack, `C-b o` shows the next child, `C-b q` the last.
+  the one it was shown before at each level.
 - **The bar** is hidden: panes have every row. While the prefix, or any
   screen of fux's, is in use, the bar draws over the bottom row, with the
   workspace's name and its tabs on the left and the focused pane or what
@@ -109,7 +105,7 @@ where its map doesn't bind it, sends it to the pane.
 | Key | Runs | Does |
 | --- | --- | --- |
 | `h` `j` `k` `l` | `(step (me) (focused (me)) "left")` … | focus the pane that way |
-| `o` / `q` | `(step (me) (focused (me)) "next")` / `… "last"` | focus the next / last pane (in a stack, child) |
+| `o` / `q` | `(step (me) (focused (me)) "next")` / `… "last"` | focus the next / last pane |
 | `v` / `s` | `(split (axis (focused (me)) "horizontal"))` / `… "vertical"` | split side by side / stacked |
 | `x` | `(confirm-close (me) (focused (me)))` | close the pane (`y` or Enter closes, `n` or Esc keeps it) |
 | `z` | `(zoom (focused (me)))` | zoom the pane, or restore it, on every screen showing its tab |

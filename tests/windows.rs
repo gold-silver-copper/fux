@@ -265,7 +265,7 @@ fn program(argv: &[&str]) -> Result<Program, String> {
 fn new_tab(socket: &Path, start: Start) -> Result<PaneId, String> {
     let size = Some(Screen::new(24, 80).map_err(|e| format!("{e:?}"))?);
     let command = Command::NewTab {
-        target: vec![fux_wire::command::WsRef::Name("tests".to_owned())],
+        target: Some(fux_wire::command::WsRef::Name("tests".to_owned())),
         name: None,
         size,
         cwd: Some(std::env::current_dir().map_err(text)?),

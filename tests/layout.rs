@@ -334,34 +334,22 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
     Ok(())
 }
 
-/// A layout as deep as a layout goes, each level a stack of one pane and all
-/// the rest, is laid out by a server on a small stack (`ulimit -s 256`), for
-/// every pane and for a client shown the deepest, and the server lives. A
-/// level more is refused.
+/// A layout as deep as a layout goes, each pane split off the one before, is
+/// laid out by a server on a small stack (`ulimit -s 256`), for every pane
+/// and for a client shown the deepest, and the server lives. A level more
+/// is refused.
 #[test]
 fn a_layout_as_deep_as_a_layout_goes_is_laid_out_on_a_small_stack() -> Outcome {
     let most = u32::try_from(fux_wire::layout::MAX_DEPTH + 1).map_err(e)?;
     let server = Server::start_limited("", "-s 256")?;
-    let stack = "(sequence! (stack (program (pane \"%1\") (list \"true\"))) #inert)";
-    let stacked: String = std::iter::repeat_n(stack, most as usize - 1).collect();
-    let out = server.piped(fux().as_ref(), &["-"], &stacked)?;
-    assert_eq!(out.status, 0, "{}", out.stderr);
-    // stack[%1, stack[%2, … stack[%n-1, %n]]]: node 2k is a stack of node
-    // 2k+1, pane k+1, and node 2k+2, the rest.
-    let arrange = |panes: u32| -> Result<support::Output, String> {
-        let revision = server.words("(get (tab 1) \"layout-revision\")")?;
-        let mut nodes = format!(
-            "(arrange (tab 1) {} (list",
-            fux::script::quoted(revision.trim())
-        );
-        for k in 0..panes - 1 {
-            let (pane, rest) = (2 * k + 1, 2 * k + 2);
-            nodes += &format!(" (list \"stack\" (list {pane} {rest})) (pane {})", k + 1);
-        }
-        nodes += &format!(" (pane {panes})))");
-        server.piped(fux().as_ref(), &["-"], &nodes)
+    let split = |pane: u32| {
+        format!(
+            "(sequence! (split (program (axis (pane {pane}) \"horizontal\") (list \"true\"))) #inert)"
+        )
     };
-    let out = arrange(most)?;
+    let mut program = format!("(sequence! (resize (tab 1) {} 24) #inert)", 4 * most);
+    (1..most).for_each(|pane| program += &split(pane));
+    let out = server.piped(fux().as_ref(), &["-"], &program)?;
     assert_eq!(out.status, 0, "{}", out.stderr);
     let mut client = server.attach(24, 80)?;
     client.ready()?;
@@ -375,8 +363,7 @@ fn a_layout_as_deep_as_a_layout_goes_is_laid_out_on_a_small_stack() -> Outcome {
     assert!(alive(i32::try_from(pid).map_err(e)?), "{}", server.log());
     let nodes = server.words("(sequence! (define! value-458 (snapshot (tab 1) \"topology\")) \"tabs\" (define! value-461 (first (get value-458 \"tabs\"))) \"nodes\" (length (get value-461 \"nodes\")))")?;
     assert_eq!(nodes.trim(), (2 * most - 1).to_string());
-    server.words(stack)?;
-    let refused = arrange(most + 1)?;
+    let refused = server.fux(&[split(most)])?;
     assert!(
         refused.stderr.starts_with("fux: too-many: "),
         "{}",

@@ -570,7 +570,7 @@ fn asked<'a, 'b, A: Asks + ?Sized>(
             rest = tail;
             if let Some((axis, _)) = g.as_pair(&node)?
                 && let Some(text) = g.as_str(&axis)?
-                && !matches!(text, "horizontal" | "vertical" | "stack")
+                && !matches!(text, "horizontal" | "vertical")
             {
                 let about = g.string("unknown layout axis")?;
                 return Err(g.error("bad-value", &[about, axis]));
@@ -1092,7 +1092,7 @@ library_words! {
        "edit-history" "batch-events";
     1: "native-data?" "session-data" "dump-text" "dump-recipe" "dump" "dump-first" "dump-directory"
        "dump-warnings" "session-find" "restore-create-options" "restore-session" "listing"
-       "events" "session-step";
+       "events" "dump-check";
 }
 
 /// A new interpreter: fux's words and prelude, its libraries not loaded.

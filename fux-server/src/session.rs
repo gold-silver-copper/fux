@@ -14,7 +14,7 @@ use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
 use fux_wire::code::{Code, Error, fail};
 use fux_wire::command::Start;
 use fux_wire::command::{
-    self, AnyRef, Beside, ClientAction, Command, Input, Kind, Members, MoveTo, PaneResize, Request,
+    self, AnyRef, ClientAction, Command, Input, Kind, Members, MoveTo, PaneResize, Request,
     Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
@@ -22,6 +22,7 @@ use fux_wire::json::Json;
 use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 mod flat;
@@ -1450,14 +1451,15 @@ impl Session {
     /// The layout with a new pane `beside` `target`, and the size the new
     /// pane starts at: the one settling gives it, its place in that layout
     /// on its tab's effective size, which must have room for it.
-    fn split_size(&self, target: PaneId, beside: Beside) -> Result<(Split, Size), Error> {
+    fn split_size(
+        &self,
+        target: PaneId,
+        (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
+    ) -> Result<(Split, Size), Error> {
         let new = self.ids.clone().pane()?;
-        let add = |root: &mut Tree| match beside {
-            Beside::Split(axis, shares) => {
-                let shares = shares.map_or(Shares::HALVED, |(a, b)| Shares::new(a, b));
-                root.split((target, new), (axis, Side::After), shares)
-            }
-            Beside::Stack => root.stack((target, new)),
+        let add = |root: &mut Tree| {
+            let shares = shares.map_or(Shares::HALVED, |(a, b)| Shares::new(a, b));
+            root.split((target, new), (axis, Side::After), shares)
         };
         let split = (self.parts.plan_split(target, add)).map_err(|NoPane| Error::NoPane(target))?;
         self.room(split.tab(), split.root(), None)?;
@@ -1932,7 +1934,7 @@ impl Session {
                 let size = self.effective(tab, tab.root(), None);
                 let area = view.pane_area().split(Axis::Horizontal, size.w()).0;
                 let area = area.split(Axis::Vertical, size.h()).0;
-                lay_out((tab.root(), Some(view.id)), tab.zoomed(), area, out);
+                lay_out(tab.root(), tab.zoomed(), area, out);
             }
             None => out.clear(),
         }
@@ -3337,14 +3339,15 @@ impl Session {
                 Ok(Reply::default())
             }
             &Command::Split {
-                beside,
+                axis,
+                shares,
                 target,
                 ref start,
                 ref cwd,
                 options,
             } => self.split(
                 target,
-                beside,
+                (axis, shares),
                 (start, options),
                 cwd.as_deref(),
                 origin,
@@ -3363,7 +3366,7 @@ impl Session {
                 let source = self.pane(target)?.id();
                 let other = match with {
                     SwapWith::Pane(p) => self.pane(p)?.id(),
-                    SwapWith::Toward(direction) => self.neighbor(source, direction, here)?,
+                    SwapWith::Toward(direction) => self.neighbor(source, direction)?,
                 };
                 self.parts.swap(source, other);
                 Ok(Reply::default())
@@ -3488,12 +3491,12 @@ impl Session {
         Ok(())
     }
 
-    /// `split` and `stack`: a new pane `beside` `target`, running `start`
+    /// `split`: a new pane beside `target`, along `axis`, running `start`
     /// in `dir`.
     fn split(
         &mut self,
         target: PaneId,
-        beside: Beside,
+        beside: (Axis, Option<(NonZeroU32, NonZeroU32)>),
         (start, options): (&Start, command::PaneOptions),
         dir: Option<&Path>,
         origin: &Origin,
@@ -3503,11 +3506,10 @@ impl Session {
         let target = self.pane(target)?.id();
         let cwd = self.start_dir(here, dir, Some(target))?;
         // The splitting client follows the new pane, if it shows its tab;
-        // from the CLI, the clients that focus the split one, while a stack
-        // made there shows no client its new child.
+        // from the CLI, the clients that focus the split one.
         let tab = self.locate(target).map(|(_, tab)| tab);
         let shows = |c: &ClientId| tab.is_some_and(|t| self.shows(*c, t));
-        let shown = |c: &ClientId| self.focused(*c) == Some(target) && beside != Beside::Stack;
+        let shown = |c: &ClientId| self.focused(*c) == Some(target);
         let followers: Vec<ClientId> = match here {
             Here::Client(client, _) => [client].into_iter().filter(shows).collect(),
             Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
@@ -3702,10 +3704,10 @@ impl Session {
 
     /// The pane beside `from` toward `direction`, its tab laid out on its
     /// effective size.
-    fn neighbor(&self, from: PaneId, direction: Direction, here: Here) -> Result<PaneId, Error> {
+    fn neighbor(&self, from: PaneId, direction: Direction) -> Result<PaneId, Error> {
         let found = self.locate(from).and_then(|(_, tab)| {
             let area = self.area_of(tab)?;
-            let placed = placed_from(self.root(tab)?, area, here.client(), from);
+            let placed = layout::place(self.root(tab)?, area);
             layout::neighbor(&placed, from, direction)
         });
         found.ok_or(Error::NoNeighbor { from, direction })
@@ -3721,7 +3723,7 @@ impl Session {
         let mut ids = self.ids.clone();
         let dest = match to {
             &MoveTo::Beside(direction) => {
-                let destination = self.neighbor(pane, direction, here)?;
+                let destination = self.neighbor(pane, direction)?;
                 let root = self.root(from).ok_or(Error::NoTab(from))?;
                 let root = layout::move_beside(root, pane, destination, direction)
                     .ok_or(Error::NoPane(pane))?;
@@ -3811,30 +3813,10 @@ impl Session {
 
     /// The sibling of `from` that `way` says client `view` is shown: the
     /// next or previous among what holds it, going round, the one it was
-    /// shown there before, or a pane's neighbour on its screen. What holds
-    /// a pane is the stack nearest it in its tab's layout, whose child
-    /// shown is a pane there (`Tree::first_shown`), else its tab, of
-    /// whose panes those shown.
+    /// shown there before, or a pane's neighbour on its screen.
     fn step(&self, view: &View, from: AnyRef, way: Way) -> Result<AnyRef, Error> {
         let kind = from.kind();
         let root = |p| self.locate(p).and_then(|(_, tab)| self.root(tab));
-        if let (AnyRef::Pane(p), Way::Step(_) | Way::Last) = (from, way)
-            && let Some(stack) = root(p).and_then(|r| r.stack_of(p))
-        {
-            let children: Vec<&Tree> = stack.children().collect();
-            let child = match way {
-                Way::Step(toward) => {
-                    let index = children.iter().position(|c| c.contains(p));
-                    round(&children, index.unwrap_or(0), toward)
-                }
-                Way::Last | Way::Toward(_) => {
-                    let last = stack.shown(view.id).last;
-                    last.and_then(|i| children.get(i))
-                }
-            };
-            let child = child.ok_or_else(|| fail(Code::NoPane, "no previously shown pane"))?;
-            return Ok(AnyRef::Pane(child.first_shown(view.id)));
-        }
         let within = match from {
             AnyRef::Pane(p) => Some(AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1)),
             AnyRef::Tab(t) => Some(AnyRef::Workspace(self.tab_workspace(t)?)),
@@ -3845,7 +3827,7 @@ impl Session {
         };
         let siblings: Vec<AnyRef> = match (from, within) {
             (AnyRef::Pane(p), _) => (root(p).into_iter())
-                .flat_map(|r| r.shown_panes(view.id))
+                .flat_map(Tree::panes)
                 .map(AnyRef::Pane)
                 .collect(),
             (_, Some(AnyRef::Workspace(w))) => (self.workspace(w).into_iter())
@@ -3875,7 +3857,7 @@ impl Session {
             (Way::Toward(direction), AnyRef::Pane(from)) => {
                 let found = self.locate(from).and_then(|(_, tab)| {
                     let (root, area) = (self.root(tab)?, self.area_of(tab)?);
-                    let placed = placed_from(root, area, Some(view.id), from);
+                    let placed = layout::place(root, area);
                     layout::neighbor(&placed, from, direction)
                 });
                 found
@@ -3975,45 +3957,26 @@ fn check_name(name: &str) -> Result<(), Error> {
 
 /// Where each pane of a tab laid out as `root` is in `area`, into `out`:
 /// the `zoomed` pane alone, filling it, if one is and it has room; else
-/// what `client` is shown, or with none every pane (`layout::place_into`).
-fn lay_out(
-    (root, client): (&Tree, Option<ClientId>),
-    zoomed: Option<PaneId>,
-    area: Rect,
-    out: &mut Placement,
-) {
+/// every pane (`layout::place_into`).
+fn lay_out(root: &Tree, zoomed: Option<PaneId>, area: Rect, out: &mut Placement) {
     match zoomed.filter(|_| !area.is_empty()) {
         Some(pane) => {
             out.clear();
             out.panes.push((pane, area));
         }
-        None => layout::place_into(root, area, client, out),
+        None => layout::place_into(root, area, out),
     }
 }
 
 /// Where each pane of a tab laid out as `root` and zoomed on `zoomed` is in
-/// `area`, into `out`, as its PTY is sized: every child of a stack on the
-/// stack's rectangle (D-114), and the zoomed pane on the whole area.
+/// `area`, into `out`, as its PTY is sized: the zoomed pane on the whole
+/// area.
 fn sized_on(root: &Tree, zoomed: Option<PaneId>, area: Rect, out: &mut Placement) {
-    layout::place_into(root, area, None, out);
+    layout::place_into(root, area, out);
     if let Some(zoomed) = zoomed.filter(|_| !area.is_empty()) {
         out.panes.retain(|(p, _)| *p != zoomed);
         out.panes.push((zoomed, area));
     }
-}
-
-/// Where each pane of a tab laid out as `root` is in `area` that `client`
-/// is shown, or with none every pane, `from` among them: at the stacks that
-/// hold it, the child holding it, as a zoom shows it to a client that chose
-/// another, its choices kept.
-fn placed_from(root: &Tree, area: Rect, client: Option<ClientId>, from: PaneId) -> Placement {
-    let mut root = std::borrow::Cow::Borrowed(root);
-    if let Some(client) = client {
-        root.to_mut().reveal(client, from);
-    }
-    let mut placed = Placement::default();
-    layout::place_into(&root, area, client, &mut placed);
-    placed
 }
 
 /// The item after the one at `index` among `items`, or before it, going
@@ -4627,7 +4590,6 @@ mod tests {
     #[cfg(unix)]
     use crate::process;
     use fux_wire::code::Code;
-    use std::num::NonZeroU32;
     #[cfg(unix)]
     use std::time::Duration;
 
@@ -6477,146 +6439,17 @@ mod tests {
     }
 
     #[test]
-    fn each_client_chooses_its_own_stack_child_and_no_program_resizes() -> TestResult {
-        let (mut s, c1) = attached(24, 81)?;
-        let c2 = s.attach(24, 81, None)?;
-        output_as(&mut s, Some(c1), BAR_ROW)?;
-        // An editor on the left, two alternatives on the right.
-        run(
-            &mut s,
-            "(sequence! (split (axis (pane 1) \"horizontal\")) (stack (pane 2)) #inert)",
-        )?;
-        s.out(PaneId::of(2), b"second");
-        s.out(PaneId::of(3), b"third");
-        let sizes = |s: &Session| [1, 2, 3].map(|p| s.pane(PaneId::of(p)).map(Pane::size).ok());
-        let before = sizes(&s);
-        assert_eq!(
-            before[1], before[2],
-            "both children are sized on the stack's room"
-        );
-        let lines = told(&mut s, |s| {
-            _ = run(s, &format!("(show (client \"{c2}\") (pane 3))"))
-        });
-        assert!(lines.contains("(event \"shown\")"), "{lines}");
-        assert!(!lines.contains("resized"), "{lines}");
-        assert_eq!(sizes(&s), before);
-        let screen = |s: &mut Session, c| {
-            output(
-                s,
-                &format!(
-                    "(string (capture (client {})))",
-                    fux::script::quoted(&format!("{c}"))
-                ),
-            )
-        };
-        let (one, two) = (screen(&mut s, c1)?, screen(&mut s, c2)?);
-        assert!(one.contains("second") && !one.contains("third"), "{one}");
-        assert!(two.contains("third") && !two.contains("second"), "{two}");
-        // The bar lists the children of the focus's stack.
-        let bar = one.lines().last().unwrap_or_default();
-        assert!(bar.contains("%2") && bar.contains("%3"), "{one}");
-        // A pane's next steps among its stack's children, going round.
-        let step = |s: &mut Session, way: &str| {
-            run(
-                s,
-                &format!(
-                    "(sequence! (define! value-120 (client {})) (step value-120 (focused value-120) {}) #inert)",
-                    fux::script::quoted(&format!("{c1}")),
-                    fux::script::quoted(way)
-                ),
-            )
-        };
-        for (way, shown) in [("next", 3), ("next", 2), ("last", 3)] {
-            step(&mut s, way)?;
-            assert_eq!(s.focused(c1), Some(PaneId::of(shown)), "{way}");
-        }
-        assert_eq!(s.focused(c2), Some(PaneId::of(3)));
-        // The client record has each choice with the tab's revision.
-        use fux_wire::inspect::{Projection, Scope};
-        let Body::Snapshot(snapshot) = s.inspect(Scope::All, Projection::Facts)? else {
-            return Err("snapshot".into());
-        };
-        snapshot.validate()?;
-        let choices = |c| {
-            let client = snapshot.clients.iter().find(|r| r.id == c);
-            client.map(|r| {
-                r.choices
-                    .iter()
-                    .map(|ch| (ch.stack, ch.current, ch.last))
-                    .collect::<Vec<_>>()
-            })
-        };
-        assert_eq!(choices(c1), Some(vec![(2, 4, Some(3))]));
-        assert_eq!(choices(c2), Some(vec![(2, 4, Some(3))]));
-        // A child closed shows each client shown it the one it was before.
-        run(&mut s, "(sequence! (kill (pane 3)) #inert)")?;
-        assert_eq!([c1, c2].map(|c| s.focused(c)), [Some(PaneId::of(2)); 2]);
-        assert_eq!(sizes(&s)[1], before[1]);
-        Ok(())
-    }
-
-    #[test]
-    fn a_focus_gone_follows_its_stack_back_to_the_child_shown_before() -> TestResult {
-        let shown = |s: &Session, c| s.root(TabId::of(1)).map(|r| r.shown_panes(c));
-        // `[%1, %2 | %4, %3]`: the stack's last child is %1, the seat's
-        // last pane %2, which closes first.
-        let (mut s, c) = attached(24, 80)?;
-        run(
-            &mut s,
-            "(sequence! (stack (pane 1)) (stack (pane 2)) (split (axis (pane 2) \"horizontal\")) #inert)",
-        )?;
-        run(
-            &mut s,
-            &format!(
-                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 4)) #inert)",
-                fux::script::quoted(&format!("{c}")),
-                fux::script::quoted(&format!("{c}"))
-            ),
-        )?;
-        run(&mut s, "(sequence! (kill (pane 2)) (kill (pane 4)) #inert)")?;
-        assert_eq!(s.focused(c), Some(PaneId::of(1)));
-        assert_eq!(shown(&s, c), Some(vec![PaneId::of(1)]));
-        // Moved out, as closed: `[%1 | %5, %3, %4]`, shown %4, then %1 and
-        // %5; %5 leaves for its last pane, then %1 for the stack's last.
-        let (mut s, c) = attached(24, 80)?;
-        run(
-            &mut s,
-            "(sequence! (new-tab (in (size (options) 80 24) \"other\")) #inert)",
-        )?;
-        run(
-            &mut s,
-            "(sequence! (stack (pane 1)) (stack (pane 3)) (split (axis (pane 1) \"horizontal\")) #inert)",
-        )?;
-        for pane in [4, 1, 5] {
-            run(
-                &mut s,
-                &format!(
-                    "(sequence! (show (client {}) {}) #inert)",
-                    fux::script::quoted(&format!("{c}")),
-                    crate::test_reference(&format!("%{pane}"))
-                ),
-            )?;
-        }
-        run(&mut s, "(sequence! (move (pane 5) (tab \"@2\")) #inert)")?;
-        assert_eq!(s.focused(c), Some(PaneId::of(1)));
-        run(&mut s, "(sequence! (move (pane 1) (tab \"@2\")) #inert)")?;
-        assert_eq!(s.focused(c), Some(PaneId::of(4)));
-        assert_eq!(shown(&s, c), Some(vec![PaneId::of(4)]));
-        Ok(())
-    }
-
-    #[test]
     fn a_step_from_a_zoom_finds_the_zoomed_panes_neighbour() -> TestResult {
         let (mut s, c1) = attached(24, 80)?;
         let c2 = s.attach(24, 80, None)?;
         run(
             &mut s,
-            "(sequence! (split (axis (pane 1) \"horizontal\")) (stack (pane 2)) #inert)",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
         )?;
         run(
             &mut s,
             &format!(
-                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 3)) (zoom (pane 2)) #inert)",
+                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 2)) (zoom (pane 2)) #inert)",
                 fux::script::quoted(&format!("{c1}")),
                 fux::script::quoted(&format!("{c2}"))
             ),
@@ -6630,12 +6463,6 @@ mod tests {
         )?;
         assert_eq!(s.tab(TabId::of(1)).and_then(Tab::zoomed), None);
         assert_eq!(s.focused(c2), Some(PaneId::of(1)));
-        let shown = s.root(TabId::of(1)).map(|r| r.shown_panes(c2));
-        assert_eq!(
-            shown,
-            Some(vec![PaneId::of(1), PaneId::of(3)]),
-            "its choice kept"
-        );
         Ok(())
     }
 
@@ -6667,8 +6494,7 @@ mod tests {
             nodes
                 .map(|n| match n {
                     fux_wire::layout::Node::Pane(p) => format!("{:?}", at(&p)),
-                    node @ (fux_wire::layout::Node::Split { .. }
-                    | fux_wire::layout::Node::Stack { .. }) => format!("{node:?}"),
+                    node @ fux_wire::layout::Node::Split { .. } => format!("{node:?}"),
                 })
                 .collect::<Vec<_>>()
         };
@@ -6680,35 +6506,6 @@ mod tests {
         let more = "(sequence! (move (new-tab (in (size (options) 10 10) \"other\")) (tab \"@2\")) #inert)";
         let refused = run(&mut s, more).err().unwrap_or_default();
         assert!(refused.contains("too-many"), "{refused}");
-        Ok(())
-    }
-
-    #[test]
-    fn a_stack_child_no_client_is_shown_needs_its_room_too() -> TestResult {
-        let (mut s, c) = attached(24, 80)?;
-        run(
-            &mut s,
-            "(sequence! (new-tab (in (size (options) 20 9) (workspace \"+1\"))) #inert)",
-        )?;
-        run(
-            &mut s,
-            &format!(
-                "(sequence! (show (client {}) (pane 2)) #inert)",
-                fux::script::quoted(&format!("{c}"))
-            ),
-        )?;
-        // `[%2, %3 / %4 / %5]`, shown %2: the hidden child needs 8 rows.
-        let made = "(sequence! (stack (pane 2)) (split (axis (pane 3) \"vertical\")) (split (axis (pane 4) \"vertical\")) #inert)";
-        run(&mut s, made)?;
-        assert_eq!(s.focused(c), Some(PaneId::of(2)));
-        for refused in [
-            "(split (axis (pane 5) \"vertical\"))",
-            "(sequence! (resize (tab 2) 20 7) #inert)",
-        ] {
-            let why = run(&mut s, refused).err().unwrap_or_default();
-            assert!(why.starts_with("size: "), "{refused}: {why}");
-        }
-        assert_eq!(s.parts.panes().len(), 5);
         Ok(())
     }
 
@@ -10395,8 +10192,7 @@ mod tests {
                 .iter()
                 .map(|node| match node {
                     fux_wire::layout::Node::Pane(_) => fux_wire::layout::Node::Pane(PaneId::of(1)),
-                    node @ (fux_wire::layout::Node::Split { .. }
-                    | fux_wire::layout::Node::Stack { .. }) => node.clone(),
+                    node @ fux_wire::layout::Node::Split { .. } => node.clone(),
                 })
                 .collect::<Vec<_>>()
         };
@@ -10913,9 +10709,9 @@ mod tests {
             "(sequence! (kill (pane 5)) #inert)",
             "(sequence! (move (pane 3) (tab \"@2\")) #inert)",
             "(sequence! (kill (pane 6)) #inert)",
-            "(sequence! (stack (pane 2)) #inert)",
+            "(sequence! (split (axis (pane 2) \"vertical\")) #inert)",
             "(sequence! (split (axis (pane 8) \"vertical\")) #inert)",
-            "(sequence! (stack (pane 2)) #inert)",
+            "(sequence! (split (axis (pane 2) \"vertical\")) #inert)",
             "(sequence! (kill (pane 10)) #inert)",
         ] {
             run(&mut s, change)?;

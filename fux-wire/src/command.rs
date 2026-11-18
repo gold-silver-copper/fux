@@ -256,17 +256,6 @@ wire! {
 }
 
 wire! {
-    /// Where a new pane goes beside its target: split off along `axis`,
-    /// the two taking `shares` if given, else halves (`split`); or an
-    /// alternative to it on its rectangle, in a stack (`stack`).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Beside {
-        Split(axis: Axis, shares: Option<(NonZeroU32, NonZeroU32)>),
-        Stack,
-    }
-}
-
-wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum MoveTo {
         Tab(id: TabId),
@@ -780,7 +769,9 @@ wire! {
         },
         /// A new pane beside `target` (`split`, `stack`).
         Split {
-            beside: Beside,
+            axis: crate::layout::Axis,
+            /// What the two take, target to new: halves if not given.
+            shares: Option<(NonZeroU32, NonZeroU32)>,
             target: PaneId,
             /// Its launch: the shell or program role, with argv.
             start: Start,

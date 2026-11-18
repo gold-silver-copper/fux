@@ -138,18 +138,13 @@ impl Session {
             ),
             (None, _) => (self.parts.workspaces(), self.parts.tabs_in(None)),
         };
-        // The tabs whose whole layout is here, which choices index.
-        let mut laid_out = Vec::new();
         for (ws, tab) in tabs {
             // Where each pane is, found once for the tab.
             let at: BTreeMap<PaneId, Rect> = self.sized(tab).panes.into_iter().collect();
             // A pane's tab as far as it is in scope: the pane alone.
             let tree = match target {
                 Some(AnyRef::Pane(pane)) => vec![Node::Pane(pane)],
-                Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) | None => {
-                    laid_out.push(tab);
-                    tab.root().nodes()
-                }
+                Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) | None => tab.root().nodes(),
             };
             for node in &tree {
                 let Node::Pane(id) = node else {
@@ -247,18 +242,6 @@ impl Session {
                 tab: place.map(|p| p.tab),
                 pane: place.map(|p| p.pane),
                 seats: self.parts.seats(view.id),
-                choices: (laid_out.iter())
-                    .filter_map(|tab| Some((tab.revision(self.run)?, tab.root())))
-                    .flat_map(|(revision, root)| {
-                        let choices = root.choices(view.id).into_iter();
-                        choices.map(move |(stack, shown)| inspect::Choice {
-                            revision,
-                            stack,
-                            current: shown.current,
-                            last: shown.last,
-                        })
-                    })
-                    .collect(),
                 opening: view.mode.opening(),
             };
             snapshot.clients.push(fact);

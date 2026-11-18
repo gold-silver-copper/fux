@@ -68,12 +68,11 @@ keys.line[]: key action code label
 keys.list[]: key action code label
 keys: at keymap list line
 preferences[]: name value type
-snapshot.facts.clients[].choices[]: layout-revision stack current last
 snapshot.facts.clients[].output: graphics underline-styles clipboard kitty-flags-requested
 snapshot.facts.clients[].seats[]: in current last
 snapshot.facts.clients[].terminal.cell-reported: width height
 snapshot.facts.clients[].terminal: sixel-reported cell-reported underline-styles-reported kitty-flags-reported
-snapshot.facts.clients[]: id kind terminal output read-only rows columns pane-rows pane-columns workspace tab pane seats choices opening
+snapshot.facts.clients[]: id kind terminal output read-only rows columns pane-rows pane-columns workspace tab pane seats opening
 snapshot.facts.panes[].cell: width height
 snapshot.facts.panes[].last-output: start end
 snapshot.facts.panes[].launch.directory: encoding text
@@ -85,12 +84,11 @@ snapshot.facts.panes[]: id tab version respawns screen bells done ended name lab
 snapshot.facts.tabs[]: id workspace name label fit columns rows host nodes layout-revision zoomed
 snapshot.facts.workspaces[]: id name label tabs
 snapshot.facts: run cursor scope projection workspaces tabs panes clients
-snapshot.recipe.clients[].choices[]: layout-revision stack current last
 snapshot.recipe.clients[].output: graphics underline-styles clipboard kitty-flags-requested
 snapshot.recipe.clients[].seats[]: in current last
 snapshot.recipe.clients[].terminal.cell-reported: width height
 snapshot.recipe.clients[].terminal: sixel-reported cell-reported underline-styles-reported kitty-flags-reported
-snapshot.recipe.clients[]: id kind terminal output read-only rows columns pane-rows pane-columns workspace tab pane seats choices opening
+snapshot.recipe.clients[]: id kind terminal output read-only rows columns pane-rows pane-columns workspace tab pane seats opening
 snapshot.recipe.panes[].cell: width height
 snapshot.recipe.panes[].directory.path: encoding text
 snapshot.recipe.panes[].directory[failed]: status operation errno
@@ -105,12 +103,11 @@ snapshot.recipe.panes[]: id tab version respawns screen bells done ended name la
 snapshot.recipe.tabs[]: id workspace name label fit columns rows host nodes layout-revision zoomed
 snapshot.recipe.workspaces[]: id name label tabs
 snapshot.recipe: run cursor scope projection workspaces tabs panes clients
-snapshot.topology.clients[].choices[]: layout-revision stack current last
 snapshot.topology.clients[].output: graphics underline-styles clipboard kitty-flags-requested
 snapshot.topology.clients[].seats[]: in current last
 snapshot.topology.clients[].terminal.cell-reported: width height
 snapshot.topology.clients[].terminal: sixel-reported cell-reported underline-styles-reported kitty-flags-reported
-snapshot.topology.clients[]: id kind terminal output read-only rows columns pane-rows pane-columns workspace tab pane seats choices opening
+snapshot.topology.clients[]: id kind terminal output read-only rows columns pane-rows pane-columns workspace tab pane seats opening
 snapshot.topology.panes[]: id tab version respawns screen bells done ended name label title rows columns row column
 snapshot.topology.tabs[]: id workspace name label fit columns rows host nodes layout-revision zoomed
 snapshot.topology.workspaces[]: id name label tabs

@@ -789,10 +789,11 @@ fn a_dump_loads_on_a_new_server_and_dumps_again_the_same() -> Outcome {
                 let pane = support::reference(first_word(&pane));
                 home.get_or_insert(format!(r#"(string (workspace {pane}))"#));
                 for _ in 0..roll(3) {
-                    let beside = match roll(3) {
-                        0 => format!(r#"(stack (program {pane} {SLEEP}))"#),
-                        1 => format!(r#"(split (program (axis {pane} "vertical") {SLEEP}))"#),
-                        _ => format!(r#"(split (program (axis {pane} "horizontal") {SLEEP}))"#),
+                    let beside = match roll(2) {
+                        0 => format!(r#"(split (program (axis {pane} "vertical") {SLEEP}))"#),
+                        _ => format!(
+                            r#"(split (program (shares (axis {pane} "horizontal") 2 1) {SLEEP}))"#
+                        ),
                     };
                     source.words(&beside)?;
                 }

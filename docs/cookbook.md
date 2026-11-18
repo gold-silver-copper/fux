@@ -362,19 +362,16 @@ fux '(kill (workspace "orch1-task2"))'
 fux '(workspace "orch1-task1")' || [ $? -eq 1 ]
 ```
 
-## An editor beside switchable terminals
+## An editor beside a terminal
 
-`stack` puts a new pane on another's rectangle, as `split` puts one beside
-it: the two are children of a stack, and each client is shown one child
-of a stack, its own. Every child keeps its size, so choosing one resizes no
-program. `step` on a pane in a stack shows a client its next, previous or
-last child (`C-b o`, `C-b q`), and `show` any pane. A tab's `nodes` lists a
-stack as `("stack" (CHILD ...))`, which `arrange` takes too.
+`split` puts a new pane beside another, side by side or one above the other,
+and a tab's `nodes` lists the result, which `arrange` takes too. Work that
+should not share the screen gets a tab of its own.
 
 ```sh
 fux '(rename (new-tab (program (name (size (in (options) "work") 80 24) "code") (list "sh"))) "editor")'
 fux '(rename (split (program (axis (pane "editor") "horizontal") (list "sh"))) "tests")'
-fux '(rename (stack (program (pane "tests") (list "sh"))) "build")'
+fux '(rename (split (program (axis (pane "tests") "vertical") (list "sh"))) "build")'
 fux '(data-text (get (first (get (snapshot (tab "code") "topology") "tabs")) "nodes"))'
 [ "$(fux '(get (pane "tests") "columns")')" = "$(fux '(get (pane "build") "columns")')" ]
 ```
