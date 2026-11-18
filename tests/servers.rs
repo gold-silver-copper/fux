@@ -870,9 +870,9 @@ fn a_pane_dumped_from_a_tab_zoomed_on_another_loads_alone() -> Outcome {
     Ok(())
 }
 
-/// A saved session is checked whole before anything starts: whatever is
-/// wrong with its layout, or its names against the workspace it is loaded
-/// into, it is refused and the server is left with nothing.
+/// A saved session's layouts, zooms and names against the workspace it is
+/// loaded into are checked before anything starts: whatever is wrong with
+/// them, it is refused and the server is left with nothing.
 #[test]
 fn a_saved_layout_is_refused_whole_before_anything_starts() -> Outcome {
     let split = |first: usize, second: usize| format!(r#"("horizontal" 1 1 {first} {second})"#);
@@ -900,7 +900,7 @@ fn a_saved_layout_is_refused_whole_before_anything_starts() -> Outcome {
         (
             "one pane at two leaves",
             format!(r#"{} "%0" "%0""#, split(1, 2)),
-            2,
+            1,
             "none",
             "bad-value",
         ),
@@ -955,7 +955,13 @@ fn a_saved_layout_is_refused_whole_before_anything_starts() -> Outcome {
         ),
         ("a layout too deep", chain(65), 66, "none", "too-many"),
     ];
-    let recipe = |nodes: &str, panes: usize, zoomed: &str, pane_name: &str, tab_name: &str| {
+    let tab = |nodes: &str, zoomed: &str, name: &str| {
+        format!(
+            r#"((id "@1") (workspace "+1") (name {name}) (columns 240) (rows 24)
+                (nodes ({nodes})) (zoomed {zoomed}))"#
+        )
+    };
+    let session = |tabs: &str, panes: usize, pane_name: &str| {
         let panes: Vec<String> = (0..panes)
             .map(|pane| {
                 let name = if pane == 0 { pane_name } else { "none" };
@@ -965,11 +971,13 @@ fn a_saved_layout_is_refused_whole_before_anything_starts() -> Outcome {
         format!(
             r#"(restore-session (quote! ((projection "recipe")
               (workspaces (((id "+1") (name none))))
-              (tabs (((id "@1") (workspace "+1") (name {tab_name}) (columns 240) (rows 24)
-                      (nodes ({nodes})) (zoomed {zoomed}))))
+              (tabs ({tabs}))
               (panes ({})))))"#,
             panes.join(" ")
         )
+    };
+    let recipe = |nodes: &str, panes: usize, zoomed: &str, pane_name: &str, tab_name: &str| {
+        session(&tab(nodes, zoomed, tab_name), panes, pane_name)
     };
     let server = Server::empty()?;
     let file = server.dir.join("bad.grift");
@@ -985,6 +993,17 @@ fn a_saved_layout_is_refused_whole_before_anything_starts() -> Outcome {
         std::fs::write(&file, recipe(nodes, *panes, zoomed, "none", "none")).map_err(e)?;
         refused(&["--file", path], code, what)?;
     }
+    // A tab saved with another's id still zooms only a pane of its own.
+    let tabs = [
+        tab(r#""%0""#, "none", "none"),
+        tab(r#""%1""#, r#""%0""#, "none"),
+    ];
+    std::fs::write(&file, session(&tabs.join(" "), 2, "none")).map_err(e)?;
+    refused(
+        &["--file", path],
+        "bad-value",
+        "a zoom on another tab's pane",
+    )?;
     // The workspace it is loaded into takes the name a pane or tab has.
     for (pane, tab) in [(r#""home""#, "none"), ("none", r#""home""#)] {
         std::fs::write(&file, recipe(r#""%0""#, 1, "none", pane, tab)).map_err(e)?;
