@@ -256,17 +256,6 @@ wire! {
 }
 
 wire! {
-    /// Where a new pane goes beside its target: split off along `axis`,
-    /// the two taking `shares` if given, else halves (`split`); or an
-    /// alternative to it on its rectangle, in a stack (`stack`).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Beside {
-        Split(axis: Axis, shares: Option<(NonZeroU32, NonZeroU32)>),
-        Stack,
-    }
-}
-
-wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum MoveTo {
         Tab(id: TabId),
@@ -274,8 +263,6 @@ wire! {
         NewTab,
         NewWorkspace,
         Beside(direction: Direction),
-        /// A workspace's place at the top (`all`).
-        Top,
     }
 }
 
@@ -769,21 +756,22 @@ wire! {
         /// Stops the server; from the CLI, refused from one of its own panes
         /// or with people attached.
         KillServer,
-        /// A tab with a shell or a program, in the last workspace of
-        /// `target`, each in the one before (each from the first not there
-        /// made, the first at the top), else the caller's; a client asking
-        /// from a key or prompt is moved to it.
+        /// A tab with a shell or a program, in workspace `target` (made if
+        /// it is not there), else the caller's; a client asking from a key
+        /// or prompt is moved to it.
         NewTab {
-            target: Vec<WsRef>,
+            target: Option<WsRef>,
             name: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
             start: Start,
             options: PaneOptions,
         },
-        /// A new pane beside `target` (`split`, `stack`).
+        /// A new pane beside `target` (`split`).
         Split {
-            beside: Beside,
+            axis: crate::layout::Axis,
+            /// What the two take, target to new: halves if not given.
+            shares: Option<(NonZeroU32, NonZeroU32)>,
             target: PaneId,
             /// Its launch: the shell or program role, with argv.
             start: Start,
@@ -827,10 +815,9 @@ wire! {
             target: AnyRef,
             name: String,
         },
-        /// A pane to another place, or a workspace into another or to the
-        /// top.
+        /// A pane to another place.
         Move {
-            target: AnyRef,
+            target: PaneId,
             to: MoveTo,
         },
         SwapPane {
@@ -915,7 +902,7 @@ wire! {
         /// Keys as typed at its terminal: its bindings, overlays and prompts
         /// take them as a person's keys.
         Keys(inputs: Vec<Input>),
-        /// Shows it the pane, tab or workspace, and each that holds it.
+        /// Shows it the pane, tab or workspace, and what holds it.
         Show(target: AnyRef),
         /// Shows it the sibling of `from` that `way` says.
         Step { from: AnyRef, way: Way },

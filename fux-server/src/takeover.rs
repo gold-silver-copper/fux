@@ -387,11 +387,10 @@ mod tests {
             run: fux_wire::command::Run::now().ok_or("a clock")?,
             ids: Vec::new(),
             tree: Tree {
-                top: vec![fux_wire::id::WsId::of(1)],
                 workspaces: vec![Workspace {
                     id: fux_wire::id::WsId::of(1),
                     name: None,
-                    children: vec![fux_wire::command::AnyRef::Tab(tab.id)],
+                    tabs: vec![tab.id],
                 }],
                 tabs: vec![tab],
             },

@@ -3246,17 +3246,14 @@ mod tests {
             let mut reader = crate::journal::Reader::new(scope, journal, session.run, Some(from))?;
             let said =
                 |e: &fux_wire::events::Item, key| e.data.get(key).map(fux_wire::json::Json::render);
-            Ok((reader
-                .batch(journal, &session.parts.nested(), true)?
-                .events
-                .iter())
-            .map(|e| {
-                [said(e, "event"), said(e, "why")]
-                    .into_iter()
-                    .flatten()
-                    .collect()
-            })
-            .collect())
+            Ok((reader.batch(journal, true)?.events.iter())
+                .map(|e| {
+                    [said(e, "event"), said(e, "why")]
+                        .into_iter()
+                        .flatten()
+                        .collect()
+                })
+                .collect())
         };
         let now = Instant::now();
         let (mut session, mut conn, _peer) = attached()?;

@@ -198,8 +198,8 @@ pub struct Opts {
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
-    /// The workspaces `in` names, each in the one before.
-    pub place: Vec<WsRef>,
+    /// The workspace `in` names.
+    pub place: Option<WsRef>,
     pub kill: bool,
     /// Attaching only to watch (`watch`).
     pub watch: bool,

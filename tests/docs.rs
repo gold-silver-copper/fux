@@ -269,8 +269,18 @@ fn run(
 
 #[test]
 fn every_recipe_in_the_cookbook_runs() -> Outcome {
-    let blocks = blocks(COOKBOOK)?;
+    let mut blocks = blocks(COOKBOOK)?;
     assert!(blocks.len() >= 10, "{} blocks", blocks.len());
+    // The page says its last recipe closes all they made: only the server's
+    // first workspace and the one these runs begin with are left.
+    blocks.push(Block {
+        heading: "what the recipes left",
+        info: "sh",
+        text: r#"left=$(fux '(map (lambda! (w) (get w "name")) (get (session-data (snapshot (all) "topology")) "workspaces"))')
+[ "$left" = "$(printf 'main\ndocs')" ] || { echo "left: $left"; exit 1; }
+"#
+        .to_owned(),
+    });
     for skipped in runs(shell()?, blocks, false)? {
         eprintln!("{skipped}");
     }

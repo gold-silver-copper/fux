@@ -113,10 +113,9 @@ from the held record as text, a pane's exit as `exited N`, a signal's as `signal
 unknown outcome as `ended, its status lost`.
 
 Every scope has the same envelope: `run`, `cursor`, `scope`, `projection`, `workspaces`, `tabs`,
-`panes` and `clients`. The four collections are flat, in hierarchy order: each workspace before the
-workspaces in it, and the tabs in the order they are shown. A workspace's `children` is an ordered
-list of its tab and workspace handles; a workspace's `parent`, a tab's `workspace` and a pane's
-`tab` identify their parents. Ids in a record are actual handles carrying this server run.
+`panes` and `clients`. The four collections are flat, in order: the workspaces, and the tabs in the
+order they are shown. A workspace's `tabs` is an ordered list of its tab handles; a tab's `workspace`
+and a pane's `tab` identify what holds them. Ids in a record are actual handles carrying this server run.
 
 ```grift
 (define! held (snapshot (all) "topology"))
@@ -136,18 +135,16 @@ Lists stay lists, a record reads back with the same fields, booleans and integer
 their exact text. `none` is neither false nor an empty string or list. Unsigned numbers above i64
 fail `range-error`.
 
-Each workspace has `id`, `parent` (the workspace it is in, `none` at the top), `name`, `label` and
-`children`, its tabs and workspaces. Its `children` is always the full ordered membership, including
-in a tab- or pane-scoped snapshot, whose `tabs` collection contains only the selected tab. Each tab
+Each workspace has `id`, `name`, `label` and `tabs`. Its `tabs` is always the full ordered membership,
+including in a tab- or pane-scoped snapshot, whose `tabs` collection contains only the selected tab;
+a `recipe` lists only the tabs it makes again. Each tab
 has `id`, `workspace`, `name`, `label`, `fit` (`"fixed"` or `"clients"`), `columns`, `rows`, `host`,
 `nodes`, `layout-revision` and `zoomed`: the pane that fills the tab on every screen showing it,
 each client focusing it there, or `none`. Client fit reports its retained size.
 
 `layout-revision` is `TAB:REVISION:RUN`, the native layout revision, or `none` if its counter is
 exhausted. Screen output does not change it. `nodes` uses the shared flat layout schema: the root
-is index zero, a leaf is a pane handle, a split is `(AXIS FIRST-SHARE SECOND-SHARE FIRST SECOND)`,
-and a stack is `("stack" (CHILD ...))`, two or more children each laid out on its whole rectangle,
-of which each client is shown one. The axis is `"horizontal"` or `"vertical"`; shares are positive
+is index zero, a leaf is a pane handle, and a split is `(AXIS FIRST-SHARE SECOND-SHARE FIRST SECOND)`. The axis is `"horizontal"` or `"vertical"`; shares are positive
 integers and children are indices in that same list. These values feed `arrange` directly. Every
 node is reachable once, with one leaf per pane. Layout depth does not consume record nesting. Each
 change of a tab's layout (a split, a close, a move or swap, `arrange`, a reshape, its fit or size,
@@ -165,16 +162,14 @@ bytes (UTF-8, with a lone surrogate as its three bytes). Replay launches new pro
 launch inputs, not saved process memory. The snapshot's `cursor` is its panes' journal cursor.
 
 Each client has `id`, `kind` (`"terminal"` or `"headless"`), `terminal`, `output`, `read-only`,
-physical `rows`/`columns`, `pane-rows`/`pane-columns`, optional `workspace`/`tab`/`pane`, `seats`,
-`choices` and `opening`: the screen it shows over its panes, `"column"` (the prefix's command
+physical `rows`/`columns`, `pane-rows`/`pane-columns`, optional `workspace`/`tab`/`pane`, `seats`
+and `opening`: the screen it shows over its panes, `"column"` (the prefix's command
 column), `"repeat"` (a repeat mode's bar), `"list"` (a chooser) or `"prompt"`, `none` when none is
 open. Each of `seats` is what it is shown `in` a workspace (the server's, with `in` `none`) or
-focuses in a tab: `current`, and `last`, the one before. Each of `choices` is its child at a stack
-of a tab in the snapshot: `stack`, `current` and `last` index that tab's `nodes` at its
-`layout-revision`.
+focuses in a tab: `current`, and `last`, the one before.
 
-`(all)` includes every root and view. A workspace includes its descendants, the workspaces in it at
-any depth with theirs, and views showing any of them; a tab includes its whole tab and parent
+`(all)` includes every workspace and view. A workspace includes its tabs and the views showing them;
+a tab includes its whole tab and parent
 workspace reference. A pane includes that pane alone, in every projection: its tab as far as the
 pane is in it (the tab's `nodes`, the pane alone), and relevant views. A client includes that client and its current
 workspace closure. Missing explicit scopes fail.
@@ -296,13 +291,13 @@ clipped. A malformed reply ends that request's connection.
 
 ## What an action made
 
-`split`, `stack`, `new-tab` and `respawn` leave an answer (below), which is also the new pane: a word
+`split`, `new-tab` and `respawn` leave an answer (below), which is also the new pane: a word
 that wants a pane takes it as one, and `wait` waits from its version. `(panes X)` and `(tabs X)` are
 lists of handles in layout order, and `(information X)` is all of it.
 
 ## Answers and waits
 
-An action's answer (`send-keys`, `send-mouse`, `signal`, `split`, `stack`, `new-tab`, `respawn`, and
+An action's answer (`send-keys`, `send-mouse`, `signal`, `split`, `new-tab`, `respawn`, and
 `line`, `type` and `press` over `send-keys`) holds:
 
 ```text
@@ -438,11 +433,10 @@ The finite coverage schema is:
 | --- | --- |
 | `created` | `name` on a tab or workspace, `none` when unnamed; a pane's `role`, `"shell"` (its exit closes it) or `"program"`; creation invalidates membership and layout |
 | `renamed` | `name` |
-| `closed` | `why`: `"killed"` by a `kill` of it or of what holds it, `"exited"` for its shell's exit, or `"emptied"` as its last child left; closure invalidates membership, layout and repaired views |
+| `closed` | `why`: `"killed"` by a `kill` of it or of what holds it, `"exited"` for its shell's exit, or `"emptied"` as its last pane or tab left; closure invalidates membership, layout and repaired views |
 | `reordered` | changed tab or workspace order |
-| (any of these four, and `moved`, on a workspace) | `parent`: the workspace it is in, `none` at the top; a workspace's events reach the scopes of the workspaces holding it, and a move's those of the one it left |
 | `laid-out` | tab, workspace and its `layout-revision` after the change, `none` once exhausted: a split, close, move, swap, reshaping, a guarded `arrange`, its fit or size changed (a new revision), or the size it is laid out on or its effective host, as a client shows, resizes, types, leaves or shows another tab (the same one); pane resizes can follow |
-| `moved` | a pane: `from-tab`, `from-workspace`; a workspace: its new `parent`; both old and new scopes receive it |
+| `moved` | a pane: `from-tab`, `from-workspace`; both old and new scopes receive it |
 | `attached` | `client`, its place, its `kind` (`"terminal"` or `"headless"`) and `read-only` |
 | `detached` | `client`, its last place if known, and `why`: `"detached"` when asked (its terminal or `detach`), `"disconnected"` when its connection closed or failed, `"server_stopped"` before the server's `stopped`, `"failed"` when the server could not paint it |
 | `shown` | `client` and its place, each time it changes at any level (workspace, tab, focused pane, or a zoom of its tab): one at the place left, one at the place reached; includes automatic repair after a close |
@@ -495,14 +489,14 @@ fits. Its exit status is 2 for a mistake in the program itself
 - a program: `cancelled`, `not-here`, `not-config`, `config`, `bad-binding`, `read`, `unset-variable`,
   `output`, `nested`, `not-a-key`;
 - the language: `type-error`, `range-error`, `arity-error`, `unbound-symbol`, `read-error`,
-  `parse-error`, `contract-error`, `bad-name`, `too-long`, `unused`, `out-of-memory`, `ids-exhausted`,
+  `parse-error`, `contract-error`, `bad-name`, `too-long`, `too-many`, `unused`, `out-of-memory`, `ids-exhausted`,
   `fail`.
 
 The libraries raise two kinds of their own, each exit 1: `ended-before-text` (`shows`, on a program
 that ended without the text) and `respawned-during-wait` (`grows`). A
 program may raise any kind: `(raise (error (quote! my-kind) 1 2))`.
 
-fux sets no limits of its own: memory, time and steps are the user's and the OS's to bound (`ulimit`,
+fux sets no limits of its own but that one on a layout's depth: memory, time and steps are the user's and the OS's to bound (`ulimit`,
 cgroups, `timeout`), and a program that loops is stopped as any program is. At its descriptor or
 process limit a server refuses a new client with the cause
 (`the server can serve no new client now: …`), and a change made while the run's record can't be written (a full disk, a file-size limit) stands: its
@@ -516,8 +510,7 @@ cross the wire (a callback's lists past 64, records past 32) fails `too-long`, w
 the server refuses it. So does a request longer than one frame (1 MiB), its keys or paste apart
 (a name, a directory or a program of that length): its client's own connection process refuses it,
 and the server is sent none of it. A pane's program and directory together are 262,143 bytes at most (a
-quarter of a frame's 1,048,575 bytes, as its facts say them): `new-tab`, `split` or `respawn` with more fails `too-long`. A layout is a flat list of nodes, so it nests as deep as its panes take it,
-with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. A name is at most 1,024 bytes: a longer one fails `bad-name`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
+quarter of a frame's 1,048,575 bytes, as its facts say them): `new-tab`, `split` or `respawn` with more fails `too-long`. A tab's layout nests at most 64 deep: a `split`, `move`, `arrange` or saved session that would nest it deeper fails `too-many`. A size no screen can have, past what a grid holds, fails `size`. A name is at most 1,024 bytes: a longer one fails `bad-name`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
 handler catches. fux's own code takes memory as it needs it: refused, that process aborts, whether a pane's, a
 connection's, a client's or the server's, and a run whose server ended so is taken back (`start`). Keys and pastes are joined nowhere: what is longer than a frame
 goes to its pane a piece at a time, each sent once the pane's terminal took the one before, so a large
@@ -548,8 +541,8 @@ that had taken effect by then, as an uncaught failure lists them on stderr.
 ## `status`
 
 ```text
-((socket "/run/user/1000/fux/server.sock") (release "0.38.0") (protocol 80)
- (server-release "0.38.0") (server-protocol 80) (server-process-id 4242) (compatible #true))
+((socket "/run/user/1000/fux/server.sock") (release "0.38.0") (protocol 81)
+ (server-release "0.38.0") (server-protocol 81) (server-process-id 4242) (compatible #true))
 ```
 
 `(status)` returns an ordinary record with these locally readable fields, including `(compatible

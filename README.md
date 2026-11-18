@@ -50,27 +50,22 @@ and it never starts a server. Inside a fux pane, `fux` refuses to attach.
   program's stays, its exit told, until `kill` closes it or `respawn`
   starts its program again. A pane's lines re-wrap when its width
   changes, history included.
-- **Tabs** lay out panes, split side by side or stacked one at a time. A
+- **Tabs** lay out panes, split side by side or one above the other. A
   tab closes with its last pane.
-- **Workspaces** hold tabs and workspaces, so workspaces nest: a project
-  `proj` with a workspace per agent shows as `proj › agent1`. A workspace
-  closes with its last child.
+- **Workspaces** are ordered groups of tabs, one per project or agent. A
+  workspace closes with its last tab.
 - **Each client is shown its own** workspace, tab and pane, and remembers
-  the one it was shown before at each level. A tab's layout may hold
-  **stacks**: `(stack PANE)` puts a new pane on that pane's rectangle, as
-  `split` puts one beside it, and each client is shown one child of a
-  stack, its own. Every child keeps its size, so choosing one resizes no
-  program. In a stack, `C-b o` shows the next child, `C-b q` the last.
+  the one it was shown before at each level.
 - **The bar** is hidden: panes have every row. While the prefix, or any
   screen of fux's, is in use, the bar draws over the bottom row, with the
-  workspace's path and its tabs on the left and the focused pane or what
+  workspace's name and its tabs on the left and the focused pane or what
   the keys do on the right; when it ends, the row shows the pane again. A
   bell or a program's notification (OSC 9, 777) shows in the bottom-right
   corner for five seconds, or until your next key. When a workspace you
   are in closes by someone else's request (a kill, or its last program
   ending), the corner says what closed, who closed it and where you are
-  now, until your next key: `harmony › meta-design killed by %12: 20 tabs
-  closed · now harmony › desktop-simple · C-b w g shows all`. A screen
+  now, until your next key: `meta-design killed by %12: 20 tabs closed ·
+  now desktop-simple · C-b w g shows all`. A screen
   too small for its tab shows the panes cut off, and the corner names
   them (`[hidden %3] [cut %2]`). No pane is ever resized for fux's own
   feedback. To give the bar a row of its own, see the cookbook's "The bar
@@ -110,14 +105,14 @@ where its map doesn't bind it, sends it to the pane.
 | Key | Runs | Does |
 | --- | --- | --- |
 | `h` `j` `k` `l` | `(step (me) (focused (me)) "left")` … | focus the pane that way |
-| `o` / `q` | `(step (me) (focused (me)) "next")` / `… "last"` | focus the next / last pane (in a stack, child) |
+| `o` / `q` | `(step (me) (focused (me)) "next")` / `… "last"` | focus the next / last pane |
 | `v` / `s` | `(split (axis (focused (me)) "horizontal"))` / `… "vertical"` | split side by side / stacked |
 | `x` | `(confirm-close (me) (focused (me)))` | close the pane (`y` or Enter closes, `n` or Esc keeps it) |
 | `z` | `(zoom (focused (me)))` | zoom the pane, or restore it, on every screen showing its tab |
 | `c` | `(edit-history (me))` | the pane's history in your `$EDITOR` |
 | `a`, then a key | `(rename-prompt (me) (focused (me)))` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
 | `n` / `b` | `(step (me) (tab (focused (me))) "next")` / `… "previous"` | next / previous tab |
-| `t`, `w` | the tab and workspace maps | `n` new, `h`/`l` previous and next, `g` choose, `r` rename, `x` close, `m h`/`m l` move; `w j`/`w k` into a workspace in this one and out of it |
+| `t`, `w` | the tab and workspace maps | `n` new, `h`/`l` previous and next, `g` choose, `r` rename, `x` close, `m h`/`m l` move |
 | `e` | `(command-prompt (me))` | type any grift |
 | `d` | `(detach (me))` | detach this terminal |
 | `r`, then `h` `j` `k` `l` | `(move-border (focused (me)) "left" 1)` … | move a border one cell |
@@ -136,9 +131,8 @@ too, though it has no `(me)` to give them.
   titled `history` that closes when the editor exits: search, select and
   copy there. It stands in for a copy mode and a pager.
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
-  or panes. `w g` lists every workspace on the server, each indented
-  under what holds it, with the tabs, panes and workspaces it holds
-  counted and `*` on yours and each holding it; the others list the
+  or panes. `w g` lists every workspace on the server, with the tabs
+  and panes it holds counted and `*` on yours; the others list the
   siblings of yours. Enter or `y` selects, `r` renames, `x` closes, Esc,
   `q` or `n` cancels. They are library programs over one `choose`
   primitive (`choose-among`, `choose-move`, `choose-pane`; `fux '(explain
@@ -203,19 +197,20 @@ first argument is a whole program, never a file; `fux
 
 A handle names everything under it: `information`, `dump`, `events`, `panes`,
 `tabs` and `kill` take a pane, a tab, a workspace or `(all)`, and apply to
-the whole of it, so `kill` on a project closes its agents' workspaces too.
+the whole of it, so `kill` on a workspace closes its tabs and their panes.
 
 ```sh
-fux '(new-tab (program (size (in (in (options) "proj") "agent1") 80 24) (list "sh")))' > /dev/null
-fux '(new-tab (program (size (in (in (options) "proj") "agent2") 80 24) (list "sh")))' > /dev/null
-fux '(length (panes (workspace "proj")))'
-fux '(kill (workspace "proj"))'
+fux '(new-tab (program (name (size (in (options) "agent1") 80 24) "build") (list "sh")))' > /dev/null
+fux '(new-tab (program (name (size (in (options) "agent1") 80 24) "tests") (list "sh")))' > /dev/null
+fux '(length (panes (workspace "agent1")))'
+fux '(kill (workspace "agent1"))'
 ```
 
 Names are given, never made: `name` and `rename` give one, and a
 workspace, tab or pane that has a name refuses it to another
 (`name-taken`), so a name finds one thing. fux sets no limits of its own
-on memory, time or steps: `ulimit`, cgroups and `timeout` do.
+on memory, time or steps: `ulimit`, cgroups and `timeout` do. A tab's
+layout nests at most 64 deep: deeper is refused (`too-many`).
 
 ## grift
 
@@ -363,11 +358,11 @@ grift: write them again in grift.
 ## Saved sessions
 
 `(dump (all))` gives what there is as a grift program that makes it again,
-and `(dump X)` a tab or a workspace with all in it: the layouts, sizes,
-names and the programs each pane started with. Running it on a server,
-with `fux --file FILE PARENT`, makes them again in workspace PARENT
-(made if missing), else at the top: saving, cloning and moving a project
-are that one mechanism (the cookbook's "Save and restore a layout"). A
+and `(dump X)` a tab or a workspace: the layouts, sizes, names and the
+programs each pane started with. `fux --file FILE` makes them again on a
+server. `fux --file FILE NAME` puts the tabs of one saved workspace in
+workspace NAME (made if missing), and refuses a file of several: saving,
+cloning and moving a workspace are that one mechanism (the cookbook's "Save and restore a layout"). A
 replay joins a workspace of a name it gives, and refuses a tab or pane
 name the server already has (`name-taken`) before it makes anything. A
 dump starts new processes: it never brings back what a process held, its

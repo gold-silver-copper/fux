@@ -124,8 +124,8 @@ impl Session {
             panes: Vec::new(),
             clients: Vec::new(),
         };
-        // The workspaces in scope, each before those in it, and their tabs
-        // in order: a workspace and those in it, or a tab's or pane's own.
+        // The workspaces in scope and their tabs, in order: a workspace, or
+        // a tab's or pane's own.
         let (workspaces, tabs) = match (selected_place, target) {
             _ if empty => (Vec::new(), Vec::new()),
             (Some((ws, tab)), _) => {
@@ -133,23 +133,18 @@ impl Session {
                 (self.workspace(ws).into_iter().collect(), tabs)
             }
             (None, Some(AnyRef::Workspace(ws))) => (
-                self.parts.workspaces_in(Some(ws)),
+                self.workspace(ws).into_iter().collect(),
                 self.parts.tabs_in(Some(ws)),
             ),
-            (None, _) => (self.parts.every_workspace(), self.parts.tabs_in(None)),
+            (None, _) => (self.parts.workspaces(), self.parts.tabs_in(None)),
         };
-        // The tabs whose whole layout is here, which choices index.
-        let mut laid_out = Vec::new();
         for (ws, tab) in tabs {
             // Where each pane is, found once for the tab.
             let at: BTreeMap<PaneId, Rect> = self.sized(tab).panes.into_iter().collect();
             // A pane's tab as far as it is in scope: the pane alone.
             let tree = match target {
                 Some(AnyRef::Pane(pane)) => vec![Node::Pane(pane)],
-                Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) | None => {
-                    laid_out.push(tab);
-                    tab.root().nodes()
-                }
+                Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) | None => tab.root().nodes(),
             };
             for node in &tree {
                 let Node::Pane(id) = node else {
@@ -160,6 +155,11 @@ impl Session {
                 snapshot.panes.push(fact);
             }
             let size = tab.fit().size();
+            // A recipe says only what it makes again: a pane saved alone
+            // is no zoom on another.
+            let zoomed = (tab.zoomed()).filter(|zoomed| {
+                !matches!(projection, Projection::Recipe) || tree.contains(&Node::Pane(*zoomed))
+            });
             let fact = inspect::Tab {
                 id: tab.id(),
                 workspace: ws,
@@ -171,28 +171,36 @@ impl Session {
                 nodes: tree,
                 revision: tab.revision(self.run),
                 host: self.host(Some(tab.id())),
-                zoomed: tab.zoomed(),
+                zoomed,
             };
             snapshot.tabs.push(fact);
         }
+        // A recipe says only what it makes again.
+        let recipe = matches!(snapshot.projection, Projection::Recipe);
+        let saved = |tab: &&TabId| !recipe || snapshot.tabs.iter().any(|t| t.id == **tab);
+        let mut facts = Vec::with_capacity(workspaces.len());
         for ws in workspaces {
             let fact = inspect::Workspace {
                 id: ws.id(),
-                parent: ws.parent(),
                 name: ws.name().map(str::to_owned),
                 label: format!("{}", ws.display_label()),
-                children: ws.stack().children().to_vec(),
+                tabs: ws
+                    .stack()
+                    .children()
+                    .iter()
+                    .filter(saved)
+                    .copied()
+                    .collect(),
             };
-            snapshot.workspaces.push(fact);
+            facts.push(fact);
         }
+        snapshot.workspaces = facts;
         for view in self.views.values() {
             let place = self.place(view.id);
             let selected = match scope {
                 Scope::All => true,
                 Scope::Client(id) => id == view.id,
-                Scope::Target(AnyRef::Workspace(id)) => {
-                    place.is_some_and(|p| self.parts.within(p.ws, id))
-                }
+                Scope::Target(AnyRef::Workspace(id)) => place.is_some_and(|p| p.ws == id),
                 Scope::Target(AnyRef::Tab(id)) => place.is_some_and(|p| p.tab == id),
                 Scope::Target(AnyRef::Pane(id)) => place.is_some_and(|p| p.pane == id),
             };
@@ -239,18 +247,6 @@ impl Session {
                 tab: place.map(|p| p.tab),
                 pane: place.map(|p| p.pane),
                 seats: self.parts.seats(view.id),
-                choices: (laid_out.iter())
-                    .filter_map(|tab| Some((tab.revision(self.run)?, tab.root())))
-                    .flat_map(|(revision, root)| {
-                        let choices = root.choices(view.id).into_iter();
-                        choices.map(move |(stack, shown)| inspect::Choice {
-                            revision,
-                            stack,
-                            current: shown.current,
-                            last: shown.last,
-                        })
-                    })
-                    .collect(),
                 opening: view.mode.opening(),
             };
             snapshot.clients.push(fact);

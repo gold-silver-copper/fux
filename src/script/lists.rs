@@ -145,9 +145,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     let run = session.run;
     let mut draft = super::default_state()?.draft();
     let dir = super::quoted(env!("CARGO_MANIFEST_DIR"));
-    let split = format!(
-        "(split (directory (axis (pane 1) \"vertical\") {dir})) (stack (directory (pane 1) {dir}))"
-    );
+    let split = format!("(split (directory (axis (pane 1) \"vertical\") {dir}))");
     let asks = &mut InProcess(&mut session);
     evaluate(&split, Some(&mut draft), asks, &mut Vec::new())?;
     let mut lines = Vec::new();

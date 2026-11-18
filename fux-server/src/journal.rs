@@ -12,7 +12,7 @@ use fux_wire::events::{Actor, Batch, Cursor, Item, Seq, Status};
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::inspect::Scope;
 use fux_wire::json::Json;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewChange {
@@ -91,7 +91,7 @@ pub enum Close {
     Killed,
     /// Its shell exited.
     Exited,
-    /// Its last child left it.
+    /// Its last pane or tab left it.
     Emptied,
 }
 impl Close {
@@ -112,81 +112,13 @@ struct Entry {
     actor: Actor,
 }
 
-/// A time in the journal: before entry `seq` and before the `moves`th
-/// workspace to leave where it was: how the workspaces were nested
-/// then (`Journal::above`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Mark {
-    seq: Seq,
-    moves: u64,
-}
-impl Mark {
-    /// Just after entry `seq` was journaled: every workspace that had
-    /// left a place by then has, whichever it was of them.
-    fn after(seq: Seq) -> Mark {
-        Mark {
-            seq: Seq(seq.0.saturating_add(1)),
-            moves: 0,
-        }
-    }
-}
-
-/// A workspace left what held it, moved or closed, at `at`. Kept while an
-/// entry is that happened before: one no later than `until`.
-#[derive(Debug)]
-struct Move {
-    at: Mark,
-    ws: WsId,
-    until: Seq,
-}
-/// The bytes one row of `Journal::was` is.
-const WAS: usize = std::mem::size_of::<((WsId, Mark), Option<WsId>)>();
-/// The rows a table of the journal's gains at once, at least.
+/// The rows the ring's table gains at once, at least.
 const ROWS: usize = 16;
-
-/// Gives back the rows of `table` beyond half as many again as it holds,
-/// and all of them once it holds none: a table that held many rows once
-/// holds no room for them after.
-fn trim<T>(table: &mut VecDeque<T>) {
-    let rows = table.len();
-    let spare = if rows == 0 { 0 } else { ROWS };
-    let most = rows
-        .saturating_mul(2)
-        .saturating_add(spare.saturating_mul(2));
-    if table.capacity() > most {
-        table.shrink_to(rows.saturating_add(rows / 2).saturating_add(spare));
-    }
-}
-
-/// Entry `entry` happened at a place as the workspaces were nested at
-/// `mark`, before the change that journaled it, and as they were when it
-/// was journaled too if `now` (`Journal::push_then`).
-#[derive(Debug)]
-struct Then {
-    entry: Seq,
-    mark: Mark,
-    now: bool,
-}
-
-/// A change whose entries may yet tell of places as they were before it
-/// (`Journal::open`): what `close` takes.
-pub(crate) struct Open {
-    /// When it began.
-    pub(crate) then: Mark,
-    outer: Option<Mark>,
-}
-
-/// The workspace each workspace is in now, none at the top or gone: the
-/// session's parts say (`workspace::Parts::nested`), the journal keeps
-/// only what was otherwise before.
-pub type Nested<'a> = &'a dyn Fn(WsId) -> Option<WsId>;
 
 /// What happened, as many of the last events as `room` bytes hold, the
 /// last of them at least: a reader further behind is told how many it
-/// missed. What it holds is counted by `held`: each row of its tables and
-/// each text at the size stored. An entry holds no more for being in a workspace in others:
-/// which held it is read from how they are nested now and from each
-/// workspace's leaving a place since (`moves`).
+/// missed. What it holds is counted by `held`: each entry and each text at
+/// the size stored.
 #[derive(Debug)]
 pub struct Journal {
     entries: VecDeque<Entry>,
@@ -196,17 +128,6 @@ pub struct Journal {
     next: Seq,
     actor: Actor,
     exhausted: bool,
-    /// Each workspace's leaving what held it, in order, while an entry
-    /// from before it is kept; and what held it till then, by workspace
-    /// and time.
-    moves: VecDeque<Move>,
-    was: BTreeMap<(WsId, Mark), Option<WsId>>,
-    /// How many workspaces have left a place: the next one's number.
-    moved: u64,
-    /// The entries told at a place as it was before their change, in order.
-    thens: VecDeque<Then>,
-    /// The change open longest, if one is: no move since is let go.
-    open: Option<Mark>,
 }
 impl Journal {
     pub fn new(room: fux_wire::command::JournalBytes) -> Journal {
@@ -217,34 +138,16 @@ impl Journal {
             next: Seq::default(),
             actor: Actor::default(),
             exhausted: false,
-            moves: VecDeque::new(),
-            was: BTreeMap::new(),
-            moved: 0,
-            thens: VecDeque::new(),
-            open: None,
         }
     }
-    /// Workspace `ws` is no longer in `from` (none: it was at the top): it
-    /// moved, or closed.
-    pub(crate) fn left(&mut self, ws: WsId, from: Option<WsId>) {
-        let at = self.mark();
-        self.moved = self.moved.saturating_add(1);
-        self.was.insert((ws, at), from);
-        let until = self.next;
-        self.moves.push_back(Move { at, ws, until });
-    }
-    /// The bytes it holds: its texts and each row of its tables. So an
-    /// entry let go makes room at once, whatever it is. A table's room for
-    /// rows it does not hold is not counted and is bounded apart: the
-    /// ring's grows only into rows its room has left, and each table gives
-    /// back what is beyond twice its rows (`trim`).
+    /// The bytes it holds: its texts and each entry. So an entry let go
+    /// makes room at once, whatever it is. The ring's room for entries it
+    /// does not hold is not counted and is bounded apart: it grows only
+    /// into what `room` has left, and `evict` gives back what is beyond
+    /// twice its rows.
     fn held(&self) -> usize {
-        let rows = |rows: usize, row: usize| rows.saturating_mul(row);
         (self.text)
-            .saturating_add(rows(self.entries.len(), std::mem::size_of::<Entry>()))
-            .saturating_add(rows(self.moves.len(), std::mem::size_of::<Move>()))
-            .saturating_add(rows(self.thens.len(), std::mem::size_of::<Then>()))
-            .saturating_add(rows(self.was.len(), WAS))
+            .saturating_add((self.entries.len()).saturating_mul(std::mem::size_of::<Entry>()))
     }
     /// The entries it holds.
     #[cfg(test)]
@@ -258,94 +161,6 @@ impl Journal {
             .checked_div(std::mem::size_of::<Entry>())
             .unwrap_or(0)
     }
-    /// A change begins that may journal an event at a place as it was
-    /// before it (`push_then`): how the workspaces are nested now is kept
-    /// till it is `close`d.
-    pub(crate) fn open(&mut self) -> Open {
-        let then = self.mark();
-        let outer = self.open;
-        self.open = Some(outer.map_or(then, |outer| outer.min(then)));
-        Open { then, outer }
-    }
-    /// The change `open` began is done.
-    pub(crate) fn close(&mut self, open: Open) {
-        self.open = open.outer;
-        self.evict();
-    }
-    /// The workspace that held `ws` at `at`.
-    fn parent_at(&self, ws: WsId, at: Mark, nested: Nested<'_>) -> Option<WsId> {
-        let later = (ws, at)..;
-        match self.was.range(later).next() {
-            Some(((moved, _), from)) if *moved == ws => *from,
-            Some(_) | None => nested(ws),
-        }
-    }
-    /// The workspaces that held `ws` at `at`, from the one it was in out
-    /// to the top.
-    pub(crate) fn above<'a>(
-        &'a self,
-        ws: WsId,
-        at: Mark,
-        nested: Nested<'a>,
-    ) -> impl Iterator<Item = WsId> + 'a {
-        // No workspace holds itself: one met again (it is as far out as
-        // the one kept, a power of two steps back) ends the walk.
-        let (mut kept, mut steps, mut power) = (ws, 0_u64, 1_u64);
-        let up = move |ws: &WsId| self.parent_at(*ws, at, nested);
-        std::iter::successors(up(&ws), up).take_while(move |ws| {
-            if *ws == kept {
-                return false;
-            }
-            steps = steps.saturating_add(1);
-            if steps == power {
-                (kept, steps, power) = (*ws, 0, power.saturating_mul(2));
-            }
-            true
-        })
-    }
-    /// Whether what `entry` tells happened in workspace `w`, or in one in
-    /// it then; a move, where it left too.
-    fn within(&self, entry: &Entry, w: WsId, nested: Nested<'_>) -> bool {
-        let event = &entry.event;
-        let (_, _, ws) = event.ids();
-        let from = match event {
-            Event::Pane(_, PaneEvent::Moved((from, _))) => Some(*from),
-            Event::Workspace(_, Change::Moved(from)) => *from,
-            Event::Pane(..)
-            | Event::Tab(..)
-            | Event::Workspace(..)
-            | Event::Layout(..)
-            | Event::Zoomed(..)
-            | Event::View { .. }
-            | Event::Stopped(_) => None,
-        };
-        let held = |ws: Option<WsId>, at: Mark| {
-            ws.is_some_and(|ws| ws == w || self.above(ws, at, nested).any(|above| above == w))
-        };
-        let own = Mark::after(entry.seq);
-        // Only a view's event is told as of before its change.
-        let then = match event {
-            Event::View { .. } => {
-                let at = self.thens.partition_point(|then| then.entry < entry.seq);
-                (self.thens.get(at)).filter(|then| then.entry == entry.seq)
-            }
-            Event::Pane(..)
-            | Event::Tab(..)
-            | Event::Workspace(..)
-            | Event::Layout(..)
-            | Event::Zoomed(..)
-            | Event::Stopped(_) => None,
-        };
-        match then {
-            Some(then) => held(ws, then.mark) || (then.now && held(ws, own)),
-            None => held(ws, own) || held(from, own),
-        }
-    }
-    /// The bytes it holds, as it counts them.
-    #[cfg(test)]
-    pub(crate) fn bytes(&self) -> usize {
-        self.held()
-    }
     /// Request scopes restore the previous actor before returning; deferred
     /// work retains its own actor rather than inheriting a later request's.
     pub(crate) fn actor(&mut self, actor: Actor) -> Actor {
@@ -358,30 +173,12 @@ impl Journal {
         self.push_from(event, self.actor);
     }
     pub(crate) fn push_from(&mut self, event: Event, actor: Actor) {
-        self.record(event, actor, None);
-    }
-    /// `event` at a place as the workspaces were nested at `then`, and as
-    /// they are now too if `now`.
-    pub(crate) fn push_then(&mut self, event: Event, then: Mark, now: bool) {
-        self.record(event, self.actor, Some((then, now)));
-    }
-    fn record(&mut self, event: Event, actor: Actor, then: Option<(Mark, bool)>) {
         let Some(next) = self.next.0.checked_add(1) else {
             self.exhausted = true;
             return;
         };
         let seq = self.next;
         self.next = Seq(next);
-        if let Some((mark, now)) = then {
-            // It reads each move since `mark`, so each is kept as long.
-            let since = (self.moves.iter_mut().rev()).take_while(|moved| moved.at >= mark);
-            since.for_each(|moved| moved.until = seq);
-            self.thens.push_back(Then {
-                entry: seq,
-                mark,
-                now,
-            });
-        }
         // The ring's table grows by the rows its room has left, this
         // entry's among them, and no more than half again: with no row
         // left, the oldest entry's is the new one's.
@@ -402,48 +199,29 @@ impl Journal {
     }
     /// The oldest entry is let go.
     fn oldest_goes(&mut self) {
-        let Some(evicted) = self.entries.pop_front() else {
-            return;
-        };
-        self.text = self.text.saturating_sub(evicted.event.stored());
-        if (self.thens.front()).is_some_and(|then| then.entry == evicted.seq) {
-            self.thens.pop_front();
+        if let Some(evicted) = self.entries.pop_front() {
+            self.text = self.text.saturating_sub(evicted.event.stored());
         }
     }
-    /// Lets go the moves no entry kept happened before, and the oldest
-    /// entries, but for the newest, till what is held fits its room: no
-    /// more of them than that. Then each table gives back its room for
-    /// rows it holds no more.
+    /// Lets go the oldest entries, but for the newest, till what is held
+    /// fits its room: no more of them than that. The table then gives back
+    /// its rows beyond twice those it holds: a ring that held many small
+    /// entries holds no room for them beside long texts.
     fn evict(&mut self) {
-        loop {
-            let first = self.first();
-            while let Some(moved) = self.moves.front()
-                && moved.until < first
-                && self.open.is_none_or(|open| moved.at < open)
-            {
-                self.was.remove(&(moved.ws, moved.at));
-                self.moves.pop_front();
-            }
-            if self.held() <= self.room || self.entries.len() <= 1 {
-                break;
-            }
+        while self.held() > self.room && self.entries.len() > 1 {
             self.oldest_goes();
         }
-        trim(&mut self.entries);
-        trim(&mut self.moves);
-        trim(&mut self.thens);
+        let rows = self.entries.len();
+        let most = (rows.saturating_mul(2)).saturating_add(ROWS.saturating_mul(2));
+        if self.entries.capacity() > most {
+            let kept = rows.saturating_add(rows / 2).saturating_add(ROWS);
+            self.entries.shrink_to(kept);
+        }
     }
     pub fn end(&self, run: Run) -> Cursor {
         Cursor {
             seq: self.next,
             run,
-        }
-    }
-    /// Now: where its next entry goes, and how the workspaces are nested.
-    pub(crate) fn mark(&self) -> Mark {
-        Mark {
-            seq: self.next,
-            moves: self.moved,
         }
     }
     /// The oldest entry it still holds, or its end when it holds none.
@@ -468,8 +246,7 @@ pub type PaneAt = ((WsId, TabId), PaneId);
 pub enum Event {
     Pane(PaneAt, PaneEvent),
     Tab((WsId, TabId), Change),
-    /// At the workspace it is in (none: the top), and the workspace.
-    Workspace((Option<WsId>, WsId), Change),
+    Workspace(WsId, Change),
     /// A tab's tree, fit, size or host changed, at its layout revision
     /// then (none once its counter is exhausted). Consumers take a new
     /// snapshot.
@@ -496,8 +273,6 @@ pub enum Change {
     Renamed(String),
     Closed(Close),
     Reordered,
-    /// A workspace moved here from the one it was in (none: the top).
-    Moved(Option<WsId>),
 }
 
 /// What happens to a pane, and in it.
@@ -528,7 +303,7 @@ impl Change {
     fn stored(&self) -> usize {
         match self {
             Change::Created(Some(name)) | Change::Renamed(name) => name.capacity(),
-            Change::Created(None) | Change::Closed(_) | Change::Reordered | Change::Moved(_) => 0,
+            Change::Created(None) | Change::Closed(_) | Change::Reordered => 0,
         }
     }
 
@@ -542,7 +317,6 @@ impl Change {
             Change::Renamed(name) => ("renamed", named(name)),
             Change::Closed(why) => ("closed", vec![why.field()]),
             Change::Reordered => ("reordered", Vec::new()),
-            Change::Moved(_) => ("moved", Vec::new()),
         }
     }
 }
@@ -670,7 +444,7 @@ impl Event {
             Event::Pane(((ws, tab), pane), _) => (Some(*pane), Some(*tab), Some(*ws)),
             Event::Tab((ws, tab), _) | Event::Layout((ws, tab), _) => (None, Some(*tab), Some(*ws)),
             Event::Zoomed((ws, tab), pane) => (*pane, Some(*tab), Some(*ws)),
-            Event::Workspace((_, ws), _) => (None, None, Some(*ws)),
+            Event::Workspace(ws, _) => (None, None, Some(*ws)),
             Event::View { at, .. } => at.map_or((None, None, None), |((ws, tab), pane)| {
                 (Some(pane), Some(tab), Some(ws))
             }),
@@ -694,7 +468,7 @@ impl Event {
         match self {
             Event::Pane((_, pane), PaneEvent::Closed(_)) => Some(AnyRef::Pane(*pane)),
             Event::Tab((_, tab), Change::Closed(_)) => Some(AnyRef::Tab(*tab)),
-            Event::Workspace((_, ws), Change::Closed(_)) => Some(AnyRef::Workspace(*ws)),
+            Event::Workspace(ws, Change::Closed(_)) => Some(AnyRef::Workspace(*ws)),
             Event::Pane(..)
             | Event::Tab(..)
             | Event::Workspace(..)
@@ -771,12 +545,8 @@ pub fn every_kind(
     ];
     for change in changes.into_iter().chain(closes.map(Change::Closed)) {
         events.push(Event::Tab(at.0, change.clone()));
-        events.push(Event::Workspace((Some(at.0.0), at.0.0), change));
+        events.push(Event::Workspace(at.0.0, change));
     }
-    events.push(Event::Workspace(
-        (None, at.0.0),
-        Change::Moved(Some(at.0.0)),
-    ));
     let [title, notification] = said;
     let ended = |ended| Told::Exited(End { ended, left });
     for told in [
@@ -889,7 +659,7 @@ pub fn every_kind_read(run: Run) -> Result<Batch, String> {
     for (event, actor) in events.into_iter().zip(actors.into_iter().cycle()) {
         journal.push_from(event, actor);
     }
-    reader.batch(&journal, &|_| None, true)
+    reader.batch(&journal, true)
 }
 
 /// The bytes `value` is, sent.
@@ -944,7 +714,7 @@ impl Reader {
         }
         Ok(Self { scope, next })
     }
-    fn wants(&self, journal: &Journal, nested: Nested<'_>, entry: &Entry) -> bool {
+    fn wants(&self, entry: &Entry) -> bool {
         let event = &entry.event;
         let (pane, tab, ws) = event.ids();
         let from = if let Event::Pane(_, PaneEvent::Moved(from)) = event {
@@ -958,7 +728,7 @@ impl Reader {
             Scope::Target(AnyRef::Pane(p)) => pane == Some(p),
             Scope::Target(AnyRef::Tab(t)) => tab == Some(t) || from.is_some_and(|(_, f)| f == t),
             Scope::Target(AnyRef::Workspace(w)) => {
-                ws == Some(w) || journal.within(entry, w, nested)
+                ws == Some(w) || from.is_some_and(|(f, _)| f == w)
             }
             Scope::Client(c) => matches!(event, Event::View { client, .. } if *client == c),
         }
@@ -979,13 +749,7 @@ impl Reader {
     /// frame has no room for, which the next batch begins with. One event
     /// longer than a frame is a batch alone, sent as any long reply is, in
     /// pieces its reader joins: the cursor after it comes with the last.
-    /// The workspaces are nested as `nested` says.
-    pub fn batch(
-        &mut self,
-        journal: &Journal,
-        nested: Nested<'_>,
-        exists: bool,
-    ) -> Result<Batch, String> {
+    pub fn batch(&mut self, journal: &Journal, exists: bool) -> Result<Batch, String> {
         if journal.exhausted {
             return Err("journal cursor IDs exhausted".into());
         }
@@ -1004,7 +768,7 @@ impl Reader {
             missed = missed.saturating_add(entry.seq.0.saturating_sub(self.next.seq.0));
             self.next.seq = entry.seq;
             let mut value = None;
-            if self.wants(journal, nested, entry) {
+            if self.wants(entry) {
                 let next = Cursor {
                     seq: Seq(entry.seq.0.saturating_add(1)),
                     run: self.next.run,
@@ -1024,21 +788,11 @@ impl Reader {
                 } else {
                     None
                 };
-                let parent = match entry.event {
-                    Event::Workspace((parent, _), _) => parent,
-                    Event::Pane(..)
-                    | Event::Tab(..)
-                    | Event::Layout(..)
-                    | Event::Zoomed(..)
-                    | Event::View { .. }
-                    | Event::Stopped(_) => None,
-                };
                 let item = Item {
                     data: entry.event.json(self.next.run),
                     pane,
                     tab,
                     workspace,
-                    parent,
                     client,
                     moved_from,
                     origin: entry.actor,
@@ -1091,14 +845,13 @@ impl Reader {
     pub(crate) fn lines(
         &mut self,
         journal: &Journal,
-        nested: Nested<'_>,
         holder: impl Fn(AnyRef) -> Option<WsId>,
     ) -> (String, bool) {
         let exists = match self.scope {
             Scope::Target(t) => holder(t).is_some(),
             Scope::All | Scope::Client(_) => true,
         };
-        let batch = match self.batch(journal, nested, exists) {
+        let batch = match self.batch(journal, exists) {
             Ok(batch) => batch,
             Err(why) => return (why, false),
         };
@@ -1153,7 +906,7 @@ impl Read {
         if reader.next == journal.end(session.journal_run) && exists && now < self.deadline {
             return None;
         }
-        let mut batch = match reader.batch(journal, &session.parts.nested(), exists) {
+        let mut batch = match reader.batch(journal, exists) {
             Ok(batch) => batch,
             Err(why) => return Some(reply(Err(why))),
         };
@@ -1176,10 +929,6 @@ mod tests {
     use fux_wire::protocol::{Body, Response};
     use std::time::{Duration, Instant};
 
-    /// Every workspace at the top.
-    fn top(_: WsId) -> Option<WsId> {
-        None
-    }
     fn run() -> Result<Run, String> {
         "1-0".parse().map_err(|()| "run".into())
     }
@@ -1287,19 +1036,11 @@ mod tests {
                 )
                 | Event::Tab(
                     _,
-                    Change::Created(_)
-                    | Change::Renamed(_)
-                    | Change::Closed(_)
-                    | Change::Reordered
-                    | Change::Moved(_),
+                    Change::Created(_) | Change::Renamed(_) | Change::Closed(_) | Change::Reordered,
                 )
                 | Event::Workspace(
                     _,
-                    Change::Created(_)
-                    | Change::Renamed(_)
-                    | Change::Closed(_)
-                    | Change::Reordered
-                    | Change::Moved(_),
+                    Change::Created(_) | Change::Renamed(_) | Change::Closed(_) | Change::Reordered,
                 )
                 | Event::View {
                     change:
@@ -1379,21 +1120,21 @@ mod tests {
             assert!(journal.held() <= room);
         }
         let mut oldest = Reader::new(Scope::All, &journal, run, Some(from(0)))?;
-        let full = oldest.batch(&journal, &top, true)?;
+        let full = oldest.batch(&journal, true)?;
         assert_eq!((full.missed, full.first.seq), (0, Seq(0)));
         journal.push(maximum.clone());
         assert_eq!((journal.entries.len(), journal.text), (8, texts(8)));
         assert!(journal.held() <= room);
         // Its first is the oldest it holds, as many as a reader from 0 missed.
         let mut lost = Reader::new(Scope::All, &journal, run, Some(from(0)))?;
-        let wrapped = lost.batch(&journal, &top, true)?;
+        let wrapped = lost.batch(&journal, true)?;
         assert_eq!((wrapped.missed, wrapped.first.seq), (1, Seq(1)));
-        assert_eq!(lost.batch(&journal, &top, true)?.missed, 0);
+        assert_eq!(lost.batch(&journal, true)?.missed, 0);
         // One longer than the room: kept, alone.
         let long = Event::Stopped(std::iter::repeat_n('x', room).collect());
         journal.push(long.clone());
         assert_eq!(journal.entries.len(), 1);
-        assert_eq!(lost.batch(&journal, &top, true)?.events.len(), 1);
+        assert_eq!(lost.batch(&journal, true)?.events.len(), 1);
         journal.push(bell(1));
         assert_eq!((journal.entries.len(), journal.text), (1, 0));
         assert!(journal.held() <= room);
@@ -1463,28 +1204,49 @@ mod tests {
             run: run()?,
         };
         let mut reader = Reader::new(Scope::All, &journal, run()?, Some(oldest))?;
-        let open = journal.open();
-        journal.left(WsId::of(2), Some(WsId::of(1)));
         let shown = Event::View {
             client: ClientId::of(1),
             at: None,
             change: ViewChange::Shown,
         };
-        journal.push_then(shown, open.then, false);
-        journal.close(open);
+        journal.push(shown);
         journal.push(bell(1));
-        // Two entries, a move's two rows and a `then`: five entries' room
-        // at most.
+        // Two entries: two entries' room.
         assert!(
-            journal.entries.len() >= KEPT - 5,
+            journal.entries.len() >= KEPT - 2,
             "{}",
             journal.entries.len()
         );
         assert!(journal.held() <= KEPT * 80);
-        let batch = reader.batch(&journal, &top, true)?;
-        assert!(batch.missed <= 5, "{} missed", batch.missed);
+        let batch = reader.batch(&journal, true)?;
+        assert!(batch.missed <= 2, "{} missed", batch.missed);
         // The room of rows unused is bounded, though not counted.
         assert!(journal.entries.capacity() <= KEPT + KEPT / 2 + ROWS);
+        Ok(())
+    }
+
+    /// A ring full of small entries, then of long texts, holds few rows: the
+    /// table gives back the room of those it held, which the byte count
+    /// leaves out, so what it keeps is D-177's: twice its rows and a little.
+    #[test]
+    fn a_ring_gone_over_to_long_texts_gives_back_the_rows_it_held() -> TestResult {
+        let mut journal = journal()?;
+        for _ in 0..KEPT {
+            journal.push(bell(1));
+        }
+        let long: String = std::iter::repeat_n('x', 4000).collect();
+        for _ in 0..1000 {
+            let told = Told::Title(Said::sent(&long, false));
+            let at = ((WsId::of(1), TabId::of(1)), PaneId::of(1));
+            journal.push(Event::Pane(at, PaneEvent::Told(told)));
+        }
+        let rows = journal.entries.len();
+        assert!(rows < KEPT / 8, "{rows} rows");
+        let capacity = journal.entries.capacity();
+        assert!(
+            capacity <= 2 * rows + 2 * ROWS,
+            "{capacity} for {rows} rows"
+        );
         Ok(())
     }
 
@@ -1512,7 +1274,7 @@ mod tests {
         let frame = fux_wire::protocol::MAX_PAYLOAD - fux_wire::protocol::ENVELOPE;
         let (mut read, mut batches) = (0_usize, 0);
         while reader.next != journal.end(run()?) {
-            let batch = reader.batch(&journal, &top, true)?;
+            let batch = reader.batch(&journal, true)?;
             assert_eq!((batch.missed, &batch.status), (0, &Status::Continuing));
             assert!(
                 batch.events.len() >= 10,
@@ -1548,85 +1310,19 @@ mod tests {
         let name: String = std::iter::repeat_n('n', fux_wire::protocol::MAX_PAYLOAD).collect();
         let renamed = Change::Renamed(name.clone());
         journal.push(bell(1));
-        journal.push(Event::Workspace((None, WsId::of(1)), renamed));
+        journal.push(Event::Workspace(WsId::of(1), renamed));
         journal.push(bell(2));
-        let before = reader.batch(&journal, &top, true)?;
+        let before = reader.batch(&journal, true)?;
         assert_eq!((before.events.len(), before.next.seq), (1, Seq(1)));
-        let long = reader.batch(&journal, &top, true)?;
+        let long = reader.batch(&journal, true)?;
         let [item] = long.events.as_slice() else {
             return Err("one event".into());
         };
         assert_eq!(item.data.get("name"), Some(&Json::str(name)));
         assert_eq!((long.next.seq, long.missed), (Seq(2), 0));
         assert!(reply_bytes(long) > fux_wire::protocol::MAX_FRAME);
-        let after = reader.batch(&journal, &top, true)?;
+        let after = reader.batch(&journal, true)?;
         assert_eq!((after.events.len(), after.next), (1, journal.end(run()?)));
-        Ok(())
-    }
-
-    /// A workspace's reader reads what happened in a workspace that was in
-    /// it then, wherever that one is now. `c`, in `b` in `a`, moves to
-    /// `d`: read after the move, `a` and `b` have what happened in `c`
-    /// before it and the move out, and nothing after; `d` has the move in
-    /// and what happened after, and nothing before. `c` then closes, and
-    /// moves, and is read the same.
-    #[test]
-    fn what_happened_in_a_workspace_that_moved_is_read_where_it_was_then() -> TestResult {
-        let [a, b, c, d] = [1, 2, 3, 4].map(WsId::of);
-        let mut journal = journal()?;
-        // Where each is now, as the session's parts would say.
-        let mut now = BTreeMap::from([(b, a), (c, b)]);
-        let tab = TabId::of(1);
-        let bell = |ws| Event::Pane(((ws, tab), PaneId::of(1)), PaneEvent::Told(Told::Bell));
-        let read =
-            |journal: &Journal, now: &BTreeMap<WsId, WsId>, ws| -> Result<Vec<u64>, String> {
-                let scope = Scope::Target(AnyRef::Workspace(ws));
-                let from = Cursor {
-                    seq: Seq(0),
-                    run: run()?,
-                };
-                let mut reader = Reader::new(scope, journal, run()?, Some(from))?;
-                let batch = reader.batch(journal, &|ws| now.get(&ws).copied(), true)?;
-                Ok((batch.events.iter())
-                    .map(|e| e.next.seq.0.saturating_sub(1))
-                    .collect())
-            };
-        journal.push(bell(c)); // 0
-        assert_eq!(read(&journal, &now, a)?, [0]);
-        now.insert(c, d);
-        journal.left(c, Some(b));
-        journal.push(Event::Workspace((Some(d), c), Change::Moved(Some(b)))); // 1
-        journal.push(bell(c)); // 2
-        for source in [a, b] {
-            assert_eq!(read(&journal, &now, source)?, [0, 1], "{source}");
-        }
-        assert_eq!(read(&journal, &now, d)?, [1, 2]);
-        assert_eq!(read(&journal, &now, c)?, [0, 1, 2]);
-        // It moves back, twice between two entries, and closes.
-        now.insert(c, a);
-        journal.left(c, Some(d));
-        now.insert(c, b);
-        journal.left(c, Some(a));
-        journal.push(Event::Workspace((Some(b), c), Change::Moved(Some(a)))); // 3
-        journal.push(Event::Workspace(
-            (Some(b), c),
-            Change::Closed(Close::Killed),
-        )); // 4
-        now.remove(&c);
-        journal.left(c, Some(b));
-        assert_eq!(read(&journal, &now, a)?, [0, 1, 3, 4]);
-        assert_eq!(read(&journal, &now, b)?, [0, 1, 3, 4]);
-        assert_eq!(read(&journal, &now, d)?, [1, 2]);
-        // The moves go with the entries from before them, and are counted.
-        assert_eq!(journal.moves.len(), 4);
-        assert_eq!((journal.was.len(), journal.text), (4, 0));
-        for _ in 0..KEPT {
-            journal.push(bell(d));
-        }
-        assert_eq!((journal.moves.len(), journal.was.len()), (0, 0));
-        // A row a move just gave back is the next entry's.
-        assert!(journal.entries.len() >= KEPT - 1);
-        assert_eq!(journal.held(), journal.entries.len() * 80);
         Ok(())
     }
 
@@ -1648,7 +1344,7 @@ mod tests {
             session
                 .parts
                 .journal_mut()
-                .push(Event::Workspace((None, WsId::of(2)), Change::Reordered));
+                .push(Event::Workspace(WsId::of(2), Change::Reordered));
         }
         for _ in 0..3 {
             assert!(
@@ -1666,14 +1362,14 @@ mod tests {
         for _ in 0..1000 {
             journal.push(bell(1));
         }
-        let first = reader.batch(&journal, &top, true)?;
+        let first = reader.batch(&journal, true)?;
         assert_eq!(first.events.len(), 1000);
         assert_eq!(first.events.last().map(|e| e.next), Some(first.next));
         for _ in 0..3 {
             journal.push(bell(1));
         }
-        let second = Reader::new(Scope::All, &journal, run()?, Some(first.next))?
-            .batch(&journal, &top, true)?;
+        let second =
+            Reader::new(Scope::All, &journal, run()?, Some(first.next))?.batch(&journal, true)?;
         assert_eq!(second.events.len(), 3);
         assert_eq!(second.next, journal.end(run()?));
         Ok(())
@@ -1691,12 +1387,12 @@ mod tests {
         for _ in 0..1000 {
             journal.push(bell(1));
         }
-        let empty = reader.batch(&journal, &top, true)?;
+        let empty = reader.batch(&journal, true)?;
         assert!(empty.events.is_empty());
         assert_eq!(empty.next, journal.end(run()?));
         assert_eq!(empty.status, Status::Continuing);
         journal.push(bell(2));
-        let matching = reader.batch(&journal, &top, true)?;
+        let matching = reader.batch(&journal, true)?;
         assert_eq!(matching.events.len(), 1);
         assert_eq!(matching.next, journal.end(run()?));
         Ok(())
@@ -1714,10 +1410,10 @@ mod tests {
         for _ in 0..KEPT.saturating_add(3) {
             journal.push(bell(1));
         }
-        let batch = reader.batch(&journal, &top, true)?;
+        let batch = reader.batch(&journal, true)?;
         assert_eq!(batch.missed, 3);
         assert!(batch.events.is_empty());
-        assert_eq!(reader.batch(&journal, &top, true)?.missed, 0);
+        assert_eq!(reader.batch(&journal, true)?.missed, 0);
         Ok(())
     }
 
@@ -1729,7 +1425,7 @@ mod tests {
         journal.push(bell(1));
         assert!(journal.entries.is_empty());
         assert!(Reader::new(Scope::All, &journal, run()?, None).is_err());
-        assert!(reader.batch(&journal, &top, true).is_err());
+        assert!(reader.batch(&journal, true).is_err());
         Ok(())
     }
 
@@ -1757,11 +1453,11 @@ mod tests {
         journal.push(Event::Pane((to, pane), PaneEvent::Moved(from)));
         journal.push(Event::Tab(from, Change::Closed(Close::Emptied)));
         journal.push(bell(1));
-        let closed = old.batch(&journal, &top, false)?;
+        let closed = old.batch(&journal, false)?;
         assert_eq!(closed.events.len(), 2);
         assert_eq!(closed.status, Status::Gone);
         assert!(closed.next.seq < journal.end(run()?).seq);
-        assert_eq!(new.batch(&journal, &top, true)?.events.len(), 1);
+        assert_eq!(new.batch(&journal, true)?.events.len(), 1);
         Ok(())
     }
 

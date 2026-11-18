@@ -37,12 +37,10 @@ wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Workspace {
         pub id: WsId,
-        /// The workspace it is in, none at the top.
-        pub parent: Option<WsId>,
         pub name: Option<String>,
         pub label: String,
-        /// Its tabs and workspaces, in order.
-        pub children: Vec<crate::command::AnyRef>,
+        /// Its tabs, in order.
+        pub tabs: Vec<TabId>,
     }
 }
 wire! {
@@ -314,10 +312,8 @@ wire! {
         pub workspace: Option<WsId>,
         pub tab: Option<TabId>,
         pub pane: Option<PaneId>,
-        /// What it is shown in each stack and focuses in each tab.
+        /// What it is shown in each workspace and focuses in each tab.
         pub seats: Vec<Seat>,
-        /// What it is shown at each stack in the layouts of the tabs here.
-        pub choices: Vec<Choice>,
         /// The screen it shows over its panes, if one.
         pub opening: Option<crate::act::Opening>,
     }
@@ -330,19 +326,6 @@ wire! {
         pub within: Option<AnyRef>,
         pub current: AnyRef,
         pub last: Option<AnyRef>,
-    }
-}
-
-wire! {
-    /// A client's choice at a stack in a tab's layout, at the tab's
-    /// `revision`: the stack, the child it is shown and the one before, as
-    /// indices of the tab's `nodes`.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct Choice {
-        pub revision: crate::command::LayoutRevision,
-        pub stack: u32,
-        pub current: u32,
-        pub last: Option<u32>,
     }
 }
 
@@ -400,19 +383,18 @@ impl Snapshot {
         sorted(self.tabs.iter().map(|t| t.id))?;
         let panes = sorted(self.panes.iter().map(|p| p.id))?;
         sorted(self.clients.iter().map(|c| c.id))?;
-        // Each workspace holds what names it as its own, and something.
-        let holds = |w: &Workspace, child| w.children.contains(&child);
-        let held_by = |id: Option<WsId>, child| {
-            id.and_then(|id| self.workspaces.iter().find(|w| w.id == id))
-                .is_none_or(|w| holds(w, child))
-        };
+        // Each workspace holds something, and each tab's holds it.
         for w in &self.workspaces {
-            sorted(w.children.iter().copied())?;
-            if w.children.is_empty() || !held_by(w.parent, AnyRef::Workspace(w.id)) {
+            sorted(w.tabs.iter().copied())?;
+            if w.tabs.is_empty() {
                 return Err(bad());
             }
         }
-        if !(self.tabs.iter()).all(|t| held_by(Some(t.workspace), AnyRef::Tab(t.id))) {
+        let held = |t: &Tab| {
+            (self.workspaces.iter().find(|w| w.id == t.workspace))
+                .is_none_or(|w| w.tabs.contains(&t.id))
+        };
+        if !self.tabs.iter().all(held) {
             return Err(bad());
         }
         let mut ordered_panes = self.panes.iter();
@@ -449,9 +431,6 @@ impl Snapshot {
                     }
                     Node::Split { first, second, .. } => {
                         pending.extend([*second as usize, *first as usize]);
-                    }
-                    Node::Stack { children } => {
-                        pending.extend(children.iter().rev().map(|c| *c as usize));
                     }
                 }
             }
@@ -493,21 +472,6 @@ impl Snapshot {
                 .map(|(_, t)| *t);
             if c.workspace != tab_ws || c.tab != pane_tab {
                 return Err(bad());
-            }
-            // A choice is at a stack of a tab here, at its revision.
-            for choice in &c.choices {
-                let tab = self
-                    .tabs
-                    .iter()
-                    .find(|t| t.revision == Some(choice.revision));
-                let stack = tab.and_then(|t| t.nodes.get(choice.stack as usize));
-                let Some(Node::Stack { children }) = stack else {
-                    return Err(bad());
-                };
-                let child = |i: u32| children.contains(&i);
-                if !child(choice.current) || choice.last.is_some_and(|l| !child(l)) {
-                    return Err(bad());
-                }
             }
         }
         Ok(())

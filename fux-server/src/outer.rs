@@ -373,12 +373,8 @@ impl Session {
         let Some((ws, tab)) = self.locate(id) else {
             return;
         };
-        // Each client shown the workspace, one in it or one holding it, and
-        // whether it is shown the tab.
-        let related = |c: &ClientId| {
-            let at = self.place(*c).map(|p| p.ws);
-            at.is_some_and(|at| self.parts.within(at, ws) || self.parts.within(ws, at))
-        };
+        // Each client shown the workspace, and whether it is shown the tab.
+        let related = |c: &ClientId| self.place(*c).is_some_and(|p| p.ws == ws);
         let viewers: BTreeMap<ClientId, bool> = (self.views.keys().copied().filter(related))
             .map(|c| (c, self.shows(c, tab)))
             .collect();
@@ -977,36 +973,6 @@ mod tests {
         assert!(sent(&mut s, c).is_empty());
         assert!(!tab_label(&s, c).contains('!'));
         assert_eq!(sent(&mut s, d), [BELL.to_vec()]);
-        Ok(())
-    }
-
-    /// A bell in a workspace in the one a client is shown rings it and
-    /// marks the workspace it rang in, until it shows the tab that rang.
-    #[test]
-    fn a_bell_in_a_workspace_inside_rings_and_marks_it_for_its_holders_clients() -> Outcome {
-        let (mut s, c) = session()?;
-        crate::session::testing::output_as(&mut s, Some(c), crate::session::testing::BAR_ROW)?;
-        run(
-            &mut s,
-            "(new-tab (in (in (size (options) 80 24) (workspace 1)) \"agent1\"))",
-        )?;
-        let _ = (s.before_paint(c), sent(&mut s, c));
-        s.out(PaneId::of(2), b"\x07");
-        assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
-        let bar = tab_label(&s, c);
-        assert!(bar.contains(" agent1! "), "{bar}");
-        for shown in ["(workspace \"agent1\")", "%1"] {
-            run(
-                &mut s,
-                &format!(
-                    "(sequence! (show (client \"c1\") {}) #inert)",
-                    crate::test_reference(shown)
-                ),
-            )?;
-            let _ = s.before_paint(c);
-        }
-        let bar = tab_label(&s, c);
-        assert!(bar.contains(" agent1 ") && !bar.contains('!'), "{bar}");
         Ok(())
     }
 

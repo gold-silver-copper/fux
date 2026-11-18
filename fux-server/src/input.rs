@@ -441,7 +441,7 @@ mod tests {
             let from = s.parts.journal().end(s.run);
             s.apply(c, vec![Act::Screen { opening, act }]);
             let batch = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
-                .batch(s.parts.journal(), &s.parts.nested(), true)?;
+                .batch(s.parts.journal(), true)?;
             assert_eq!(batch.events.len(), 1);
             let event = batch.events.first().ok_or("screen event")?;
             assert_eq!(event.data.get("event"), Some(&Json::str("screen")));
@@ -468,7 +468,7 @@ mod tests {
                 .map_err(|e: fux_vt::keys::Error| e.to_string())?;
             s.apply(c, vec![Act::Key(key.into())]);
             let batch = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
-                .batch(s.parts.journal(), &s.parts.nested(), true)?;
+                .batch(s.parts.journal(), true)?;
             assert_eq!(batch.events.len(), 1);
             let ending = &batch.events.first().ok_or("ending")?.data;
             assert_eq!(ending.get("event"), Some(&Json::str("screen")));
@@ -550,11 +550,8 @@ mod tests {
                 .rows(),
             rows - 1
         );
-        let batch = Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?.batch(
-            s.parts.journal(),
-            &s.parts.nested(),
-            true,
-        )?;
+        let batch = Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
+            .batch(s.parts.journal(), true)?;
         assert!(
             batch
                 .events
@@ -1198,7 +1195,7 @@ mod tests {
         )?;
         run(
             &mut s,
-            "(new-tab (size (in (in (options) (workspace 1)) \"new-workspace\") 80 24))",
+            "(new-tab (size (in (options) \"new-workspace\") 80 24))",
         )?;
         run(
             &mut s,
@@ -1225,46 +1222,6 @@ mod tests {
             notice(s, c),
             screen(s, c)
         ))
-    }
-
-    /// With one workspace at the top, the keys into a workspace in it and
-    /// out again come back where they started: out shows what the holding
-    /// workspace showed before.
-    #[test]
-    fn into_a_workspace_and_out_again_is_a_round_trip() -> Outcome {
-        let (mut s, c) = session()?;
-        run(
-            &mut s,
-            "(new-tab (size (in (in (options) (workspace 1)) \"agent1\") 80 24))",
-        )?;
-        let at = |s: &Session| s.place(c).map(|p| (p.ws, p.tab));
-        let start = at(&s);
-        s.input(c, &prefixed("wj"));
-        let agent1 = (fux_wire::id::WsId::of(2), fux_wire::id::TabId::of(2));
-        assert_eq!(at(&s), Some(agent1));
-        // Nothing is in this one.
-        s.input(c, &prefixed("wj"));
-        assert!(notice(&s, c).contains("none is in it"), "{}", notice(&s, c));
-        s.input(c, &prefixed("wk"));
-        assert_eq!(at(&s), start);
-        Ok(())
-    }
-
-    /// Out of a workspace at the top has nowhere to go: refused, the client
-    /// where it was, though it showed another top workspace before.
-    #[test]
-    fn out_of_a_workspace_at_the_top_is_refused() -> Outcome {
-        let (mut s, c) = session()?;
-        run(&mut s, "(new-tab (size (in (options) \"proj\") 80 24))")?;
-        run(
-            &mut s,
-            "(sequence! (show (client \"c1\") (workspace \"proj\")) (show (client \"c1\") (pane 1)) #inert)",
-        )?;
-        let start = s.place(c).map(|p| (p.ws, p.tab));
-        s.input(c, &prefixed("wk"));
-        assert_eq!(s.place(c).map(|p| (p.ws, p.tab)), start);
-        assert!(notice(&s, c).contains("none holds it"), "{}", notice(&s, c));
-        Ok(())
     }
 
     /// Typing a default binding's keys does what running its program as the
@@ -1319,14 +1276,13 @@ mod tests {
             assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
         }
         // Refused as the session stands: no pane that way, nothing before
-        // the first tab or workspace, none holding the first workspace,
-        // nothing but a shell to signal, and no readable nearby cwd in
+        // the first tab or workspace, nothing but a shell to signal, and no readable nearby cwd in
         // these processless panes.
         refused.sort();
         assert_eq!(
             refused,
             [
-                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wk", "wmh", "wn"
+                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wmh", "wn"
             ]
         );
         Ok(())
@@ -1475,7 +1431,7 @@ mod tests {
                 "(sequence! (choose-among (me) (workspace (focused (me)))) #inert)",
                 "j\r",
                 "(string (workspace (focused (me))))",
-                "+3\n",
+                "+2\n",
             ),
             (
                 "(sequence! (choose-move (me) (pane 2) (tab (pane 2))) #inert)",

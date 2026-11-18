@@ -9,7 +9,6 @@ pub use fux_pane::render::*;
 use fux_vt::clusters;
 use fux_vt::{Attributes, CellRef, Graphics, Screen};
 use fux_wire::act::{List, Panel};
-use fux_wire::command::AnyRef;
 use fux_wire::id::ClientId;
 use fux_wire::id::PaneId;
 use fux_wire::layout::{Axis, Placement, Rect};
@@ -548,13 +547,12 @@ fn bar_fields(
         }
         match field {
             Field::Workspace => {
-                if let Some(place) = session.place(view.id) {
-                    // The path of workspaces down to the one shown: `proj › agent1`.
-                    let trail = session.parts.trail(place.ws);
+                if let Some(ws) = session.shown_workspace(view.id) {
+                    let label = ws.label();
                     push(
                         &mut parts,
                         &mut room,
-                        format!(" {trail} "),
+                        format!(" {label} "),
                         base.with_bold(true),
                     );
                 }
@@ -562,26 +560,16 @@ fn bar_fields(
             Field::Tabs => {
                 if let Some(ws) = session.shown_workspace(view.id) {
                     let tab_of = session.parts.tab_of(ws.id(), view.id);
-                    let current = tab_of.map(|t| AnyRef::Tab(t.id()));
+                    let current = tab_of.map(|t| t.id());
                     let rang = |tab: &Tab| tab.seat(view.id).is_some_and(|s| s.rang);
                     for (i, child) in ws.stack().children().iter().enumerate() {
                         if room == 0 {
                             break;
                         }
-                        // A workspace in it rang if a tab in it did.
-                        let (tab, inner) = match *child {
-                            AnyRef::Tab(tab) => (session.parts.tab(tab), None),
-                            AnyRef::Workspace(inner) => (None, session.parts.workspace(inner)),
-                            AnyRef::Pane(_) => (None, None),
+                        let Some((_, tab)) = session.parts.tab(*child) else {
+                            continue;
                         };
-                        let (label, rang) = match (tab, inner) {
-                            (Some((_, tab)), _) => (tab.label(session.parts.panes()), rang(tab)),
-                            (None, Some(inner)) => {
-                                let tabs = session.parts.tabs_in(Some(inner.id()));
-                                (inner.label(), tabs.into_iter().any(|(_, t)| rang(t)))
-                            }
-                            (None, None) => continue,
-                        };
+                        let (label, rang) = (tab.label(session.parts.panes()), rang(tab));
                         let rang = rang && Some(*child) != current;
                         let number = if view.presentation.bar.tab_numbers() {
                             format!("{} ", i.saturating_add(1))
@@ -595,30 +583,6 @@ fn bar_fields(
                             base
                         };
                         push(&mut parts, &mut room, label, attrs);
-                    }
-                }
-                // Then the children of the stack nearest the focus, each by
-                // the pane shown first in it, the one shown marked.
-                let focus = session.focused(view.id);
-                let tab = session.shown_tab(view.id);
-                if let Some((focus, stack)) =
-                    focus.and_then(|f| Some((f, tab?.root().stack_of(f)?)))
-                {
-                    push(&mut parts, &mut room, "›".to_owned(), base);
-                    for child in stack.children() {
-                        let (id, current) = match child.contains(focus) {
-                            true => (focus, true),
-                            false => (child.first_shown(view.id), false),
-                        };
-                        let Some(p) = session.parts.panes().get(&id) else {
-                            continue;
-                        };
-                        let attrs = match current {
-                            true => view.presentation.styles.tab.attributes(),
-                            false => base,
-                        };
-                        let label = fux_wire::words::labelled(p.id(), &p.label());
-                        push(&mut parts, &mut room, format!(" {label} "), attrs);
                     }
                 }
             }
@@ -825,7 +789,7 @@ fn unseen(session: &Session, view: &View, placement: &Placement) -> String {
     };
     let panes = match tab.zoomed() {
         Some(zoomed) => vec![zoomed],
-        None => tab.root().shown_panes(view.id),
+        None => tab.root().panes(),
     };
     let (mut cut, mut hidden) = (String::new(), String::new());
     for id in panes {

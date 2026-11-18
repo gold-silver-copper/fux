@@ -1634,14 +1634,13 @@ fn a_pane_never_begun_is_begun_from_its_record() -> Outcome {
 
 /// The record's tree without the tab that holds `pane`.
 fn without(tree: &mut fux_server::record::Tree, pane: fux_wire::id::PaneId) {
-    use fux_wire::command::AnyRef;
     let holds = |tab: &fux_server::record::Tab| tab.panes.iter().any(|p| p.id == pane);
-    let gone: Vec<AnyRef> = (tree.tabs.iter().filter(|tab| holds(tab)))
-        .map(|tab| AnyRef::Tab(tab.id))
+    let gone: Vec<fux_wire::id::TabId> = (tree.tabs.iter().filter(|tab| holds(tab)))
+        .map(|tab| tab.id)
         .collect();
     tree.tabs.retain(|tab| !holds(tab));
     for ws in &mut tree.workspaces {
-        ws.children.retain(|child| !gone.contains(child));
+        ws.tabs.retain(|tab| !gone.contains(tab));
     }
 }
 

@@ -14,7 +14,7 @@ use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
 use fux_wire::code::{Code, Error, fail};
 use fux_wire::command::Start;
 use fux_wire::command::{
-    self, AnyRef, Beside, ClientAction, Command, Input, Kind, Members, MoveTo, PaneResize, Request,
+    self, AnyRef, ClientAction, Command, Input, Kind, Members, MoveTo, PaneResize, Request,
     Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
@@ -22,6 +22,7 @@ use fux_wire::json::Json;
 use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 mod flat;
@@ -527,8 +528,8 @@ impl Session {
             ));
         }
         let new = NewPane::new(&initial.start, &initial.cwd, initial.options, (size, None));
-        let made = vec![initial.name.clone()];
-        (self.create_workspaces(None, made, None, Fit::Clients(size), new, now)).map(drop)
+        let name = initial.name.clone();
+        (self.create_workspace(name, None, Fit::Clients(size), new, now)).map(drop)
     }
 
     // ---------------------------------------------------------------- lookup
@@ -1269,7 +1270,7 @@ impl Session {
     /// The workspace, tab or pane named `name`: one at most, as every
     /// name is checked by `check_free` as it is given.
     fn named(&self, name: &str) -> Option<AnyRef> {
-        let workspaces = self.parts.every_workspace();
+        let workspaces = self.parts.workspaces();
         let workspace = workspaces.iter().find(|w| w.name() == Some(name));
         let tabs = || workspaces.iter().flat_map(|w| self.parts.tabs_of(w.id()));
         let tab = || tabs().find(|t| t.name() == Some(name));
@@ -1350,9 +1351,8 @@ impl Session {
         }
     }
 
-    /// The tabs in `scope`, in order: a tab itself, a workspace's and
-    /// those of the workspaces in it, or with none every one; a pane holds
-    /// none.
+    /// The tabs in `scope`, in order: a tab itself, a workspace's, or with
+    /// none every one; a pane holds none.
     fn tabs_of(&self, scope: Option<AnyRef>) -> Result<Vec<TabId>, Error> {
         let tabs = |ws: Option<WsId>| {
             let tabs = self.parts.tabs_in(ws).into_iter();
@@ -1451,14 +1451,15 @@ impl Session {
     /// The layout with a new pane `beside` `target`, and the size the new
     /// pane starts at: the one settling gives it, its place in that layout
     /// on its tab's effective size, which must have room for it.
-    fn split_size(&self, target: PaneId, beside: Beside) -> Result<(Split, Size), Error> {
+    fn split_size(
+        &self,
+        target: PaneId,
+        (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
+    ) -> Result<(Split, Size), Error> {
         let new = self.ids.clone().pane()?;
-        let add = |root: &mut Tree| match beside {
-            Beside::Split(axis, shares) => {
-                let shares = shares.map_or(Shares::HALVED, |(a, b)| Shares::new(a, b));
-                root.split((target, new), (axis, Side::After), shares)
-            }
-            Beside::Stack => root.stack((target, new)),
+        let add = |root: &mut Tree| {
+            let shares = shares.map_or(Shares::HALVED, |(a, b)| Shares::new(a, b));
+            root.split((target, new), (axis, Side::After), shares)
         };
         let split = (self.parts.plan_split(target, add)).map_err(|NoPane| Error::NoPane(target))?;
         self.room(split.tab(), split.root(), None)?;
@@ -1562,31 +1563,27 @@ impl Session {
         })
     }
 
-    /// Workspaces `made`, named as each says, each in the one before and
-    /// the first in `parent` (none: at the top), the last with one tab
-    /// named `tab_name`, laid out on `fit`, holding one new pane.
-    fn create_workspaces(
+    /// A new workspace named `name`, with one tab named `tab_name`, laid
+    /// out on `fit`, holding one new pane.
+    fn create_workspace(
         &mut self,
-        parent: Option<WsId>,
-        made: Vec<Option<String>>,
+        name: Option<String>,
         tab_name: Option<String>,
         fit: Fit,
         new: NewPane<'_>,
         now: Instant,
     ) -> Result<Place, Error> {
-        for name in made.iter().flatten() {
+        if let Some(name) = &name {
             self.check_free(name, None)?;
+            if tab_name.as_ref() == Some(name) {
+                let why = format!("a workspace and its tab cannot both be named {name:?}");
+                return Err(fail(Code::NameTaken, why));
+            }
         }
         // The IDs are taken before the pane starts, so that none can run out
         // after, and are committed once it has.
         let mut ids = self.ids.clone();
-        let made = (made.into_iter())
-            .map(|name| Ok((ids.workspace()?, name)))
-            .collect::<Result<Vec<_>, Error>>()?;
-        let ws = made
-            .last()
-            .map(|(id, _)| *id)
-            .ok_or(Error::NoWorkspaceGiven)?;
+        let ws = ids.workspace()?;
         let tab = ids.tab()?;
         let (pane, begin) = self.new_pane(&mut ids, new)?;
         let place = Place {
@@ -1594,77 +1591,18 @@ impl Session {
             tab,
             pane: pane.id(),
         };
-        if (self.parts)
-            .add_workspaces(parent, made, (tab, tab_name, fit), pane)
-            .is_err()
-        {
-            return Err(parent.map_or(Error::NoWorkspaceGiven, Error::NoWorkspace));
-        }
+        (self.parts).add_workspace((ws, name), (tab, tab_name, fit), pane);
         self.ids = ids;
         self.start_pane(place.pane, begin, now)?;
         Ok(place)
     }
 
-    /// Where `in`'s workspaces `path` put a new tab named `tab`: the
-    /// workspace there that holds the rest, and the names of the rest, made
-    /// in it, each in the one before. Each from the first not there is
-    /// made; one there is in the one before it, and the first anywhere.
-    /// With none, `here`'s.
-    fn nesting(
-        &self,
-        path: &[WsRef],
-        here: Here,
-        tab: Option<&str>,
-    ) -> Result<(Option<WsId>, Vec<Option<String>>), Error> {
-        if path.is_empty() {
-            return Ok((Some(here.ws().ok_or(Error::NoWorkspaceGiven)?), Vec::new()));
-        }
-        let (mut parent, mut made) = (None, Vec::<Option<String>>::new());
-        for (i, r) in path.iter().enumerate() {
-            let found = match r {
-                WsRef::Id(id) => Some(self.workspace(*id).ok_or(Error::NoWorkspace(*id))?.id()),
-                WsRef::Name(name) => match self.named(name) {
-                    Some(AnyRef::Workspace(id)) => Some(id),
-                    Some(holder) => return Err(Error::NameTaken(name.clone(), holder)),
-                    None => None,
-                },
-                WsRef::New => None,
-            };
-            match (found, r) {
-                (Some(id), _) if made.is_empty() => {
-                    if i > 0 && self.parts.parent(id) != Some(parent) {
-                        let p = parent.map_or_else(String::new, |p| p.to_string());
-                        let why = format!("{} is not in {p}", AnyRef::Workspace(id));
-                        return Err(fail(Code::BadValue, why));
-                    }
-                    parent = Some(id);
-                }
-                (Some(id), _) => {
-                    let why = format!("{} is not in a workspace made here", AnyRef::Workspace(id));
-                    return Err(fail(Code::BadValue, why));
-                }
-                (None, WsRef::Name(name)) => {
-                    if tab == Some(name) || made.contains(&Some(name.clone())) {
-                        let why = format!(
-                            "a workspace and its tab or another workspace made with it cannot both be named {name:?}"
-                        );
-                        return Err(fail(Code::NameTaken, why));
-                    }
-                    made.push(Some(name.clone()));
-                }
-                (None, WsRef::Id(_) | WsRef::New) => made.push(None),
-            }
-        }
-        Ok((parent, made))
-    }
-
-    /// Adds a tab named `name` (checked by `new-tab`) to the workspace
-    /// `in`'s `path` names (`nesting`), or else `here`'s, laid out on
-    /// `fit`, holding one new pane; the workspaces it names that are not
-    /// there are made, the tab the first child of the last.
+    /// Adds a tab named `name` (checked by `new-tab`) to the workspace `in`
+    /// named, made if it is not there, or else `here`'s, laid out on `fit`,
+    /// holding one new pane.
     fn create_tab(
         &mut self,
-        path: &[WsRef],
+        place: Option<&WsRef>,
         here: Here,
         name: Option<String>,
         fit: Fit,
@@ -1674,10 +1612,18 @@ impl Session {
         if let Some(name) = &name {
             self.check_free(name, None)?;
         }
-        let (parent, made) = self.nesting(path, here, name.as_deref())?;
-        let id = match (parent, made.is_empty()) {
-            (Some(id), true) => id,
-            (parent, _) => return self.create_workspaces(parent, made, name, fit, new, now),
+        let id = match place {
+            None => here.ws().ok_or(Error::NoWorkspaceGiven)?,
+            Some(WsRef::Id(id)) => self.workspace(*id).ok_or(Error::NoWorkspace(*id))?.id(),
+            Some(WsRef::New) => return self.create_workspace(None, name, fit, new, now),
+            Some(WsRef::Name(given)) => match self.named(given) {
+                Some(AnyRef::Workspace(id)) => id,
+                Some(holder) => return Err(Error::NameTaken(given.clone(), holder)),
+                None => {
+                    let given = Some(given.clone());
+                    return self.create_workspace(given, name, fit, new, now);
+                }
+            },
         };
         // Found before its pane's program starts, which nothing can then
         // leave running. As for a workspace: the ID first, committed after
@@ -1988,7 +1934,7 @@ impl Session {
                 let size = self.effective(tab, tab.root(), None);
                 let area = view.pane_area().split(Axis::Horizontal, size.w()).0;
                 let area = area.split(Axis::Vertical, size.h()).0;
-                lay_out((tab.root(), Some(view.id)), tab.zoomed(), area, out);
+                lay_out(tab.root(), tab.zoomed(), area, out);
             }
             None => out.clear(),
         }
@@ -2862,7 +2808,7 @@ impl Session {
             AnyRef::Tab(_) | AnyRef::Workspace(_) => Some(of),
         };
         let at = |p: Place| match of {
-            Some(AnyRef::Workspace(ws)) => self.parts.within(p.ws, ws),
+            Some(AnyRef::Workspace(ws)) => p.ws == ws,
             Some(tab) => tab == AnyRef::Tab(p.tab),
             None => false,
         };
@@ -3362,7 +3308,7 @@ impl Session {
                 let new = NewPane::new(start, &cwd, *options, sized);
                 // A workspace named that is not there is made, its first tab
                 // this one.
-                let made = self.create_tab(target, here, name.clone(), fit, new, now)?;
+                let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new, now)?;
                 self.follow(here, AnyRef::Tab(made.tab));
                 Ok(acted(self.pane(made.pane)?.version(self.run)))
             }
@@ -3393,14 +3339,15 @@ impl Session {
                 Ok(Reply::default())
             }
             &Command::Split {
-                beside,
+                axis,
+                shares,
                 target,
                 ref start,
                 ref cwd,
                 options,
             } => self.split(
                 target,
-                beside,
+                (axis, shares),
                 (start, options),
                 cwd.as_deref(),
                 origin,
@@ -3412,17 +3359,14 @@ impl Session {
                 let target = self.there(*target)?;
                 self.rename(target, name.clone()).map(|()| Reply::default())
             }
-            &Command::Move { target, ref to } => match target {
-                AnyRef::Pane(pane) => self.move_pane(pane, to, here),
-                AnyRef::Workspace(ws) => self.move_workspace(ws, to, here),
-                AnyRef::Tab(_) => Err(fail(Code::BadValue, "move takes a pane or workspace")),
+            &Command::Move { target, ref to } => {
+                self.move_pane(target, to, here).map(|()| Reply::default())
             }
-            .map(|()| Reply::default()),
             &Command::SwapPane { target, with } => {
                 let source = self.pane(target)?.id();
                 let other = match with {
                     SwapWith::Pane(p) => self.pane(p)?.id(),
-                    SwapWith::Toward(direction) => self.neighbor(source, direction, here)?,
+                    SwapWith::Toward(direction) => self.neighbor(source, direction)?,
                 };
                 self.parts.swap(source, other);
                 Ok(Reply::default())
@@ -3547,12 +3491,12 @@ impl Session {
         Ok(())
     }
 
-    /// `split` and `stack`: a new pane `beside` `target`, running `start`
+    /// `split`: a new pane beside `target`, along `axis`, running `start`
     /// in `dir`.
     fn split(
         &mut self,
         target: PaneId,
-        beside: Beside,
+        beside: (Axis, Option<(NonZeroU32, NonZeroU32)>),
         (start, options): (&Start, command::PaneOptions),
         dir: Option<&Path>,
         origin: &Origin,
@@ -3562,11 +3506,10 @@ impl Session {
         let target = self.pane(target)?.id();
         let cwd = self.start_dir(here, dir, Some(target))?;
         // The splitting client follows the new pane, if it shows its tab;
-        // from the CLI, the clients that focus the split one, while a stack
-        // made there shows no client its new child.
+        // from the CLI, the clients that focus the split one.
         let tab = self.locate(target).map(|(_, tab)| tab);
         let shows = |c: &ClientId| tab.is_some_and(|t| self.shows(*c, t));
-        let shown = |c: &ClientId| self.focused(*c) == Some(target) && beside != Beside::Stack;
+        let shown = |c: &ClientId| self.focused(*c) == Some(target);
         let followers: Vec<ClientId> = match here {
             Here::Client(client, _) => [client].into_iter().filter(shows).collect(),
             Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
@@ -3590,8 +3533,8 @@ impl Session {
         Ok(acted(version))
     }
 
-    /// `kill`: a pane closed, a tab, or a workspace and all in it (with
-    /// none, everything) in one pass (`Parts::remove_workspace`).
+    /// `kill`: a pane closed, a tab, or a workspace (with none, everything)
+    /// in one pass (`Parts::remove_workspace`).
     fn kill(&mut self, scope: Option<AnyRef>, now: Instant) -> Result<(), Error> {
         if let Some(AnyRef::Pane(pane)) = scope {
             self.pane(pane)?;
@@ -3606,7 +3549,7 @@ impl Session {
                     self.remove_tab(tab, now);
                 }
             }
-            // A workspace and all in it, or everything, in one pass.
+            // A workspace, or everything, in one pass.
             Some(AnyRef::Workspace(_)) | None => {
                 let ws = match scope {
                     Some(AnyRef::Workspace(ws)) => Some(ws),
@@ -3761,10 +3704,10 @@ impl Session {
 
     /// The pane beside `from` toward `direction`, its tab laid out on its
     /// effective size.
-    fn neighbor(&self, from: PaneId, direction: Direction, here: Here) -> Result<PaneId, Error> {
+    fn neighbor(&self, from: PaneId, direction: Direction) -> Result<PaneId, Error> {
         let found = self.locate(from).and_then(|(_, tab)| {
             let area = self.area_of(tab)?;
-            let placed = placed_from(self.root(tab)?, area, here.client(), from);
+            let placed = layout::place(self.root(tab)?, area);
             layout::neighbor(&placed, from, direction)
         });
         found.ok_or(Error::NoNeighbor { from, direction })
@@ -3780,7 +3723,7 @@ impl Session {
         let mut ids = self.ids.clone();
         let dest = match to {
             &MoveTo::Beside(direction) => {
-                let destination = self.neighbor(pane, direction, here)?;
+                let destination = self.neighbor(pane, direction)?;
                 let root = self.root(from).ok_or(Error::NoTab(from))?;
                 let root = layout::move_beside(root, pane, destination, direction)
                     .ok_or(Error::NoPane(pane))?;
@@ -3801,11 +3744,7 @@ impl Session {
             MoveTo::NewTab => Destination::NewTab(from_ws, ids.tab()?, fit),
             MoveTo::NewWorkspace => {
                 let (id, tab) = (ids.workspace()?, ids.tab()?);
-                Destination::NewWorkspace((id, None), (tab, None, fit))
-            }
-            MoveTo::Top => {
-                let why = "all is where a workspace moves; a pane moves to a tab or workspace";
-                return Err(fail(Code::BadValue, why));
+                Destination::NewWorkspace(id, tab, fit)
             }
         };
         let tab = match &dest {
@@ -3816,7 +3755,7 @@ impl Session {
                 self.room(*tab, &root, here.client())?;
                 *tab
             }
-            Destination::NewTab(_, tab, _) | Destination::NewWorkspace(_, (tab, ..)) => *tab,
+            Destination::NewTab(_, tab, _) | Destination::NewWorkspace(_, tab, _) => *tab,
         };
         (self.parts.relocate(pane, dest)).ok_or(Error::NoTab(tab))?;
         // Both IDs or neither: one taken alone would be lost.
@@ -3826,39 +3765,16 @@ impl Session {
         Ok(())
     }
 
-    /// `move` of workspace `ws`: into the workspace `to` names, after what
-    /// it holds, or with `all` to the top; never into itself or one in it.
-    fn move_workspace(&mut self, ws: WsId, to: &MoveTo, here: Here) -> Result<(), Error> {
-        let from = self.parts.parent(ws).ok_or(Error::NoWorkspace(ws))?;
-        let into = match to {
-            MoveTo::Workspace(r) => Some(self.resolve_ws(r)?),
-            MoveTo::Top => None,
-            MoveTo::Tab(_) | MoveTo::NewTab | MoveTo::NewWorkspace | MoveTo::Beside(_) => {
-                let why = "a workspace moves into a workspace, or with all to the top";
-                return Err(fail(Code::BadValue, why));
-            }
-        };
-        if let Some(into) = into.filter(|into| self.parts.within(*into, ws)) {
-            let (ws, into) = (AnyRef::Workspace(ws), AnyRef::Workspace(into));
-            let why = match ws == into {
-                true => format!("{ws} cannot move into itself"),
-                false => format!("{ws} cannot move into {into}, which is in it"),
-            };
-            return Err(fail(Code::BadValue, why));
-        }
-        if from != into {
-            (self.parts.move_workspace(ws, into)).ok_or(Error::NoWorkspace(ws))?;
-            self.follow(here, AnyRef::Workspace(ws));
-        }
-        Ok(())
-    }
-
     /// Refused unless tab `tab` laid out as `root` shows every pane on its
     /// effective size (`effective`), with `joining` about to show it: the
     /// size settling gives it, sized by the clients that will size it laid
     /// out so (`sizes`). So a split or a move hides no pane, and a dump can
-    /// make every layout there is again.
+    /// make every layout there is again. Every change of a layout's shape
+    /// comes here, so none nests it past `MAX_DEPTH`.
     fn room(&self, tab: TabId, root: &Tree, joining: Option<ClientId>) -> Result<(), Error> {
+        if root.depth() > layout::MAX_DEPTH {
+            return Err(layout::too_deep());
+        }
         let area = self.effective(self.tab(tab).ok_or(Error::NoTab(tab))?, root, joining);
         if layout::shows_all(root, area) {
             return Ok(());
@@ -3897,44 +3813,26 @@ impl Session {
 
     /// The sibling of `from` that `way` says client `view` is shown: the
     /// next or previous among what holds it, going round, the one it was
-    /// shown there before, or a pane's neighbour on its screen. What holds
-    /// a pane is the stack nearest it in its tab's layout, whose child
-    /// shown is a pane there (`Tree::first_shown`), else its tab, of
-    /// whose panes those shown.
+    /// shown there before, or a pane's neighbour on its screen.
     fn step(&self, view: &View, from: AnyRef, way: Way) -> Result<AnyRef, Error> {
         let kind = from.kind();
         let root = |p| self.locate(p).and_then(|(_, tab)| self.root(tab));
-        if let (AnyRef::Pane(p), Way::Step(_) | Way::Last) = (from, way)
-            && let Some(stack) = root(p).and_then(|r| r.stack_of(p))
-        {
-            let children: Vec<&Tree> = stack.children().collect();
-            let child = match way {
-                Way::Step(toward) => {
-                    let index = children.iter().position(|c| c.contains(p));
-                    round(&children, index.unwrap_or(0), toward)
-                }
-                Way::Last | Way::Toward(_) => {
-                    let last = stack.shown(view.id).last;
-                    last.and_then(|i| children.get(i))
-                }
-            };
-            let child = child.ok_or_else(|| fail(Code::NoPane, "no previously shown pane"))?;
-            return Ok(AnyRef::Pane(child.first_shown(view.id)));
-        }
         let within = match from {
             AnyRef::Pane(p) => Some(AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1)),
             AnyRef::Tab(t) => Some(AnyRef::Workspace(self.tab_workspace(t)?)),
             AnyRef::Workspace(w) => {
-                (self.parts.parent(w).ok_or(Error::NoWorkspace(w))?).map(AnyRef::Workspace)
+                self.workspace(w).ok_or(Error::NoWorkspace(w))?;
+                None
             }
         };
         let siblings: Vec<AnyRef> = match (from, within) {
             (AnyRef::Pane(p), _) => (root(p).into_iter())
-                .flat_map(|r| r.shown_panes(view.id))
+                .flat_map(Tree::panes)
                 .map(AnyRef::Pane)
                 .collect(),
             (_, Some(AnyRef::Workspace(w))) => (self.workspace(w).into_iter())
                 .flat_map(|w| w.stack().children().iter().copied())
+                .map(AnyRef::Tab)
                 .collect(),
             (_, _) => (self.parts.workspaces().iter())
                 .map(|w| AnyRef::Workspace(w.id()))
@@ -3959,7 +3857,7 @@ impl Session {
             (Way::Toward(direction), AnyRef::Pane(from)) => {
                 let found = self.locate(from).and_then(|(_, tab)| {
                     let (root, area) = (self.root(tab)?, self.area_of(tab)?);
-                    let placed = placed_from(root, area, Some(view.id), from);
+                    let placed = layout::place(root, area);
                     layout::neighbor(&placed, from, direction)
                 });
                 found
@@ -4012,14 +3910,10 @@ impl Session {
                 match field {
                     "name" => ws.name().map_or(Json::Null, Json::str),
                     "label" => Json::str(format!("{}", ws.display_label())),
-                    "children" => {
-                        let ids = ws.stack().children().to_vec();
-                        return Ok(Body::Handles(ids));
+                    "tabs" => {
+                        let ids = ws.stack().children().iter().copied();
+                        return Ok(Body::Handles(ids.map(AnyRef::Tab).collect()));
                     }
-                    "parent" => match self.parts.parent(id).flatten() {
-                        Some(parent) => return Ok(Body::Found(AnyRef::Workspace(parent))),
-                        None => Json::Null,
-                    },
                     _ => return Err(no_field()),
                 }
             }
@@ -4063,45 +3957,26 @@ fn check_name(name: &str) -> Result<(), Error> {
 
 /// Where each pane of a tab laid out as `root` is in `area`, into `out`:
 /// the `zoomed` pane alone, filling it, if one is and it has room; else
-/// what `client` is shown, or with none every pane (`layout::place_into`).
-fn lay_out(
-    (root, client): (&Tree, Option<ClientId>),
-    zoomed: Option<PaneId>,
-    area: Rect,
-    out: &mut Placement,
-) {
+/// every pane (`layout::place_into`).
+fn lay_out(root: &Tree, zoomed: Option<PaneId>, area: Rect, out: &mut Placement) {
     match zoomed.filter(|_| !area.is_empty()) {
         Some(pane) => {
             out.clear();
             out.panes.push((pane, area));
         }
-        None => layout::place_into(root, area, client, out),
+        None => layout::place_into(root, area, out),
     }
 }
 
 /// Where each pane of a tab laid out as `root` and zoomed on `zoomed` is in
-/// `area`, into `out`, as its PTY is sized: every child of a stack on the
-/// stack's rectangle (D-114), and the zoomed pane on the whole area.
+/// `area`, into `out`, as its PTY is sized: the zoomed pane on the whole
+/// area.
 fn sized_on(root: &Tree, zoomed: Option<PaneId>, area: Rect, out: &mut Placement) {
-    layout::place_into(root, area, None, out);
+    layout::place_into(root, area, out);
     if let Some(zoomed) = zoomed.filter(|_| !area.is_empty()) {
         out.panes.retain(|(p, _)| *p != zoomed);
         out.panes.push((zoomed, area));
     }
-}
-
-/// Where each pane of a tab laid out as `root` is in `area` that `client`
-/// is shown, or with none every pane, `from` among them: at the stacks that
-/// hold it, the child holding it, as a zoom shows it to a client that chose
-/// another, its choices kept.
-fn placed_from(root: &Tree, area: Rect, client: Option<ClientId>, from: PaneId) -> Placement {
-    let mut root = std::borrow::Cow::Borrowed(root);
-    if let Some(client) = client {
-        root.to_mut().reveal(client, from);
-    }
-    let mut placed = Placement::default();
-    layout::place_into(&root, area, client, &mut placed);
-    placed
 }
 
 /// The item after the one at `index` among `items`, or before it, going
@@ -4715,7 +4590,6 @@ mod tests {
     #[cfg(unix)]
     use crate::process;
     use fux_wire::code::Code;
-    use std::num::NonZeroU32;
     #[cfg(unix)]
     use std::time::Duration;
 
@@ -4892,7 +4766,7 @@ mod tests {
                 let mut w = workspace.clone();
                 w.id = WsId::of(ws);
                 w.label = w.id.to_string();
-                w.children.clear();
+                w.tabs.clear();
                 for _ in 0..tabs_per_workspace {
                     let id = u32::try_from(snapshot.panes.len())?.saturating_add(1);
                     let mut t = tab.clone();
@@ -4907,7 +4781,7 @@ mod tests {
                     p.tab = t.id;
                     p.label = p.id.to_string();
                     p.version.pane = p.id;
-                    w.children.push(AnyRef::Tab(t.id));
+                    w.tabs.push(t.id);
                     snapshot.tabs.push(t);
                     snapshot.panes.push(p);
                 }
@@ -5009,7 +4883,7 @@ mod tests {
             };
             snapshot.validate()?;
             let ws = snapshot.workspaces.first().ok_or("workspace")?;
-            assert_eq!(ws.children.len(), 3);
+            assert_eq!(ws.tabs.len(), 3);
             assert_eq!((snapshot.tabs.len(), snapshot.panes.len()), (1, panes));
             let tab = snapshot.tabs.first().ok_or("tab")?;
             assert_eq!(tab.revision, s.tab(tab.id).and_then(|t| t.revision(s.run)));
@@ -5117,7 +4991,7 @@ mod tests {
         fn invariants(s: &Session) -> Result<(), String> {
             for &client in s.views.keys() {
                 holds(s.parts.stack(), client)?;
-                for ws in s.parts.every_workspace() {
+                for ws in s.parts.workspaces() {
                     holds(ws.stack(), client)?;
                     for tab in s.parts.tabs_of(ws.id()) {
                         let Shown { current, last } = tab.seat(client).ok_or("no seat")?.focus;
@@ -5135,8 +5009,8 @@ mod tests {
         };
         let at = |current, last: Option<u32>| {
             Some(Shown {
-                current: AnyRef::Tab(TabId::of(current)),
-                last: last.map(|l| AnyRef::Tab(TabId::of(l))),
+                current: TabId::of(current),
+                last: last.map(TabId::of),
             })
         };
         let (mut s, c) = attached(10, 40)?;
@@ -5230,107 +5104,35 @@ mod tests {
         Ok(())
     }
 
-    /// D-115: a workspace is never in itself or in one in it, and one its
-    /// last child leaves closes, and so does each that holds it that it
-    /// leaves empty, each journaled closed in the one it was in.
+    /// A workspace holds tabs alone: a second `in`, and a move of a
+    /// workspace, are refused, and it closes as its last tab leaves.
     #[test]
-    fn workspaces_nest_without_cycles_and_close_as_they_empty() -> TestResult {
+    fn a_workspace_holds_only_tabs_and_closes_with_its_last() -> TestResult {
         let mut s = started()?;
-        run(
-            &mut s,
-            "(sequence! (new-tab (size (in (in (in (options) (workspace 1)) \"a\") \"b\") 80 24)) #inert)",
-        )?;
-        let path = |s: &Session, ws| s.parts.path(WsId::of(ws));
-        assert_eq!(path(&s, 3), [1, 2, 3].map(WsId::of));
-        for (ws, into) in [(1, 1), (1, 2), (1, 3), (2, 3)] {
-            let code = format!("(move (workspace {ws}) (workspace {into}))");
-            let refused = output(&mut s, &code).err().ok_or(code.clone())?;
-            assert!(refused.starts_with("bad-value:"), "{code}: {refused}");
+        for (code, refused) in [
+            (r#"(new-tab (in (in (options) "a") "b"))"#, "unused:"),
+            (r#"(move (workspace 1) (workspace 1))"#, "type-error:"),
+        ] {
+            let error = output(&mut s, code).err().ok_or(code)?;
+            assert!(error.starts_with(refused), "{code}: {error}");
         }
-        // Out of a, b leaves it empty: a closes.
-        run(&mut s, "(sequence! (move (workspace 3) (all)) #inert)")?;
-        assert_eq!((path(&s, 3), path(&s, 2)), (vec![WsId::of(3)], Vec::new()));
         run(
             &mut s,
-            "(sequence! (new-tab (size (in (in (in (options) (workspace 3)) \"c\") \"d\") 80 24)) #inert)",
+            "(sequence! (new-tab (size (in (options) \"a\") 80 24)) #inert)",
         )?;
         let closed = told(&mut s, |s| {
-            let _ = run(s, "(sequence! (kill (pane 3)) #inert)");
+            let _ = run(s, "(sequence! (kill (pane 2)) #inert)");
         });
         assert_eq!(
             closed,
             [
-                "((event \"closed\") (pane %3) (tab @3) (workspace +5) (why \"killed\"))",
-                "((event \"closed\") (tab @3) (workspace +5) (why \"emptied\"))",
-                "((event \"closed\") (workspace +5) (parent +4) (why \"emptied\"))",
-                "((event \"closed\") (workspace +4) (parent +3) (why \"emptied\"))",
+                "((event \"closed\") (pane %2) (tab @2) (workspace +2) (why \"killed\"))",
+                "((event \"closed\") (tab @2) (workspace +2) (why \"emptied\"))",
+                "((event \"closed\") (workspace +2) (why \"emptied\"))",
                 "",
             ]
             .join("\n")
         );
-        // b keeps its own tab.
-        assert_eq!(path(&s, 3), [WsId::of(3)]);
-        Ok(())
-    }
-
-    /// A client leaving a workspace that moves out of a project, or one in
-    /// it that closes, is told left in the project and reached where it
-    /// is: the project's reader reads every `shown` the whole journal does.
-    #[test]
-    fn a_projects_reader_reads_its_clients_leaving_what_moves_or_closes() -> TestResult {
-        let (mut s, c) = attached(10, 40)?;
-        for path in [
-            r#"(in (options) "proj")"#,
-            r#"(in (in (options) "proj") "agent1")"#,
-            r#"(in (in (options) "proj") "agent2")"#,
-            r#"(in (options) "other")"#,
-        ] {
-            run(
-                &mut s,
-                &format!("(sequence! (new-tab (size {} 80 24)) #inert)", path),
-            )?;
-        }
-        let proj = AnyRef::Workspace(WsId::of(2));
-        let reader =
-            |s: &Session, scope| crate::journal::Reader::new(scope, s.parts.journal(), s.run, None);
-        let (mut project, mut all) = (
-            reader(&s, fux_wire::inspect::Scope::Target(proj))?,
-            reader(&s, fux_wire::inspect::Scope::All)?,
-        );
-        run(
-            &mut s,
-            "(sequence! (show (client \"c1\") (workspace \"agent1\")) (move (workspace \"agent1\") (workspace \"other\")) #inert)",
-        )?;
-        run(
-            &mut s,
-            "(sequence! (show (client \"c1\") (workspace \"agent2\")) (kill (workspace \"agent2\")) #inert)",
-        )?;
-        let shown = |lines: String| -> Vec<String> {
-            (lines.lines().filter(|l| l.contains("(event \"shown\")")))
-                .map(str::to_owned)
-                .collect()
-        };
-        let (project, all) = (
-            shown(
-                project
-                    .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
-                    .0,
-            ),
-            shown(
-                all.lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
-                    .0,
-            ),
-        );
-        assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(2)));
-        // Reached agent1; left it moved and reached proj; left proj for
-        // agent2, and left agent2 closed for proj. Only leaving +1 is not
-        // the project's.
-        let at = |lines: &[String]| -> Vec<String> {
-            let ws = |l: &String| l.split("(workspace ").nth(1)?.get(..2).map(str::to_owned);
-            lines.iter().filter_map(ws).collect()
-        };
-        assert_eq!(at(&project), ["+3", "+3", "+2", "+2", "+4", "+4", "+2"]);
-        assert_eq!(all.get(1..), Some(&project[..]), "{all:?}");
         Ok(())
     }
 
@@ -5360,7 +5162,7 @@ mod tests {
             Some(Shown { current, last })
         }
         let tabs = |s: &Session, ws| s.workspace(WsId::of(ws)).and_then(|w| w.stack().shown(e));
-        let on_tab = |tab| on(AnyRef::Tab(TabId::of(tab)), None);
+        let on_tab = |tab| on(TabId::of(tab), None);
         assert_eq!(s.parts.stack().shown(e), on(WsId::of(2), None));
         assert_eq!(tabs(&s, 2), on_tab(3));
         assert_eq!(tabs(&s, 1), on_tab(1));
@@ -6499,7 +6301,7 @@ mod tests {
         let new_tab = Command::NewTab {
             options: fux::script::default_state()?.preferences.pane_options(),
             start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
-            target: Vec::new(),
+            target: None,
             name: None,
             size: None,
             cwd: Some("/".into()),
@@ -6637,150 +6439,25 @@ mod tests {
     }
 
     #[test]
-    fn each_client_chooses_its_own_stack_child_and_no_program_resizes() -> TestResult {
-        let (mut s, c1) = attached(24, 81)?;
-        let c2 = s.attach(24, 81, None)?;
-        output_as(&mut s, Some(c1), BAR_ROW)?;
-        // An editor on the left, two alternatives on the right.
-        run(
-            &mut s,
-            "(sequence! (split (axis (pane 1) \"horizontal\")) (stack (pane 2)) #inert)",
-        )?;
-        s.out(PaneId::of(2), b"second");
-        s.out(PaneId::of(3), b"third");
-        let sizes = |s: &Session| [1, 2, 3].map(|p| s.pane(PaneId::of(p)).map(Pane::size).ok());
-        let before = sizes(&s);
-        assert_eq!(
-            before[1], before[2],
-            "both children are sized on the stack's room"
-        );
-        let lines = told(&mut s, |s| {
-            _ = run(s, &format!("(show (client \"{c2}\") (pane 3))"))
-        });
-        assert!(lines.contains("(event \"shown\")"), "{lines}");
-        assert!(!lines.contains("resized"), "{lines}");
-        assert_eq!(sizes(&s), before);
-        let screen = |s: &mut Session, c| {
-            output(
-                s,
-                &format!(
-                    "(string (capture (client {})))",
-                    fux::script::quoted(&format!("{c}"))
-                ),
-            )
-        };
-        let (one, two) = (screen(&mut s, c1)?, screen(&mut s, c2)?);
-        assert!(one.contains("second") && !one.contains("third"), "{one}");
-        assert!(two.contains("third") && !two.contains("second"), "{two}");
-        // The bar lists the children of the focus's stack.
-        let bar = one.lines().last().unwrap_or_default();
-        assert!(bar.contains("%2") && bar.contains("%3"), "{one}");
-        // A pane's next steps among its stack's children, going round.
-        let step = |s: &mut Session, way: &str| {
-            run(
-                s,
-                &format!(
-                    "(sequence! (define! value-120 (client {})) (step value-120 (focused value-120) {}) #inert)",
-                    fux::script::quoted(&format!("{c1}")),
-                    fux::script::quoted(way)
-                ),
-            )
-        };
-        for (way, shown) in [("next", 3), ("next", 2), ("last", 3)] {
-            step(&mut s, way)?;
-            assert_eq!(s.focused(c1), Some(PaneId::of(shown)), "{way}");
-        }
-        assert_eq!(s.focused(c2), Some(PaneId::of(3)));
-        // The client record has each choice with the tab's revision.
-        use fux_wire::inspect::{Projection, Scope};
-        let Body::Snapshot(snapshot) = s.inspect(Scope::All, Projection::Facts)? else {
-            return Err("snapshot".into());
-        };
-        snapshot.validate()?;
-        let choices = |c| {
-            let client = snapshot.clients.iter().find(|r| r.id == c);
-            client.map(|r| {
-                r.choices
-                    .iter()
-                    .map(|ch| (ch.stack, ch.current, ch.last))
-                    .collect::<Vec<_>>()
-            })
-        };
-        assert_eq!(choices(c1), Some(vec![(2, 4, Some(3))]));
-        assert_eq!(choices(c2), Some(vec![(2, 4, Some(3))]));
-        // A child closed shows each client shown it the one it was before.
-        run(&mut s, "(sequence! (kill (pane 3)) #inert)")?;
-        assert_eq!([c1, c2].map(|c| s.focused(c)), [Some(PaneId::of(2)); 2]);
-        assert_eq!(sizes(&s)[1], before[1]);
-        Ok(())
-    }
-
-    #[test]
-    fn a_focus_gone_follows_its_stack_back_to_the_child_shown_before() -> TestResult {
-        let shown = |s: &Session, c| s.root(TabId::of(1)).map(|r| r.shown_panes(c));
-        // `[%1, %2 | %4, %3]`: the stack's last child is %1, the seat's
-        // last pane %2, which closes first.
-        let (mut s, c) = attached(24, 80)?;
-        run(
-            &mut s,
-            "(sequence! (stack (pane 1)) (stack (pane 2)) (split (axis (pane 2) \"horizontal\")) #inert)",
-        )?;
-        run(
-            &mut s,
-            &format!(
-                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 4)) #inert)",
-                fux::script::quoted(&format!("{c}")),
-                fux::script::quoted(&format!("{c}"))
-            ),
-        )?;
-        run(&mut s, "(sequence! (kill (pane 2)) (kill (pane 4)) #inert)")?;
-        assert_eq!(s.focused(c), Some(PaneId::of(1)));
-        assert_eq!(shown(&s, c), Some(vec![PaneId::of(1)]));
-        // Moved out, as closed: `[%1 | %5, %3, %4]`, shown %4, then %1 and
-        // %5; %5 leaves for its last pane, then %1 for the stack's last.
-        let (mut s, c) = attached(24, 80)?;
-        run(
-            &mut s,
-            "(sequence! (new-tab (in (size (options) 80 24) \"other\")) #inert)",
-        )?;
-        run(
-            &mut s,
-            "(sequence! (stack (pane 1)) (stack (pane 3)) (split (axis (pane 1) \"horizontal\")) #inert)",
-        )?;
-        for pane in [4, 1, 5] {
-            run(
-                &mut s,
-                &format!(
-                    "(sequence! (show (client {}) {}) #inert)",
-                    fux::script::quoted(&format!("{c}")),
-                    crate::test_reference(&format!("%{pane}"))
-                ),
-            )?;
-        }
-        run(&mut s, "(sequence! (move (pane 5) (tab \"@2\")) #inert)")?;
-        assert_eq!(s.focused(c), Some(PaneId::of(1)));
-        run(&mut s, "(sequence! (move (pane 1) (tab \"@2\")) #inert)")?;
-        assert_eq!(s.focused(c), Some(PaneId::of(4)));
-        assert_eq!(shown(&s, c), Some(vec![PaneId::of(4)]));
-        Ok(())
-    }
-
-    #[test]
     fn a_step_from_a_zoom_finds_the_zoomed_panes_neighbour() -> TestResult {
         let (mut s, c1) = attached(24, 80)?;
         let c2 = s.attach(24, 80, None)?;
+        // `%1 | %2 | %3`: the stepping client remembers %3, whose left is
+        // %2; the zoomed pane is %2, whose left is %1.
         run(
             &mut s,
-            "(sequence! (split (axis (pane 1) \"horizontal\")) (stack (pane 2)) #inert)",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (split (axis (pane 2) \"horizontal\")) #inert)",
         )?;
         run(
             &mut s,
             &format!(
-                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 3)) (zoom (pane 2)) #inert)",
+                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 3)) #inert)",
                 fux::script::quoted(&format!("{c1}")),
                 fux::script::quoted(&format!("{c2}"))
             ),
         )?;
+        assert_eq!(s.focused(c2), Some(PaneId::of(3)));
+        run(&mut s, "(sequence! (zoom (pane 2)) #inert)")?;
         run(
             &mut s,
             &format!(
@@ -6790,23 +6467,45 @@ mod tests {
         )?;
         assert_eq!(s.tab(TabId::of(1)).and_then(Tab::zoomed), None);
         assert_eq!(s.focused(c2), Some(PaneId::of(1)));
-        let shown = s.root(TabId::of(1)).map(|r| r.shown_panes(c2));
-        assert_eq!(
-            shown,
-            Some(vec![PaneId::of(1), PaneId::of(3)]),
-            "its choice kept"
-        );
+        Ok(())
+    }
+
+    /// The focused pane moved out of a tab that stays: its client goes back
+    /// to the pane it showed before, not to the pane beside it.
+    #[test]
+    fn a_focus_moved_away_goes_back_to_the_pane_shown_before() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (in (size (options) 80 24) \"other\")) #inert)",
+        )?;
+        // `%1 | %3 | %4`, shown %1 then %4: %3 is beside %4, %1 was before it.
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (split (axis (pane 3) \"horizontal\")) #inert)",
+        )?;
+        for pane in [1, 4] {
+            run(
+                &mut s,
+                &format!(
+                    "(sequence! (show (client {}) (pane {pane})) #inert)",
+                    fux::script::quoted(&format!("{c}"))
+                ),
+            )?;
+        }
+        run(&mut s, "(sequence! (move (pane 4) (tab \"@2\")) #inert)")?;
+        assert_eq!(s.focused(c), Some(PaneId::of(1)));
         Ok(())
     }
 
     #[test]
-    fn a_layout_deeper_than_64_dumps_and_replays_as_it_is() -> TestResult {
+    fn a_layout_as_deep_as_a_layout_goes_dumps_and_replays_as_it_is() -> TestResult {
         let mut s = started()?;
         run(
             &mut s,
             "(sequence! (new-tab (in (size (options) 240 24) \"deep\")) #inert)",
         )?;
-        for _ in 0..65 {
+        for _ in 0..layout::MAX_DEPTH {
             run(
                 &mut s,
                 "(sequence! (move (new-tab (in (size (options) 10 10) \"other\")) (tab \"@2\")) #inert)",
@@ -6827,45 +6526,18 @@ mod tests {
             nodes
                 .map(|n| match n {
                     fux_wire::layout::Node::Pane(p) => format!("{:?}", at(&p)),
-                    node @ (fux_wire::layout::Node::Split { .. }
-                    | fux_wire::layout::Node::Stack { .. }) => format!("{node:?}"),
+                    node @ fux_wire::layout::Node::Split { .. } => format!("{node:?}"),
                 })
                 .collect::<Vec<_>>()
         };
         let (Some(root), Some(made)) = (s.root(tab), made.map(Tab::root)) else {
             return Err("no layout".into());
         };
-        assert_eq!(root.panes().len(), 66);
+        assert_eq!(root.panes().len(), layout::MAX_DEPTH + 1);
         assert_eq!(shape(made), shape(root));
-        Ok(())
-    }
-
-    #[test]
-    fn a_stack_child_no_client_is_shown_needs_its_room_too() -> TestResult {
-        let (mut s, c) = attached(24, 80)?;
-        run(
-            &mut s,
-            "(sequence! (new-tab (in (size (options) 20 9) (workspace \"+1\"))) #inert)",
-        )?;
-        run(
-            &mut s,
-            &format!(
-                "(sequence! (show (client {}) (pane 2)) #inert)",
-                fux::script::quoted(&format!("{c}"))
-            ),
-        )?;
-        // `[%2, %3 / %4 / %5]`, shown %2: the hidden child needs 8 rows.
-        let made = "(sequence! (stack (pane 2)) (split (axis (pane 3) \"vertical\")) (split (axis (pane 4) \"vertical\")) #inert)";
-        run(&mut s, made)?;
-        assert_eq!(s.focused(c), Some(PaneId::of(2)));
-        for refused in [
-            "(split (axis (pane 5) \"vertical\"))",
-            "(sequence! (resize (tab 2) 20 7) #inert)",
-        ] {
-            let why = run(&mut s, refused).err().unwrap_or_default();
-            assert!(why.starts_with("size: "), "{refused}: {why}");
-        }
-        assert_eq!(s.parts.panes().len(), 5);
+        let more = "(sequence! (move (new-tab (in (size (options) 10 10) \"other\")) (tab \"@2\")) #inert)";
+        let refused = run(&mut s, more).err().unwrap_or_default();
+        assert!(refused.contains("too-many"), "{refused}");
         Ok(())
     }
 
@@ -7047,9 +6719,7 @@ mod tests {
             "(define! saved (second (second data))) (define! p (second (field saved (quote! panes)))) (list (field p (quote! history-bytes)) (field p (quote! reflow)) (field p (quote! alternate-scroll-lines)) (field p (quote! picture-bytes)) (field p (quote! program-clipboard)))",
         )?;
         assert_eq!(options, "(128 #false 3 1024 #false)");
-        let lines = stream
-            .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
-            .0;
+        let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
         let at = |what: &str| {
             lines
                 .find(&format!("(event \"{what}\") (pane %2)"))
@@ -7213,9 +6883,7 @@ mod tests {
             // Nor has it a program of its own till the new one takes its place.
             assert_eq!(output(&mut s, "(sequence! (define! value-2666 (pane 2)) \"program\" (get value-2666 \"program\"))")?.trim(), "none");
             turns(&mut s, id, &mut waiting)?;
-            let lines = stream
-                .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
-                .0;
+            let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
             assert!(lines.contains("(event \"respawned\") (pane %2)"), "{lines}");
             assert!(!lines.contains("input-unread"), "{lines}");
             reap(&mut s);
@@ -7313,9 +6981,7 @@ mod tests {
         })?;
         assert!(held);
         turns(&mut s, id, &mut waiting)?;
-        let lines = stream
-            .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
-            .0;
+        let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
         let at = |what: &str| {
             lines
                 .find(&format!("(event \"{what}\") (pane %2)"))
@@ -7938,7 +7604,7 @@ mod tests {
             s.run,
             Some(from),
         )?
-        .batch(s.parts.journal(), &s.parts.nested(), true)?
+        .batch(s.parts.journal(), true)?
         .events;
         let pane = s.pane(id)?;
         let after = (pane.respawns, pane.exit_status(), pane.read_error.clone());
@@ -10195,9 +9861,7 @@ mod tests {
             Err(why) => return why,
         };
         change(s);
-        stream
-            .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
-            .0
+        stream.lines(s.parts.journal(), |t| s.holder(t)).0
     }
 
     #[test]
@@ -10214,9 +9878,9 @@ mod tests {
         assert_eq!(
             lines,
             concat!(
-                "((event \"renamed\") (workspace +1) (parent none) (name \"x\"))",
+                "((event \"renamed\") (workspace +1) (name \"x\"))",
                 "\n",
-                "((event \"renamed\") (workspace +1) (parent none) (name \"main\"))",
+                "((event \"renamed\") (workspace +1) (name \"main\"))",
                 "\n"
             )
         );
@@ -10315,7 +9979,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(sequence! (new-tab (size (in (in (options) \"a\") \"b\") 80 24)) #inert)",
+            "(sequence! (new-tab (size (in (options) \"b\") 80 24)) #inert)",
         )?;
         run(
             &mut s,
@@ -10329,7 +9993,7 @@ mod tests {
         let closed: Vec<&str> = (lines.lines())
             .filter(|l| l.contains("(event \"closed\")"))
             .collect();
-        assert_eq!(closed.len(), 6, "{lines}");
+        assert_eq!(closed.len(), 5, "{lines}");
         assert!(
             closed.iter().all(|l| l.ends_with("(why \"killed\"))")),
             "{lines}"
@@ -10346,9 +10010,9 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "((event \"closed\") (pane %4) (tab @4) (workspace +4) (why \"killed\"))",
-                "((event \"closed\") (tab @4) (workspace +4) (why \"killed\"))",
-                "((event \"closed\") (workspace +4) (parent none) (why \"emptied\"))",
+                "((event \"closed\") (pane %4) (tab @4) (workspace +3) (why \"killed\"))",
+                "((event \"closed\") (tab @4) (workspace +3) (why \"killed\"))",
+                "((event \"closed\") (workspace +3) (why \"emptied\"))",
                 "",
             ]
             .join("\n")
@@ -10370,7 +10034,7 @@ mod tests {
         )?;
         run(
             &mut s,
-            "(sequence! (new-tab (size (in (in (options) (workspace 1)) \"meta-design\") 80 24)) #inert)",
+            "(sequence! (new-tab (size (in (options) \"meta-design\") 80 24)) #inert)",
         )?;
         run(
             &mut s,
@@ -10378,7 +10042,7 @@ mod tests {
         )?;
         run(
             &mut s,
-            "(sequence! (new-tab (size (in (in (options) (workspace 1)) \"desktop-simple\") 80 24)) #inert)",
+            "(sequence! (new-tab (size (in (options) \"desktop-simple\") 80 24)) #inert)",
         )?;
         for client in [watcher, killer] {
             run(
@@ -10407,9 +10071,7 @@ mod tests {
         assert!(notice(&s, killer).is_some_and(|n| n.until.is_some()));
         assert_eq!(
             notice(&s, watcher).map(|n| n.text).as_deref(),
-            Some(
-                "harmony › meta-design killed by c2: 2 tabs closed · now harmony · C-b w g shows all"
-            )
+            Some("meta-design killed by c2: 2 tabs closed · now harmony · C-b w g shows all")
         );
         s.input(watcher, b"a");
         assert!(notice(&s, watcher).is_none());
@@ -10562,8 +10224,7 @@ mod tests {
                 .iter()
                 .map(|node| match node {
                     fux_wire::layout::Node::Pane(_) => fux_wire::layout::Node::Pane(PaneId::of(1)),
-                    node @ (fux_wire::layout::Node::Split { .. }
-                    | fux_wire::layout::Node::Stack { .. }) => node.clone(),
+                    node @ fux_wire::layout::Node::Split { .. } => node.clone(),
                 })
                 .collect::<Vec<_>>()
         };
@@ -10700,7 +10361,7 @@ mod tests {
         std::fs::create_dir_all(&dir)?;
         let mut s = started()?;
         let program = Command::NewTab {
-            target: vec![WsRef::Name("agent".into())],
+            target: Some(WsRef::Name("agent".into())),
             name: None,
             size: Some(fux_wire::command::Screen::new(24, 80)?),
             cwd: Some(dir.clone()),
@@ -10719,7 +10380,7 @@ mod tests {
         Ok(())
     }
 
-    /// A restore whose top workspace is named as a pane here is refused
+    /// A restore whose workspace is named as a pane here is refused
     /// before anything is made.
     #[test]
     fn a_restore_refuses_a_taken_name_before_it_makes_anything() -> TestResult {
@@ -11080,9 +10741,9 @@ mod tests {
             "(sequence! (kill (pane 5)) #inert)",
             "(sequence! (move (pane 3) (tab \"@2\")) #inert)",
             "(sequence! (kill (pane 6)) #inert)",
-            "(sequence! (stack (pane 2)) #inert)",
+            "(sequence! (split (axis (pane 2) \"vertical\")) #inert)",
             "(sequence! (split (axis (pane 8) \"vertical\")) #inert)",
-            "(sequence! (stack (pane 2)) #inert)",
+            "(sequence! (split (axis (pane 2) \"vertical\")) #inert)",
             "(sequence! (kill (pane 10)) #inert)",
         ] {
             run(&mut s, change)?;
@@ -11170,11 +10831,8 @@ mod journal_tests {
     use testing::{output, run, run_as, started};
 
     fn batch(s: &Session, from: fux_wire::events::Cursor) -> Result<Batch, String> {
-        Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?.batch(
-            s.parts.journal(),
-            &s.parts.nested(),
-            true,
-        )
+        Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
+            .batch(s.parts.journal(), true)
     }
     fn named<'a>(b: &'a Batch, name: &str) -> Vec<&'a fux_wire::events::Item> {
         b.events
@@ -11212,12 +10870,11 @@ mod journal_tests {
             "(sequence! (split (axis (pane 1) \"horizontal\")) (new-tab (size (in (options) (workspace 1)) 80 24)) #inert)",
         )?;
         run(&mut s, "(sequence! (zoom (pane 1)) #inert)")?;
-        let shown =
-            |s: &Session, from| -> Result<Vec<Option<TabId>>, String> {
-                let b = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
-                    .batch(s.parts.journal(), &s.parts.nested(), true)?;
-                Ok(named(&b, "shown").iter().map(|e| e.tab).collect())
-            };
+        let shown = |s: &Session, from| -> Result<Vec<Option<TabId>>, String> {
+            let b = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
+                .batch(s.parts.journal(), true)?;
+            Ok(named(&b, "shown").iter().map(|e| e.tab).collect())
+        };
         // Its own focus moves to the zoomed pane it already shows.
         let from = s.parts.journal().end(s.run);
         run(
@@ -11436,11 +11093,8 @@ mod journal_tests {
                 Scope::Target(AnyRef::Tab(TabId::of(1))),
                 Scope::Target(AnyRef::Workspace(WsId::of(1))),
             ] {
-                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?.batch(
-                    s.parts.journal(),
-                    &s.parts.nested(),
-                    true,
-                )?;
+                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
+                    .batch(s.parts.journal(), true)?;
                 assert!(
                     !named(&b, "shown").is_empty(),
                     "departure from {scope:?}: {b:?}"
@@ -11466,7 +11120,7 @@ mod journal_tests {
             s.run,
             Some(from),
         )?
-        .batch(s.parts.journal(), &s.parts.nested(), true)?;
+        .batch(s.parts.journal(), true)?;
         assert!(!b.events.is_empty(), "host changed without invalidation");
         assert!(b.events.iter().all(|e| e.origin == Actor::Client(second)));
         let after = s.parts.journal().end(s.run);
