@@ -23,8 +23,6 @@
 (bind! "C-b w n" "new workspace" "Workspaces" (code! (lambda! () (new-tab (in (options) "new-workspace")) #inert)))
 (bind! "C-b w h" "previous workspace" "Workspaces" (code! (lambda! () (step (me) (workspace (focused (me))) "previous") #inert)))
 (bind! "C-b w l" "next workspace" "Workspaces" (code! (lambda! () (step (me) (workspace (focused (me))) "next") #inert)))
-(bind! "C-b w j" "into a workspace in it" "Workspaces" (code! (lambda! () (show (me) (inner (focused (me)))) #inert)))
-(bind! "C-b w k" "out of the workspace" "Workspaces" (code! (lambda! () (outer (me) (focused (me))) #inert)))
 (bind! "C-b w g" "choose a workspace" "Workspaces" (code! (lambda! () (choose-among (me) (workspace (focused (me)))) #inert)))
 (bind! "C-b w r" "rename workspace" "Workspaces" (code! (lambda! () (rename-prompt (me) (workspace (focused (me)))) #inert)))
 (bind! "C-b w x" "close workspace" "Workspaces" (code! (lambda! () (confirm-close (me) (workspace (focused (me)))) #inert)))

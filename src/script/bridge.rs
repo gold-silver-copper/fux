@@ -1086,9 +1086,9 @@ macro_rules! library_words {
 }
 library_words! {
     0: "assert-kind" "information" "all-history" "observed" "shows" "quiet" "until-ended" "grows"
-       "list-session" "me-focused" "outer" "inner" "rename-prompt" "confirm-close" "chooser-row"
+       "list-session" "me-focused" "rename-prompt" "confirm-close" "chooser-row"
        "chooser-find" "chooser-container-row" "chooser-index" "chooser-selected" "chooser-siblings"
-       "chooser-count" "chooser-path" "chooser-tree" "choose-among" "choose-move" "choose-pane"
+       "chooser-count" "chooser-workspaces" "choose-among" "choose-move" "choose-pane"
        "edit-history" "batch-events";
     1: "native-data?" "session-data" "dump-text" "dump-recipe" "dump" "dump-first" "dump-directory"
        "dump-warnings" "session-find" "restore-create-options" "restore-session" "listing"

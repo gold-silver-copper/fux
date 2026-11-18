@@ -6,14 +6,13 @@
 //!
 //! It is one file, `run`, written whole on every change of the tree. The
 //! structure is flat: the workspaces and the tabs are two lists of rows,
-//! each workspace naming its children by their ids, so no depth of
-//! nesting is read or written by going into it. Names are in it, each at
+//! each workspace naming its tabs by their ids. Names are in it, each at
 //! most `MAX_NAME` bytes (`session::check_name`).
 //!
 //! A run has one server at a time (D-180: the lock on its directory,
 //! `socket::bind_socket`), so every file here is that server's to keep or
 //! remove, whichever server wrote it.
-use fux_wire::command::{AnyRef, Run};
+use fux_wire::command::Run;
 use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
 use std::path::{Path, PathBuf};
@@ -31,25 +30,22 @@ pub struct Record {
 }
 wired!(struct Record { run, ids, tree, ended });
 
-/// A run's tree: the workspaces at the top, in order, then every
-/// workspace and every tab, a row each.
+/// A run's tree: the workspaces, in order, and every tab, a row each.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Tree {
-    pub top: Vec<WsId>,
     pub workspaces: Vec<Workspace>,
     pub tabs: Vec<Tab>,
 }
-wired!(struct Tree { top, workspaces, tabs });
+wired!(struct Tree { workspaces, tabs });
 
-/// A workspace: its name, and what it holds, tabs and
-/// workspaces, in order.
+/// A workspace: its name, and its tabs, in order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Workspace {
     pub id: WsId,
     pub name: Option<String>,
-    pub children: Vec<AnyRef>,
+    pub tabs: Vec<TabId>,
 }
-wired!(struct Workspace { id, name, children });
+wired!(struct Workspace { id, name, tabs });
 
 /// A tab: its layout, its revision, how it is sized, its zoomed pane, and
 /// its panes.

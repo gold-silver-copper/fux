@@ -377,17 +377,16 @@ fn two_clients_step_on_their_own_and_a_zoom_is_every_viewer_s_focus() -> Outcome
     Ok(())
 }
 
-/// Two clients shown different workspaces nested in one project step among
-/// their own siblings, each with its own place, and the project's words
-/// cover what is in the workspaces in it: their tabs, and what their
-/// clients were shown.
+/// Two clients shown different workspaces step among the workspaces and
+/// tabs, each with its own place, and a workspace's words cover its tabs
+/// and what its clients were shown.
 #[test]
-fn clients_in_nested_workspaces_step_among_their_own_siblings() -> Outcome {
+fn clients_step_among_workspaces_each_from_its_own_place() -> Outcome {
     let server = Server::empty()?;
     for tab in [
         "(size (in (options) \"home\") 80 24)",
-        "(name (size (in (in (options) \"proj\") \"agent1\") 80 24) \"a\")",
-        "(name (size (in (in (options) \"proj\") \"agent2\") 80 24) \"b\")",
+        "(name (size (in (options) \"agent1\") 80 24) \"a\")",
+        "(name (size (in (options) \"agent2\") 80 24) \"b\")",
         "(name (size (in (options) \"agent2\") 80 24) \"c\")",
     ] {
         server.ok(&[&format!("(new-tab {tab})")])?;
@@ -398,7 +397,7 @@ fn clients_in_nested_workspaces_step_among_their_own_siblings() -> Outcome {
     attached(&server, 2)?;
     place_is(&server, "c1", "agent1", "a")?;
     place_is(&server, "c2", "agent2", "b")?;
-    let cursor = server.ok(&["(get (information (workspace \"proj\")) \"cursor\")"])?;
+    let cursor = server.ok(&["(get (information (workspace \"agent2\")) \"cursor\")"])?;
     server.ok(&["(step (client \"c1\") (workspace \"agent1\") \"next\") #inert"])?;
     server.ok(&["(step (client \"c2\") (tab \"b\") \"next\") #inert"])?;
     place_is(&server, "c1", "agent2", "b")?;
@@ -406,10 +405,11 @@ fn clients_in_nested_workspaces_step_among_their_own_siblings() -> Outcome {
     server.ok(&["(step (client \"c1\") (workspace \"agent2\") \"last\") #inert"])?;
     place_is(&server, "c1", "agent1", "a")?;
     place_is(&server, "c2", "agent2", "c")?;
-    let tabs = server.ok(&["(map (lambda! (t) (get t \"name\")) (tabs (workspace \"proj\")))"])?;
-    assert_eq!(tabs, "a\nb\nc\n");
+    let tabs =
+        server.ok(&["(map (lambda! (t) (get t \"name\")) (tabs (workspace \"agent2\")))"])?;
+    assert_eq!(tabs, "b\nc\n");
     let shown = server.ok(&[&format!(
-        "(define! batch (next-events (workspace \"proj\") {} 0)) \
+        "(define! batch (next-events (workspace \"agent2\") {} 0)) \
          (map (lambda! (e) (get e \"client\")) \
          (filter (lambda! (e) (same? (get e \"event\") \"shown\")) (get batch \"events\")))",
         fux::script::quoted(cursor.trim())

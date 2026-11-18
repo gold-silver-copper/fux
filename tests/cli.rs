@@ -496,7 +496,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
     let data = server.ok(&["(list-session)"])?;
     for (query, expected) in [
         (
-            "(first (field (first (field data (quote! workspaces))) (quote! children)))",
+            "(first (field (first (field data (quote! workspaces))) (quote! tabs)))",
             "@1",
         ),
         (

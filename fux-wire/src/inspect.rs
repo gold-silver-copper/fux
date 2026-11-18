@@ -37,12 +37,10 @@ wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Workspace {
         pub id: WsId,
-        /// The workspace it is in, none at the top.
-        pub parent: Option<WsId>,
         pub name: Option<String>,
         pub label: String,
-        /// Its tabs and workspaces, in order.
-        pub children: Vec<crate::command::AnyRef>,
+        /// Its tabs, in order.
+        pub tabs: Vec<TabId>,
     }
 }
 wire! {
@@ -400,19 +398,18 @@ impl Snapshot {
         sorted(self.tabs.iter().map(|t| t.id))?;
         let panes = sorted(self.panes.iter().map(|p| p.id))?;
         sorted(self.clients.iter().map(|c| c.id))?;
-        // Each workspace holds what names it as its own, and something.
-        let holds = |w: &Workspace, child| w.children.contains(&child);
-        let held_by = |id: Option<WsId>, child| {
-            id.and_then(|id| self.workspaces.iter().find(|w| w.id == id))
-                .is_none_or(|w| holds(w, child))
-        };
+        // Each workspace holds something, and each tab's holds it.
         for w in &self.workspaces {
-            sorted(w.children.iter().copied())?;
-            if w.children.is_empty() || !held_by(w.parent, AnyRef::Workspace(w.id)) {
+            sorted(w.tabs.iter().copied())?;
+            if w.tabs.is_empty() {
                 return Err(bad());
             }
         }
-        if !(self.tabs.iter()).all(|t| held_by(Some(t.workspace), AnyRef::Tab(t.id))) {
+        let held = |t: &Tab| {
+            (self.workspaces.iter().find(|w| w.id == t.workspace))
+                .is_none_or(|w| w.tabs.contains(&t.id))
+        };
+        if !self.tabs.iter().all(held) {
             return Err(bad());
         }
         let mut ordered_panes = self.panes.iter();

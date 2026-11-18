@@ -897,15 +897,15 @@ fn a_file_that_does_not_read_is_placed_at_its_line() -> TestResult {
 }
 
 /// Reading a request back from its data adds each option to what is
-/// built, copying nothing built before it: twice the nested workspaces
-/// make about twice the bytes, where a copy at every step made four times.
+/// built, copying nothing built before it: twice the inputs make about
+/// twice the bytes, where a copy at every step made four times.
 #[test]
-fn reading_back_twice_the_nested_workspaces_makes_twice_the_bytes() -> TestResult {
+fn reading_back_twice_the_inputs_makes_twice_the_bytes() -> TestResult {
     let allocator = fux_vt_peak::ThreadPeak;
     let mut made = Vec::new();
     for depth in [1024, 2048] {
         let steps: Vec<_> = (0..depth)
-            .map(|i| (words::Opt::In, vec![Value::str(i.to_string())]))
+            .map(|i| (words::Opt::Text, vec![Value::str(i.to_string())]))
             .collect();
         let before = allocator.made();
         let read = words::replayed(None, steps)?;
@@ -913,14 +913,14 @@ fn reading_back_twice_the_nested_workspaces_makes_twice_the_bytes() -> TestResul
         let Value::App(Fux::Opts(opts)) = read else {
             return Err("options".into());
         };
-        assert_eq!(opts.place.len(), depth);
+        assert_eq!(opts.inputs.len(), depth);
     }
     let [shallow, deep] = made.as_slice() else {
         return Err("two depths".into());
     };
     assert!(
         *deep < shallow.saturating_mul(3),
-        "{shallow} bytes for 1024 workspaces, {deep} for 2048"
+        "{shallow} bytes for 1024 inputs, {deep} for 2048"
     );
     Ok(())
 }

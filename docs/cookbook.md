@@ -329,44 +329,37 @@ saying what was lost.
 )
 ```
 
-## A project with agent workspaces
+## A workspace for each agent
 
-A workspace holds tabs and workspaces. `in` again names a workspace in the
-one before, made if it is not there, so each agent of a project gets a
-workspace of its own under it, and the bar shows the path, `work › agent1`.
-An operation on the project covers the workspaces in it: its `events`, `panes`,
-`dump` and `kill` take in its agents, so a finished agent closes with one
-`kill`, and `move` puts a workspace in another, or with `(all)` at the top.
+A workspace is an ordered group of tabs. `in` names one, made if it is not
+there, so each agent gets a workspace of its own. An operation on a
+workspace covers its tabs: its `events`, `panes` and `dump` take them in, and
+a finished agent closes with one `kill`.
 
 ```sh
-fux '(new-tab (program (size (in (in (options) "work") "agent1") 80 24) (list "sh")))' > /dev/null
-fux '(new-tab (program (size (in (in (options) "work") "agent2") 80 24) (list "sh")))' > /dev/null
-fux '(length (panes (workspace "work")))'
-fux '(get (get (workspace "agent2") "parent") "name")'
+fux '(new-tab (program (size (in (options) "agent1") 80 24) (list "sh")))' > /dev/null
+fux '(new-tab (program (size (in (options) "agent2") 80 24) (list "sh")))' > /dev/null
+fux '(length (panes (workspace "agent1")))'
 fux '(kill (workspace "agent2"))'
 ```
 
 ## An orchestrator's agents
 
-An agent that starts agents gives each level a workspace: the fleet, each
-orchestrator in it, and each of its tasks, where a task's implementer and
-reviewers get a tab apiece, so the bar shows `fleet › orch1 › task1`. A
-finished task closes with one `kill`, an orchestrator's `kill` stops all
-its tasks, and the fleet, left empty, closes with its last child. Names
-are one namespace on a server, so each task and agent has a name of its
-own.
+An agent that starts agents gives each task a workspace, named for the
+orchestrator and the task, where the task's implementer and reviewers get a
+tab apiece. A finished task closes with one `kill`. Names are one namespace
+on a server, so each task and agent has a name of its own.
 
 ```sh
-fux '(rename (new-tab (program (size (in (in (in (options) "fleet") "orch1") "task1") 80 24) (list "sh"))) "task1-impl")'
-fux '(rename (new-tab (program (size (in (in (in (options) "fleet") "orch1") "task1") 80 24) (list "sh"))) "task1-review")'
-fux '(rename (new-tab (program (size (in (in (in (options) "fleet") "orch1") "task2") 80 24) (list "sh"))) "task2-impl")'
+fux '(rename (new-tab (program (size (in (options) "orch1-task1") 80 24) (list "sh"))) "task1-impl")'
+fux '(rename (new-tab (program (size (in (options) "orch1-task1") 80 24) (list "sh"))) "task1-review")'
+fux '(rename (new-tab (program (size (in (options) "orch1-task2") 80 24) (list "sh"))) "task2-impl")'
 fux '(line (pane "task1-impl") "echo implementing")'
-[ "$(fux '(length (panes (workspace "task1")))')" -eq 2 ]
-[ "$(fux '(length (panes (workspace "orch1")))')" -eq 3 ]
-fux '(kill (workspace "task1"))'
-[ "$(fux '(length (panes (workspace "orch1")))')" -eq 1 ]
-fux '(kill (workspace "orch1"))'
-fux '(workspace "fleet")' || [ $? -eq 1 ]
+[ "$(fux '(length (panes (workspace "orch1-task1")))')" -eq 2 ]
+fux '(kill (workspace "orch1-task1"))'
+[ "$(fux '(length (panes (workspace "orch1-task2")))')" -eq 1 ]
+fux '(kill (workspace "orch1-task2"))'
+fux '(workspace "orch1-task1")' || [ $? -eq 1 ]
 ```
 
 ## An editor beside switchable terminals
@@ -390,9 +383,10 @@ fux '(data-text (get (first (get (snapshot (tab "code") "topology") "tabs")) "no
 
 `dump` prints a grift program that makes the layout and its programs
 again (never what the processes held); `fux --file` runs it, here on a
-fresh server, its workspaces in the workspace its first argument names
-(made if it is not there), else at the top. Saving, cloning and moving a
-project are that one mechanism.
+fresh server, the saved workspace's tabs in the workspace its first argument
+names (made if it is not there). With no argument each workspace comes back
+as it was saved; a file of several takes none. Saving, cloning and moving a
+workspace are that one mechanism.
 
 ```sh
 fux '(dump (workspace "work"))' > work.grift
@@ -400,7 +394,7 @@ fux '(dump (workspace "work"))' > work.grift
   export FUX_SOCKET="$PWD/copy/fux.sock"
   fux '(start)'
   fux --file work.grift home
-  fux '(get (get (workspace "work") "parent") "name")'
+  fux '(get (workspace "home") "name")'
   kill "$(fux '(get (status) "server-process-id")' 2>/dev/null || lsof -t "$FUX_SOCKET")"
 )
 ```

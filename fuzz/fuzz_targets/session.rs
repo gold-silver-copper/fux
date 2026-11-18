@@ -812,7 +812,7 @@ fn check(run: &Run) {
     let s = &run.s;
     // Every pane is in exactly one tab's layout, and every pane there is.
     let mut seen: BTreeMap<PaneId, usize> = BTreeMap::new();
-    for ws in s.parts.every_workspace() {
+    for ws in s.parts.workspaces() {
         for tab in s.parts.tabs_of(ws.id()) {
             for pane in tab.root().panes() {
                 assert!(

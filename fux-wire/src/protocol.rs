@@ -23,7 +23,7 @@ use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 80;
+pub const PROTOCOL: u32 = 81;
 
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;

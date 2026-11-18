@@ -44,6 +44,7 @@ type-error 2 try
 range-error 1 try
 arity-error 2 try
 too-long 1 try
+too-many 1 try
 unused 1 try
 unbound-symbol 2 try
 bad-name 1 try

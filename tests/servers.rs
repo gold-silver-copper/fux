@@ -716,47 +716,145 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     Ok(())
 }
 
-/// A dump of a workspace with workspaces in it replays under another
-/// (`./proj.fux home`): the same names, nesting and layouts, in the
-/// workspace its argument names (D-116 (2)).
+/// `text` with each id replaced by the order it first appears in: two runs
+/// give the same things different ids.
+fn ids_in_order(text: &str) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        out.push(c);
+        if !matches!(c, '+' | '@' | '%') {
+            continue;
+        }
+        let mut id = c.to_string();
+        while let Some(digit) = chars.next_if(char::is_ascii_digit) {
+            id.push(digit);
+        }
+        if id.len() > 1 {
+            let known = seen.iter().position(|was| *was == id);
+            let at = known.unwrap_or_else(|| {
+                seen.push(id);
+                seen.len().saturating_sub(1)
+            });
+            out.push_str(&format!("#{at}"));
+        }
+    }
+    out
+}
+
+/// What a dump of `scope` on `server` makes again: its workspaces, its tabs
+/// with their layouts, and its panes with what they launch.
+fn saved_shape(server: &Server, scope: &str) -> Result<String, String> {
+    let shape = server.ok(&[format!(
+        r#"(define! s (session-data (snapshot {scope} "recipe")))
+        (define! fields (lambda! (records names)
+          (map (lambda! (r) (map (lambda! (k) (get r k)) names)) records)))
+        (data-text (list
+          (fields (get s "workspaces") (list "id" "name" "tabs"))
+          (fields (get s "tabs") (list "id" "workspace" "name" "fit" "columns" "rows" "nodes"))
+          (fields (get s "panes") (list "id" "tab" "name" "launch"))))"#
+    )])?;
+    Ok(ids_in_order(&shape))
+}
+
+/// What a dump of any workspace, tab or everything saves loads on a new
+/// server and dumps again the same, whatever the workspaces, their names,
+/// tabs and layouts: a few made from each seed. Into a workspace named on
+/// the command line, one workspace's tabs load the same, under that name.
 #[test]
-fn a_nested_dump_replays_under_another_workspace() -> Outcome {
-    let server = Server::start("")?;
-    let create = |builder: &str| {
-        server.words(&format!(
-            "(new-tab (program {builder} (list \"sleep\" \"60\")))"
-        ))
-    };
-    create(r#"(in (size (options) 80 24) "home")"#)?;
-    create(r#"(name (in (size (options) 80 24) "proj") "top")"#)?;
-    create(r#"(in (in (size (options) 80 24) "proj") "agent1")"#)?;
-    let p = create(r#"(name (in (in (size (options) 80 24) "proj") "agent2") "a2")"#)?;
-    server.words(&format!(
-        "(split (program (shares (axis {} \"vertical\") 2 1) (list \"sleep\" \"60\")))",
-        support::reference(first_word(&p))
-    ))?;
-    create(r#"(in (in (size (options) 80 24) "agent1") "deep")"#)?;
-    create(r#"(name (in (size (options) 80 24) "agent1") "after")"#)?;
-    create(r#"(name (in (size (options) 80 24) "proj") "last")"#)?;
-    let shape = || {
-        server.ok(&[r#"(define! s (snapshot (workspace "proj") "topology"))
-      (data-text (list
-        (map (lambda! (w) (list (get w "name") (if! (same? (get w "parent") none) "top" (get (get w "parent") "name"))
-           (map (lambda! (c) (list (kind c) (get c "name"))) (get w "children")))) (get s "workspaces"))
-        (map (lambda! (t) (list (get t "name") (get (get t "workspace") "name")
-           (map (lambda! (node) (if! (same? (kind node) "pane") "p" node)) (get t "nodes")))) (get s "tabs"))))"#])
-    };
-    let before = shape()?;
-    assert_eq!(
-        read_data(&before, "(map first (first data))")?,
-        r#"("proj" "agent1" "deep" "agent2")"#
+fn a_dump_loads_on_a_new_server_and_dumps_again_the_same() -> Outcome {
+    const SLEEP: &str = r#"(list "sleep" "60")"#;
+    for seed in 1..=4_u32 {
+        let source = Server::empty()?;
+        let mut next = seed;
+        let mut roll = |below: u32| {
+            next = next.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (next >> 16) % below
+        };
+        for w in 0..=roll(2) {
+            let place = match roll(2) {
+                0 => format!(r#""w{w}""#),
+                _ => r#""new-workspace""#.to_owned(),
+            };
+            let mut home = None;
+            for t in 0..=roll(2) {
+                let place = home.clone().unwrap_or_else(|| place.clone());
+                let options = format!(r#"(size (in (options) {place}) 80 24)"#);
+                let options = match roll(2) {
+                    0 => format!(r#"(name {options} "t{w}-{t}")"#),
+                    _ => options,
+                };
+                let pane = source.words(&format!("(new-tab (program {options} {SLEEP}))"))?;
+                let pane = support::reference(first_word(&pane));
+                home.get_or_insert(format!(r#"(string (workspace {pane}))"#));
+                for _ in 0..roll(3) {
+                    let beside = match roll(3) {
+                        0 => format!(r#"(stack (program {pane} {SLEEP}))"#),
+                        1 => format!(r#"(split (program (axis {pane} "vertical") {SLEEP}))"#),
+                        _ => format!(r#"(split (program (axis {pane} "horizontal") {SLEEP}))"#),
+                    };
+                    source.words(&beside)?;
+                }
+            }
+        }
+        let first = |list: &str| {
+            format!(r#"(get (first (get (snapshot (all) "topology") "{list}")) "id")"#)
+        };
+        let (workspace, tab) = (first("workspaces"), first("tabs"));
+        for scope in ["(all)", workspace.as_str(), tab.as_str()] {
+            let saved = source.ok(&[format!("(dump {scope})")])?;
+            let file = source.dir.join("saved.grift");
+            std::fs::write(&file, &saved).map_err(e)?;
+            let file = file.to_string_lossy();
+            let again = Server::empty()?;
+            again.ok(&["--file", &file])?;
+            assert_eq!(
+                saved_shape(&again, scope)?,
+                saved_shape(&source, scope)?,
+                "seed {seed}, {scope}"
+            );
+        }
+        let saved = source.ok(&[format!("(dump {workspace})")])?;
+        let file = source.dir.join("one.grift");
+        std::fs::write(&file, &saved).map_err(e)?;
+        let again = Server::empty()?;
+        again.ok(&["--file", &file.to_string_lossy(), "there"])?;
+        let tabs = |server: &Server, of: &str| {
+            server.ok(&[format!(
+                r#"(map (lambda! (t) (list (get t "name") (get t "nodes")))
+                (get (session-data (snapshot {of} "topology")) "tabs"))"#
+            )])
+        };
+        assert_eq!(
+            ids_in_order(&tabs(&again, r#"(workspace "there")"#)?),
+            ids_in_order(&tabs(&source, &workspace)?),
+            "seed {seed}"
+        );
+    }
+    Ok(())
+}
+
+/// A saved session of several workspaces has no one workspace to load
+/// into: named one, it is refused with nothing made.
+#[test]
+fn a_dump_of_several_workspaces_is_refused_a_workspace_to_load_into() -> Outcome {
+    let source = Server::empty()?;
+    for name in ["one", "two"] {
+        source.words(&format!(
+            r#"(new-tab (program (size (in (options) "{name}") 80 24) (list "sleep" "60")))"#
+        ))?;
+    }
+    let file = source.dir.join("both.grift");
+    std::fs::write(&file, source.ok(&["(dump (all))"])?).map_err(e)?;
+    let again = Server::empty()?;
+    let told = again.fux(&["--file", &file.to_string_lossy(), "there"])?;
+    assert!(
+        told.stderr.starts_with("fux: bad-value: "),
+        "{}",
+        told.stderr
     );
-    assert!(before.contains(r#"("vertical" 2 1 1 2)"#), "{before}");
-    let file = server.dir.join("proj.grift");
-    std::fs::write(&file, server.ok(&[r#"(dump (workspace "proj"))"#])?).map_err(e)?;
-    server.ok(&[r#"(kill (workspace "proj"))"#])?;
-    server.ok(&["--file", &file.to_string_lossy(), "home"])?;
-    assert_eq!(shape()?, before.replacen(r#""top""#, r#""home""#, 1));
+    assert_eq!(again.ok(&["(length (panes (all)))"])?, "0\n");
     Ok(())
 }
 
@@ -781,8 +879,8 @@ fn a_dump_replayed_beside_itself_makes_nothing_from_a_deleted_directory() -> Out
     Ok(())
 }
 
-/// A saved session is a program, but one whose workspaces or layout go
-/// round would never end: it is refused, with nothing made.
+/// A saved session is a program, but one whose layout goes round would
+/// never end: it is refused, with nothing made.
 #[test]
 fn a_session_that_goes_round_is_refused() -> Outcome {
     let server = Server::start("")?;
@@ -791,27 +889,20 @@ fn a_session_that_goes_round_is_refused() -> Outcome {
     let shape = || {
         server.ok(&[r#"(define! s (snapshot (all) "topology"))
       (data-text (list
-        (map (lambda! (w) (map (lambda! (k) (get w k)) (list "id" "parent" "name" "children"))) (get s "workspaces"))
+        (map (lambda! (w) (map (lambda! (k) (get w k)) (list "id" "name" "tabs"))) (get s "workspaces"))
         (map (lambda! (t) (map (lambda! (k) (get t k)) (list "id" "workspace" "name" "columns" "rows" "nodes" "layout-revision"))) (get s "tabs"))
         (map (lambda! (p) (map (lambda! (k) (get p k)) (list "id" "tab" "name"))) (get s "panes"))))"#])
     };
     let before = shape()?;
     let file = server.dir.join("round.grift");
-    let (path, leaf) = (file.to_str().ok_or("path")?, r#"("%1")"#);
-    for (first, second, nodes) in [
-        (r#""+1""#, "none", leaf),
-        (r#""+2""#, r#""+1""#, leaf),
-        ("none", r#""+1""#, r#"(("horizontal" 0 0 0 0) "%1" "%2")"#),
-        (
-            "none",
-            r#""+1""#,
-            r#"(("horizontal" 1 1 1 2) ("vertical" 1 1 0 2) "%1")"#,
-        ),
+    let path = file.to_str().ok_or("path")?;
+    for nodes in [
+        r#"(("horizontal" 0 0 0 0) "%1" "%2")"#,
+        r#"(("horizontal" 1 1 1 2) ("vertical" 1 1 0 2) "%1")"#,
     ] {
         let recipe = format!(
             r#"(restore-session (quote! ((projection "recipe")
-              (workspaces (((id "+1") (parent {first}) (name none))
-                           ((id "+2") (parent {second}) (name "in"))))
+              (workspaces (((id "+1") (name none))))
               (tabs (((id "@1") (workspace "+1") (name none) (columns 80) (rows 24)
                       (nodes {nodes}))))
               (panes (((id "%1") (name none)))))))"#

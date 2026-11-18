@@ -22,8 +22,7 @@ stay strings, read with `(arguments)`: pass text that way, never pasted in.
 
 **A tab of your own.** From outside fux a new tab needs a workspace and
 a size (from a fux pane, it takes that pane's tab's). `in` names the
-workspace, made if it isn't there; `in` again nests one in it (`(in (in
-(options) "proj") "agent1")`). `new-tab` answers its pane's version
+workspace, made if it isn't there. `new-tab` answers its pane's version
 (`%3:0.0.0.0.0:RUN`); here `rename` names the pane instead:
 
 ```sh
@@ -81,7 +80,7 @@ fux '(events (pane "sh1") (first (arguments)))' "$C" | head -n 1 || [ $? -eq 141
 | what a pane runs, and where | its `program`'s `foreground-group` G: `ps -o comm=,args= -p G`; Linux `readlink /proc/G/cwd`, `pgrep -a -g G`; macOS `lsof -a -p G -d cwd -Fn`, `pgrep -lf -g G` |
 | a log of what a program wrote | `script(1)` in its pane (`(explain "servers")`) |
 
-**Stop.** Close your workspace and all in it; kill your `events` readers
+**Stop.** Close your workspace; kill your `events` readers
 by PID. A server ends with its last pane (a crashed one leaves its panes
 for the next `(start)`); one still up stops with `kill` on its process,
 which macOS leaves out of `status`, where `lsof -t` names it:
@@ -431,7 +430,7 @@ read with it (`events` from it). `docs/records.md` says every field. Rows and co
 `start..end` ranges from 0; equal endpoints select nothing.
 A joined row range includes each whole logical line it touches; `wrapped`
 selects physical rows only.
-Every pane of a tab, a workspace (with the workspaces in it) or `(all)`, in
+Every pane of a tab, a workspace or `(all)`, in
 layout order: `(map capture (panes (workspace "agent")))`; `tabs`
 gives its tabs the same way.
 

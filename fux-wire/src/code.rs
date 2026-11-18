@@ -70,6 +70,7 @@ codes! {
     Range "range-error" [asked],
     StackUnderflow "arity-error" PROGRAM,
     TooLong "too-long" [asked],
+    TooMany "too-many" [asked],
     Unused "unused",
     UnknownWord "unbound-symbol" PROGRAM,
     BadName "bad-name" [asked],
