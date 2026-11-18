@@ -6442,18 +6442,22 @@ mod tests {
     fn a_step_from_a_zoom_finds_the_zoomed_panes_neighbour() -> TestResult {
         let (mut s, c1) = attached(24, 80)?;
         let c2 = s.attach(24, 80, None)?;
+        // `%1 | %2 | %3`: the stepping client remembers %3, whose left is
+        // %2; the zoomed pane is %2, whose left is %1.
         run(
             &mut s,
-            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (split (axis (pane 2) \"horizontal\")) #inert)",
         )?;
         run(
             &mut s,
             &format!(
-                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 2)) (zoom (pane 2)) #inert)",
+                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 3)) #inert)",
                 fux::script::quoted(&format!("{c1}")),
                 fux::script::quoted(&format!("{c2}"))
             ),
         )?;
+        assert_eq!(s.focused(c2), Some(PaneId::of(3)));
+        run(&mut s, "(sequence! (zoom (pane 2)) #inert)")?;
         run(
             &mut s,
             &format!(
@@ -6463,6 +6467,34 @@ mod tests {
         )?;
         assert_eq!(s.tab(TabId::of(1)).and_then(Tab::zoomed), None);
         assert_eq!(s.focused(c2), Some(PaneId::of(1)));
+        Ok(())
+    }
+
+    /// The focused pane moved out of a tab that stays: its client goes back
+    /// to the pane it showed before, not to the pane beside it.
+    #[test]
+    fn a_focus_moved_away_goes_back_to_the_pane_shown_before() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (in (size (options) 80 24) \"other\")) #inert)",
+        )?;
+        // `%1 | %3 | %4`, shown %1 then %4: %3 is beside %4, %1 was before it.
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (split (axis (pane 3) \"horizontal\")) #inert)",
+        )?;
+        for pane in [1, 4] {
+            run(
+                &mut s,
+                &format!(
+                    "(sequence! (show (client {}) (pane {pane})) #inert)",
+                    fux::script::quoted(&format!("{c}"))
+                ),
+            )?;
+        }
+        run(&mut s, "(sequence! (move (pane 4) (tab \"@2\")) #inert)")?;
+        assert_eq!(s.focused(c), Some(PaneId::of(1)));
         Ok(())
     }
 

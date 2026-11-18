@@ -155,6 +155,11 @@ impl Session {
                 snapshot.panes.push(fact);
             }
             let size = tab.fit().size();
+            // A recipe says only what it makes again: a pane saved alone
+            // is no zoom on another.
+            let zoomed = (tab.zoomed()).filter(|zoomed| {
+                !matches!(projection, Projection::Recipe) || tree.contains(&Node::Pane(*zoomed))
+            });
             let fact = inspect::Tab {
                 id: tab.id(),
                 workspace: ws,
@@ -166,7 +171,7 @@ impl Session {
                 nodes: tree,
                 revision: tab.revision(self.run),
                 host: self.host(Some(tab.id())),
-                zoomed: tab.zoomed(),
+                zoomed,
             };
             snapshot.tabs.push(fact);
         }

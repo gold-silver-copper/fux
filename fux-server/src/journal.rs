@@ -142,8 +142,9 @@ impl Journal {
     }
     /// The bytes it holds: its texts and each entry. So an entry let go
     /// makes room at once, whatever it is. The ring's room for entries it
-    /// does not hold is not counted: it grows only into what `room` has
-    /// left, so it is never more than `room` holds.
+    /// does not hold is not counted and is bounded apart: it grows only
+    /// into what `room` has left, and `evict` gives back what is beyond
+    /// twice its rows.
     fn held(&self) -> usize {
         (self.text)
             .saturating_add((self.entries.len()).saturating_mul(std::mem::size_of::<Entry>()))
@@ -203,10 +204,18 @@ impl Journal {
         }
     }
     /// Lets go the oldest entries, but for the newest, till what is held
-    /// fits its room: no more of them than that.
+    /// fits its room: no more of them than that. The table then gives back
+    /// its rows beyond twice those it holds: a ring that held many small
+    /// entries holds no room for them beside long texts.
     fn evict(&mut self) {
         while self.held() > self.room && self.entries.len() > 1 {
             self.oldest_goes();
+        }
+        let rows = self.entries.len();
+        let most = (rows.saturating_mul(2)).saturating_add(ROWS.saturating_mul(2));
+        if self.entries.capacity() > most {
+            let kept = rows.saturating_add(rows / 2).saturating_add(ROWS);
+            self.entries.shrink_to(kept);
         }
     }
     pub fn end(&self, run: Run) -> Cursor {
@@ -1213,6 +1222,31 @@ mod tests {
         assert!(batch.missed <= 2, "{} missed", batch.missed);
         // The room of rows unused is bounded, though not counted.
         assert!(journal.entries.capacity() <= KEPT + KEPT / 2 + ROWS);
+        Ok(())
+    }
+
+    /// A ring full of small entries, then of long texts, holds few rows: the
+    /// table gives back the room of those it held, which the byte count
+    /// leaves out, so what it keeps is D-177's: twice its rows and a little.
+    #[test]
+    fn a_ring_gone_over_to_long_texts_gives_back_the_rows_it_held() -> TestResult {
+        let mut journal = journal()?;
+        for _ in 0..KEPT {
+            journal.push(bell(1));
+        }
+        let long: String = std::iter::repeat_n('x', 4000).collect();
+        for _ in 0..1000 {
+            let told = Told::Title(Said::sent(&long, false));
+            let at = ((WsId::of(1), TabId::of(1)), PaneId::of(1));
+            journal.push(Event::Pane(at, PaneEvent::Told(told)));
+        }
+        let rows = journal.entries.len();
+        assert!(rows < KEPT / 8, "{rows} rows");
+        let capacity = journal.entries.capacity();
+        assert!(
+            capacity <= 2 * rows + 2 * ROWS,
+            "{capacity} for {rows} rows"
+        );
         Ok(())
     }
 

@@ -1092,7 +1092,7 @@ library_words! {
        "edit-history" "batch-events";
     1: "native-data?" "session-data" "dump-text" "dump-recipe" "dump" "dump-first" "dump-directory"
        "dump-warnings" "session-find" "restore-create-options" "restore-session" "listing"
-       "events" "dump-check";
+       "events";
 }
 
 /// A new interpreter: fux's words and prelude, its libraries not loaded.

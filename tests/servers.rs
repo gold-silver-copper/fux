@@ -743,25 +743,29 @@ fn ids_in_order(text: &str) -> String {
     out
 }
 
-/// What a dump of `scope` on `server` makes again: its workspaces, its tabs
-/// with their layouts, and its panes with what they launch.
+/// What a dump of `scope` on `server` says, as any run of the same things
+/// would: without the run, the scope asked for, and what counts a program's
+/// life so far (versions, its screen's changes, process ids).
 fn saved_shape(server: &Server, scope: &str) -> Result<String, String> {
     let shape = server.ok(&[format!(
-        r#"(define! s (session-data (snapshot {scope} "recipe")))
-        (define! fields (lambda! (records names)
-          (map (lambda! (r) (map (lambda! (k) (get r k)) names)) records)))
-        (data-text (list
-          (fields (get s "workspaces") (list "id" "name" "tabs"))
-          (fields (get s "tabs") (list "id" "workspace" "name" "fit" "columns" "rows" "nodes"))
-          (fields (get s "panes") (list "id" "tab" "name" "launch"))))"#
+        r#"(define! of-this-run
+          (quote! (run cursor scope version screen process-id foreground-group layout-revision)))
+        (define! lasting (lambda! (value)
+          (if! (pair? value)
+            (map lasting
+              (filter (lambda! (item) (not? (and!? (pair? item) (member? (first item) of-this-run))))
+                value))
+            value)))
+        (data-text (lasting (session-data (snapshot {scope} "recipe"))))"#
     )])?;
     Ok(ids_in_order(&shape))
 }
 
 /// What a dump of any workspace, tab or everything saves loads on a new
-/// server and dumps again the same, whatever the workspaces, their names,
-/// tabs and layouts: a few made from each seed. Into a workspace named on
-/// the command line, one workspace's tabs load the same, under that name.
+/// server, and all that server then holds dumps the same, whatever the
+/// workspaces, their names, tabs, layouts and zooms: a few made from each
+/// seed. Into a workspace named on the command line, one workspace's tabs
+/// load the same, under that name.
 #[test]
 fn a_dump_loads_on_a_new_server_and_dumps_again_the_same() -> Outcome {
     const SLEEP: &str = r#"(list "sleep" "60")"#;
@@ -788,6 +792,7 @@ fn a_dump_loads_on_a_new_server_and_dumps_again_the_same() -> Outcome {
                 let pane = source.words(&format!("(new-tab (program {options} {SLEEP}))"))?;
                 let pane = support::reference(first_word(&pane));
                 home.get_or_insert(format!(r#"(string (workspace {pane}))"#));
+                let mut newest = pane.clone();
                 for _ in 0..roll(3) {
                     let beside = match roll(2) {
                         0 => format!(r#"(split (program (axis {pane} "vertical") {SLEEP}))"#),
@@ -795,7 +800,10 @@ fn a_dump_loads_on_a_new_server_and_dumps_again_the_same() -> Outcome {
                             r#"(split (program (shares (axis {pane} "horizontal") 2 1) {SLEEP}))"#
                         ),
                     };
-                    source.words(&beside)?;
+                    newest = support::reference(first_word(&source.words(&beside)?));
+                }
+                if roll(2) == 0 {
+                    source.words(&format!("(sequence! (zoom {newest}) #inert)"))?;
                 }
             }
         }
@@ -811,7 +819,7 @@ fn a_dump_loads_on_a_new_server_and_dumps_again_the_same() -> Outcome {
             let again = Server::empty()?;
             again.ok(&["--file", &file])?;
             assert_eq!(
-                saved_shape(&again, scope)?,
+                saved_shape(&again, "(all)")?,
                 saved_shape(&source, scope)?,
                 "seed {seed}, {scope}"
             );
@@ -823,7 +831,7 @@ fn a_dump_loads_on_a_new_server_and_dumps_again_the_same() -> Outcome {
         again.ok(&["--file", &file.to_string_lossy(), "there"])?;
         let tabs = |server: &Server, of: &str| {
             server.ok(&[format!(
-                r#"(map (lambda! (t) (list (get t "name") (get t "nodes")))
+                r#"(map (lambda! (t) (list (get t "name") (get t "nodes") (get t "zoomed")))
                 (get (session-data (snapshot {of} "topology")) "tabs"))"#
             )])
         };
@@ -832,6 +840,155 @@ fn a_dump_loads_on_a_new_server_and_dumps_again_the_same() -> Outcome {
             ids_in_order(&tabs(&source, &workspace)?),
             "seed {seed}"
         );
+    }
+    Ok(())
+}
+
+/// A pane saved alone comes back alone, whichever pane of its tab was
+/// zoomed: a zoom on another is no part of what was saved.
+#[test]
+fn a_pane_dumped_from_a_tab_zoomed_on_another_loads_alone() -> Outcome {
+    let source = Server::empty()?;
+    let program = r#"(list "sleep" "60")"#;
+    let kept = source.words(&format!(
+        r#"(new-tab (program (size (in (options) "w") 80 24) {program}))"#
+    ))?;
+    let kept = support::reference(first_word(&kept));
+    let other = source.words(&format!(
+        r#"(split (program (axis {kept} "vertical") {program}))"#
+    ))?;
+    let other = support::reference(first_word(&other));
+    source.words(&format!("(sequence! (zoom {other}) #inert)"))?;
+    let file = source.dir.join("pane.grift");
+    std::fs::write(&file, source.ok(&[format!("(dump {kept})")])?).map_err(e)?;
+    let again = Server::empty()?;
+    again.ok(&["--file", &file.to_string_lossy()])?;
+    assert_eq!(again.ok(&["(length (panes (all)))"])?, "1\n");
+    let zoomed =
+        r#"(get (first (get (session-data (snapshot (all) "topology")) "tabs")) "zoomed")"#;
+    assert_eq!(again.ok(&[zoomed])?, "none\n");
+    Ok(())
+}
+
+/// A saved session is checked whole before anything starts: whatever is
+/// wrong with its layout, or its names against the workspace it is loaded
+/// into, it is refused and the server is left with nothing.
+#[test]
+fn a_saved_layout_is_refused_whole_before_anything_starts() -> Outcome {
+    let split = |first: usize, second: usize| format!(r#"("horizontal" 1 1 {first} {second})"#);
+    // `depth` splits one in another, each with a pane beside it.
+    let chain = |depth: usize| {
+        let splits = (0..depth).map(|at| split(at + 1, depth + at + 1));
+        let panes = (0..=depth).map(|pane| format!(r#""%{pane}""#));
+        splits.chain(panes).collect::<Vec<_>>().join(" ")
+    };
+    let cases: Vec<(&str, String, usize, &str, &str)> = vec![
+        (
+            "a node no split reaches",
+            r#""%0" ("horizontal" 1 1 1 1)"#.into(),
+            1,
+            "none",
+            "bad-value",
+        ),
+        (
+            "a pane past the root",
+            r#""%0" "%1""#.into(),
+            2,
+            "none",
+            "bad-value",
+        ),
+        (
+            "one pane at two leaves",
+            format!(r#"{} "%0" "%0""#, split(1, 2)),
+            2,
+            "none",
+            "bad-value",
+        ),
+        (
+            "a saved pane no leaf names",
+            r#""%0""#.into(),
+            2,
+            "none",
+            "bad-value",
+        ),
+        (
+            "a child past the nodes",
+            format!(r#"{} "%0""#, split(1, 2)),
+            1,
+            "none",
+            "bad-value",
+        ),
+        (
+            "a bad axis",
+            r#"("sideways" 1 1 1 2) "%0" "%1""#.into(),
+            2,
+            "none",
+            "bad-value",
+        ),
+        (
+            "a zero share",
+            r#"("horizontal" 0 1 1 2) "%0" "%1""#.into(),
+            2,
+            "none",
+            "bad-value",
+        ),
+        (
+            "a missing share",
+            r#"("horizontal" 1 1 2) "%0" "%1""#.into(),
+            2,
+            "none",
+            "bad-value",
+        ),
+        (
+            "a share too large",
+            r#"("horizontal" 4294967296 1 1 2) "%0" "%1""#.into(),
+            2,
+            "none",
+            "bad-value",
+        ),
+        (
+            "a zoom on no pane of the tab",
+            r#""%0""#.into(),
+            1,
+            r#""%7""#,
+            "bad-value",
+        ),
+        ("a layout too deep", chain(65), 66, "none", "too-many"),
+    ];
+    let recipe = |nodes: &str, panes: usize, zoomed: &str, pane_name: &str, tab_name: &str| {
+        let panes: Vec<String> = (0..panes)
+            .map(|pane| {
+                let name = if pane == 0 { pane_name } else { "none" };
+                format!(r#"((id "%{pane}") (name {name}))"#)
+            })
+            .collect();
+        format!(
+            r#"(restore-session (quote! ((projection "recipe")
+              (workspaces (((id "+1") (name none))))
+              (tabs (((id "@1") (workspace "+1") (name {tab_name}) (columns 240) (rows 24)
+                      (nodes ({nodes})) (zoomed {zoomed}))))
+              (panes ({})))))"#,
+            panes.join(" ")
+        )
+    };
+    let server = Server::empty()?;
+    let file = server.dir.join("bad.grift");
+    let path = file.to_str().ok_or("path")?;
+    let refused = |args: &[&str], code: &str, what: &str| -> Outcome {
+        let told = server.fux(args)?;
+        let said = format!("fux: {code}: ");
+        assert!(told.stderr.starts_with(&said), "{what}: {}", told.stderr);
+        assert_eq!(server.ok(&["(length (panes (all)))"])?, "0\n", "{what}");
+        Ok(())
+    };
+    for (what, nodes, panes, zoomed, code) in &cases {
+        std::fs::write(&file, recipe(nodes, *panes, zoomed, "none", "none")).map_err(e)?;
+        refused(&["--file", path], code, what)?;
+    }
+    // The workspace it is loaded into takes the name a pane or tab has.
+    for (pane, tab) in [(r#""home""#, "none"), ("none", r#""home""#)] {
+        std::fs::write(&file, recipe(r#""%0""#, 1, "none", pane, tab)).map_err(e)?;
+        refused(&["--file", path, "home"], "name-taken", "the name given")?;
     }
     Ok(())
 }
@@ -923,6 +1080,7 @@ fn a_session_that_goes_round_is_refused() -> Outcome {
         let said = String::from_utf8_lossy(&told.stderr);
         assert!(!told.status.success());
         assert!(said.starts_with("fux: bad-value: "), "{said}");
+        assert!(said.contains("goes round"), "{said}");
         assert_eq!(shape()?, before);
     }
     Ok(())

@@ -340,6 +340,7 @@ a finished agent closes with one `kill`.
 fux '(new-tab (program (size (in (options) "agent1") 80 24) (list "sh")))' > /dev/null
 fux '(new-tab (program (size (in (options) "agent2") 80 24) (list "sh")))' > /dev/null
 fux '(length (panes (workspace "agent1")))'
+fux '(kill (workspace "agent1"))'
 fux '(kill (workspace "agent2"))'
 ```
 

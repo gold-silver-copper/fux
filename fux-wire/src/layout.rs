@@ -1352,7 +1352,9 @@ mod tests {
             assert!(!rest.contains(p(0)));
             Ok(())
         };
-        let small = std::thread::Builder::new().stack_size(256 * 1024);
+        // Windows' debug frames are larger (as in `src/script/source.rs`).
+        let stack = if cfg!(windows) { 512 << 10 } else { 256 << 10 };
+        let small = std::thread::Builder::new().stack_size(stack);
         let laid_out = small.spawn(deep).map_err(|e| e.to_string())?;
         laid_out.join().map_err(|_| "the thread panicked")?
     }

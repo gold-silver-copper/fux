@@ -767,7 +767,7 @@ wire! {
             start: Start,
             options: PaneOptions,
         },
-        /// A new pane beside `target` (`split`, `stack`).
+        /// A new pane beside `target` (`split`).
         Split {
             axis: crate::layout::Axis,
             /// What the two take, target to new: halves if not given.
