@@ -24,6 +24,19 @@ pub const EXIT: &str = "exit";
 /// One file per picture shown.
 pub const IMAGES: &str = "images";
 
+/// Every file a holder makes in its pane's directory by these names.
+pub const MADE: [&str; 9] = [
+    IN,
+    CTL,
+    SCREEN,
+    STYLED,
+    STATUS,
+    HISTORY,
+    HISTORY_OLDER,
+    ERRORS,
+    EXIT,
+];
+
 /// The most columns and rows a pane may have.
 pub const MAX_COLS: u16 = 500;
 pub const MAX_ROWS: u16 = 200;
@@ -224,30 +237,53 @@ pub fn status_value<'a>(status: &'a [(String, String)], key: &str) -> Option<&'a
 /// Reads a regular file of at most `most` bytes, never through a link, a
 /// FIFO or a device: what a client reads a pane's files with.
 pub fn read_small(path: &std::path::Path, most: usize) -> Result<Vec<u8>, Failure> {
-    use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::File::options()
         .read(true)
         .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
-        .open(path)
-        .map_err(|e| crate::io(path.display(), e))?;
-    let meta = file.metadata().map_err(|e| crate::io(path.display(), e))?;
+        .open(path);
+    read_whole(file, path.display(), most)
+}
+
+/// As [`read_small`], the file `name` in the directory held open as `dir`.
+pub fn read_at(dir: &std::fs::File, name: &str, most: usize) -> Result<Vec<u8>, Failure> {
+    use fuxix::file::at;
+    read_whole(
+        at::open(dir, name, at::READ | fuxix::file::NONBLOCK),
+        name,
+        most,
+    )
+}
+
+fn read_whole(
+    file: std::io::Result<std::fs::File>,
+    shown: impl std::fmt::Display,
+    most: usize,
+) -> Result<Vec<u8>, Failure> {
+    use std::io::Read;
+    let file = file.map_err(|e| crate::io(&shown, e))?;
+    let meta = file.metadata().map_err(|e| crate::io(&shown, e))?;
     if !meta.is_file() {
-        return Err(Failure::new(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
+        return Err(Failure::new(format!("{shown} is not a regular file")));
     }
     let mut bytes = Vec::new();
     let limit = u64::try_from(most).unwrap_or(u64::MAX).saturating_add(1);
     file.take(limit)
         .read_to_end(&mut bytes)
-        .map_err(|e| crate::io(path.display(), e))?;
+        .map_err(|e| crate::io(&shown, e))?;
     if bytes.len() > most {
-        let why = format!("{} is over {most} bytes", path.display());
-        return Err(Failure::new(why));
+        return Err(Failure::new(format!("{shown} is over {most} bytes")));
     }
     Ok(bytes)
+}
+
+/// Makes the file `name` in `dir`, which must not be there, holding `bytes`.
+pub fn write_new(dir: &std::fs::File, name: &str, bytes: &[u8]) -> Result<(), Failure> {
+    use fuxix::file::at;
+    use std::io::Write;
+    at::open(dir, name, at::WRITE | at::NEW)
+        .and_then(|mut file| file.write_all(bytes))
+        .map_err(|e| crate::io(format!("writing {name}"), e))
 }
 
 #[cfg(test)]
