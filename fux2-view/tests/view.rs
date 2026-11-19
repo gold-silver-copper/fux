@@ -389,7 +389,7 @@ fn a_layout_makes_tabs_and_only_fit_resizes() -> Tested {
 /// A pager that shows what it is given and stays until a key is pressed.
 fn pager(lab: &Lab) -> Result<String, std::io::Error> {
     if cfg!(windows) {
-        return Ok("cmd /d /c findstr . & set /p line=<CON".to_owned());
+        return Ok("cmd /d /c findstr . & set /p line=<CON & exit 0".to_owned());
     }
     let script = lab.config.join("pager.sh");
     std::fs::write(&script, "cat\nread line < /dev/tty\n")?;

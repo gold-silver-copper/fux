@@ -522,7 +522,8 @@ fn page_removes_only_a_pane_made_for_it() -> Tested {
     let lab = Lab::new()?;
     lab.start("shown", &idle())?;
     lab.start("caller", &idle())?;
-    let cat = if cfg!(windows) { "findstr ." } else { "cat" };
+    // It succeeds, as a pager quitting normally does.
+    let cat = if cfg!(windows) { "cmd /d /c findstr . & exit 0" } else { "cat" };
     let run = |extra: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_fux2"))
             .args(["page", "shown"])
