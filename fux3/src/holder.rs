@@ -595,6 +595,7 @@ impl Holder {
             }
             self.parse();
             self.settle(now);
+            let queued = self.input.waiting();
             if fifo_ctl && self.read_ctl() {
                 return;
             }
@@ -609,6 +610,8 @@ impl Holder {
                 self.refuse("in", format!("writing to the program: {errno}"));
                 self.input = Input::default();
             }
+            // `status` says what waits: it is published again as that drains.
+            self.dirty |= self.input.waiting() != queued;
             if self.input.lost_replies > 0 {
                 let lost = std::mem::take(&mut self.input.lost_replies);
                 self.refuse(

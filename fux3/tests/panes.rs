@@ -173,7 +173,10 @@ fn a_send_is_never_split_by_typing() -> Result {
         400_000,
         "typing landed inside the send"
     );
-    Ok(())
+    // What `status` says waits drains with it, with nothing else printed.
+    until("queued 0", || {
+        s.read("p", "status").contains("\nqueued 0\n")
+    })
 }
 
 /// A program asking where its cursor is gets its answer and carries on,
