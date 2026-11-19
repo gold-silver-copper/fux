@@ -19,8 +19,8 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::FileTypeExt;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -956,12 +956,12 @@ impl Holder {
             }
             Command::Send(path) => {
                 self.takes_input()?;
-                let bytes = read_sent(&path)?;
+                let bytes = files::read_own(&path, MAX_SEND)?;
                 self.input.admit(bytes)?;
             }
             Command::Paste(path) => {
                 self.takes_input()?;
-                let bytes = read_sent(&path)?;
+                let bytes = files::read_own(&path, MAX_SEND)?;
                 let text = String::from_utf8(bytes)
                     .map_err(|_| Failure::new(format!("{} is not UTF-8 text", path.display())))?;
                 let mut out = Vec::new();
@@ -1495,47 +1495,6 @@ pub fn parse_key_mode(text: &str) -> Option<fux_vt::keys::encode::KeyMode> {
         }),
         _ => None,
     }
-}
-
-/// Reads a file `send` names: a regular file of this user's, not a link,
-/// a device or a FIFO, its size checked before it is read, read with a
-/// bound.
-fn read_sent(path: &Path) -> Result<Vec<u8>, Failure> {
-    use std::io::Read;
-    use std::os::unix::fs::MetadataExt;
-    let shown = path.display();
-    let file = File::options()
-        .read(true)
-        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK | fuxix::file::NOCTTY)
-        .open(path)
-        .map_err(|e| io(&shown, e))?;
-    let meta = file.metadata().map_err(|e| io(&shown, e))?;
-    if !meta.is_file() {
-        return Err(Failure::new(format!("{shown} is not a regular file")));
-    }
-    if meta.uid() != fuxix::process::geteuid() {
-        return Err(Failure::new(format!(
-            "{shown} belongs to uid {}",
-            meta.uid()
-        )));
-    }
-    let len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
-    if len > MAX_SEND {
-        return Err(Failure::new(format!(
-            "{shown} is {len} bytes, at most {MAX_SEND}"
-        )));
-    }
-    let mut bytes = Vec::with_capacity(len);
-    let limit = u64::try_from(MAX_SEND)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    file.take(limit)
-        .read_to_end(&mut bytes)
-        .map_err(|e| io(&shown, e))?;
-    if bytes.len() > MAX_SEND {
-        return Err(Failure::new(format!("{shown} grew past {MAX_SEND} bytes")));
-    }
-    Ok(bytes)
 }
 
 #[cfg(test)]

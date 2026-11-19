@@ -23,16 +23,25 @@ const MAX_OUTPUT: u64 = 64 << 10;
 /// How many numbers a new pane's name is tried with.
 const MAX_NEW_NAMES: u32 = 128;
 
-/// The workspace's `.view`, held open: made private, with the default
-/// layout, if missing. Refused once the workspace was removed.
+/// The workspace's `.view`, held open. A missing one is made whole, with
+/// the default layout, under a name of its own, and named by one rename
+/// that replaces nothing: no other writer finds a `.view` without its
+/// layout. Refused once the workspace was removed.
 pub fn view_dir(workspace: &Workspace) -> Result<File, Failure> {
     workspace.check()?;
     let held = workspace.held();
-    fux3::session::private_dir(held, VIEW, false).or_else(|_| {
-        let dir = fux3::session::private_dir(held, VIEW, true)?;
-        layout::write_first(&dir)?;
-        Ok(dir)
-    })
+    if let Ok(dir) = fux3::session::private_dir(held, VIEW, false) {
+        return Ok(dir);
+    }
+    let aside = format!("{VIEW}.new-{}", std::process::id());
+    let dir = fux3::session::private_dir(held, &aside, true)?;
+    layout::write_first(&dir)?;
+    // Another got there first: theirs is the one, and ours goes.
+    if at::rename_new(held, &aside, held, VIEW).is_err() {
+        empty(&dir, 0)?;
+        at::remove_dir(held, &aside).map_err(|e| fux3::io(&aside, e))?;
+    }
+    fux3::session::private_dir(held, VIEW, false)
 }
 
 /// The `fux3` program beside this one.
