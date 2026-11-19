@@ -34,7 +34,7 @@ the pane has moved on.
 | Command | Example | Prints |
 |---|---|---|
 | `start` | `fux2 start --name build --label project=x --cols 100 --rows 30 --history 2000000 -- make` | `build <token>` |
-| `ls` | `fux2 ls --label project=x --long` | a name per line; `--long` adds id, pid, size, state, labels |
+| `ls` | `fux2 ls --label project=x --long` | a name per line; `--long` adds id, the pane daemon's pid, size, state, labels |
 | `send` | `fux2 send build 'make test\n'` | `<token>` |
 | `read` | `fux2 read build` | the screen as text |
 | `wait` | `fux2 wait build --after "$t" --ms 5000` | `<token> <state>` |
@@ -127,7 +127,7 @@ same commands.
 ```text
 fux2-layout 1
 version 7
-next 5
+next 6
 workspace w1 "main"
 tab t2 "build"
   match "project=x"
@@ -145,7 +145,7 @@ A tile names one life of a pane, `NAME@ID`, so a name that passes to a new
 pane never inherits a stranger's tile. Shares are relative. A pane is in one
 tab: its tile's, or, if it has none, the first tab in order whose `match`
 labels it carries all (a tab without `match` takes any pane); if no tab takes
-it, a tab `other` appears at the end of the first workspace. Such *routed*
+it, a tab `other` appears at the end of the last workspace. Such *routed*
 panes are added to their tab's tree as a grid, and get a tile of their own
 the first time an edit touches that tab's tree. A pane that has ended keeps
 its tile, marked `NAME ended` in its corner, or `NAME missing` once its daemon
@@ -155,9 +155,17 @@ pane (`fux2 layout replace`).
 Each edit takes the layout's own lock, for at most two seconds (then `busy`,
 exit 6), applies to the file as it is then, and replaces it whole: a reader
 sees the old file or the new one. Starting or killing a pane never waits for
-it. A file that is too large (64 KiB) or wrong is refused, saying where; the
-viewer keeps showing the last good one, and nothing is written over it until
-`fux2 layout reset`. With no file, a session has one tab, `all`.
+it. A file that is wrong is refused, saying where (exit 2), and one that
+cannot be read, is too large (64 KiB) or is a link is refused too (exit 1);
+the viewer keeps showing the last good one, and nothing is written over it
+until `fux2 layout reset` (which gives every tab and workspace a new id). With
+no file, a session has one tab, `all`.
+
+**Limits.** At most 32 workspaces, 64 tabs, 256 tiles, splits nested 8 deep,
+and titles of 64 bytes without control characters; a `match` test holds no
+control character either. Nothing is written that a reader would refuse: an
+edit that would pass a limit is refused (`limit`, exit 6), and the file stays
+as it was. A version at its end is refused the same way until a reset.
 
 **Versions.** Every edit advances the version, which edits and
 `fux2 layout show` print. Every edit takes `--if VERSION` and is refused as
@@ -169,27 +177,30 @@ between. Without `--if`, an edit applies to the layout as it is now.
 |---|---|
 | `fux2 layout show` | prints the layout as shown: the file with routed panes added |
 | `fux2 layout split PANE NEW [--rows] [--before]` | puts the existing pane `NEW` beside `PANE`, splitting its tile (side by side unless `--rows`) |
-| `fux2 layout remove PANE` | takes `PANE`'s tile away (a live pane is then routed) |
-| `fux2 layout replace OLD NEW` | gives `OLD`'s tile to `NEW` |
+| `fux2 layout remove PANE` | takes `PANE`'s tile away (a live pane is then routed). A bare `NAME` is the live pane of that name if it has a tile, else the one tile of that name |
+| `fux2 layout replace OLD NEW` | gives `OLD`'s tile to `NEW`; refused while `OLD` is still there, ended or not: kill it first |
 | `fux2 layout swap PANE OTHER` | exchanges two tiles |
 | `fux2 layout move PANE left\|right\|up\|down` | swaps `PANE` with its neighbour that way |
 | `fux2 layout move PANE earlier\|later` | swaps `PANE` with the tile before or after it |
 | `fux2 layout move PANE --tab TAB\|new` | moves `PANE` to a tab, or a new one after its own (prints `made tN`) |
 | `fux2 layout move PANE --workspace WS\|new` | moves `PANE` to a workspace's first tab, or a new workspace |
-| `fux2 layout border PANE DIRECTION N%\|CELLS` | moves the border on that side of `PANE` that way (the other side's if it has none there) |
+| `fux2 layout border PANE DIRECTION N%\|CELLS` | moves a border of `PANE` that way, by N cells (counted in `--area`) or N% of its split: the border on that side, so `PANE` grows, or if it has none there the one on the other side, so it shrinks. Each side keeps at least a cell; a border that cannot move is refused |
 | `fux2 layout zoom PANE` | shows `PANE` alone in its tab, or restores the tab |
 | `fux2 layout title PANE TEXT` | names the pane `TEXT` beside its name in the bar and in lists (`""` clears it) |
-| `fux2 layout tab new [--after TAB \| --workspace WS] [--title T] [--match K=V]..` | a new tab (prints `made tN`) |
+| `fux2 layout tab new [--after TAB \| --workspace WS] [--title T] [--match K=V]..` | a new tab (prints `made tN`), at the end of the first workspace unless told. Routing takes the first tab in order, so a filtered tab after `all` takes nothing until it is moved earlier. Default titles are numbers, not positions |
 | `fux2 layout tab rename TAB TITLE` | |
-| `fux2 layout tab close TAB` | the tab goes; its live panes are routed again |
+| `fux2 layout tab close TAB [--end-panes]` | the tab goes; its live panes are routed again, or with `--end-panes` ended: those the layout holds there when it closes, under its lock, printed as `ended NAME@ID`. Only a pane already gone is passed over; any other failure to end one is said (exit 1) |
 | `fux2 layout tab move TAB earlier\|later` | |
 | `fux2 layout tab match TAB [K=V]..` | sets the labels its routed panes carry; none takes any |
 | `fux2 layout workspace new [--title T]` | a new workspace with one tab (prints `made wN`) |
-| `fux2 layout workspace rename WS TITLE`, `close WS`, `move WS earlier\|later` | |
+| `fux2 layout workspace rename WS TITLE`, `close WS [--end-panes]`, `move WS earlier\|later` | |
 | `fux2 layout reset` | the default layout, over whatever file is there |
 
 A `TAB` is its id (`t3`) or its title if no other tab has it; a `WS` the
-same (`w1`). A pane is `NAME` or `NAME@ID`. `--area COLSxROWS` says the size
+same (`w1`). Titles may repeat, but then only the id names them. An option a
+command does not take is no option there: `tab rename all --rows` names the
+tab `--rows`, and `reset --tab t2` is refused. Every edit may print `changed`
+lines, a close or rename too. A pane is `NAME` or `NAME@ID`. `--area COLSxROWS` says the size
 of the screen an edit is meant for: cells in `border` are counted there, and
 so are the tiles `changed` names. Without it, 1000x1000.
 
@@ -235,10 +246,17 @@ seconds.
 
 **Keys.** Press `C-b` and the menu of the keys after it opens at the bottom
 right, under their headings; a key marked `…` opens its own. A key runs its
-entry, the arrows move and Enter runs the one selected, Escape closes, and
-`C-b` again sends `C-b` to the pane. `C-b r`, `C-b m` and the `m` menus
-repeat: their keys act again without `C-b` until Escape or Enter. The default
-keys are fux's, after `C-b`:
+entry (a bound key wins over moving the selection), the arrows move and
+Enter runs the one selected, Escape closes, and `C-b` again sends `C-b` to the
+pane. `C-b r`, `C-b m` and the `m` menus repeat: after their first key the bar
+says so (`RESIZE  h j k l · Esc`), and their keys act again without `C-b`
+until Escape or Enter. Any other key ends the mode: the prefix, or another
+bound key, then does what it does, and an unbound key is refused with a
+notice. A paste ends a menu or a mode before it goes to the pane. Keys typed
+right after a key whose binding runs wait for it, at most a second, so a list
+or prompt it opens gets them, however fast they came. There is no default
+key for "tab N" (fux has none); `(act "go-to-tab" N)` numbers tabs from 1 and
+can be bound (see below). The default keys are fux's, after `C-b`:
 
 | Heading | Key | Caption |
 |---|---|---|
@@ -263,15 +281,30 @@ keys are fux's, after `C-b`:
 open, pastes too, so nothing typed there reaches a pane. A list marks where
 you are with `*`: `j`/`k` or the arrows, `PageUp`/`PageDown`, `Home`/`End`
 move, Enter or `y` chooses, `q`, `n` or Escape cancels, and the tab and
-workspace lists rename with `r` and close with `x`. A prompt edits one line:
-`Left`/`Right`, `Home`/`End` (`C-a`/`C-e`), `BSpace`, `Delete`, `C-u`; Enter
-accepts, Escape cancels.
+workspace lists rename with `r` and close with `x`. A prompt edits one line,
+at most 4096 characters: `Left`/`Right`, `Home`/`End` (`C-a`/`C-e`),
+`BSpace`, `Delete`, `C-u`; Enter accepts, Escape cancels. A paste it cannot
+take whole (a newline, or past the limit) is refused with a notice, never cut.
+The command prompt runs every form typed, in turn, and shows the last one's
+value; text that does not read is an error.
 
 **Mouse.** A click focuses the tile under it. Dragging a border moves it; it
 is stored, and the panes beside it fitted, when let go. The drag is made with
 `--if` the version it began at, so if the layout changed meanwhile it is
-refused as stale and nothing moves. The mouse is not forwarded to programs:
+refused as stale and nothing moves; a layout change seen during the drag
+ends it with a notice. Only SGR mouse reports are read (every current
+terminal sends them when asked). The mouse is not forwarded to programs:
 while the viewer runs, most terminals select text with Shift held.
+
+**Whose panes.** A pane the viewer starts is started by the viewer's own
+process, so it is a descendant of whatever runs the viewer. Killing a fux2
+pane that runs a viewer (`fux2 kill`) also ends the panes that viewer
+started, as `kill` ends everything a program left behind. Run the viewer in
+an ordinary terminal to keep them apart.
+
+A fresh viewer often shows `[cut NAME]`: panes start at 80x24, and a tile
+narrower or shorter than that cuts them until a layout key or `C-b f` fits
+them.
 
 **Where fux2 looks different from fux,** because fux has nothing to copy:
 
@@ -319,14 +352,15 @@ a heading, and that is all the menu is made of:
 (unbind-key "C-b o")
 (bind-key "F6" "next pane" "Mine" next-pane)
 (bind-key "C-b g" "go to a pane" "Mine" choose-pane)
+(bind-verb "C-b 1" "tab 1" "Mine" "go-to-tab" 1)   ; fux has no keys for this
 
 (define! run-tests
   (lambda! () (send (focused) "cargo test\r")))
 (bind-key "C-b y" "run the tests" "Mine" run-tests)
 
-;; A menu of your own, under C-b e.
-(bind-group "C-b e" "editors" "Mine")
-(bind-key "C-b e v" "vim beside" "Mine"
+;; A menu of your own, under C-b i (fux leaves i free).
+(bind-group "C-b i" "editors" "Mine")
+(bind-key "C-b i v" "vim beside" "Mine"
   (lambda! ()
     (let! ((target (focused)) (pane (start-new "vim" "vim")))
       (place-new! pane (lambda! (p) (edit! "split" target p))))))
@@ -335,8 +369,15 @@ a heading, and that is all the menu is made of:
 The commands are grift too: the viewer ships a library of them
 (`fux2-view/src/library.grift`) and the default keys
 (`fux2-view/src/defaults.grift`), loaded before your file, and your file may
-redefine any of them. Redefine `fit-after` as `(lambda! (text) text)`, for
-instance, and no key resizes a pane. These are the primitives they stand on:
+redefine any of them: the default keys look a command up when they run, so
+your definition is the one used. Redefine `fit-after` as
+`(lambda! (text) text)`, for instance, and no layout edit resizes a pane
+(`C-b f` still does). The file is read when the viewer starts.
+
+A key is a command or a group, never both: binding a command on a key that
+holds other keys, or under a key bound to a command, is refused, so every
+entry of a menu can be reached by its keys. A `chord` action that leads back
+to itself is stopped and said. These are the primitives they stand on:
 
 | Word | Does |
 |---|---|

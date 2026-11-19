@@ -248,3 +248,34 @@ It supersedes the keys line of D-21 and #462's status line and title bars.
 - fux2 holds no code that knows fux: the look is reimplemented in the viewer
   and its grift library. No screenshot tests: the PR shows fux's and fux2's
   screens side by side as evidence.
+
+## D-23: review round 1 of the full viewer (2026-11-19)
+
+Six reviewers and two testers; every must-fix is answered in the PR. What
+changed in the design, in short:
+- **Nothing is written that the reader would refuse.** Every edit encodes the
+  layout and reads it back before replacing the file; `layout.new` is made
+  afresh each time, and neither file name is followed through a link. A
+  version never wraps; a reset with `--if` on an unreadable file is refused.
+- **A split moves no neighbour:** each part gives its own last cell to the
+  border after it, rather than every border taking a share of the whole.
+- **The tab `other` lives at the end of the last workspace**, so stored it
+  still takes only what no other tab takes.
+- **Closing ends what the shared layout holds**, under its lock
+  (`tab close --end-panes`), not what one viewer last saw; a pane already
+  gone is the only failure passed over.
+- **`replace` refuses an old pane that is still there**, ended or not: it
+  would only be routed back beside its replacement.
+- **A key is a command or a group, never both**, refused when bound.
+- **Keys typed after a key whose binding runs wait at most a second** for the
+  panel it may open. Holding them until the binding ends would let a looping
+  binding hold the keyboard for five seconds; a second covers every panel the
+  library opens and keeps typing moving.
+- **The pane daemon keeps an idle connection** (a neutral bug fix): its
+  stall limit was left armed after an answer was written, so a connection that
+  then asked nothing was closed five seconds later. A viewer of an ended pane
+  lost it every few seconds, showed the pane missing and told its ending
+  again. No message or protocol changes.
+- **Option words belong to their command**: `fux2 layout` reads only the
+  options a command takes, so a title may be `--rows` and a stray option is
+  refused rather than dropped.

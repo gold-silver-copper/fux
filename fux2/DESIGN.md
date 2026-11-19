@@ -36,7 +36,8 @@ waits, expire deadlines.
   seconds for the leader and everything else in it, reaps, removes the name, then
   answers. It reports anything it could not end. On Linux the daemon is the
   subreaper of what its program leaves.
-- **Connections** have a five-second stall limit, and an answer has 30 seconds in
+- **Connections** have a five-second stall limit while an answer is unread
+  (a connection that has read its answer and asks nothing is idle, and stays), and an answer has 30 seconds in
   all. At most 12 may be parked in a wait, and a newcomer at the limit displaces
   a connection idle for over a second, so a read or kill gets a slot within 5 s,
   or within 30 s when the others are slow readers of large answers (D-18).
@@ -80,8 +81,11 @@ An edit is `layout::edit`: ask the panes who they are (before the lock, so a
 slow pane holds up no writer), take `layout.lock` (a file of its own, waited
 for at most two seconds, never the session's lock, so a stalled edit never
 holds up `start` or `kill`), read and check the file, compare `--if`, apply
-one `Op` to the layout as stored, check the limits again, write `layout.new`,
-flush it, rename it over `layout`, flush the directory. A killed writer leaves
+one `Op` to the layout as stored, encode it and read the text back (nothing
+is written that the reader would refuse), remove whatever stands at
+`layout.new` and make it afresh (private, exclusive, never through a link),
+flush it, rename it over `layout`, flush the directory. Neither name is
+followed if it is a link. A killed writer leaves
 at most a stale `layout.new`, which nothing reads and the next writer
 truncates. An edit that changes nothing writes nothing.
 
@@ -90,7 +94,9 @@ panes and all, so they can be named; renaming, filtering and zooming store the
 tab alone. While an edit places a pane (`split`, `replace`, `move`), that pane
 is not routed, so a pane just started moves no other tile. What an edit
 prints as `changed` is every pane whose rectangle in `--area` differs between
-the layout shown before and after it.
+the layout shown before and after it. Each part of a split but the last gives
+its own last cell to the border after it, so a part added, moved or resized
+shifts no other part.
 
 ## The viewer
 
@@ -109,7 +115,11 @@ so they work while a binding runs. Other bindings, and the answers of lists
 and prompts, run on the grift thread with a snapshot of what the viewer shows
 (`Context`), one at a time, five seconds each. A list or prompt is a panel the
 viewer draws over the panes (`panel.rs`); its callback is kept, and the choice
-runs it as a new run, so a person's thinking time is never a binding's. Panes
+runs it as a new run, so a person's thinking time is never a binding's. Keys
+typed after a key whose binding runs are held until it opens a panel or ends,
+at most a second, so a panel gets the keys meant for it. Each panel's
+callbacks are kept until its answer runs or it is dropped (at most eight
+panels), so an answer to an earlier panel is never lost in silence. Panes
 and the layout are reached by running the `fux2` command, which can be killed
 when a binding is stopped, and a pane is named as `NAME@ID`.
 
