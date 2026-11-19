@@ -384,7 +384,7 @@ to itself is stopped and said. These are the primitives they stand on:
 | `(bind-key CHORD CAPTION HEADING f)`, `(unbind-key CHORD)` | a chord is one to four keys, `"F7"` or `"C-b t n"`; at most 256 bindings and groups |
 | `(bind-verb CHORD CAPTION HEADING WORD [ARG])` | binds a chord to a viewer action by name: it acts at once, even while a binding runs |
 | `(bind-group CHORD CAPTION HEADING [#true])` | names the menu a chord opens; `#true` makes its keys repeat |
-| `(act WORD [ARG])` | a viewer action: `next-pane`, `previous-pane`, `last-pane`, `focus-left` (`-right`, `-up`, `-down`), `next-tab`, `previous-tab`, `last-tab`, `go-to-tab N`, `show-tab ID`, `next-workspace`, `previous-workspace`, `last-workspace`, `show-workspace ID`, `fit`, `detach`, `literal`, `chord CHORD` |
+| `(act WORD [ARG])` | a viewer action: `next-pane`, `previous-pane`, `last-pane`, `focus-left` (`-right`, `-up`, `-down`), `next-tab`, `previous-tab`, `last-tab` (the tab shown before), `go-to-tab N` (from 1), `show-tab ID`, `next-workspace`, `previous-workspace`, `last-workspace`, `show-workspace ID`, `fit`, `detach`, `literal`, `chord CHORD` |
 | `(focused)`, `(shown-tab)`, `(shown-workspace)`, `(area)` | the pane focused when the key was pressed, as `NAME@ID`; the tab and workspace shown (`t3`, `w1`); the tiles' room, `COLSxROWS` |
 | `(panes)`, `(tabs)`, `(workspaces)`, `(key-bindings)` | lists: `(NAME@ID TAB TITLE)`, `(ID TITLE WORKSPACE)`, `(ID TITLE)`, `(CHORD CAPTION HEADING)` |
 | `(arrange WORD ...)` | runs `fux2 layout WORD ... --area (area)` and gives what it printed |

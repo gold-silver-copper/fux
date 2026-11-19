@@ -476,6 +476,9 @@ fn every_viewer_shows_the_one_stored_layout() -> Tested {
     }
     layout(&lab, &["zoom", "right"])?;
     first.shows("pane-left")?;
+    // A layout edit from the command line resized nothing.
+    assert_eq!(size(&lab, "left")?, "80x24");
+    assert_eq!(size(&lab, "right")?, "80x24");
 
     // Split by hand in the first viewer: the second shows it too.
     first.keys(b"\x02v")?;

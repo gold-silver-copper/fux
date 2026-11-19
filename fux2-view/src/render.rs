@@ -218,8 +218,13 @@ impl Frame {
                 &cell.text
             };
             out.extend_from_slice(text.as_bytes());
-            let wide = fux_vt::str_width(text) >= 2;
-            at = Some((x.saturating_add(if wide { 2 } else { 1 }), y));
+            // Where the terminal's cursor is now: unknown after a glyph
+            // that took no cell, so the next cell moves there itself.
+            at = match fux_vt::str_width(text) {
+                0 => None,
+                1 => Some((x.saturating_add(1), y)),
+                _ => Some((x.saturating_add(2), y)),
+            };
         }
         out
     }
