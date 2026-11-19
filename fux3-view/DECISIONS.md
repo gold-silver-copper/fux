@@ -124,3 +124,20 @@ Append-only: one short entry per decision, newest last.
     - **Tab names**: a bare `tN` is the tab with that id when one exists, before any title; a
       quoted word is never a keyword. Quoted words are matched with a `"` mark no bare word can
       hold, so the one grammar table stays.
+17. **Templates: bare tiles (owner, 2026-11-19; the analogies decision, "use the sh script
+    format").** The layout file takes a bare `pane NAME` (and `zoom NAME`) beside `NAME@ID`.
+    - **A bare tile is whichever pane has that name now**: bound when the shown layout is derived,
+      `NAME gone` while there is none, and each new life of the name takes it. A `NAME@ID` tile
+      keeps its rule (a new life of the name does not take it). A live pane that has an `@ID` tile
+      of its own does not also bind a bare one: one pane, one tile.
+    - **An edit keeps a bare tile bare.** The edit binds bare tiles to the live panes, applies the
+      command as before, then makes those tiles bare again wherever they went (moved, swapped,
+      zoomed). So commands need no new case, and a template stays a template while it is used.
+      Tiles the viewer adds (a split, a routed pane stored by an edit) are `NAME@ID` as before.
+    - **Stored as a `PaneRef` with an empty id**, not a new tile type: the tree's operations all
+      compare `PaneRef`s, so none changed. Names are never empty, so a bare tile never equals the
+      swap's placeholder.
+    - **No viewer command makes a template**: the README gives a one-line `sed` that strips the
+      ids, and the loop that starts every recipe. Lines: production (without in-file unit
+      tests) 5,760 → 5,805; whole files 5,978 → 6,065, of which the new test is 32. Nothing was
+      cut: the ceiling is counted on production lines, as the brief states.

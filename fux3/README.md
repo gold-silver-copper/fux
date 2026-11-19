@@ -396,13 +396,14 @@ The workspace's directory is listed again once a second and whenever the
 layout changes. A pane whose directory is gone keeps its tile, drawn as `NAME gone`;
 one whose program ended keeps it too, marked `NAME exited 0` (or `signalled
 …`). A new pane under an old name gets its own tile: tiles name a pane with its
-id. Panes the viewer starts get the first free `PREFIX-N` that no pane and no
+id, unless the tile is bare (below). Panes the viewer starts get the first free `PREFIX-N` that no pane and no
 tile uses.
 
 ### The layout file
 
 `.view/layout` holds the workspace's tabs, and per tab a tree of splits with
-relative shares over panes named `NAME@ID`, a zoom, and a filter:
+relative shares over panes named `NAME@ID` or by a bare `NAME`, a zoom, and a
+filter:
 
 ```
 fux3-layout 2
@@ -418,6 +419,12 @@ tab t2 "all"
 tab t3 "builds"
   match "role=build"
 ```
+
+A bare tile, `pane NAME` (and `zoom NAME`), is whichever pane has that name
+now: it shows `NAME gone` while there is none, and each new pane of that name
+takes it, unless that pane has a `NAME@ID` tile of its own. Commands that name
+a pane act on a bare tile as on any other and leave it bare; tiles the viewer
+adds are always `NAME@ID`.
 
 A pane with no tile of its own is shown in the first tab whose filter it
 passes (every `KEY=VALUE` is one of its labels; `name=NAME` is its name; no
@@ -465,6 +472,30 @@ its tile in the viewer that ran the command): that step is the library's
 `edit!`; `.view/ctl` lines go through `layout-command`, which is `edit!`.
 Define `layout-command` as `arrange` in your config to leave sizes alone. `C-b
 f` fits the focused pane by hand. `--do` fits nothing.
+
+### Templates
+
+A workspace's skeleton is its `.recipes/` (one `sh` script per pane, which
+the core writes when a pane starts) and a `.view/layout` with bare names. To
+turn the running workspace `rig` into a template `$T`, copy the recipes and
+strip the ids from the layout:
+
+```sh
+T=~/templates/rig; mkdir -p -m 700 "$T" && mkdir -m 700 "$T/.view"
+cp -Rp "$D/rig/.recipes" "$T/"
+sed -E 's/^( +([0-9]+ )?(pane|zoom) [^@ ]+)@[0-9a-f]{16}$/\1/' "$D/rig/.view/layout" > "$T/.view/layout"
+```
+
+To start it as the workspace `new`, copy the skeleton in and start every
+recipe (`fux3 start NAME` with no program runs the recipe of that name):
+
+```sh
+mkdir -m 700 "$D/new" && cp -Rp "$T/.recipes" "$T/.view" "$D/new/"
+for r in "$D/new/.recipes"/*; do fux3 start "new/${r##*/}"; done
+```
+
+Each pane takes its tile as it starts; no rebinding step. The directories are
+made 0700 because fux3 refuses a `.view` anyone else can open.
 
 ### Keys
 

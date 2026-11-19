@@ -1,6 +1,7 @@
 //! The layout: one plain file per workspace, `.view/layout` in the
 //! workspace's directory, shared by every viewer: tabs, and per tab a tree of splits
-//! with relative shares over panes named with their ids (`NAME@ID`). Every
+//! with relative shares over panes named with their ids (`NAME@ID`), or by
+//! name alone (`NAME`: a bare tile, whichever life of that name is live). Every
 //! change is one operation on the file as it is then, under the layout's
 //! lock, written whole: a new file beside it, renamed over it, so a reader
 //! sees the old file or the new one. A file that cannot be read is never
@@ -90,7 +91,8 @@ pub fn is_id(id: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// One life of a pane: `NAME@ID`.
+/// One life of a pane: `NAME@ID`; or, with an empty id, a bare tile's
+/// `NAME`, which [`Layout::shown`] binds to the live pane of that name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PaneRef {
     pub name: String,
@@ -99,16 +101,24 @@ pub struct PaneRef {
 
 impl fmt::Display for PaneRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}", self.name, self.id)
+        match self.id.as_str() {
+            "" => f.write_str(&self.name),
+            id => write!(f, "{}@{id}", self.name),
+        }
     }
 }
 
 impl PaneRef {
     pub fn parse(text: &str) -> Result<PaneRef, Failure> {
-        match Target::parse(text)? {
-            Target { name, id: Some(id) } => Ok(PaneRef { name, id }),
-            Target { id: None, .. } => Err(bad(format!("{text:?} is not NAME@ID"))),
-        }
+        let Target { name, id } = Target::parse(text)?;
+        let id = id.unwrap_or_default();
+        Ok(PaneRef { name, id })
+    }
+
+    fn bare(&self) -> PaneRef {
+        let name = self.name.clone();
+        let id = String::new();
+        PaneRef { name, id }
     }
 }
 
@@ -668,6 +678,32 @@ impl Layout {
         self.tabs.iter().find(|tab| tab.holds(pane))
     }
 
+    /// Renames every tile and zoom `from` to `to`.
+    fn rename(&mut self, from: &PaneRef, to: &PaneRef) {
+        for tab in &mut self.tabs {
+            if let Some(root) = tab.root.as_mut() {
+                root.rename(from, to);
+            }
+            if tab.zoom.as_ref() == Some(from) {
+                tab.zoom = Some(to.clone());
+            }
+        }
+    }
+
+    /// Binds each bare tile to the live pane of its name, unless that pane
+    /// has a tile of its own; gives the panes bound.
+    fn bind(&mut self, live: &[Live]) -> Vec<PaneRef> {
+        let placed = self.placed();
+        let bound: Vec<PaneRef> = (live.iter().map(|l| &l.pane))
+            .filter(|pane| !placed.contains(pane) && placed.contains(&pane.bare()))
+            .cloned()
+            .collect();
+        bound
+            .iter()
+            .for_each(|pane| self.rename(&pane.bare(), pane));
+        bound
+    }
+
     fn placed(&self) -> Vec<PaneRef> {
         self.tabs
             .iter()
@@ -686,7 +722,9 @@ impl Layout {
     /// put in the first tab, in order, whose filter it passes, or else in a
     /// tab `other` at the end, as a grid.
     pub fn shown(&self, live: &[Live]) -> Layout {
-        let placed = self.placed();
+        let mut shown = self.clone();
+        shown.bind(live);
+        let placed = shown.placed();
         let mut sorted: Vec<&Live> = live.iter().filter(|l| !placed.contains(&l.pane)).collect();
         sorted.sort_by(|a, b| a.pane.cmp(&b.pane));
         let mut routed: Vec<(u32, Vec<PaneRef>)> = Vec::new();
@@ -698,7 +736,6 @@ impl Layout {
                 None => routed.push((tab, vec![pane.pane.clone()])),
             }
         }
-        let mut shown = self.clone();
         for (id, panes) in routed {
             if id == OTHER {
                 let mut tab = Tab::new(OTHER, "other");
@@ -898,7 +935,7 @@ fn parse_node(lines: &[TreeLine], at: &mut usize, depth: usize) -> Result<Node, 
             }
             Ok(Node::Split { axis, parts })
         }
-        _ => Err(here("expected pane NAME@ID or split AXIS")),
+        _ => Err(here("expected pane NAME, pane NAME@ID or split AXIS")),
     }
 }
 
@@ -1477,7 +1514,22 @@ fn step_item<T>(items: &mut [T], at: usize, later: bool) {
 }
 
 /// Applies `op` to `layout`; `live` is what exists. Gives a tab it made.
+/// A bare tile stays bare: bound for the edit, and bare again after it.
 pub fn apply(
+    layout: &mut Layout,
+    live: &[Live],
+    area: Rect,
+    op: &Op,
+) -> Result<Option<String>, Failure> {
+    let bound = layout.bind(live);
+    let made = apply_bound(layout, live, area, op);
+    bound
+        .iter()
+        .for_each(|pane| layout.rename(pane, &pane.bare()));
+    made
+}
+
+fn apply_bound(
     layout: &mut Layout,
     live: &[Live],
     area: Rect,
@@ -1656,14 +1708,7 @@ fn exchange(layout: &mut Layout, a: &PaneRef, b: &PaneRef) {
         id: String::new(),
     };
     for (from, to) in [(a, &hole), (b, a), (&hole, b)] {
-        for tab in &mut layout.tabs {
-            if let Some(root) = tab.root.as_mut() {
-                root.rename(from, to);
-            }
-            if tab.zoom.as_ref() == Some(from) {
-                tab.zoom = Some(to.clone());
-            }
-        }
+        layout.rename(from, to);
     }
 }
 
@@ -1844,6 +1889,48 @@ mod tests {
         run(&mut layout, &[], "tab rename \"t1\" \"titled\"")?;
         let titles: Vec<&str> = layout.tabs.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["first", "match", "titled"]);
+        Ok(())
+    }
+
+    /// A bare `pane NAME` binds to whichever life of NAME is live now and
+    /// shows missing while there is none; a `NAME@ID` tile beside it keeps
+    /// its life; an edit keeps a bare tile bare.
+    #[test]
+    fn a_bare_tile_binds_to_each_life_of_its_name() -> Result<(), Failure> {
+        let old = pane("b", '1').to_string();
+        let text = format!(
+            "{HEADER}\nversion 1\nnext 2\ntab t1 \"all\"\n  split columns\n    1 pane a\n    1 pane {old}\n"
+        );
+        let mut layout = parse(&text).map_err(bad)?;
+        let leaves = |layout: &Layout, live: &[Live]| -> Vec<String> {
+            let shown = layout.shown(live);
+            let leaves = shown.tabs.iter().flat_map(|t| t.leaves());
+            leaves.map(PaneRef::to_string).collect()
+        };
+        assert_eq!(leaves(&layout, &[]), ["a", old.as_str()]);
+        for n in ['2', '3'] {
+            let lives = [live("a", n, &[]), live("b", n, &[])];
+            let want = [
+                pane("a", n).to_string(),
+                old.clone(),
+                pane("b", n).to_string(),
+            ];
+            assert_eq!(leaves(&layout, &lives), want);
+        }
+        let lives = [live("a", '2', &[]), live("b", '2', &[])];
+        run(&mut layout, &lives, "split a down b")?;
+        run(&mut layout, &lives, "zoom a")?;
+        let text = layout.to_string();
+        assert!(
+            text.contains(" pane a\n") && text.contains(" zoom a\n"),
+            "{text}"
+        );
+        let later = [live("a", '3', &[])];
+        let shown = layout.shown(&later);
+        assert_eq!(
+            shown.tabs.first().and_then(Tab::zoomed),
+            Some(&pane("a", '3'))
+        );
         Ok(())
     }
 }
