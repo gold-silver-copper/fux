@@ -211,6 +211,19 @@ fn failed(g: &mut HostCall<'_, Host>, why: &str) -> Error {
     }
 }
 
+/// A pane that is gone: its directory went, or another life has its name.
+/// Its own kind, `pane-gone`, so a command can ignore that and nothing else.
+fn gone(g: &mut HostCall<'_, Host>, pane: &str) -> Error {
+    match g.string(&format!("pane {pane} is gone")) {
+        Ok(text) => g.error("pane-gone", &[text]),
+        Err(error) => error,
+    }
+}
+
+fn missing(dir: &std::path::Path) -> bool {
+    matches!(std::fs::symlink_metadata(dir), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
 /// What a word that failed says, unless the run was stopped.
 fn refused(g: &mut HostCall<'_, Host>, host: &Host, failure: &fux3::Failure) -> Error {
     match host.cancel.load(Ordering::Relaxed) {
@@ -230,14 +243,21 @@ fn shown(g: &mut HostCall<'_, Host>, host: &Host) -> Result<Workspace, Error> {
 }
 
 /// The directory of the pane `NAME` or `NAME@ID` names in the workspace
-/// shown, refused if that life of it is over.
+/// shown, refused (`pane-gone`) if that life of it is over.
 fn pane_dir(g: &mut HostCall<'_, Host>, host: &Host, pane: &str) -> Result<PathBuf, Error> {
     let target = crate::layout::Target::parse(pane).map_err(|f| failed(g, &f.0))?;
     let dir = shown(g, host)?.pane_dir(&target.name);
+    if missing(&dir) {
+        return Err(gone(g, pane));
+    }
     if let Some(id) = &target.id {
-        let status = crate::panes::read_status(&dir).map_err(|f| failed(g, &f.0))?;
+        let status = match crate::panes::read_status(&dir) {
+            Ok(status) => status,
+            Err(_) if missing(&dir) => return Err(gone(g, pane)),
+            Err(failure) => return Err(failed(g, &failure.0)),
+        };
         if fux3::files::status_value(&status, "id") != Some(id.as_str()) {
-            return Err(failed(g, &format!("pane {pane} is gone")));
+            return Err(gone(g, pane));
         }
     }
     Ok(dir)
@@ -699,8 +719,11 @@ const WORDS: &[(&str, Word)] = &[
         let pane = string_arg(g, host, pane)?;
         let line = string_arg(g, host, line)?;
         let dir = pane_dir(g, host, &pane)?;
-        crate::panes::ctl_line(&dir, &line).map_err(|f| failed(g, &f.0))?;
-        inert()
+        match crate::panes::ctl_line(&dir, &line) {
+            Ok(()) => inert(),
+            Err(_) if missing(&dir) => Err(gone(g, &pane)),
+            Err(failure) => Err(failed(g, &failure.0)),
+        }
     }),
 ];
 
@@ -713,9 +736,10 @@ fn describe(g: &Grift<Host>, error: &Error) -> String {
 }
 
 /// What a primitive said in an error grift describes as
-/// `fux3-error "WHY" in …`, else the description whole.
+/// `fux3-error "WHY" in …` (or `pane-gone …`), else the description whole.
 fn said(described: &str) -> String {
     let quoted = (described.strip_prefix("fux3-error \""))
+        .or_else(|| described.strip_prefix("pane-gone \""))
         .and_then(|rest| rest.split_once("\" in "))
         .map(|(why, _)| why.replace("\\\"", "\""));
     quoted.unwrap_or_else(|| described.to_owned())

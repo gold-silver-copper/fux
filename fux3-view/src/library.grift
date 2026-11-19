@@ -61,9 +61,11 @@
 (define! confirm (lambda! (question then)
   (pick question (list (list "yes" "Yes")) (lambda! (answer) (then)))))
 
-;; Ends a pane and takes its tile away; one already gone just loses its tile.
+;; Ends a pane and takes its tile away; one already gone just loses its
+;; tile. A kill that fails otherwise (its ctl full) is said, and the tile
+;; stays while the program runs.
 (define! close-pane (lambda! (pane)
-  (catch-kind! (kill pane) fux3-error gone #inert)
+  (catch-kind! (kill pane) pane-gone gone #inert)
   (edit! (join "close " pane))))
 (define! confirm-close-pane (lambda! (pane)
   (confirm (join "close pane " (name-of pane) "?") (lambda! () (close-pane pane)))))
@@ -118,7 +120,7 @@
       (start-new (join name "/shell"))
       (show-workspace name)))))
 (define! end-panes (lambda! (rows)
-  (for-each (lambda! (row) (catch-kind! (kill (first row)) fux3-error gone #inert)) rows)))
+  (for-each (lambda! (row) (catch-kind! (kill (first row)) pane-gone gone #inert)) rows)))
 (define! confirm-close-tab (lambda! (tab)
   (confirm (join "close tab " tab " " (second (row-of (tabs) tab)) "?")
     (lambda! () (end-panes (panes-of tab)) (arrange (join "tab close " tab))))))

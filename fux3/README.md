@@ -447,7 +447,7 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 | `(start-new PREFIX PROGRAM ARG…)` | starts `PREFIX-N` in the workspace shown, or in WORKSPACE (made if missing) for `WORKSPACE/PREFIX` (your shell if no program): `NAME@ID` |
 | `(close-workspace NAME)` | ends its panes, then removes its directory (refused, saying which, if a pane will not end within 12 s) |
 | `(send PANE TEXT)` | to the pane's `in`, after keys typed before |
-| `(ctl PANE LINE)` | one line to the pane's `ctl` (`kill`, `signal INT`, …) |
+| `(ctl PANE LINE)` | one line to the pane's `ctl` (`kill`, `signal INT`, …). A pane that is gone (its directory went, or another life has its name) raises `pane-gone`, any other failure `fux3-error`: closing a pane or a tab ignores only the first, and keeps the tile otherwise |
 | `(pick TITLE ROWS FUNCTION [KEYS])`, `(read-line PROMPT INITIAL FUNCTION)` | a list or a line to type; what is chosen goes to FUNCTION |
 | `(focus PANE)`, `(say TEXT)`, `(workspace-dir)`, `(quote TEXT)` | `workspace-dir`: the shown workspace's directory |
 
