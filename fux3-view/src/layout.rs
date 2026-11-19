@@ -1200,12 +1200,26 @@ pub fn edit(view: &Path, live: &[Live], area: Rect, op: &Op) -> Result<Edited, F
 
 // ---- Operations ----
 
-/// A tab as a command names it: its id (`t3`), or its title if no other
-/// tab has it.
-fn tab_id(shown: &Layout, text: &str) -> Result<u32, Failure> {
-    let id = text.strip_prefix('t').and_then(|d| d.parse::<u32>().ok());
+/// A tab as a command names it: a bare `tN` is the tab with that id, if
+/// one has it; any other word, and every quoted one, is a title.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabName {
+    text: String,
+    quoted: bool,
+}
+
+/// The tab `name` names: by id first, else the one tab with that title.
+fn tab_id(shown: &Layout, name: &TabName) -> Result<u32, Failure> {
+    let text = &name.text;
+    let id = (!name.quoted)
+        .then(|| text.strip_prefix('t').and_then(|d| d.parse::<u32>().ok()))
+        .flatten()
+        .filter(|id| shown.tab(*id).is_some());
+    if let Some(id) = id {
+        return Ok(id);
+    }
     let found: Vec<u32> = (shown.tabs.iter())
-        .filter(|tab| Some(tab.id) == id || tab.title == text)
+        .filter(|tab| tab.title == *text)
         .map(|tab| tab.id)
         .collect();
     match found.as_slice() {
@@ -1225,7 +1239,7 @@ pub enum Whither {
     /// Swap with the one after it in its tab (true), or before.
     Order(bool),
     /// To a tab (`None`: a new tab after its own).
-    Tab(Option<String>),
+    Tab(Option<TabName>),
 }
 
 /// What may change the layout: one command each (see the README).
@@ -1244,11 +1258,11 @@ pub enum Op {
     /// Zooms a pane in its tab, or restores the tab if it is zoomed.
     Zoom(Target),
     /// A tab: its title, the tab it comes after, its filter.
-    NewTab(Option<String>, Option<String>, Vec<(String, String)>),
-    RenameTab(String, String),
-    CloseTab(String),
+    NewTab(Option<String>, Option<TabName>, Vec<(String, String)>),
+    RenameTab(TabName, String),
+    CloseTab(TabName),
     /// A tab one place later (true) or earlier.
-    MoveTab(String, bool),
+    MoveTab(TabName, bool),
     /// The default layout, over whatever is there.
     Reset,
 }
@@ -1261,16 +1275,25 @@ fn later_of(word: &str) -> Result<bool, Failure> {
     }
 }
 
-/// Reads one layout command (the grammar is in the README).
+/// Reads one layout command (the grammar is in the README). A quoted word
+/// is never a keyword: it is matched below with a `"` before it, which no
+/// bare word holds.
 pub fn parse_command(line: &str) -> Result<Op, Failure> {
     let all = words(line.trim()).map_err(bad)?;
-    let words: Vec<&str> = all.iter().map(|(w, _)| w.as_str()).collect();
-    let target = Target::parse;
-    let owned = |w: &str| w.to_owned();
-    let title = |w: &str| check_title(w).map(|()| w.to_owned()).map_err(bad);
+    let marked: Vec<String> = (all.iter())
+        .map(|(w, quoted)| if *quoted { format!("\"{w}") } else { w.clone() })
+        .collect();
+    let words: Vec<&str> = marked.iter().map(String::as_str).collect();
+    let text = |w: &str| w.strip_prefix('"').unwrap_or(w).to_owned();
+    let target = |w: &str| Target::parse(&text(w));
+    let tab = |w: &str| TabName {
+        text: text(w),
+        quoted: w.starts_with('"'),
+    };
+    let title = |w: &str| check_title(&text(w)).map(|()| text(w)).map_err(bad);
     let tests = |rest: &[&str]| {
         rest.iter()
-            .map(|w| parse_test(w))
+            .map(|w| parse_test(&text(w)))
             .collect::<Result<Vec<_>, _>>()
     };
     let dir = Dir::parse;
@@ -1278,10 +1301,9 @@ pub fn parse_command(line: &str) -> Result<Op, Failure> {
         ["split", pane, way] => Op::SplitNew(target(pane)?, dir(way)?),
         ["split", pane, way, new] => Op::Split(target(pane)?, target(new)?, dir(way)?),
         ["close", pane] => Op::Close(target(pane)?),
-        ["move", pane, "tab", tab] => Op::Move(
-            target(pane)?,
-            Whither::Tab((*tab != "new").then(|| owned(tab))),
-        ),
+        ["move", pane, "tab", to] => {
+            Op::Move(target(pane)?, Whither::Tab((*to != "new").then(|| tab(to))))
+        }
         ["move", pane, way @ ("earlier" | "later")] => {
             Op::Move(target(pane)?, Whither::Order(later_of(way)?))
         }
@@ -1293,7 +1315,7 @@ pub fn parse_command(line: &str) -> Result<Op, Failure> {
             let mut rest = rest;
             while let Some((word, more)) = rest.split_first() {
                 match (*word, more) {
-                    ("after", [tab, more @ ..]) => (after, rest) = (Some(owned(tab)), more),
+                    ("after", [to, more @ ..]) => (after, rest) = (Some(tab(to)), more),
                     ("match", tests_given) => (filter, rest) = (tests(tests_given)?, &[]),
                     (text, more) if name.is_none() => (name, rest) = (Some(title(text)?), more),
                     (other, _) => return Err(bad(format!("tab new: unexpected {other:?}"))),
@@ -1301,9 +1323,9 @@ pub fn parse_command(line: &str) -> Result<Op, Failure> {
             }
             Op::NewTab(name, after, filter)
         }
-        ["tab", "rename", tab, text] => Op::RenameTab(owned(tab), title(text)?),
-        ["tab", "close", tab] => Op::CloseTab(owned(tab)),
-        ["tab", "move", tab, way] => Op::MoveTab(owned(tab), later_of(way)?),
+        ["tab", "rename", name, new] => Op::RenameTab(tab(name), title(new)?),
+        ["tab", "close", name] => Op::CloseTab(tab(name)),
+        ["tab", "move", name, way] => Op::MoveTab(tab(name), later_of(way)?),
         ["reset"] => Op::Reset,
         [] => return Err(bad("an empty command")),
         _ => {
@@ -1808,6 +1830,20 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&view);
         assert!(refused > 0, "no split was too deep");
+        Ok(())
+    }
+
+    /// A bare `tN` names the tab with that id before any tab titled so,
+    /// and a quoted word is never a keyword.
+    #[test]
+    fn bare_ids_beat_titles_and_quoted_words_are_titles() -> Result<(), Failure> {
+        let mut layout = Layout::default();
+        run(&mut layout, &[], "tab new \"match\"")?;
+        run(&mut layout, &[], "tab new t1")?;
+        run(&mut layout, &[], "tab rename t1 \"first\"")?;
+        run(&mut layout, &[], "tab rename \"t1\" \"titled\"")?;
+        let titles: Vec<&str> = layout.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["first", "match", "titled"]);
         Ok(())
     }
 }

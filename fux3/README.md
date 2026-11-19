@@ -369,8 +369,10 @@ One line each, acting on one workspace's layout: written to its `.view/ctl` (a
 viewer of it takes it), run with `fux3 view [WORKSPACE] --do 'LINE'` (prints
 what it did; a refusal goes to stderr, exit 1), or from grift with `(arrange
 LINE)` (the workspace shown). `PANE` is `NAME` or `NAME@ID`, a pane of that
-workspace; `TAB` is `tN` or a title no other tab has; `DIR` is `left`, `right`,
-`up` or `down`; a title with spaces is quoted, `"like this"`.
+workspace; `TAB` is `tN` (the tab with that id, if there is one) or a title no
+other tab has; `DIR` is `left`, `right`, `up` or `down`; a title with spaces is
+quoted, `"like this"`. A quoted word is never a keyword: `tab new "match"` makes
+a tab called match, and `"t1"` is the tab titled t1.
 
 | Command | What it does |
 |---|---|
