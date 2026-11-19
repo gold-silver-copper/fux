@@ -177,7 +177,16 @@ so a shell's `> in` never makes a regular file there.
 
 `echo kill > "$D/NAME/ctl"` hangs up the program, then kills its session; on
 Linux the holder is the subreaper of everything the program started, so a
-`setsid` child or a double-forked daemon is found and killed too. When
+`setsid` child or a double-forked daemon is found and killed too.
+
+**Panes started inside a pane are part of it.** One kill ends a task and
+everything it started, panes included: on Linux, a `fux3 start` run inside a
+pane makes a holder that pane's holder adopts, so killing the outer pane ends
+the inner one too (its directory goes at the next `fux3` command). A viewer
+run inside a pane starts its shells inside that pane, so killing that pane
+ends them. On macOS the inner pane's holder left the outer pane's session and
+cannot be found, so it outlives the outer pane: end it with
+`echo kill > "$D/NAME/ctl"`. When
 everything is gone the directory is removed and the holder exits. When
 something could not be killed, the directory stays, `state` says
 `kill-incomplete` and what is left, and you may send `kill` again. On macOS a

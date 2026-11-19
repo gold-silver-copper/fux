@@ -63,13 +63,17 @@ echo "split build right" > "$D/.view/ctl"
 until_ok grep -qs 'pane shell-1@' "$D/.view/layout"
 until_ok test -d "$D/shell-1"
 grep -qx 'size 100 30' "$V/viewer/status"
+# Killing the viewer outright leaves every pane running and typable.
+kill -9 "$(sed -n 's/^pid //p' "$V/viewer/status")"
+until_ok grep -q '^state signalled KILL' "$V/viewer/status"
+[ "$(fux3 ls)" = "$(printf 'build\nshell-1')" ]
+printf 'echo after-viewer\n' > "$D/shell-1/in"
+until_ok grep -qx after-viewer "$D/shell-1/screen"
+echo kill > "$D/shell-1/ctl"
+until_ok test ! -e "$D/shell-1"
 echo kill > "$V/viewer/ctl"
 until_ok test ! -e "$V/viewer"
 rm -rf "$V"
-# Killing the viewer leaves every pane running.
-[ "$(fux3 ls)" = "$(printf 'build\nshell-1')" ]
-echo kill > "$D/shell-1/ctl"
-until_ok test ! -e "$D/shell-1"
 
 # A program that ends: its exit in status, its last screen kept, typing
 # after taken and dropped with a line in errors.

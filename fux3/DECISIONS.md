@@ -98,3 +98,10 @@ overruled it, both are recorded.
   loss is counted in `history`.
 - **D27. `fuxix::file::private_fifo`** is the one primitive added to fuxix
   (`mkfifo`, mode 0600): the workspace forbids `unsafe` outside fuxix.
+- **D28. A pane's kill ends everything started inside it, panes included.**
+  The viewer's builder found that on Linux a holder adopts the holders
+  started from inside its pane, so killing the outer pane kills them. I first
+  spared other holders; the owner, shown the finding: "maybe we should
+  preserve this behavior?" — one kill ends a task and all the panes it
+  started, with no special case. Kept, stated by a test; on macOS an inner
+  pane's holder left the session and outlives the outer pane (README).

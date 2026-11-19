@@ -280,3 +280,30 @@ fn an_ended_programs_screen_stays() -> Result {
         s.read("p", "errors").contains("in: 6 bytes dropped")
     })
 }
+
+/// A pane started from inside another pane is part of what that pane's
+/// program started. On Linux the outer holder adopts its holder, so killing
+/// the outer pane ends it too; macOS has no subreaper, so there it left the
+/// outer pane's session for good, outlives the kill, and is ended through
+/// its own `ctl`.
+#[test]
+fn a_pane_started_inside_a_pane_is_part_of_it() -> Result {
+    let s = Session::new("nested")?;
+    s.start("outer", &["sh"])?;
+    let start = format!("{} start inner -- sh\n", env!("CARGO_BIN_EXE_fux3"));
+    s.write("outer", "in", start.as_bytes())?;
+    until("the inner pane", || s.pane("inner").join("screen").exists())?;
+    s.write("outer", "ctl", b"kill\n")?;
+    until("the outer pane gone", || !s.pane("outer").exists())?;
+    #[cfg(target_os = "linux")]
+    until("the inner pane gone with it", || {
+        s.fux3(&["ls"]).is_ok_and(|live| live.is_empty())
+    })?;
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(s.fux3(&["ls"])?, "inner\n");
+        s.write("inner", "ctl", b"kill\n")?;
+        until("the inner pane gone", || !s.pane("inner").exists())?;
+    }
+    Ok(())
+}
