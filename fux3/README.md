@@ -324,7 +324,7 @@ Paths are in the workspace shown, `$D/WORKSPACE/`.
 | `.view/layout`, `.view/layout.lock` | the workspace's layout, shared by every viewer of it (below) |
 | `.view/ctl`, `.view/ctl.lock` | a FIFO of layout commands for this workspace. One viewer showing the workspace reads it at a time, the one holding the lock on `ctl.lock`, so no two split a line; the others try again every second. The reader makes it, and removes it when it shows another workspace or leaves; another viewer of the workspace takes over within a second. So with no viewer, `echo LINE > .view/ctl` makes a regular file, whose lines the next viewer of the workspace runs when it comes. A viewer killed outright leaves the FIFO, and a writer then waits for a reader (guard it as for `in`, below, or use `--do`) |
 | `.view/errors` | the last 32 refused `.view/ctl` lines, `LINE: WHY`, replaced whole |
-| `.view/paste-PID-N` | a paste's text, 0600, removed 10 s after the `paste` command, or when the viewer leaves or switches workspace (after waiting up to 1 s on leaving) |
+| `.view/paste-PID-N` | a paste's text, 0600, removed 10 s after the `paste` command, or when the viewer leaves (a paste under 1 s old gets the rest of that second first) |
 
 The workspace's directory is listed again once a second and whenever the
 layout changes. A pane whose directory is gone keeps its tile, drawn as `NAME gone`;
