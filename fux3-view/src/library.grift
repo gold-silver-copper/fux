@@ -52,9 +52,10 @@
 ;; (in a directory of its own in the session's, so what an editor writes
 ;; beside it goes with it), opened at its end in a pane below: $EDITOR, else
 ;; $PAGER, else less. The text is a copy: editing it changes nothing in the
-;; pane. When the editor ends, the pane removes the file and its recipe (a
-;; template never starts one) and ends itself; this viewer then closes its
-;; tile.
+;; pane. When the editor ends, the pane removes the file and its recipe
+;; (a template never starts one; it is under the name the pane started
+;; with) and ends itself, wherever it was moved to (it finds its directory
+;; by its id); this viewer then closes its tile.
 (define! history-script
   "umask 077; d=\"$FUX3_DIR/.history-$FUX3_PANE_ID\"; f=history-and-screen
 trap 'rm -rf \"$d\"' EXIT; trap 'exit 1' HUP INT TERM; mkdir \"$d\" && cd \"$d\" || exit 1
@@ -64,7 +65,8 @@ e=${EDITOR%% *}; case \"${e##*/}\" in
   '') ${PAGER:-less +G} \"$f\";;
   *) $EDITOR \"$f\";;
 esac
-rm -rf \"$d\" \"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"; echo kill > \"$FUX3_PANE_DIR/ctl\"")
+rm -rf \"$d\" \"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"
+p=$(grep -lx \"$FUX3_PANE_ID\" \"$FUX3_DIR\"/*/*/id) && echo kill 1<>\"${p%id}ctl\"")
 (define! history (lambda! ()
   (let! ((target (focused))
          (file (join (workspace-dir) "/" (name-of target) "/history"))

@@ -520,3 +520,41 @@ fn the_history_key_opens_the_history_and_then_the_screen() -> Tested {
     assert_eq!(text.lines().last(), Some(last), "{text:?}");
     Ok(())
 }
+
+/// A pane is its directory and its id, and a name only where it is listed:
+/// a live pane renamed with `mv` keeps its tile, the focus and its keys,
+/// and the next edit stores its new name; moved to another workspace it
+/// leaves this one's layout as a pane that went, and has a tile in the other.
+#[test]
+fn a_moved_pane_keeps_its_tile_by_its_id() -> Tested {
+    let lab = Lab::new("moved", "")?;
+    lab.start("a")?;
+    lab.start("b")?;
+    let out = lab.run(&lab.view, &["--do", "split a right b"])?;
+    assert!(out.status.success(), "{out:?}");
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "\u{2502}")?;
+    let main = lab.view.join("main");
+    std::fs::rename(main.join("a"), main.join("c")).map_err(|e| e.to_string())?;
+    lab.keys("v", b"echo mo''ved\r")?;
+    until("keys reach the renamed pane", || {
+        lab.read(&lab.view, "c", "screen").contains("moved")
+    })?;
+    lab.shows("v", "moved")?;
+    std::thread::sleep(Duration::from_millis(1500));
+    let screen = lab.read(&lab.harness, "v", "screen");
+    assert!(!screen.contains("gone"), "a tile was lost:\n{screen}");
+    let out = lab.run(&lab.view, &["--do", "tab new spare"])?;
+    assert!(out.status.success(), "{out:?}");
+    let layout = std::fs::read_to_string(main.join(".view/layout")).map_err(|e| e.to_string())?;
+    assert!(
+        layout.contains("pane c@") && !layout.contains("pane a@"),
+        "{layout}"
+    );
+    private_dir(&lab.view.join("two"))?;
+    std::fs::rename(main.join("c"), lab.view.join("two/c")).map_err(|e| e.to_string())?;
+    lab.shows("v", "c gone")?;
+    let out = lab.run(&lab.view, &["two", "--do", "zoom c"])?;
+    assert!(out.status.success(), "{out:?}");
+    Ok(())
+}

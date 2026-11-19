@@ -375,6 +375,14 @@ impl View {
         let live = self.live_now();
         if layout_changed || live != self.live {
             self.live = live;
+            // The focus stays on a pane renamed: it is its id.
+            for held in [&mut self.focus, &mut self.last_focus]
+                .into_iter()
+                .flatten()
+            {
+                let now = self.live.iter().find(|l| l.pane.id == held.id);
+                held.name = now.map_or(held.name.clone(), |l| l.pane.name.clone());
+            }
             self.arranged = Arc::new(self.stored.shown(&self.live));
             if self.arranged.tab(self.tab).is_none() {
                 self.tab = self.arranged.tabs.first().map_or(0, |tab| tab.id);
@@ -456,11 +464,14 @@ impl View {
                 self.fit(&pane);
             }
         }
-        // A watched pane is gone once its name is, or another life has it.
+        // A watched life is gone once no pane here has its id; a name, once
+        // no pane has it.
         let gone = |(space, pane): &(String, Target)| {
-            let other =
-                |p: &Pane| (pane.id.as_deref().zip(p.id())).is_some_and(|(id, now)| id != now);
-            *space == self.workspace.name && self.panes.get(&pane.name).is_none_or(other)
+            let there = match &pane.id {
+                Some(id) => (self.panes.values()).any(|p| p.id().is_none_or(|now| now == id)),
+                None => self.panes.contains_key(&pane.name),
+            };
+            *space == self.workspace.name && !there
         };
         let (gone, watched) = std::mem::take(&mut self.watched)
             .into_iter()

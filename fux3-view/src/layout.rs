@@ -1970,4 +1970,31 @@ mod tests {
         assert_eq!(zoomed(&layout), None, "{layout}");
         Ok(())
     }
+
+    /// A tile is its pane's id: a pane renamed keeps its tile, commands
+    /// find it by the old name's `NAME@ID` too, and the next edit stores
+    /// the new name.
+    #[test]
+    fn a_renamed_pane_keeps_its_tile() -> Result<(), Failure> {
+        let mut layout = Layout::default();
+        let before = [live("a", '1', &[]), live("b", '2', &[])];
+        run(&mut layout, &before, "split a down b")?;
+        let after = [live("c", '1', &[]), live("b", '2', &[])];
+        let shown = layout.shown(&after);
+        let leaves: Vec<String> = (shown.tabs.iter())
+            .flat_map(|t| t.leaves().into_iter().map(PaneRef::to_string))
+            .collect();
+        assert_eq!(
+            leaves,
+            [pane("c", '1').to_string(), pane("b", '2').to_string()]
+        );
+        run(&mut layout, &after, &format!("zoom {}", pane("a", '1')))?;
+        let text = layout.to_string();
+        assert!(
+            text.contains(&format!("zoom {}\n", pane("c", '1'))),
+            "{text}"
+        );
+        assert!(!text.contains("pane a@"), "{text}");
+        Ok(())
+    }
 }

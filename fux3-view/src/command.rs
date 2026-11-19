@@ -243,3 +243,40 @@ pub fn close_workspace(workspace: &Workspace, cancel: &AtomicBool) -> Result<(),
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fux3::session::Session;
+
+    /// A workspace removed and made again is another: a layout command that
+    /// began on the first is refused, saying so, and the second's layout is
+    /// as it was.
+    #[test]
+    fn a_command_for_a_removed_workspace_never_lands_on_its_successor() -> Result<(), Failure> {
+        let scratch = fuxix::file::scratch().map_err(|e| fux3::io("scratch", e))?;
+        let root = scratch.join(format!("f3v-wsid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        fuxix::file::private_dir(&root).map_err(|e| fux3::io("root", e))?;
+        let session = Session::at(root.clone())?;
+        let (area, cancel) = (Rect::default(), AtomicBool::new(false));
+        let first = session.workspace("w", true)?;
+        run_line(&first, "tab new kept", area, &cancel)?;
+        std::fs::remove_dir_all(root.join("w")).map_err(|e| fux3::io("removing", e))?;
+        let second = session.workspace("w", true)?;
+        run_line(&second, "tab new theirs", area, &cancel)?;
+        for line in ["tab new stale", "split nosuch right", "reset"] {
+            let refused = run_line(&first, line, area, &cancel).err();
+            assert_eq!(
+                refused.map(|f| f.0).as_deref(),
+                Some("workspace w was removed")
+            );
+        }
+        let layout = layout::read(&view_dir(&second)?)?.to_string();
+        assert!(
+            layout.contains("theirs") && !layout.contains("stale"),
+            "{layout}"
+        );
+        std::fs::remove_dir_all(&root).map_err(|e| fux3::io("removing", e))
+    }
+}
