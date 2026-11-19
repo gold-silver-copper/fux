@@ -246,7 +246,9 @@ and the clearing of dead panes leave it. `fux3 start NAME` with no program
 runs it again; `cat "$D/main/.recipes/NAME"` shows what it would run, and
 `sh "$D/main/.recipes/NAME"` runs it in your own terminal. A recipe stays
 after its pane is gone, until the name starts another program; a file at the
-name that is not a plain file of at most 64 KiB is refused, never skipped.
+name that is not a plain file of at most 64 KiB is refused, never skipped. A
+start that runs a recipe takes no `--env` (the recipe sets its own: give the
+program again to change them).
 Starting a
 workspace's every recipe:
 

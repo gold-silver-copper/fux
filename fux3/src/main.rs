@@ -236,6 +236,12 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
             }
             Err(_) => false,
         };
+    if from_recipe && !env.is_empty() {
+        return Err(Failure::new(format!(
+            "--env with no program: the recipe {} sets its own variables; give the program to change them",
+            saved.display()
+        )));
+    }
     if from_recipe {
         argv = vec!["/bin/sh".into(), saved.clone().into()];
     } else if argv.is_empty() {

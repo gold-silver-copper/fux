@@ -50,7 +50,7 @@
 ;; workspace's .view/ctl, opened read-write so that it never waits),
 ;; removes its recipe (a template never starts a pager) and ends itself.
 (define! history-script
-  "cat \"$1.1\" \"$1\" 2>/dev/null | ${PAGER:-less +G}; exec 3<>\"$FUX3_DIR/$FUX3_WORKSPACE/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; rm -f \"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"; echo kill > \"$FUX3_PANE_DIR/ctl\"")
+  "if [ -e \"$1.1\" ]; then cat \"$1.1\" \"$1\" | ${PAGER:-less +G}; else ${PAGER:-less +G} \"$1\"; fi; exec 3<>\"$FUX3_DIR/$FUX3_WORKSPACE/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; rm -f \"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"; echo kill > \"$FUX3_PANE_DIR/ctl\"")
 (define! history (lambda! ()
   (let! ((target (focused))
          (file (join (workspace-dir) "/" (name-of target) "/history"))

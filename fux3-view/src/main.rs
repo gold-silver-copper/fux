@@ -656,7 +656,7 @@ impl View {
         let dir = self.workspace.pane_dir(&pane.name);
         // A pane gone meanwhile (a pager that ended itself) needs no fit.
         if let Err(failure) = panes::ctl_line(&dir, &format!("resize {cols} {rows}"))
-            && dir.exists()
+            && dir.join(fux3::files::CTL).exists()
         {
             self.say(format!("fit: {failure}"));
         }
