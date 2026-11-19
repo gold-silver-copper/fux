@@ -646,3 +646,18 @@ fn a_wait_ignores_old_lines_through_many_redraws() -> Tested {
     assert_eq!(out.status.code(), Some(5), "{out:?}");
     Ok(())
 }
+
+/// A connection that has read its answer and then asks nothing is idle,
+/// not stalled: it stays open past the stall limit, so a viewer of a pane
+/// that ended keeps it without greeting it again.
+#[test]
+fn an_idle_connection_stays_open() -> Tested {
+    let lab = Lab::new()?;
+    lab.start("done", &program("echo finished"))?;
+    let mut client = lab.client("done")?;
+    client.ask(&Request::Screen { since: None }, ANSWER_WAIT)?;
+    std::thread::sleep(Duration::from_secs(6));
+    let again = client.ask(&Request::Screen { since: None }, ANSWER_WAIT);
+    assert!(again.is_ok(), "the idle connection was closed: {again:?}");
+    Ok(())
+}

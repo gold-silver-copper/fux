@@ -1537,7 +1537,12 @@ impl View {
             match pane.conn.receive() {
                 Ok(Some(body)) => {
                     let was_greeting = pane.phase == Phase::Greeting;
-                    let was_running = pane.meta.as_ref().is_none_or(|m| m.state == State::Running);
+                    // Only an ending seen happen is told: a pane ended before it was
+                    // first read is just shown ended.
+                    let was_running = pane
+                        .meta
+                        .as_ref()
+                        .is_some_and(|m| m.state == State::Running);
                     match pane.answered(&body, now) {
                         Ok(screen) => changed |= screen,
                         Err(failure) => {

@@ -861,6 +861,12 @@ impl Pane {
         if peer.conn.flush().is_err() {
             peer.closing = true;
         }
+        // Written whole: the reader is idle now, not stalled, and keeps its
+        // connection until it asks again or is displaced.
+        if peer.conn.pending() == 0 {
+            peer.due = None;
+            peer.latest = None;
+        }
     }
 
     fn answer(&mut self, request: Request, peer: &mut Peer, now: Instant) -> Reply {
