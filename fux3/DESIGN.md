@@ -41,7 +41,7 @@ while its lock and FIFOs moved: don't. The pane limit, 128, is per workspace.
 | `history.1` | the generation before | holder, by rename |
 | `errors` | the last 32 refusals, a line each, `WHAT: WHY` (below) | holder, atomic replace |
 | `images/N.sixel` | one picture shown, re-encoded as sixel from the emulator's pixels; written once, removed once no published screen shows it | holder |
-| `exit` | `state exited CODE` or `state signalled NAME` and a newline, once the program's end has settled; written aside and renamed, in the same publish as (after) the screens that show the end | holder, once |
+| `exit` | `state exited CODE` or `state signalled NAME` and a newline, once the program's end has settled; written aside and renamed, after the screens that show the end, only when they were written whole; tried again each second until it is on disk | holder |
 
 Every file is 0600 and the directory and `images/` are 0700. Files replaced
 whole are written to `.NAME.new` and renamed, so a reader sees an old file or
@@ -188,7 +188,9 @@ the same with no fux3.
 
 ## Recipes and `fux3 put`
 
-`fux3 start` writes `WORKSPACE/.recipes/NAME` after the holder says `ok`: an
+The holder writes `WORKSPACE/.recipes/NAME` once it has claimed the name and
+before it says `ok` (a recipe it can't write fails the start, and no older
+start can overwrite a newer one's): an
 executable `sh` script (`#!/bin/sh`, `cd -- 'DIR' || exit 126`, one
 `NAME='VALUE'; export NAME` per `--env`, `exec 'PROGRAM' 'ARG'…`), every word
 single-quoted with `'` written `'\''`, so any byte but NUL comes back as it
@@ -197,8 +199,16 @@ renamed, 0700, in a 0700 `.recipes/`. Only the variables named by `--env` go
 in it, never the inherited environment. With no program, `start` runs
 `/bin/sh .recipes/NAME` when that file is there and writes no new recipe.
 
-`fux3 put` opens `in` with `O_WRONLY|O_NONBLOCK|O_NOFOLLOW` and no create: no
-file is "no pane", `ENXIO` (nobody reads) is "a dead holder"; it writes at most
+`--env` values reach the holder on its startup pipe after `go`, each
+`NAME=VALUE` ended by a NUL, never in its arguments (which `ps` shows anyone).
+With no program, `start` runs a recipe only if it is a plain file of at most
+64 KiB; anything else at the name is refused.
+
+`fux3 put` takes no lock and clears nothing. It checks the workspace and pane
+are real directories (no links) holding a pane's FIFOs, refuses one whose lock
+it can take (a dead holder), then opens `in` with
+`O_WRONLY|O_NONBLOCK|O_NOFOLLOW` and no create: no file is "no pane", `ENXIO`
+(nobody reads) is "a dead holder"; it writes at most
 `PIPE_BUF` (512) bytes in one call, so the write is whole or `EAGAIN` ("input
 full"). It never waits.
 

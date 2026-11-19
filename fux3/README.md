@@ -33,7 +33,7 @@ echo "send $HOME/paste.txt" > "$D/main/build/ctl" # a send of any size up to 16 
 ls "$D"                                     # the workspaces: main
 ls "$D/main"                                # its panes: build
 fux3 view                                   # workspace main as fux shows it (see "The viewer"); C-b d detaches
-echo "split build right" > "$D/main/.view/ctl" # from another terminal while the viewer runs: the layout, by a plain file
+D=$(fux3 dir); echo "split build right" > "$D/main/.view/ctl" # in another terminal, while the viewer runs
 echo kill > "$D/main/build/ctl"             # ends the program and all it started; the directory goes
 ```
 
@@ -48,7 +48,7 @@ echo kill > "$D/main/build/ctl"             # ends the program and all it starte
 | `fux3 put [WORKSPACE/]NAME [TEXT]` | writes TEXT (else stdin; at most 512 bytes) to the pane's `in`: whole, or refused saying why (no pane, a dead holder, input full), never waiting |
 | `fux3 view [WORKSPACE] [--do LINE]` | the viewer of a workspace (below); with `--do`, one layout command applied with no viewer running |
 
-Every `fux3` command first clears the leftovers of panes whose holder is gone,
+Every `fux3` command but `put` first clears the leftovers of panes whose holder is gone,
 in every workspace. Pane and workspace names are 1 to 32 of `a-z 0-9 _ -`,
 starting with a letter or digit; a pane's name is unique in its workspace.
 
@@ -81,7 +81,7 @@ a session directory anyone else can open. Keep it under directories only you
 can change (as `$XDG_RUNTIME_DIR` and your home are): fux3 checks the
 directory itself, not its parents, and not ACLs on macOS. A holder's command
 line (`ps`) shows the session's path, the pane's name and labels, and its
-program, as any program's arguments are shown.
+program, as any program's arguments are shown; `--env` values are not on it.
 
 ## The pane directory
 
@@ -220,13 +220,18 @@ there, since a kill removes it:
 p=$D/main/build; while [ -d "$p" ] && [ ! -e "$p/exit" ]; do sleep 0.1; done; cat "$p/exit"
 ```
 
+(A holder killed outright writes no `exit`, and its directory stays until the
+next `fux3` command: see "Two hazards".)
+
 ## Recipes
 
 Each `fux3 start` writes the pane's recipe, `WORKSPACE/.recipes/NAME`: one
 executable POSIX `sh` script that starts the program again exactly, in the
-same directory, with the variables named by `--env` and no others (never the
-environment `start` ran in, which can hold secrets), every word single-quoted
-so any byte comes back as it was:
+same directory, adding the variables named by `--env` to the environment it
+runs in, every word single-quoted so any byte comes back as it was. It holds
+those variables and no others (never the environment `start` ran in, which
+can hold secrets); run, it inherits the environment of whoever runs it, as
+the first start inherited `start`'s:
 
 ```sh
 #!/bin/sh
@@ -239,7 +244,10 @@ It is written aside and renamed in, at most 64 KiB (a start whose recipe would
 be larger is refused), and it lives outside the pane's directory, so a kill
 and the clearing of dead panes leave it. `fux3 start NAME` with no program
 runs it again; `cat "$D/main/.recipes/NAME"` shows what it would run, and
-`sh "$D/main/.recipes/NAME"` runs it in your own terminal. Starting a
+`sh "$D/main/.recipes/NAME"` runs it in your own terminal. A recipe stays
+after its pane is gone, until the name starts another program; a file at the
+name that is not a plain file of at most 64 KiB is refused, never skipped.
+Starting a
 workspace's every recipe:
 
 ```sh
@@ -279,11 +287,13 @@ one line of Perl, which Linux and macOS both ship:
 
 ```sh
 printf 'echo hi\n' | fux3 put main/build
-printf 'echo hi\n' | perl -e 'use Fcntl; sysopen(F, shift, O_WRONLY|O_NONBLOCK) or die "$!\n"; local $/; my $t = <STDIN>; syswrite(F, $t) == length $t or die "$!\n"' "$D/main/build/in"
+printf 'echo hi\n' | perl -e 'use Fcntl; read(STDIN, my $t, 513); length $t <= 512 or die "over 512 bytes\n"; sysopen(F, shift, O_WRONLY|O_NONBLOCK) or die "$!\n"; syswrite(F, $t) == length $t or die "$!\n"' "$D/main/build/in"
 ```
 
 Both refuse at once when nobody reads `in` ("No such device or address") or
-the pane is gone, and write at most 512 bytes whole.
+the pane is gone, and write at most 512 bytes whole. Both read their text from
+stdin to its end first, so they wait for whatever writes it. `fux3 put` takes
+no lock and clears no dead pane: it never waits.
 
 **A write over 512 bytes to `in`** may arrive in pieces, mixed with another
 writer's. Use `send` for anything long.
@@ -297,15 +307,17 @@ Things fux3 needs no code for, each with its limit:
   mirror copies to a temporary file, then renames it, or its reader can catch a
   half-written copy. FIFOs do not cross a network mount: type with `ssh host
   fux3 put …`.
-- **A screen bookmark.** `ln "$D/main/build/screen" ~/saved` keeps that frame,
-  even after the pane is gone (the next publish replaces the name, not the
-  file). Across filesystems, `cp` to a temporary file beside the destination,
-  then `mv`.
+- **A screen bookmark.** `ln "$D/main/build/screen" "$D/saved"` keeps that
+  frame, even after the pane is gone (the next publish replaces the name, not
+  the file). A hard link stays on one filesystem (the session is a tmpfs on
+  Linux): elsewhere, `cp` to a temporary file beside the destination, then `mv`.
 - **Staying on one pane.** `cd "$D/main/build"` and use relative paths: after a
   kill and a new pane under the same name, the old directory's files are gone
   and nothing you write reaches the newcomer.
 - **Write-protecting a pane.** `chmod u-w "$D/main/build/in" "$D/main/build/ctl"`
-  refuses writes from you at once; `chmod u+w` gives them back.
+  refuses every new open for writing at once; a writer that already has one
+  open (a viewer that has typed) keeps it until it closes it. `chmod u+w` gives
+  them back.
 - **"Is it alive?"** Its directory's lock is held:
   `perl -e 'use Fcntl qw(:DEFAULT :flock); sysopen(D, shift, O_RDONLY) or die "gone\n"; print flock(D, LOCK_EX|LOCK_NB) ? "dead\n" : "alive\n"' "$D/main/build"`.
   A sample, not a guard: it may be dead a moment later (use `fux3 put`).
