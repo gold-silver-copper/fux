@@ -97,10 +97,6 @@ fn after(now: Instant, wait: Duration) -> Instant {
     now.checked_add(wait).unwrap_or(now)
 }
 
-fn io_failure(what: &str, error: impl std::fmt::Display) -> Failure {
-    fux3::io(what, error)
-}
-
 /// Writes frames on a thread of its own, so that a terminal that stopped
 /// reading holds up no key: one frame at a time, the next made once it is
 /// out.
@@ -274,12 +270,6 @@ impl View {
     /// An error, in the bar's corner until the next key.
     fn say(&mut self, text: impl Into<String>) {
         self.notice = Some((text.into(), ERROR));
-        self.dirty = true;
-    }
-
-    /// A notice that is no error.
-    fn note(&mut self, text: impl Into<String>) {
-        self.notice = Some((text.into(), NOTICE));
         self.dirty = true;
     }
 
@@ -889,7 +879,10 @@ impl View {
                     self.fit(&pane);
                 }
             }
-            ToViewer::Say(text) => self.note(text),
+            ToViewer::Say(text) => {
+                // A notice that is no error.
+                (self.notice, self.dirty) = (Some((text, NOTICE)), true);
+            }
             ToViewer::Type(pane, bytes) => self.type_into(&pane, |_| bytes),
             ToViewer::Started(stop, limit) => {
                 self.running = Some(Running {
@@ -1408,7 +1401,7 @@ fn do_line(space: &str, line: &str) -> Result<(), Failure> {
     let edited = command::run_line(&workspace, line, area, &AtomicBool::new(false))?;
     let mut out = std::io::stdout();
     out.write_all(edited.to_string().as_bytes())
-        .map_err(|e| io_failure("stdout", e))
+        .map_err(|e| fux3::io("stdout", e))
 }
 
 /// A workspace's `.view/ctl` as the one viewer reading it holds it: the
@@ -1426,11 +1419,11 @@ fn ctl_lock(view: &std::path::Path) -> Result<Option<File>, Failure> {
     let mut options = File::options();
     options.read(true).write(true).create(true).truncate(false);
     let file = (fuxix::file::private_file(&mut options).open(&path))
-        .map_err(|e| io_failure(&path.display().to_string(), e))?;
+        .map_err(|e| fux3::io(path.display(), e))?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(e)) => Err(io_failure(&path.display().to_string(), e)),
+        Err(std::fs::TryLockError::Error(e)) => Err(fux3::io(path.display(), e)),
     }
 }
 
@@ -1474,19 +1467,19 @@ fn open_ctl(view: &std::path::Path) -> Result<Option<(Ctl, Vec<u8>)>, Failure> {
     let mut written = Vec::new();
     if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
         written = fux3::files::read_small(&path, 64 << 10)?;
-        std::fs::remove_file(&path).map_err(|e| io_failure(&path.display().to_string(), e))?;
+        std::fs::remove_file(&path).map_err(|e| fux3::io(path.display(), e))?;
     }
     match fuxix::file::private_fifo(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(io_failure(&path.display().to_string(), e)),
+        Err(e) => return Err(fux3::io(path.display(), e)),
     }
     let file = File::options()
         .read(true)
         .write(true)
         .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
         .open(&path)
-        .map_err(|e| io_failure(&path.display().to_string(), e))?;
+        .map_err(|e| fux3::io(path.display(), e))?;
     match file.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
         true => Ok(Some((Ctl { fifo: file, lock }, written))),
         false => Err(Failure::new(format!("{} is not a FIFO", path.display()))),
@@ -1501,7 +1494,7 @@ fn run() -> Result<(), Failure> {
             let mut out = std::io::stdout();
             return out
                 .write_all(USAGE.as_bytes())
-                .map_err(|e| io_failure("stdout", e));
+                .map_err(|e| fux3::io("stdout", e));
         }
     };
     if !fuxix::terminal::on_one_terminal() {
@@ -1519,10 +1512,10 @@ fn run() -> Result<(), Failure> {
         Signal::Int,
         Signal::Quit,
     ];
-    let signals = fuxix::signal::Pipe::new(&stops).map_err(|e| io_failure("signals", e))?;
-    let (paint_wake, paint_poke) = waker().map_err(|e| io_failure("a waker", e))?;
-    let (script_wake, script_poke) = waker().map_err(|e| io_failure("a waker", e))?;
-    let painter = Painter::start(paint_poke).map_err(|e| io_failure("a thread", e))?;
+    let signals = fuxix::signal::Pipe::new(&stops).map_err(|e| fux3::io("signals", e))?;
+    let (paint_wake, paint_poke) = waker().map_err(|e| fux3::io("a waker", e))?;
+    let (script_wake, script_poke) = waker().map_err(|e| fux3::io("a waker", e))?;
+    let painter = Painter::start(paint_poke).map_err(|e| fux3::io("a thread", e))?;
     let (to_viewer, from_script) = std::sync::mpsc::sync_channel(64);
     let (config, note) = match script::load_config() {
         Ok(config) => (config, None),
@@ -1535,9 +1528,8 @@ fn run() -> Result<(), Failure> {
         to_viewer,
         script_poke,
     )
-    .map_err(|e| io_failure("a thread", e))?;
-    let raw =
-        fuxix::terminal::Raw::enter(std::io::stdin()).map_err(|e| io_failure("raw mode", e))?;
+    .map_err(|e| fux3::io("a thread", e))?;
+    let raw = fuxix::terminal::Raw::enter(std::io::stdin()).map_err(|e| fux3::io("raw mode", e))?;
     // An abort still leaves the screen it found.
     fuxix::terminal::leaving_on_abort(LEAVE);
     let now = Instant::now();
@@ -1639,7 +1631,7 @@ fn wait(
         .map(|ctl| fds.push(PollFd::new(&ctl.fifo, Events::IN)));
     match fds.poll(Some(timeout)) {
         Ok(_) | Err(Errno::INTR) => {}
-        Err(errno) => return Err(io_failure("poll", errno)),
+        Err(errno) => return Err(fux3::io("poll", errno)),
     }
     Ok(Ready {
         stdin: keys.is_some_and(|entry| !fds.events(entry).is_empty()),
@@ -1723,7 +1715,7 @@ fn serve(
                     decoder.mark(now);
                 }
                 Err(Errno::AGAIN | Errno::INTR) => {}
-                Err(errno) => return Err(io_failure("reading keys", errno)),
+                Err(errno) => return Err(fux3::io("reading keys", errno)),
             }
         }
         if decoder.deadline().is_some_and(|due| now >= due) {

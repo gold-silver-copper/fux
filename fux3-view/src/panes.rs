@@ -70,9 +70,7 @@ fn open_fifo(path: &Path) -> Result<File, Failure> {
 pub fn ctl_line(dir: &Path, line: &str) -> Result<(), Failure> {
     let mut bytes = line.trim_end_matches('\n').as_bytes().to_vec();
     bytes.push(b'\n');
-    if bytes.len() > files::PIPE_BUF
-        || line.contains('\n') && line.trim_end_matches('\n').contains('\n')
-    {
+    if bytes.len() > files::PIPE_BUF || line.trim_end_matches('\n').contains('\n') {
         return Err(Failure::new(format!(
             "a ctl line is one line of at most {} bytes",
             files::PIPE_BUF
