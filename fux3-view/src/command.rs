@@ -154,7 +154,16 @@ pub fn start_new(
     program: &[String],
     cancel: &AtomicBool,
 ) -> Result<PaneRef, Failure> {
-    let taken = session.names().unwrap_or_default();
+    // A name a tile still shows (a pane gone) is not reused either.
+    let mut taken = session.names().unwrap_or_default();
+    if let Ok(layout) = view_dir(session).and_then(|view| layout::read(&view)) {
+        taken.extend(
+            layout
+                .tabs()
+                .flat_map(|t| t.leaves())
+                .map(|p| p.name.clone()),
+        );
+    }
     for number in 1..=MAX_NEW_NAMES {
         let name = format!("{prefix}-{number}");
         if taken.contains(&name) {
@@ -178,8 +187,8 @@ pub fn run_line(
 ) -> Result<Edited, Failure> {
     let command = layout::parse_command(line)?;
     let view = view_dir(session)?;
-    let (op, started) = match &command.op {
-        Op::SplitNew { target, dir } => {
+    let (op, started) = if let Op::SplitNew(target, dir) = &command.op {
+        {
             // The pane split must have a tile before a shell is started for it.
             let shown = layout::read(&view)?.shown(&live_panes(session));
             if !shown
@@ -195,25 +204,10 @@ pub fn run_line(
                 id: Some(pane.id.clone()),
             };
             let (target, dir) = (target.clone(), *dir);
-            (Op::Split { target, new, dir }, Some(pane))
+            (Op::Split(target, new, dir), Some(pane))
         }
-        Op::Split { .. }
-        | Op::Close(_)
-        | Op::Replace { .. }
-        | Op::Swap(..)
-        | Op::Move { .. }
-        | Op::Border { .. }
-        | Op::Zoom(_)
-        | Op::NewTab { .. }
-        | Op::RenameTab { .. }
-        | Op::CloseTab(_)
-        | Op::MoveTab { .. }
-        | Op::MatchTab { .. }
-        | Op::NewWorkspace { .. }
-        | Op::RenameWorkspace { .. }
-        | Op::CloseWorkspace(_)
-        | Op::MoveWorkspace { .. }
-        | Op::Reset => (command.op.clone(), None),
+    } else {
+        (command.op.clone(), None)
     };
     let edited = layout::edit(&view, command.expected, &live_panes(session), area, &op);
     match (edited, started) {

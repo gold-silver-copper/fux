@@ -373,11 +373,11 @@ impl Node {
 
     /// Moves the border that `pane` has on side `dir` of the nearest split
     /// along that axis with a part there, else the one on its other side,
-    /// by `amount` in `area`. True if a border moved.
-    fn border(&mut self, pane: &PaneRef, dir: Dir, amount: Amount, area: Rect) -> bool {
+    /// by `cells` in `area`. True if a border moved.
+    fn border(&mut self, pane: &PaneRef, dir: Dir, cells: u32, area: Rect) -> bool {
         [dir.forward(), !dir.forward()]
             .into_iter()
-            .any(|forward| self.border_on(pane, dir, forward, amount, area))
+            .any(|forward| self.border_on(pane, dir, forward, cells, area))
     }
 
     /// Tries the border on one side (`forward`: right or down) of `pane`.
@@ -386,7 +386,7 @@ impl Node {
         pane: &PaneRef,
         dir: Dir,
         forward: bool,
-        amount: Amount,
+        cells: u32,
         area: Rect,
     ) -> bool {
         let Node::Split { axis, parts } = self else {
@@ -399,7 +399,7 @@ impl Node {
         // The nearest split first: inside the part that holds the pane.
         if let Some((_, node)) = parts.get_mut(holder) {
             let inner = rects.get(holder).copied().unwrap_or_default();
-            if node.border_on(pane, dir, forward, amount, inner) {
+            if node.border_on(pane, dir, forward, cells, inner) {
                 return true;
             }
         }
@@ -421,7 +421,7 @@ impl Node {
             Axis::Columns => area.w.saturating_sub(gaps(parts.len())),
             Axis::Rows => area.h.saturating_sub(gaps(parts.len())),
         };
-        let delta = amount.shares(total, room);
+        let delta = shares(cells, total, room);
         let share = |index: usize| parts.get(index).map_or(0, |(share, _)| *share);
         let (a, b) = (share(first), share(second));
         let least = total
@@ -464,67 +464,22 @@ impl Node {
             },
         }
     }
-
-    /// Keeps every share within bounds, keeping their proportions.
-    fn bounded(self) -> Node {
-        match self {
-            Node::Leaf(leaf) => Node::Leaf(leaf),
-            Node::Split { axis, parts } => {
-                let total: u64 = parts.iter().map(|(share, _)| *share).sum();
-                let count = u64::try_from(parts.len()).unwrap_or(1);
-                let scale = total > MAX_SHARE || total < count.saturating_mul(10);
-                let parts = (parts.into_iter())
-                    .map(|(share, node)| {
-                        let share = match scale {
-                            true => share
-                                .saturating_mul(SHARE.saturating_mul(count))
-                                .checked_div(total)
-                                .unwrap_or(SHARE)
-                                .max(1),
-                            false => share,
-                        };
-                        (share, node.bounded())
-                    })
-                    .collect();
-                Node::Split { axis, parts }
-            }
-        }
-    }
 }
 
-/// How a border moves: a percentage of its split, or cells as seen in an
-/// area.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Amount {
-    Percent(u32),
-    Cells(u32),
+/// How far a border moves: `N` cells as seen in an area.
+fn parse_cells(text: &str) -> Result<u32, Failure> {
+    (text.parse::<u32>().ok())
+        .filter(|n| (1..=10_000).contains(n))
+        .ok_or_else(|| bad(format!("{text:?}: a number of cells, 1 to 10000")))
 }
 
-impl Amount {
-    /// `N%` or `N` (cells).
-    pub fn parse(text: &str) -> Result<Amount, Failure> {
-        let wrong = || bad(format!("{text:?}: an amount is N% or a number of cells"));
-        match text.strip_suffix('%') {
-            Some(number) => match number.parse::<u32>() {
-                Ok(n) if (1..=100).contains(&n) => Ok(Amount::Percent(n)),
-                _ => Err(wrong()),
-            },
-            None => match text.parse::<u32>() {
-                Ok(n) if (1..=10_000).contains(&n) => Ok(Amount::Cells(n)),
-                _ => Err(wrong()),
-            },
-        }
-    }
-
-    /// In shares of a split whose shares add to `total`, `room` long:
-    /// rounded up, so a cell asked for is at least a cell moved.
-    fn shares(self, total: u64, room: u32) -> u64 {
-        let (num, den) = match self {
-            Amount::Percent(n) => (u64::from(n), 100),
-            Amount::Cells(n) => (u64::from(n), u64::from(room.max(1))),
-        };
-        total.saturating_mul(num).div_ceil(den).max(1)
-    }
+/// `cells` in shares of a split whose shares add to `total`, `room` long:
+/// rounded up, so a cell asked for is at least a cell moved.
+fn shares(cells: u32, total: u64, room: u32) -> u64 {
+    (total
+        .saturating_mul(cells.into())
+        .div_ceil(room.max(1).into()))
+    .max(1)
 }
 
 /// A rectangle of cells.
@@ -1357,8 +1312,8 @@ fn find_id<'a>(
 pub enum Whither {
     /// Swap with the pane beside it that way.
     Beside(Dir),
-    /// Swap with the one before or after it in its tab.
-    Order { later: bool },
+    /// Swap with the one after it in its tab (true), or before.
+    Order(bool),
     /// To a tab (`None`: a new tab after its own).
     Tab(Option<String>),
     /// To a workspace's first tab (`None`: a new workspace).
@@ -1368,68 +1323,29 @@ pub enum Whither {
 /// What may change the layout: one command each (see the README).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
-    /// Puts pane `new` beside `target` on side `dir`, splitting its tile.
-    Split {
-        target: Target,
-        new: Target,
-        dir: Dir,
-    },
-    /// The same with a new shell: whoever runs the command starts it
-    /// first ([`Op::Split`] then), as no layout edit starts a pane.
-    SplitNew {
-        target: Target,
-        dir: Dir,
-    },
-    /// Takes `pane`'s tile away.
+    /// `split PANE DIR NEW`: puts pane NEW beside PANE on side DIR.
+    Split(Target, Target, Dir),
+    /// `split PANE DIR`: the same with a new shell, which whoever runs the
+    /// command starts first ([`Op::Split`] then): no layout edit starts a pane.
+    SplitNew(Target, Dir),
+    /// Takes a pane's tile away.
     Close(Target),
-    /// `new` takes `old`'s tile.
-    Replace {
-        old: Target,
-        new: Target,
-    },
     Swap(Target, Target),
-    Move {
-        pane: Target,
-        to: Whither,
-    },
-    Border {
-        pane: Target,
-        dir: Dir,
-        amount: Amount,
-    },
-    /// Zooms `pane` in its tab, or restores the tab if it is zoomed.
+    Move(Target, Whither),
+    /// Moves a pane's border toward DIR, by a number of cells.
+    Border(Target, Dir, u32),
+    /// Zooms a pane in its tab, or restores the tab if it is zoomed.
     Zoom(Target),
-    NewTab {
-        title: Option<String>,
-        after: Option<String>,
-        workspace: Option<String>,
-        tests: Vec<(String, String)>,
-    },
-    RenameTab {
-        tab: String,
-        title: String,
-    },
+    /// A tab: its title, the tab it comes after, its filter.
+    NewTab(Option<String>, Option<String>, Vec<(String, String)>),
+    RenameTab(String, String),
     CloseTab(String),
-    MoveTab {
-        tab: String,
-        later: bool,
-    },
-    MatchTab {
-        tab: String,
-        tests: Vec<(String, String)>,
-    },
-    NewWorkspace {
-        title: Option<String>,
-    },
-    RenameWorkspace {
-        workspace: String,
-        title: String,
-    },
+    /// A tab one place later (true) or earlier.
+    MoveTab(String, bool),
+    NewWorkspace(Option<String>),
+    RenameWorkspace(String, String),
     CloseWorkspace(String),
-    MoveWorkspace {
-        workspace: String,
-        later: bool,
-    },
+    MoveWorkspace(String, bool),
     /// The default layout, over whatever is there.
     Reset,
 }
@@ -1470,91 +1386,47 @@ pub fn parse_command(line: &str) -> Result<Command, Failure> {
             .map(|w| parse_test(w))
             .collect::<Result<Vec<_>, _>>()
     };
+    let dir = Dir::parse;
     let op = match words.as_slice() {
-        ["split", pane, dir] => Op::SplitNew {
-            target: target(pane)?,
-            dir: Dir::parse(dir)?,
-        },
-        ["split", pane, dir, new] => Op::Split {
-            target: target(pane)?,
-            new: target(new)?,
-            dir: Dir::parse(dir)?,
-        },
+        ["split", pane, way] => Op::SplitNew(target(pane)?, dir(way)?),
+        ["split", pane, way, new] => Op::Split(target(pane)?, target(new)?, dir(way)?),
         ["close", pane] => Op::Close(target(pane)?),
-        ["replace", old, new] => Op::Replace {
-            old: target(old)?,
-            new: target(new)?,
-        },
         ["swap", a, b] => Op::Swap(target(a)?, target(b)?),
-        ["move", pane, "tab", tab] => Op::Move {
-            pane: target(pane)?,
-            to: Whither::Tab((*tab != "new").then(|| owned(tab))),
-        },
-        ["move", pane, "workspace", space] => Op::Move {
-            pane: target(pane)?,
-            to: Whither::Workspace((*space != "new").then(|| owned(space))),
-        },
-        ["move", pane, way @ ("earlier" | "later")] => Op::Move {
-            pane: target(pane)?,
-            to: Whither::Order {
-                later: later_of(way)?,
-            },
-        },
-        ["move", pane, dir] => Op::Move {
-            pane: target(pane)?,
-            to: Whither::Beside(Dir::parse(dir)?),
-        },
-        ["border", pane, dir, amount] => Op::Border {
-            pane: target(pane)?,
-            dir: Dir::parse(dir)?,
-            amount: Amount::parse(amount)?,
-        },
+        ["move", pane, "tab", tab] => Op::Move(
+            target(pane)?,
+            Whither::Tab((*tab != "new").then(|| owned(tab))),
+        ),
+        ["move", pane, "workspace", space] => Op::Move(
+            target(pane)?,
+            Whither::Workspace((*space != "new").then(|| owned(space))),
+        ),
+        ["move", pane, way @ ("earlier" | "later")] => {
+            Op::Move(target(pane)?, Whither::Order(later_of(way)?))
+        }
+        ["move", pane, way] => Op::Move(target(pane)?, Whither::Beside(dir(way)?)),
+        ["border", pane, way, cells] => Op::Border(target(pane)?, dir(way)?, parse_cells(cells)?),
         ["zoom", pane] => Op::Zoom(target(pane)?),
         ["tab", "new", rest @ ..] => {
-            let (mut name, mut after, mut workspace, mut filter) = (None, None, None, Vec::new());
+            let (mut name, mut after, mut filter) = (None, None, Vec::new());
             let mut rest = rest;
             while let Some((word, more)) = rest.split_first() {
                 match (*word, more) {
                     ("after", [tab, more @ ..]) => (after, rest) = (Some(owned(tab)), more),
-                    ("in", [space, more @ ..]) => (workspace, rest) = (Some(owned(space)), more),
                     ("match", tests_given) => (filter, rest) = (tests(tests_given)?, &[]),
                     (text, more) if name.is_none() => (name, rest) = (Some(title(text)?), more),
                     (other, _) => return Err(bad(format!("tab new: unexpected {other:?}"))),
                 }
             }
-            Op::NewTab {
-                title: name,
-                after,
-                workspace,
-                tests: filter,
-            }
+            Op::NewTab(name, after, filter)
         }
-        ["tab", "rename", tab, text] => Op::RenameTab {
-            tab: owned(tab),
-            title: title(text)?,
-        },
+        ["tab", "rename", tab, text] => Op::RenameTab(owned(tab), title(text)?),
         ["tab", "close", tab] => Op::CloseTab(owned(tab)),
-        ["tab", "move", tab, way] => Op::MoveTab {
-            tab: owned(tab),
-            later: later_of(way)?,
-        },
-        ["tab", "match", tab, rest @ ..] => Op::MatchTab {
-            tab: owned(tab),
-            tests: tests(rest)?,
-        },
-        ["workspace", "new"] => Op::NewWorkspace { title: None },
-        ["workspace", "new", text] => Op::NewWorkspace {
-            title: Some(title(text)?),
-        },
-        ["workspace", "rename", space, text] => Op::RenameWorkspace {
-            workspace: owned(space),
-            title: title(text)?,
-        },
+        ["tab", "move", tab, way] => Op::MoveTab(owned(tab), later_of(way)?),
+        ["workspace", "new"] => Op::NewWorkspace(None),
+        ["workspace", "new", text] => Op::NewWorkspace(Some(title(text)?)),
+        ["workspace", "rename", space, text] => Op::RenameWorkspace(owned(space), title(text)?),
         ["workspace", "close", space] => Op::CloseWorkspace(owned(space)),
-        ["workspace", "move", space, way] => Op::MoveWorkspace {
-            workspace: owned(space),
-            later: later_of(way)?,
-        },
+        ["workspace", "move", space, way] => Op::MoveWorkspace(owned(space), later_of(way)?),
         ["reset"] => Op::Reset,
         [] => return Err(bad("an empty command")),
         _ => return Err(bad("no such layout command; see fux3-view's README")),
@@ -1607,7 +1479,7 @@ fn materialize(layout: &mut Layout, shown: &Layout, pane: &PaneRef) -> Result<u3
     let tab = shown
         .tab_of(pane)
         .ok_or_else(|| bad(format!("no tile for pane {pane}")))?;
-    let root = tab.root.clone().map(Node::bounded);
+    let root = tab.root.clone();
     let id = store_tab(layout, shown, tab.id)?;
     if let Some(stored) = layout.tab_mut(id) {
         stored.root = root;
@@ -1636,29 +1508,10 @@ fn store_tab(layout: &mut Layout, shown: &Layout, id: u32) -> Result<u32, Failur
 /// The pane `op` gives a tile to: while the edit reads the layout, it is
 /// not routed anywhere, so a pane just started moves no other tile.
 fn placing(op: &Op) -> Option<&Target> {
-    match op {
-        Op::Split { new, .. } | Op::Replace { new, .. } => Some(new),
-        Op::Move {
-            pane,
-            to: Whither::Tab(_) | Whither::Workspace(_),
-        } => Some(pane),
-        Op::Close(_)
-        | Op::SplitNew { .. }
-        | Op::Swap(..)
-        | Op::Move { .. }
-        | Op::Border { .. }
-        | Op::Zoom(_)
-        | Op::NewTab { .. }
-        | Op::RenameTab { .. }
-        | Op::CloseTab(_)
-        | Op::MoveTab { .. }
-        | Op::MatchTab { .. }
-        | Op::NewWorkspace { .. }
-        | Op::RenameWorkspace { .. }
-        | Op::CloseWorkspace(_)
-        | Op::MoveWorkspace { .. }
-        | Op::Reset => None,
+    if let Op::Split(_, new, _) | Op::Move(new, Whither::Tab(_) | Whither::Workspace(_)) = op {
+        return Some(new);
     }
+    None
 }
 
 /// `live` as routing sees it during `op`.
@@ -1806,7 +1659,7 @@ pub fn apply(
     let shown = layout.shown(&routing(op, live));
     let went = || bad("the tab went");
     match op {
-        Op::Split { target, new, dir } => {
+        Op::Split(target, new, dir) => {
             let target = resolve(&shown, live, target)?;
             let new = resolve_live(live, new)?;
             if new == target {
@@ -1825,27 +1678,12 @@ pub fn apply(
                 false => Err(bad(format!("no tile for pane {target}"))),
             }
         }
-        Op::SplitNew { .. } => Err(bad("a split with a new shell starts the shell first")),
+        Op::SplitNew(..) => Err(bad("a split with a new shell starts the shell first")),
         Op::Close(pane) => {
             let pane = resolve(&shown, live, pane)?;
             if layout.tab_of(&pane).is_some() {
                 materialize(layout, &shown, &pane)?;
                 unplace(layout, &pane);
-            }
-            Ok(None)
-        }
-        Op::Replace { old, new } => {
-            let (old, new) = (resolve(&shown, live, old)?, resolve_live(live, new)?);
-            if old != new {
-                let tab = materialize(layout, &shown, &old)?;
-                unplace(layout, &new);
-                let tab = layout.tab_mut(tab).ok_or_else(went)?;
-                if tab.zoom.as_ref() == Some(&old) {
-                    tab.zoom = Some(new.clone());
-                }
-                if let Some(root) = tab.root.as_mut() {
-                    root.rename(&old, &new);
-                }
             }
             Ok(None)
         }
@@ -1856,84 +1694,56 @@ pub fn apply(
             exchange(layout, &a, &b);
             Ok(None)
         }
-        Op::Move { pane, to } => {
-            let other = |pane: &PaneRef| -> Result<Option<PaneRef>, Failure> {
-                let tab = shown.tab_of(pane).ok_or_else(|| bad("no tab"))?;
-                Ok(match to {
-                    Whither::Beside(dir) => Some(
-                        (tab.neighbor(pane, *dir, area))
-                            .ok_or_else(|| bad(format!("no pane beside {pane} that way")))?,
-                    ),
-                    Whither::Order { later } => {
-                        let leaves = tab.leaves();
-                        let at = leaves.iter().position(|leaf| *leaf == pane).unwrap_or(0);
-                        let at = match later {
-                            true => at.checked_add(1),
-                            false => at.checked_sub(1),
-                        };
-                        at.and_then(|at| leaves.get(at)).map(|leaf| (*leaf).clone())
-                    }
-                    Whither::Tab(_) | Whither::Workspace(_) => None,
-                })
-            };
-            match to {
-                Whither::Beside(_) | Whither::Order { .. } => {
+        Op::Move(pane, to) => {
+            let (to, made) = match to {
+                Whither::Beside(_) | Whither::Order(_) => {
                     let pane = resolve(&shown, live, pane)?;
-                    if let Some(other) = other(&pane)? {
+                    if let Some(other) = swapped_with(&shown, &pane, to, area)? {
                         materialize(layout, &shown, &pane)?;
                         exchange(layout, &pane, &other);
                     }
-                    Ok(None)
+                    return Ok(None);
                 }
-                Whither::Tab(tab) => {
-                    // A routed pane just stops being routed.
+                Whither::Tab(Some(text)) => (
+                    store_tab(layout, &everything, tab_id(&everything, text)?)?,
+                    None,
+                ),
+                Whither::Tab(None) => {
                     let pane = resolve(&everything, live, pane)?;
                     let from = everything.tab_of(&pane).map_or(OTHER, |tab| tab.id);
-                    let (to, made) = match tab {
-                        Some(text) => (
-                            store_tab(layout, &everything, tab_id(&everything, text)?)?,
-                            None,
-                        ),
-                        None => {
-                            let id = new_tab(layout, space_of(layout, from), Some(from), None)?;
-                            (id, Some(format!("t{id}")))
-                        }
-                    };
-                    if !layout.tab(to).is_some_and(|tab| tab.holds(&pane)) {
-                        unplace(layout, &pane);
-                        add_to_tab(layout, to, &pane)?;
-                    }
-                    Ok(made)
+                    let id = new_tab(layout, space_of(layout, from), Some(from), None)?;
+                    (id, Some(format!("t{id}")))
                 }
-                Whither::Workspace(space) => {
-                    let pane = resolve(&everything, live, pane)?;
-                    let (to, made) = match space {
-                        Some(text) => {
-                            let id = workspace_id(layout, text)?;
-                            let first = (layout.workspaces.iter().find(|s| s.id == id))
-                                .and_then(|s| s.tabs.first())
-                                .map(|t| t.id);
-                            (first.ok_or_else(|| bad("an empty workspace"))?, None)
-                        }
-                        None => {
-                            let (space, tab) = new_workspace(layout, None)?;
-                            (tab, Some(format!("w{space}")))
-                        }
-                    };
-                    if !layout.tab(to).is_some_and(|tab| tab.holds(&pane)) {
-                        unplace(layout, &pane);
-                        add_to_tab(layout, to, &pane)?;
-                    }
-                    Ok(made)
+                Whither::Workspace(Some(text)) => {
+                    let id = workspace_id(layout, text)?;
+                    let first = (layout.workspaces.iter().find(|s| s.id == id))
+                        .and_then(|s| s.tabs.first());
+                    (
+                        first
+                            .map(|t| t.id)
+                            .ok_or_else(|| bad("an empty workspace"))?,
+                        None,
+                    )
                 }
+                Whither::Workspace(None) => {
+                    let (space, tab) = new_workspace(layout, None)?;
+                    (tab, Some(format!("w{space}")))
+                }
+            };
+            // A routed pane just stops being routed.
+            let pane = resolve(&everything, live, pane)?;
+            if !layout.tab(to).is_some_and(|tab| tab.holds(&pane)) {
+                unplace(layout, &pane);
+                add_to_tab(layout, to, &pane)?;
             }
+            Ok(made)
         }
-        Op::Border { pane, dir, amount } => {
+        Op::Border(pane, dir, cells) => {
             let pane = resolve(&shown, live, pane)?;
             let id = materialize(layout, &shown, &pane)?;
             let tab = layout.tab_mut(id).ok_or_else(went)?;
             let moved =
-                (tab.root.as_mut()).is_some_and(|root| root.border(&pane, *dir, *amount, area));
+                (tab.root.as_mut()).is_some_and(|root| root.border(&pane, *dir, *cells, area));
             match moved {
                 true => Ok(None),
                 false => Err(bad(format!("{pane} has no border to move that way"))),
@@ -1950,25 +1760,13 @@ pub fn apply(
             };
             Ok(None)
         }
-        Op::NewTab {
-            title,
-            after,
-            workspace,
-            tests,
-        } => {
-            let (space, after) = match (after, workspace) {
-                (Some(after), _) => {
+        Op::NewTab(title, after, tests) => {
+            let (space, after) = match after {
+                Some(after) => {
                     let id = store_tab(layout, &shown, tab_id(&shown, after)?)?;
                     (space_of(layout, id), Some(id))
                 }
-                (None, Some(workspace)) => {
-                    let id = workspace_id(layout, workspace)?;
-                    (
-                        (layout.workspaces.iter().position(|s| s.id == id)).unwrap_or(0),
-                        None,
-                    )
-                }
-                (None, None) => (0, None),
+                None => (0, None),
             };
             let id = new_tab(layout, space, after, title.as_deref())?;
             if let Some(tab) = layout.tab_mut(id) {
@@ -1976,7 +1774,7 @@ pub fn apply(
             }
             Ok(Some(format!("t{id}")))
         }
-        Op::RenameTab { tab, title } => {
+        Op::RenameTab(tab, title) => {
             let id = store_tab(layout, &shown, tab_id(&shown, tab)?)?;
             if let Some(tab) = layout.tab_mut(id) {
                 tab.title = title.clone();
@@ -1999,7 +1797,7 @@ pub fn apply(
             }
             Ok(None)
         }
-        Op::MoveTab { tab, later } => {
+        Op::MoveTab(tab, later) => {
             let id = store_tab(layout, &shown, tab_id(&shown, tab)?)?;
             for space in &mut layout.workspaces {
                 if let Some(at) = space.tabs.iter().position(|t| t.id == id) {
@@ -2008,18 +1806,11 @@ pub fn apply(
             }
             Ok(None)
         }
-        Op::MatchTab { tab, tests } => {
-            let id = store_tab(layout, &shown, tab_id(&shown, tab)?)?;
-            if let Some(tab) = layout.tab_mut(id) {
-                tab.tests = tests.clone();
-            }
-            Ok(None)
-        }
-        Op::NewWorkspace { title } => {
+        Op::NewWorkspace(title) => {
             let (space, _) = new_workspace(layout, title.as_deref())?;
             Ok(Some(format!("w{space}")))
         }
-        Op::RenameWorkspace { workspace, title } => {
+        Op::RenameWorkspace(workspace, title) => {
             let id = workspace_id(layout, workspace)?;
             if let Some(space) = layout.workspaces.iter_mut().find(|s| s.id == id) {
                 space.title = title.clone();
@@ -2034,7 +1825,7 @@ pub fn apply(
             }
             Ok(None)
         }
-        Op::MoveWorkspace { workspace, later } => {
+        Op::MoveWorkspace(workspace, later) => {
             let id = workspace_id(layout, workspace)?;
             if let Some(at) = layout.workspaces.iter().position(|s| s.id == id) {
                 step_item(&mut layout.workspaces, at, *later);
@@ -2043,6 +1834,32 @@ pub fn apply(
         }
         Op::Reset => fresh(layout).map(|()| None),
     }
+}
+
+/// The pane `pane` swaps with to move `to` (beside it, or before or
+/// after it in its tab); none past the tab's first or last.
+fn swapped_with(
+    shown: &Layout,
+    pane: &PaneRef,
+    to: &Whither,
+    area: Rect,
+) -> Result<Option<PaneRef>, Failure> {
+    let tab = shown.tab_of(pane).ok_or_else(|| bad("no tab"))?;
+    let leaves = tab.leaves();
+    let at = leaves.iter().position(|leaf| *leaf == pane).unwrap_or(0);
+    let other = match to {
+        Whither::Beside(dir) => {
+            let other = tab.neighbor(pane, *dir, area);
+            return other
+                .map(Some)
+                .ok_or_else(|| bad(format!("no pane beside {pane} that way")));
+        }
+        Whither::Order(true) => at.checked_add(1),
+        Whither::Order(false) | Whither::Tab(_) | Whither::Workspace(_) => at.checked_sub(1),
+    };
+    Ok(other
+        .and_then(|at| leaves.get(at))
+        .map(|leaf| (*leaf).clone()))
 }
 
 /// The default layout in place of `layout`, its version kept and its ids
@@ -2133,7 +1950,10 @@ mod tests {
             (text.replace("version", "versio"), "line 2"),
             (text.replacen("split rows", "split sideways", 1), "line"),
             (format!("{text}tab t99 \"x\"\n"), "id 99"),
-            (format!("{text}  pane a@{}\n", pane("a", '1').id), "two tiles"),
+            (
+                format!("{text}  pane a@{}\n", pane("a", '1').id),
+                "two tiles",
+            ),
         ] {
             let refused = parse(&wrong).err().unwrap_or_default();
             assert!(refused.contains(line), "{refused:?} for\n{wrong}");
@@ -2181,15 +2001,6 @@ mod tests {
         assert!(names.contains(&pane("job", '1').to_string()), "{names:?}");
         assert!(names.contains(&pane("job", '9').to_string()), "{names:?}");
         assert_eq!(names.len(), 3, "{names:?}");
-        run(
-            &mut layout,
-            &later,
-            &format!("replace {} job", pane("job", '1')),
-        )?;
-        assert_eq!(
-            layout.shown(&later).tabs().flat_map(|t| t.leaves()).count(),
-            2
-        );
         Ok(())
     }
 
@@ -2215,7 +2026,7 @@ mod tests {
         assert_eq!(width(&layout, "a", '1'), 50);
         run(&mut layout, &panes, "border a right 10")?;
         assert_eq!(width(&layout, "a", '1'), 60);
-        run(&mut layout, &panes, "border b right 100%")?;
+        run(&mut layout, &panes, "border b right 1000")?;
         assert!(width(&layout, "b", '2') >= 5);
         let before = layout.shown(&panes);
         run(&mut layout, &panes, "split b down c")?;

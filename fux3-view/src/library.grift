@@ -5,25 +5,10 @@
 ;; Where the command prompt's text runs.
 (define! top (current-context))
 
-;; The viewer's own actions: they act at once.
-(define! next-pane (lambda! () (act "next-pane")))
-(define! previous-pane (lambda! () (act "previous-pane")))
-(define! last-pane (lambda! () (act "last-pane")))
-(define! focus-left (lambda! () (act "focus-left")))
-(define! focus-right (lambda! () (act "focus-right")))
-(define! focus-up (lambda! () (act "focus-up")))
-(define! focus-down (lambda! () (act "focus-down")))
-(define! next-tab (lambda! () (act "next-tab")))
-(define! previous-tab (lambda! () (act "previous-tab")))
-(define! last-tab (lambda! () (act "last-tab")))
-(define! go-to-tab (lambda! (n) (act "go-to-tab" n)))
-(define! next-workspace (lambda! () (act "next-workspace")))
-(define! previous-workspace (lambda! () (act "previous-workspace")))
-(define! last-workspace (lambda! () (act "last-workspace")))
+;; The viewer's own actions, done at once: `(act "next-tab")`, and with an
+;; argument `(act "show-tab" "t3")`; the README lists them.
 (define! show-tab (lambda! (tab) (act "show-tab" tab)))
 (define! show-workspace (lambda! (space) (act "show-workspace" space)))
-(define! fit (lambda! () (act "fit")))
-(define! detach (lambda! () (act "detach")))
 (define! run-chord (lambda! (chord) (act "chord" chord)))
 
 ;; A pane's program: signals, and ending it, through its ctl file.
@@ -59,11 +44,6 @@
 ;; A shell beside the focused pane, on side `dir`: the split starts it.
 (define! split-new (lambda! (dir)
   (focus (started (edit! (join "split " (focused) " " dir))))))
-
-;; A shell in the tab shown.
-(define! new-shell-here (lambda! ()
-  (let! ((tab (shown-tab)) (pane (start-new "shell")))
-    (place-new! pane (lambda! (p) (edit! (join "move " p " tab " tab)))))))
 
 ;; The focused pane's history in a pager, below it: $PAGER, else less at
 ;; the end. The pane ends itself when the pager does.
@@ -120,9 +100,6 @@
            (workspaces))
       show-workspace
       (list (list "r" "rename" rename-workspace) (list "x" "close" confirm-close-workspace))))))
-(define! choose-pane (lambda! ()
-  (pick "panes" (map (lambda! (row) (list (first row) (name-of (first row)) (equal? (first row) (focused)))) (panes))
-    focus)))
 (define! swap-with (lambda! (pane)
   (let! ((others (filter (lambda! (row) (not? (equal? (first row) pane))) (panes-of (shown-tab)))))
     (when! (empty-list? others) (raise (error (quote! fail) "only one pane in this tab")))

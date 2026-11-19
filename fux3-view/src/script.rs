@@ -8,7 +8,9 @@
 //! pickers, prompts) are grift in `library.grift`, and the keys are grift in
 //! `defaults.grift`; the user's `view.grift`, loaded last, extends or
 //! replaces any of them.
+use crate::keys::{Action, Binding, Group};
 use crate::layout::{Dir, Layout, Rect};
+use crate::panel::{Ask, List, Panel, Row};
 use fux3::session::Session;
 use fuxix::poll::Poke;
 use grift::{Answer, Error, Grift, HostCall, HostFunction, Interrupter, Kept, Value};
@@ -63,85 +65,31 @@ const LIBRARY: &str = include_str!("library.grift");
 const DEFAULTS: &str = include_str!("defaults.grift");
 
 pub enum ToViewer {
-    /// The chord runs its function on this thread, under this number.
-    Bind {
-        chord: String,
-        caption: String,
-        heading: String,
-        generation: u64,
-    },
-    /// The chord does this at once on the viewer's own thread, so it works
-    /// while a binding runs.
-    BindVerb {
-        chord: String,
-        caption: String,
-        heading: String,
-        generation: u64,
-        verb: Verb,
-    },
-    /// The chord holds other keys.
-    Group {
-        chord: String,
-        caption: String,
-        heading: String,
-        repeat: bool,
-        generation: u64,
-    },
+    /// A key's binding: its function runs on this thread, or its verb at
+    /// once on the viewer's own (so it works while a binding runs).
+    Bind(String, Binding),
+    /// A key that holds other keys.
+    Group(String, Group),
     Unbind(String),
     Verb(Verb),
-    /// Focus this pane once it is there, and come back when it goes.
+    /// Focus this pane, showing its tab.
     Focus(String),
-    /// Show a list: rows of value, label and whether it is where you are
-    /// now (`*`) or only selected at first, and keys besides choosing with
-    /// their captions. What is chosen goes to callback `id`.
-    Pick {
-        id: u64,
-        title: String,
-        rows: Vec<(String, String, Start)>,
-        actions: Vec<(String, String)>,
-    },
-    /// Ask for a line; it goes to callback `id`.
-    Ask {
-        id: u64,
-        prompt: String,
-        initial: String,
-    },
+    /// Open a list, or a line to type: what it gives goes to its callback.
+    Panel(Panel),
     /// The layout changed: read it now.
     Reread,
-    /// Resize these panes to their tiles once the layout is at `version`.
-    Fit {
-        version: u64,
-        panes: Vec<String>,
-    },
+    /// Resize these panes to their tiles (the layout was just read again).
+    Fit(Vec<String>),
     /// A line for the bar's corner.
     Say(String),
     /// Bytes for a pane's program, after any keys typed before them.
-    Type {
-        pane: String,
-        bytes: Vec<u8>,
-    },
+    Type(String, Vec<u8>),
     /// A key for a pane's program, encoded as the program asked.
-    Key {
-        pane: String,
-        key: fux_vt::keys::KeyPress,
-    },
-    /// A run begins; `stop` ends it, `limit` is its time.
-    Started {
-        stop: Interrupter,
-        limit: Duration,
-    },
+    Key(String, fux_vt::keys::KeyPress),
+    /// A run begins: what stops it, and its time.
+    Started(Interrupter, Duration),
     /// The run ended: what went wrong, if anything.
     Done(Option<String>),
-}
-
-/// How a row of a list starts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Start {
-    Plain,
-    /// Marked `*` and selected: where you are now.
-    Current,
-    /// Selected, not marked.
-    Selected,
 }
 
 /// What the viewer shows, as a run sees it.
@@ -456,12 +404,16 @@ const WORDS: &[(&str, Word)] = &[
         if let Some(old) = host.kept.insert(chord.clone(), kept) {
             let _ = g.release(old);
         }
-        host.tell(ToViewer::Bind {
+        let action = Action::Script(generation);
+        host.tell(ToViewer::Bind(
             chord,
-            caption,
-            heading,
-            generation,
-        });
+            Binding {
+                action,
+                caption,
+                heading,
+                order: generation,
+            },
+        ));
         inert()
     }),
     ("bind-verb", |g, host, args| {
@@ -477,13 +429,16 @@ const WORDS: &[(&str, Word)] = &[
             let _ = g.release(old);
         }
         host.others.insert(chord.clone());
-        host.tell(ToViewer::BindVerb {
+        let action = Action::Verb(verb);
+        host.tell(ToViewer::Bind(
             chord,
-            caption,
-            heading,
-            generation,
-            verb,
-        });
+            Binding {
+                action,
+                caption,
+                heading,
+                order: generation,
+            },
+        ));
         inert()
     }),
     ("bind-group", |g, host, args| {
@@ -505,13 +460,15 @@ const WORDS: &[(&str, Word)] = &[
             let _ = g.release(old);
         }
         host.others.insert(chord.clone());
-        host.tell(ToViewer::Group {
+        host.tell(ToViewer::Group(
             chord,
-            caption,
-            heading,
-            repeat,
-            generation,
-        });
+            Group {
+                caption,
+                heading,
+                repeat,
+                order: generation,
+            },
+        ));
         inert()
     }),
     ("unbind-key", |g, host, args| {
@@ -609,7 +566,7 @@ const WORDS: &[(&str, Word)] = &[
             _ => return Err(g.arity_error(args)),
         };
         let title = string_arg(g, host, title)?;
-        let mut rows = Vec::new();
+        let (mut rows, mut selected) = (Vec::new(), None);
         for item in g.list_items(&items)? {
             let parts = g.list_items(&item)?;
             let (Some(value), Some(label)) = (parts.first(), parts.get(1)) else {
@@ -618,16 +575,20 @@ const WORDS: &[(&str, Word)] = &[
                     "each row is (value label), then #true for where you are, or \"selected\"",
                 ));
             };
-            let start = match parts.get(2) {
-                Some(Value::Boolean(true)) => Start::Current,
-                Some(other) if g.as_str(other)? == Some("selected") => Start::Selected,
-                _ => Start::Plain,
+            let current = matches!(parts.get(2), Some(Value::Boolean(true)));
+            let marked = match parts.get(2) {
+                Some(other) => current || g.as_str(other)? == Some("selected"),
+                None => false,
             };
-            rows.push((
-                string_arg(g, host, *value)?,
-                string_arg(g, host, *label)?,
-                start,
-            ));
+            if marked && selected.is_none() {
+                selected = Some(rows.len());
+            }
+            let (value, label) = (string_arg(g, host, *value)?, string_arg(g, host, *label)?);
+            rows.push(Row {
+                value,
+                label,
+                current,
+            });
             if rows.len() > crate::panel::MAX_ITEMS {
                 return Err(failed(
                     g,
@@ -650,12 +611,15 @@ const WORDS: &[(&str, Word)] = &[
             }
         }
         let id = keep_callbacks(g, host, &functions)?;
-        host.tell(ToViewer::Pick {
+        let selected = selected.unwrap_or(0);
+        let actions = keys;
+        host.tell(ToViewer::Panel(Panel::List(List {
             id,
             title,
             rows,
-            actions: keys,
-        });
+            actions,
+            selected,
+        })));
         inert()
     }),
     ("read-line", |g, host, args| {
@@ -663,11 +627,14 @@ const WORDS: &[(&str, Word)] = &[
         let prompt = string_arg(g, host, prompt)?;
         let initial = string_arg(g, host, initial)?;
         let id = keep_callbacks(g, host, &[function])?;
-        host.tell(ToViewer::Ask {
+        let text: Vec<char> = initial.chars().collect();
+        let cursor = text.len();
+        host.tell(ToViewer::Panel(Panel::Ask(Ask {
             id,
             prompt,
-            initial,
-        });
+            text,
+            cursor,
+        })));
         inert()
     }),
     ("arrange", |g, host, args| {
@@ -685,17 +652,8 @@ const WORDS: &[(&str, Word)] = &[
     ("fit-after", |g, host, args| {
         let [text] = *g.exactly(args)?;
         let text = string_arg(g, host, text)?;
-        let version = (text.lines())
-            .find_map(|line| line.strip_prefix("version "))
-            .and_then(|v| v.parse::<u64>().ok());
-        let Some(version) = version else {
-            return Err(failed(g, "not what arrange gives"));
-        };
-        let panes: Vec<String> = (text.lines())
-            .filter_map(|line| line.strip_prefix("changed "))
-            .map(str::to_owned)
-            .collect();
-        host.tell(ToViewer::Fit { version, panes });
+        let panes = (text.lines()).filter_map(|line| line.strip_prefix("changed "));
+        host.tell(ToViewer::Fit(panes.map(str::to_owned).collect()));
         g.string(&text).map(Answer::Now)
     }),
     ("line-of", |g, host, args| {
@@ -732,26 +690,10 @@ const WORDS: &[(&str, Word)] = &[
         host.tell(ToViewer::Focus(pane));
         inert()
     }),
-    ("fux3-program", |g, host, args| {
-        let [] = *g.exactly(args)?;
-        let path = host.fux3.to_string_lossy().into_owned();
-        g.string(&path).map(Answer::Now)
-    }),
     ("session-dir", |g, host, args| {
         let [] = *g.exactly(args)?;
         let path = host.session.root.to_string_lossy().into_owned();
         g.string(&path).map(Answer::Now)
-    }),
-    ("start", |g, host, args| {
-        let Some((name, rest)) = args.split_first() else {
-            return Err(g.arity_error(args));
-        };
-        let name = string_arg(g, host, *name)?;
-        let words = program(g, host, rest)?;
-        match crate::command::start(&host.fux3, &host.session, &name, &words, &host.cancel) {
-            Ok(pane) => g.string(&pane.to_string()).map(Answer::Now),
-            Err(failure) => Err(refused(g, host, &failure)),
-        }
     }),
     ("start-new", |g, host, args| {
         let Some((prefix, rest)) = args.split_first() else {
@@ -769,7 +711,7 @@ const WORDS: &[(&str, Word)] = &[
         let pane = string_arg(g, host, pane)?;
         pane_dir(g, host, &pane)?;
         let bytes = string_arg(g, host, text)?.into_bytes();
-        host.tell(ToViewer::Type { pane, bytes });
+        host.tell(ToViewer::Type(pane, bytes));
         inert()
     }),
     ("send-key", |g, host, args| {
@@ -780,7 +722,7 @@ const WORDS: &[(&str, Word)] = &[
         let key = key
             .parse::<fux_vt::keys::KeyPress>()
             .map_err(|e| failed(g, &e.to_string()))?;
-        host.tell(ToViewer::Key { pane, key });
+        host.tell(ToViewer::Key(pane, key));
         inert()
     }),
     ("ctl", |g, host, args| {
@@ -791,20 +733,6 @@ const WORDS: &[(&str, Word)] = &[
         crate::panes::ctl_line(&dir, &line).map_err(|f| failed(g, &f.0))?;
         inert()
     }),
-    ("read", |g, host, args| {
-        let [pane] = *g.exactly(args)?;
-        let pane = string_arg(g, host, pane)?;
-        let dir = pane_dir(g, host, &pane)?;
-        let path = dir.join(fux3::files::SCREEN);
-        let bytes = fux3::files::read_small(&path, fux3::files::MAX_SCREEN_FILE)
-            .map_err(|f| failed(g, &f.0))?;
-        text_answer(g, &String::from_utf8_lossy(&bytes))
-    }),
-    ("ls", |g, host, args| {
-        let [] = *g.exactly(args)?;
-        let names = host.session.names().map_err(|f| failed(g, &f.0))?;
-        strings(g, &names).map(Answer::Now)
-    }),
 ];
 
 fn describe(g: &Grift<Host>, error: &Error) -> String {
@@ -813,6 +741,15 @@ fn describe(g: &Grift<Host>, error: &Error) -> String {
         Ok(_) => text.as_str().replace('\n', " "),
         Err(_) => "the program failed".to_owned(),
     }
+}
+
+/// What a primitive said in an error grift describes as
+/// `fux3-error "WHY" in …`, else the description whole.
+fn said(described: &str) -> String {
+    let quoted = (described.strip_prefix("fux3-error \""))
+        .and_then(|rest| rest.split_once("\" in "))
+        .map(|(why, _)| why.replace("\\\"", "\""));
+    quoted.unwrap_or_else(|| described.to_owned())
 }
 
 fn prepare() -> Result<Grift<Host>, String> {
@@ -839,10 +776,7 @@ fn load(g: &mut Grift<Host>, host: &mut Host, config: Option<String>) -> Option<
         let Some(text) = text else {
             continue;
         };
-        host.tell(ToViewer::Started {
-            stop: g.interrupter(),
-            limit: CONFIG_TIME,
-        });
+        host.tell(ToViewer::Started(g.interrupter(), CONFIG_TIME));
         if let Err(error) = g.evaluate(host, &text) {
             return Some(format!("{what}: {}", describe(g, &error)));
         }
@@ -933,16 +867,15 @@ fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
                 continue;
             }
         };
-        host.tell(ToViewer::Started {
-            stop: g.interrupter(),
-            limit: BINDING_TIME,
-        });
+        host.tell(ToViewer::Started(g.interrupter(), BINDING_TIME));
         let (function, args) = function;
         let outcome = g.call(&mut host, &function, &args).err();
         // A run with no label (an answer from a list or prompt) says its
-        // error alone, as fux does.
+        // error alone, as fux does; a `.view/ctl` line's refusal is what a
+        // primitive said, if one did, for `.view/errors`.
         let why = outcome.map(|e| match run.label.as_str() {
             "" => describe(&g, &e),
+            label if label.starts_with("ctl: ") => said(&describe(&g, &e)),
             label => format!("{label}: {}", describe(&g, &e)),
         });
         host.tell(ToViewer::Done(why));
