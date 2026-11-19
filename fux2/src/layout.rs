@@ -423,8 +423,31 @@ impl Node {
             Axis::Columns => area.w,
             Axis::Rows => area.h,
         };
-        let delta = amount.shares(total, room)?;
         let (a, b) = (share_of(parts, first), share_of(parts, second));
+        // Cells are counted where the border is drawn: the shares that put
+        // it exactly that many cells away, no more.
+        let delta = match amount {
+            Amount::Cells(cells) => {
+                let before: u64 = parts
+                    .iter()
+                    .take(first.saturating_add(1))
+                    .map(|(s, _)| *s)
+                    .sum();
+                let room = u64::from(room);
+                let at = room.saturating_mul(before).checked_div(total).unwrap_or(0);
+                let target = match dir.forward() {
+                    true => at.saturating_add(u64::from(cells)),
+                    false => at.saturating_sub(u64::from(cells)),
+                };
+                let wanted = target
+                    .saturating_mul(total)
+                    .checked_next_multiple_of(room)
+                    .and_then(|whole| whole.checked_div(room))
+                    .ok_or_else(|| invalid("the split has no room to move a border in"))?;
+                wanted.abs_diff(before)
+            }
+            Amount::Percent(_) => amount.shares(total, room)?,
+        };
         // Each side keeps at least a cell, as it is drawn in `area`.
         let least = Amount::Cells(1).shares(total, room)?;
         let (a, b) = match dir.forward() {
@@ -1952,6 +1975,12 @@ fn apply_op(
         Op::Replace { old, new } => {
             let old = resolve(&shown, live, old)?;
             let new = resolve_live(live, new)?;
+            // A pane still there, ended or not, would only be routed beside
+            // its replacement.
+            if old != new && live.iter().any(|l| l.pane == old) {
+                let why = format!("{old} is still there: fux2 kill it first, or swap the two");
+                return Err(invalid(why));
+            }
             if old == new {
                 return Ok(None);
             }
@@ -2739,6 +2768,57 @@ mod tests {
             tab.neighbor(&pane("a", 1), Dir::Right, area),
             Some(pane("c", 3))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_border_moved_a_cell_moves_one_cell_at_any_width() -> Result<(), Failure> {
+        for w in (0u32..26).map(|i| i.saturating_mul(7).saturating_add(40)) {
+            let (mut layout, panes) = three_columns()?;
+            let area = Rect {
+                x: 0,
+                y: 0,
+                w,
+                h: 30,
+            };
+            let edge = |layout: &Layout| -> u32 {
+                let tab = layout
+                    .tabs()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| Tab::new(2, "x"));
+                tab.tiles(area)
+                    .iter()
+                    .find(|(p, _)| p.name == "a")
+                    .map_or(0, |(_, r)| r.w)
+            };
+            for _ in 0..5 {
+                let was = edge(&layout);
+                apply(
+                    &mut layout,
+                    &panes,
+                    area,
+                    &Op::Border {
+                        pane: target("a"),
+                        dir: Dir::Right,
+                        amount: Amount::Cells(1),
+                    },
+                )?;
+                assert_eq!(edge(&layout), was.saturating_add(1), "at width {w}");
+            }
+        }
+        // A pane still there is not replaced: it would be routed beside.
+        let (mut layout, panes) = three_columns()?;
+        let refused = apply(
+            &mut layout,
+            &panes,
+            NOMINAL,
+            &Op::Replace {
+                old: target("a"),
+                new: target("d"),
+            },
+        );
+        assert!(refused.is_err());
         Ok(())
     }
 

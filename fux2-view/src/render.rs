@@ -69,6 +69,23 @@ impl Frame {
     }
 
     fn put(&mut self, x: u16, y: u16, text: &str, sgr: &str, tail: bool) {
+        // Writing over half of a wide glyph loses the other half on a
+        // terminal: it is blanked here too, so this frame is what the
+        // terminal shows and a later frame redraws the glyph whole.
+        if !tail {
+            let was_tail = self.at(x, y).is_some_and(|cell| cell.tail);
+            if was_tail && let Some(head) = x.checked_sub(1).and_then(|h| self.at(h, y)) {
+                head.text.clear();
+                head.text.push(' ');
+            }
+            if let Some(next) = x.checked_add(1).and_then(|n| self.at(n, y))
+                && next.tail
+            {
+                next.tail = false;
+                next.text.clear();
+                next.text.push(' ');
+            }
+        }
         if let Some(cell) = self.at(x, y) {
             cell.text.clear();
             cell.text.push_str(text);
@@ -310,6 +327,47 @@ mod tests {
         let after = out.split('\u{4e16}').nth(1).unwrap_or("missing");
         assert!(!after.starts_with('\x1b'), "drawn over: {out:?}");
         assert!(out.contains('\u{4e16}'), "{out:?}");
+    }
+
+    /// What a terminal shows of row 0 after `bytes`, from a blank screen.
+    fn shown(screens: &[&[u8]], cols: u16) -> Result<String, Box<dyn std::error::Error>> {
+        let size = fux_vt::Size::new(1, cols)?;
+        let mut term = fux_vt::Parser::with_options(size, 0, fux_vt::Options::new())?;
+        for bytes in screens {
+            term.process_all(bytes, &mut ());
+        }
+        let window = term.screen().window();
+        Ok(window
+            .iter()
+            .map(|(_, row)| row.text())
+            .collect::<Vec<_>>()
+            .join(""))
+    }
+
+    /// A panel covering half of a wide glyph, then gone: the terminal shows
+    /// each frame as composed, with no half glyph and nothing left behind.
+    #[test]
+    fn covering_half_a_wide_glyph_leaves_nothing_behind() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut glyph = Frame::new(6, 1);
+        glyph.label(0, 0, 6, "a\u{4e16}bc", "");
+        let mut covered = glyph.clone();
+        covered.label(2, 0, 4, "XYZ", ";7");
+        let blank = Frame::new(6, 1);
+        let first = glyph.diff(&blank);
+        let cover = covered.diff(&glyph);
+        let uncover = glyph.diff(&covered);
+        assert_eq!(shown(&[&first, &cover], 6)?.trim_end(), "a XYZ");
+        assert_eq!(
+            shown(&[&first, &cover, &uncover], 6)?.trim_end(),
+            "a\u{4e16}bc"
+        );
+        // And a glyph written over the first half of another.
+        let mut over = glyph.clone();
+        over.label(1, 0, 1, "Q", "");
+        let both = [&first[..], &over.diff(&glyph)[..]];
+        assert_eq!(shown(&both, 6)?.trim_end(), "aQ bc");
+        Ok(())
     }
 
     #[test]

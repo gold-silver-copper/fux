@@ -684,6 +684,10 @@ impl View {
             self.back = None;
         }
         self.dirty |= chosen != self.focus;
+        // A focus moved for you is a focus moved: `last-pane` goes back.
+        if chosen != self.focus && self.focus.is_some() && chosen.is_some() {
+            self.last_focus = self.focus.clone();
+        }
         self.focus_name = chosen
             .as_ref()
             .map(|p| p.name.clone())
@@ -801,9 +805,12 @@ impl View {
                     self.notice = None;
                 }
                 self.layout_text = text;
-                // A drag in progress was made against the old one.
-                self.drag = None;
                 let changed = stored != self.stored;
+                // A drag in progress was made against the old one: it is
+                // over, and said to be, not dropped in silence.
+                if changed && self.drag.take().is_some() {
+                    self.say("the layout changed during the drag; the border was not moved");
+                }
                 self.stored = stored;
                 changed
             }
@@ -1294,6 +1301,10 @@ impl View {
             ToViewer::Done(why) => {
                 self.running = None;
                 self.run_sent = false;
+                // A drag's preview that was not stored goes.
+                if self.drag.is_none() {
+                    self.arranged = Arc::new(self.stored.shown(&self.live));
+                }
                 if let Some(why) = why {
                     self.say(why);
                 }
@@ -1711,7 +1722,7 @@ impl View {
     /// a repeating group, a list or a prompt is open; else only its right
     /// corner, and only for a notice or panes hidden or cut. True if drawn.
     fn draw_bar(&self, frame: &mut Frame, tiles: &[(PaneRef, Rect)]) -> bool {
-        let (cols, rows) = (frame_cols(self.term), self.term.1);
+        let (cols, rows) = (frame_cols(self.term), self.term.1.min(render::MAX_ROWS));
         let y = rows.saturating_sub(1);
         let whole = self.column.is_some() || self.repeat.is_some() || self.panel.is_some();
         let unseen = self.unseen(tiles);
@@ -2087,6 +2098,8 @@ fn run() -> Result<(), Failure> {
         next_scan: now,
         quit: false,
     };
+    // The layout first, so the first tab shown is the first in order.
+    view.reread_layout();
     view.refresh(true);
     if let Some(note) = note {
         view.say(note);

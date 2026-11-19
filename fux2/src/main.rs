@@ -695,18 +695,30 @@ fn page(mut args: Args) -> Outcome {
         .ok()
         .and_then(|id| PaneId::parse(&id));
     let own = own.zip(id).map(|(name, id)| Target { name, id: Some(id) });
-    // Its tile goes with it: it was made for this and nothing else.
-    if let Some(own) = &own
-        && let Ok(session) = Session::open()
-        && let Ok(live) = live_panes(&session)
-    {
-        let _ = layout::edit(
-            &session,
-            None,
-            &live,
-            layout::NOMINAL,
-            &Op::Remove(own.clone()),
-        );
+    // Its tile goes with it: it was made for this and nothing else. A
+    // busy layout is tried again; a failure that stays is said, and read,
+    // before the pane goes, so a tile left behind is never a surprise.
+    if let Some(own) = &own {
+        let remove = Op::Remove(own.clone());
+        let mut removed = Err(Failure::new(Code::Busy, "not tried"));
+        for _ in 0..3 {
+            removed = Session::open().and_then(|session| {
+                let live = live_panes(&session)?;
+                layout::edit(&session, None, &live, layout::NOMINAL, &remove)
+            });
+            if !matches!(&removed, Err(f) if f.code == Code::Busy) {
+                break;
+            }
+        }
+        // One with no tile has nothing to remove.
+        if let Err(failure) = removed.filter_missing() {
+            let mut err = std::io::stderr();
+            let _ = writeln!(
+                err,
+                "fux2: its tile stays: {failure}\n\npress Enter to close"
+            );
+            let _ = std::io::stdin().take(1024).read(&mut [0; 1024]);
+        }
     }
     if let Some(own) = &own
         && let Ok(mut client) = connect(own)
@@ -715,6 +727,21 @@ fn page(mut args: Args) -> Outcome {
         let _ = client.call(&Request::Kill { expected: None }, ANSWER_WAIT);
     }
     shown
+}
+
+trait FilterMissing {
+    fn filter_missing(self) -> Result<(), Failure>;
+}
+
+impl<T> FilterMissing for Result<T, Failure> {
+    /// Ok, or the failure unless it says the thing is missing.
+    fn filter_missing(self) -> Result<(), Failure> {
+        match self {
+            Ok(_) => Ok(()),
+            Err(f) if f.code == Code::Missing => Ok(()),
+            Err(f) => Err(f),
+        }
+    }
 }
 
 /// The pane's history in `$PAGER`, else a pager of the system's.
