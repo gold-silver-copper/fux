@@ -503,16 +503,21 @@ fn an_edit_from_outside_is_shown_and_fitted_by_a_running_viewer() -> Tested {
 }
 
 /// `C-b c` gives the editor one text, the pane's history and then its
-/// screen: it ends with the screen's last row that is not blank.
+/// screen as it was when the key was pressed: every row once, the last one
+/// the screen's last that is not blank. Opening the copy disturbs nothing:
+/// a pane whose size is not its tile's keeps it, before and after.
 #[test]
 fn the_history_key_opens_the_history_and_then_the_screen() -> Tested {
     let lab = Lab::new("copy", "")?;
     lab.start("only")?;
     lab.viewer("v", "100x30", &[])?;
     lab.shows("v", "$")?;
-    lab.keys("v", b"echo mar''ker\r")?;
-    until("the line ran", || {
-        lab.read(&lab.view, "only", "screen").contains("marker")
+    lab.keys(
+        "v",
+        b"i=0; while [ $i -lt 40 ]; do i=$((i+1)); echo row-$i; done\r",
+    )?;
+    until("the rows are out", || {
+        lab.read(&lab.view, "only", "screen").contains("row-40\n")
     })?;
     let screen = lab.read(&lab.view, "only", "screen");
     let last = (screen.lines().skip(1))
@@ -523,8 +528,17 @@ fn the_history_key_opens_the_history_and_then_the_screen() -> Tested {
     let copied = lab.base.join("editor.copied");
     until("the editor was given the text", || copied.exists())?;
     let text = std::fs::read_to_string(&copied).map_err(|e| e.to_string())?;
-    assert!(text.contains("\nmarker\n"), "{text:?}");
+    for n in 1..=40 {
+        let row = format!("row-{n}");
+        let times = text.lines().filter(|line| *line == row).count();
+        assert_eq!(times, 1, "{row} is in the text {times} times:\n{text}");
+    }
     assert_eq!(text.lines().last(), Some(last), "{text:?}");
+    until("the copy's pane went", || {
+        !lab.view.join("main/history-1").exists()
+    })?;
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(lab.size("only"), "80 24", "the copy resized its source");
     Ok(())
 }
 

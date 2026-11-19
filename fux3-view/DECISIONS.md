@@ -260,3 +260,22 @@ Append-only: one short entry per decision, newest last.
       the same workspace says `no tile for pane NAME@OLDID` (true, and nothing is done to the
       new pane), in grift's error form rather than a plain sentence.
     - Lines: production 5,861 → 5,883 (28 added, 6 paid by folding `release_callbacks`).
+22. **Opening the copy resizes nothing but its own pane (a tester's finding, 2026-11-19).** `C-b c`
+    split the pane and fitted both halves, so the pane copied was resized before, or while, the
+    script read its `screen`: a shrink pushed rows off that the core does not add to `history`
+    (a row seen when the key was pressed was missing from the text), a grow pulled rows back
+    (eleven rows twice). Now the split is an `arrange` and only the new pane is fitted; the pane
+    copied keeps its size and its tile clips it while the editor is open, as a tile does. Closing
+    the copy fits nothing either (`close-tile` takes the word to change the layout with:
+    `arrange` here, `edit!` for `C-b x`), so a pane fitted before is the size of its tile again
+    without having been touched, and one never fitted stays as it was.
+    - Chosen over making the text before the split: the script starts with the pane, and the
+      viewer has no way to wait for it but a new word; and a resize would still disturb the
+      program copied (a redraw, a reflow) for a copy the user only reads.
+    - **What changes while a binding runs is its own edit**: the once-a-second look fits a layout
+      change only when no binding is running. It closes the window entry 19 named (an `arrange`
+      seen by that look before its own read was fitted), which this now depends on. Cost: an
+      edit from outside landing while a binding runs is shown and not fitted.
+    - With two viewers of one workspace, the other one still fits the pane copied to its own
+      tile when it sees the split (entry 19's cost).
+    - Lines: production 5,883 → 5,889.

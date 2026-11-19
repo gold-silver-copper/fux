@@ -41,11 +41,12 @@
 (define! split-new (lambda! (dir)
   (focus (started (edit! (join "split " (focused) " " dir))))))
 
-;; Takes a pane's tile away, if a tile still has its name.
-(define! close-tile (lambda! (pane)
+;; Takes a pane's tile away, if a tile still has its name, with `change`:
+;; `edit!` to fit the panes that get its room, `arrange` to fit none.
+(define! close-tile (lambda! (pane change)
   (if! (empty-list? (filter (lambda! (row) (equal? (name-of (first row)) (name-of pane))) (panes)))
     #inert
-    (edit! (join "close " pane)))))
+    (change (join "close " pane)))))
 
 ;; The focused pane's history and then its screen (as it is when the key
 ;; is pressed, without trailing blank rows), as one text in a private file
@@ -55,7 +56,9 @@
 ;; pane. When the editor ends, the pane removes the file and its recipe
 ;; (a template never starts one; it is under the name the pane started
 ;; with) and ends itself, wherever it was moved to (it finds its directory
-;; by its id); this viewer then closes its tile.
+;; by its id); this viewer then closes its tile. Opening and closing the
+;; copy resize only its own pane: the pane copied keeps its size (its tile
+;; clips it meanwhile), so its screen is what it was when the key was pressed.
 (define! history-script
   "umask 077; d=\"$FUX3_DIR/.history-$FUX3_PANE_ID\"; f=history-and-screen
 trap 'rm -rf \"$d\"' EXIT; trap 'exit 1' HUP INT TERM; mkdir \"$d\" && cd \"$d\" || exit 1
@@ -71,8 +74,10 @@ p=$(grep -lx \"$FUX3_PANE_ID\" \"$FUX3_DIR\"/*/*/id) && echo kill 1<>\"${p%id}ct
   (let! ((target (focused))
          (file (join (workspace-dir) "/" (name-of target) "/history"))
          (pane (start-new "history" "sh" "-c" history-script "sh" file)))
-    (when-gone pane (lambda! () (close-tile pane)))
-    (place-new! pane (lambda! (p) (edit! (join "split " target " down " p)))))))
+    (when-gone pane (lambda! () (close-tile pane arrange)))
+    (place-new! pane (lambda! (p)
+      (arrange (join "split " target " down " p))
+      (fit-after (join "changed " p)))))))
 
 ;; Asks, as a list with one row, Yes, and calls `then` only if it is chosen.
 (define! confirm (lambda! (question then)
@@ -84,7 +89,7 @@ p=$(grep -lx \"$FUX3_PANE_ID\" \"$FUX3_DIR\"/*/*/id) && echo kill 1<>\"${p%id}ct
 ;; stays while the program runs.
 (define! close-pane (lambda! (pane)
   (catch-kind! (kill pane) pane-gone gone #inert)
-  (when-gone pane (lambda! () (close-tile pane)))))
+  (when-gone pane (lambda! () (close-tile pane edit!)))))
 (define! confirm-close-pane (lambda! (pane)
   (confirm (join "close pane " (name-of pane) "?") (lambda! () (close-pane pane)))))
 

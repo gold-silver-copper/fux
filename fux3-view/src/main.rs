@@ -1493,7 +1493,8 @@ fn serve(
     while !view.quit {
         let now = Instant::now();
         if now >= view.next_scan {
-            view.rescan(now, true);
+            // What changes while a binding runs is its own edit: not fitted.
+            view.rescan(now, !view.run_sent);
         }
         if now >= view.next_look {
             view.look(now);
