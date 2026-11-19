@@ -121,8 +121,9 @@ interrupts the read it starts again, and after three tries it says so
 
 In the viewer, `C-b [` opens the focused pane's history in a new pane running
 `$PAGER`, else `less`, else `more` (`more.com` on Windows). Search and scroll
-there, and select with your terminal to copy. When the pager ends, the pane
-removes itself and the focus returns.
+there, and select with your terminal to copy. The new pane is 80x24 like any other;
+`C-b f` fits it to its tile. When the pager ends, the pane removes itself and the
+focus returns.
 
 ### Layout file
 
@@ -229,9 +230,13 @@ prevent mistakes such as typing into a replaced pane. They are not passwords.
 No shared layout or session state, no ordering across panes, no restart of a
 program, no taking over of a pane from a crashed daemon, no mouse, no graphics, no
 clipboard bridge, no scroll mode in the viewer, no program-set palette colours, and
-no judgement of whether a program is "ready". Tiles are equal: no uneven splits,
-resizable borders or splitting by hand. There is no tab or workspace picker, and a
-pane cannot move between tabs, since its labels are fixed when it starts. If a pane's daemon itself is killed its screen is gone, and
+no judgement of whether a program is "ready".
+
+Planned next, replacing the layout file described above: a layout stored in the
+session directory that viewers and the command line can change, splitting by hand,
+uneven splits with movable borders, moving panes between tabs, pickers for tabs and
+workspaces, and a prefix menu built from the bindings. Today tiles are equal and a
+pane's labels are fixed when it starts. If a pane's daemon itself is killed its screen is gone, and
 its program normally gets a hang-up; a program that ignores that keeps running
 with nothing attached.
 

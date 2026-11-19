@@ -421,6 +421,8 @@ jobs:
             $failed += [int]($run.ExitCode -ne 0)
           }
           # fux2's viewer runs the user's key bindings only when not elevated.
+          # The test inherits this job's TEMP, so that user must be able to use it.
+          icacls $env:TEMP /grant '*S-1-5-32-545:(OI)(CI)M' /Q | Out-Null
           $view = Get-ChildItem target\debug\deps\view-*.exe | Sort-Object LastWriteTime | Select-Object -Last 1
           "=== $($view.Name)"
           $log = "$env:RUNNER_TEMP\view.txt"

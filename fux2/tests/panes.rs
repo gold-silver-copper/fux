@@ -210,8 +210,9 @@ fn an_old_token_never_reaches_the_replacement() -> Tested {
 #[test]
 fn kill_ends_what_an_ended_program_left_behind() -> Tested {
     let lab = Lab::new()?;
-    // It ignores the hang-up its terminal's end sends, as a daemon would.
-    let script = "(trap '' HUP; exec sleep 300) & echo left=$!; exit 0";
+    // Ignored before the child exists, so the hang-up the terminal's end
+    // sends cannot reach it first: it stays behind, as a daemon would.
+    let script = "trap '' HUP; sleep 300 & echo left=$!; exit 0";
     lab.start("orphan", &program(script, ""))?;
     let until = soon(Duration::from_secs(10));
     let pid = loop {
