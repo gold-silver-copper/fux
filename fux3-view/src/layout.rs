@@ -1960,4 +1960,23 @@ mod tests {
         assert_eq!(tiles, [(2, b.to_string())]);
         Ok(())
     }
+
+    /// A bare zoom names whichever pane has the name once every pane has its
+    /// tile, a routed one too; edits leave it bare, and `zoom` restores it.
+    #[test]
+    fn a_bare_zoom_takes_a_routed_pane_and_stays_bare() -> Result<(), Failure> {
+        let text = format!("{HEADER}\nversion 1\nnext 2\ntab t1 \"all\"\n  zoom a\n");
+        let mut layout = parse(&text).map_err(bad)?;
+        let lives = [live("a", '1', &[]), live("b", '1', &[])];
+        let zoomed = |layout: &Layout| {
+            let shown = layout.shown(&lives);
+            shown.tabs.first().and_then(Tab::zoomed).cloned()
+        };
+        assert_eq!(zoomed(&layout), Some(pane("a", '1')));
+        run(&mut layout, &lives, "tab new spare")?;
+        assert!(layout.to_string().contains("  zoom a\n"), "{layout}");
+        run(&mut layout, &lives, "zoom a")?;
+        assert_eq!(zoomed(&layout), None, "{layout}");
+        Ok(())
+    }
 }
