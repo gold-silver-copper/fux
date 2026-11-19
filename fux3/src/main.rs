@@ -127,8 +127,13 @@ fn session() -> Result<(Session, Vec<String>), Failure> {
 fn dir(args: impl Iterator<Item = OsString>) -> Outcome {
     none_left(args)?;
     let (session, _) = session()?;
+    say_path(&session.root)
+}
+
+/// Prints a path as the system names it, bytes and all.
+fn say_path(path: &std::path::Path) -> Outcome {
     use std::os::unix::ffi::OsStrExt;
-    let mut out = session.root.as_os_str().as_bytes().to_vec();
+    let mut out = path.as_os_str().as_bytes().to_vec();
     out.push(b'\n');
     let mut stdout = std::io::stdout();
     match stdout.write_all(&out).and_then(|()| stdout.flush()) {
@@ -191,15 +196,7 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
     if line != "ok" {
         return Err(Failure::new(line.strip_prefix("err ").unwrap_or(&line)));
     }
-    // The directory as the system names it, bytes and all.
-    let dir = session.root.join(&workspace).join(&name);
-    let mut out = dir.as_os_str().as_bytes().to_vec();
-    out.push(b'\n');
-    let mut stdout = std::io::stdout();
-    match stdout.write_all(&out).and_then(|()| stdout.flush()) {
-        Ok(()) => Ok(ExitCode::SUCCESS),
-        Err(e) => Err(io("stdout", e)),
-    }
+    say_path(&session.root.join(&workspace).join(&name))
 }
 
 /// What a start's arguments ask for, read in the holder: the starter's
@@ -291,7 +288,9 @@ fn spec(
     let cwd = std::env::current_dir().map_err(|e| io("the current directory", e))?;
     // With no program, a recipe of the name runs; else the shell, whose
     // recipe is written as any program's is.
-    let saved = fux3::recipe::path(&session.root.join(&workspace), &name);
+    let saved = (session.root.join(&workspace))
+        .join(fux3::recipe::DIR)
+        .join(&name);
     // A recipe there is run only if it is a plain file of a recipe's size;
     // anything else there is refused, never taken for "no recipe".
     let recipe = match std::fs::symlink_metadata(&saved) {

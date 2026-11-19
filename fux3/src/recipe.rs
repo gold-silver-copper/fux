@@ -7,7 +7,7 @@ use crate::{Failure, io};
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The recipes' directory in a workspace.
 pub const DIR: &str = ".recipes";
@@ -29,21 +29,6 @@ pub fn quote(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Whether `name` may name an environment variable in a recipe.
-pub fn check_env_name(name: &str) -> Result<(), Failure> {
-    let mut chars = name.chars();
-    let good = chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    match good {
-        true => Ok(()),
-        false => Err(Failure::new(format!(
-            "bad variable name {name:?}: [A-Za-z_][A-Za-z0-9_]*"
-        ))),
-    }
-}
-
 /// Names `sh` owns and will not take a value for (`bash`, which is
 /// `/bin/sh` on macOS, makes them read-only): a recipe setting one would
 /// not run, so a start naming one is refused.
@@ -56,14 +41,32 @@ const OWNED: [&str; 6] = [
     "BASH_VERSINFO",
 ];
 
+/// Whether `name` may name an environment variable in a recipe: a
+/// variable's name, and none `sh` owns.
+pub fn check_env_name(name: &str) -> Result<(), Failure> {
+    let mut chars = name.chars();
+    let good = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    match (good, OWNED.contains(&name)) {
+        (true, false) => Ok(()),
+        (true, true) => Err(Failure::new(format!(
+            "--env {name}: sh keeps that variable for itself, so the recipe could not run"
+        ))),
+        (false, _) => Err(Failure::new(format!(
+            "bad variable name {name:?}: [A-Za-z_][A-Za-z0-9_]*"
+        ))),
+    }
+}
+
 /// Where a recipe keeps the start's size and labels: comment lines, which
 /// `sh` skips and a start with no program reads back ([`Kept`]).
 const SIZE: &str = "# fux3 size ";
 const LABEL: &str = "# fux3 label ";
 
 /// The recipe of a program started in `cwd` with `env` and `argv`, and
-/// what it keeps besides; or why not: a variable `sh` owns, or past
-/// [`MAX_RECIPE`].
+/// what it keeps besides; or why not: past [`MAX_RECIPE`].
 pub fn render(
     cwd: &Path,
     env: &[(String, OsString)],
@@ -81,11 +84,6 @@ pub fn render(
     out.extend_from_slice(&quote(cwd.as_os_str().as_bytes()));
     out.extend_from_slice(b" || exit 126\n");
     for (name, value) in env {
-        if OWNED.contains(&name.as_str()) {
-            return Err(Failure::new(format!(
-                "--env {name}: sh keeps that variable for itself, so the recipe could not run"
-            )));
-        }
         let _ = write!(out, "{name}=");
         out.extend_from_slice(&quote(value.as_bytes()));
         let _ = writeln!(out, "; export {name}");
@@ -127,11 +125,6 @@ pub fn kept(text: &[u8]) -> Kept {
         }
     }
     kept
-}
-
-/// Where the recipe of `name` in the workspace directory `workspace` is.
-pub fn path(workspace: &Path, name: &str) -> PathBuf {
-    workspace.join(DIR).join(name)
 }
 
 /// Writes the recipe of `name` in the workspace held open as `workspace`,
