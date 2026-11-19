@@ -258,6 +258,18 @@ fn a_wrong_layout_is_refused_and_the_last_good_one_kept() -> Tested {
         // The last good layout still shows both panes, side by side.
         assert!(lab.read(&lab.harness, "v", "screen").contains('\u{2502}'));
     }
+    // A layout file removed is refused too: no change writes a new one
+    // over the layout the viewer still shows; only `reset` does.
+    std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+    let out = lab.run(&lab.view, &["--do", "tab new unexpected"])?;
+    assert!(
+        !out.status.success(),
+        "a change was made with the file gone"
+    );
+    assert!(!file.exists());
+    let out = lab.run(&lab.view, &["--do", "reset"])?;
+    assert!(out.status.success(), "{out:?}");
+    assert!(file.exists());
     Ok(())
 }
 

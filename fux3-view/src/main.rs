@@ -596,9 +596,13 @@ impl View {
         let rect = (self.arranged.tab_of(pane))
             .and_then(|tab| tab.tiles(area).into_iter().find(|(p, _)| p == pane))
             .map(|(_, rect)| rect);
-        let Some(rect) = rect.filter(|r| r.w > 0 && r.h > 0) else {
-            return self.say(format!("{} has no room on the screen", pane.name));
+        // No tile any more (the change closed it): nothing to fit.
+        let Some(rect) = rect else {
+            return;
         };
+        if rect.w == 0 || rect.h == 0 {
+            return self.say(format!("{} has no room on the screen", pane.name));
+        }
         if self.live_pane(pane).is_none() {
             return;
         }
@@ -606,7 +610,10 @@ impl View {
         let cols = tile.w.clamp(1, fux3::files::MAX_COLS);
         let rows = tile.h.clamp(1, fux3::files::MAX_ROWS);
         let dir = self.workspace.pane_dir(&pane.name);
-        if let Err(failure) = panes::ctl_line(&dir, &format!("resize {cols} {rows}")) {
+        // A pane gone meanwhile (a pager that ended itself) needs no fit.
+        if let Err(failure) = panes::ctl_line(&dir, &format!("resize {cols} {rows}"))
+            && dir.exists()
+        {
             self.say(format!("fit: {failure}"));
         }
     }

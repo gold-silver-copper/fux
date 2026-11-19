@@ -21,15 +21,19 @@ const MAX_OUTPUT: u64 = 64 << 10;
 /// How many numbers a new pane's name is tried with.
 const MAX_NEW_NAMES: u32 = 128;
 
-/// The workspace's `.view`, made private if missing.
+/// The workspace's `.view`, made private, with the default layout, if
+/// missing.
 pub fn view_dir(workspace: &Workspace) -> Result<PathBuf, Failure> {
     let dir = workspace.dir.join(VIEW);
-    match fuxix::file::private_dir(&dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+    let made = match fuxix::file::private_dir(&dir) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(e) => return Err(fux3::io(dir.display(), e)),
-    }
+    };
     fux3::session::check_private(&dir)?;
+    if made {
+        layout::write_first(&dir)?;
+    }
     Ok(dir)
 }
 

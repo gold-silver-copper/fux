@@ -150,7 +150,7 @@ files stay.
 **`history`** is plain text, never the program's raw bytes: raw bytes shown in
 a terminal replay escape codes, make that terminal answer the program's
 queries into your shell, and let a pane's program attack whoever tails it. A
-soft-wrapped line is one line. `less +G` or `tail -F` reads it. It is appended to, so a read while output pours in may end in the middle of a line; the next read has the rest. Each file holds at most half the cap (`--history`, default 4 MiB): past it, `history` is renamed `history.1` (the older `history.1` goes) and a new `history` starts. `tail -F history` follows the new file and sees every line once; `tail -f` stops at the old one. `cat history.1 history` is everything kept, in order, under the cap; what neither holds is gone.
+soft-wrapped line is one line. `less +G` or `tail -F` reads it. It is appended to, so a read while output pours in may end in the middle of a line; the next read has the rest. Each file holds at most half the cap (`--history`, default 4 MiB): past it, `history` is renamed `history.1` (the older `history.1` goes) and a new `history` starts. `tail -F history` follows the new file and repeats nothing; it sees every line once as long as it looks again before the new file fills too (it looks once a second): under a flood with a small cap a whole generation can come and go between two looks, and is then only in `history.1`, or gone. `tail -f` stops at the old file. `cat history.1 history` is everything kept, in order, under the cap; what neither holds is gone.
 
 ## `ctl`
 
@@ -457,8 +457,8 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 - **Tab names.** The first tab is `all`, new ones `2`, `3`, …; fux names
   tabs by their first pane (`%1`).
 - **Sizes stay.** A pane keeps its size when viewed, focused, or when the
-  terminal is resized; only the split, move and border commands (and `C-b f`)
-  fit it, once. fux resizes panes to their tiles.
+  terminal is resized; only the split, move, border and zoom commands (and
+  `C-b f`) fit the panes they change, once. fux resizes panes to their tiles.
 - **No repeating groups.** `C-b r h` moves a border once; type it again to
   move it again. No `[cut]` or `[hidden]` marks in the corner, and no notice
   when a pane's program ends (its tile says so).
@@ -485,7 +485,7 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 - **The cursor's shape** is not in the pane files: the viewer shows the
   terminal's default.
 - **Pane names, not titles.** Panes are not renamed (`C-b a r` is gone); tabs
-  and workspaces are.
+  are; workspaces are not (see above).
 - **A new shell starts where the viewer runs**, not in the focused pane's
   directory, which the files do not say.
 - **Layout filters are set when a tab is made** (`tab new … match KEY=VALUE`).

@@ -1087,15 +1087,27 @@ pub fn read_text(view: &Path) -> Result<Option<String>, Failure> {
     }
 }
 
-/// The workspace's layout: the default if there is no file. A file that
-/// cannot be read or is wrong is refused, saying why.
+/// The workspace's layout. A file that cannot be read or is wrong is
+/// refused, saying why; so is a missing one, as `.view` is made with its
+/// layout (`write_first`): one gone was removed, and only `reset` writes
+/// over that.
 pub fn read(view: &Path) -> Result<Layout, Failure> {
     match read_text(view)? {
         Some(text) => {
             parse(&text).map_err(|why| bad(format!("{}: {why}", view.join(FILE).display())))
         }
-        None => Ok(Layout::default()),
+        None => Err(bad(format!(
+            "{} is gone; `reset` writes a new one",
+            view.join(FILE).display()
+        ))),
     }
+}
+
+/// The first layout of a `.view` just made: the default, so that a layout
+/// file missing later is known to have been removed.
+pub fn write_first(view: &Path) -> Result<(), Failure> {
+    let _lock = lock(view)?;
+    replace(view, FILE, TEMP, &Layout::default().to_string())
 }
 
 /// Replaces `name` in `dir` with `text`, whole: written beside it, then
@@ -1285,7 +1297,11 @@ pub fn parse_command(line: &str) -> Result<Op, Failure> {
         ["tab", "move", tab, way] => Op::MoveTab(owned(tab), later_of(way)?),
         ["reset"] => Op::Reset,
         [] => return Err(bad("an empty command")),
-        _ => return Err(bad("no such layout command; see \"Layout commands\" in fux3's README")),
+        _ => {
+            return Err(bad(
+                "no such layout command; see \"Layout commands\" in fux3's README",
+            ));
+        }
     };
     Ok(op)
 }
