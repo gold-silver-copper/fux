@@ -311,7 +311,6 @@ struct Holder {
     parser: Parser,
     master: Master,
     job: Option<Job>,
-    pid: Option<u32>,
     children: fuxix::signal::Pipe,
     in_fifo: File,
     ctl_fifo: File,
@@ -487,7 +486,6 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
             return Err(failure);
         }
     };
-    let pid = Some(job.leader().as_u32());
     Ok(Holder {
         session,
         dir,
@@ -499,7 +497,6 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         parser,
         master,
         job: Some(job),
-        pid,
         children,
         in_fifo,
         ctl_fifo,
@@ -1086,8 +1083,8 @@ impl Holder {
         line(format!("cell {} {}", self.cell.0, self.cell.1));
         line(format!("pictures {}", on(self.pictures)));
         line(format!("state {}", self.state));
-        match self.pid {
-            Some(pid) => line(format!("pid {pid}")),
+        match &self.job {
+            Some(job) => line(format!("pid {}", job.leader())),
             None => line("pid none".to_owned()),
         }
         line(format!("holder {}", std::process::id()));
@@ -1230,7 +1227,7 @@ impl Holder {
         if missed.is_empty()
             && let Some(held) = self.held.take()
         {
-            match self.remove() {
+            match self.remove(&held) {
                 Ok(()) => return true,
                 Err(failure) => {
                     missed.push(failure.0);
@@ -1248,16 +1245,10 @@ impl Holder {
 
     /// Removes the pane's directory, once everything handed to the
     /// publisher is written.
-    fn remove(&mut self) -> Result<(), Failure> {
+    fn remove(&mut self, held: &File) -> Result<(), Failure> {
         self.publisher.stop();
-        let held = session::try_lock_dir(&self.dir).ok().flatten();
-        let lock = self.session.lock()?;
-        let removed = match &held {
-            Some(held) => session::remove_pane(&self.dir, held),
-            None => std::fs::remove_dir_all(&self.dir).map_err(|e| io(self.dir.display(), e)),
-        };
-        drop(lock);
-        removed
+        let _lock = self.session.lock()?;
+        session::remove_pane(&self.dir, held)
     }
 
     /// How many of the job's other processes outlast `deadline`, if any do.
