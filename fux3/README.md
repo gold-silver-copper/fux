@@ -679,8 +679,7 @@ turn the running workspace `rig` into a template `$T`:
 
 - A recipe stays after its pane is gone, so starting every recipe starts
   closed panes again too. Remove the recipes of panes the template should not
-  start, among them any history pager's (`history-N`; a pager that ends by
-  itself removes its own).
+  start (a `C-b c` copy's pane, `history-N`, leaves no recipe).
 - The layout may hold two tiles of one name (an ended life's beside the new
   one's). Close the one you don't want (`fux3 view rig --do 'close NAME@ID'`)
   before stripping the ids: the reader refuses two `pane NAME`.
@@ -768,7 +767,9 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 | `(arrange LINE)` | one layout command; its result lines |
 | `(fit-after RESULT)`, `(line-of KEY RESULT)` | fit the panes a result changed; a result line's value |
 | `(start-new PREFIX PROGRAM ARG…)` | starts `PREFIX-N` in the workspace shown, or in WORKSPACE (made if missing) for `WORKSPACE/PREFIX` (your shell if no program): `NAME@ID` |
-| `(close-workspace NAME)` | ends its panes, then removes its directory (refused, saying which, if a pane will not end within 12 s) |
+| `(hold-workspace NAME)` | holds the workspace's directory, as it is now, and gives its id: what a question about a workspace keeps while it waits for its answer |
+| `(close-workspace HELD)` | ends the panes of a workspace held and removes its directory, whatever it is called by then; refused, saying which, if a pane will not end within 12 s, and with no pane ended if one in it is starting, ending or sits inside another's directory |
+| `(forget-recipe PANE)` | removes the recipe of a pane just started (the copy's pane leaves none) |
 | `(send PANE TEXT)` | to the pane's `in`, after keys typed before |
 | `(ctl PANE LINE)` | one line to the pane's `ctl` (`kill`, `signal INT`, …). A pane that is gone (its directory went, or another life has its name) raises `pane-gone`, any other failure `fux3-error`: closing a pane or a tab ignores only the first, and keeps the tile otherwise |
 | `(pick TITLE ROWS FUNCTION [KEYS])`, `(read-line PROMPT INITIAL FUNCTION)` | a list or a line to type; what is chosen goes to FUNCTION |
