@@ -2,7 +2,8 @@
 
 Two crates. `fux2` is the binary and the library: `wire` (frames and messages),
 `conn` (one non-blocking connection), `client` (blocking calls for the command
-line), `dir` (the session directory), `model` (a terminal, its versions and
+line), `dir` (the session directory), `layout` (the stored layout, its file and
+its edits; the daemon never uses it), `model` (a terminal, its versions and
 tokens; no I/O), `pane` (the daemon), `sys` (what differs between systems).
 `fux2-view` is the viewer and the only crate that links grift. Both rest on
 `fux-vt` and `fuxix`; neither uses `fux-pane` or `fux-wire`.
@@ -65,15 +66,55 @@ that directory, held for the daemon's life. A separate `lock` file serializes
 changes to the directory only. Under it, a claim that can be taken belongs to
 nobody, and its leftovers are removed.
 
+## The layout
+
+One source of truth for each fact: the panes say what exists (the session
+directory and each daemon's hello), the file `layout` says how it is arranged,
+the bindings say what keys do and what the menu shows. What a viewer draws is
+derived: `Layout::shown` adds each live pane without a tile to the first tab
+whose filter it passes, as a grid appended to the tab's tree; geometry is
+`Tab::tiles`, the same function for the viewer's cells and for the command
+line's `--area`.
+
+An edit is `layout::edit`: ask the panes who they are (before the lock, so a
+slow pane holds up no writer), take `layout.lock` (a file of its own, waited
+for at most two seconds, never the session's lock, so a stalled edit never
+holds up `start` or `kill`), read and check the file, compare `--if`, apply
+one `Op` to the layout as stored, check the limits again, write `layout.new`,
+flush it, rename it over `layout`, flush the directory. A killed writer leaves
+at most a stale `layout.new`, which nothing reads and the next writer
+truncates. An edit that changes nothing writes nothing.
+
+`Op`s that change a tab's tree first store that tab as it is shown, routed
+panes and all, so they can be named; renaming, filtering and zooming store the
+tab alone. While an edit places a pane (`split`, `replace`, `move`), that pane
+is not routed, so a pane just started moves no other tile. What an edit
+prints as `changed` is every pane whose rectangle in `--area` differs between
+the layout shown before and after it.
+
 ## The viewer
 
 One thread polls: keys, each pane's watching connection, and each pane's input
 connection, opened at the first key. A second thread writes to the terminal, so a
 terminal that stops reading delays no key; frames merge meanwhile. A third runs
-grift, starting with the default keys in `defaults.grift`. A workspace and a tab are
-what the viewer filters by; panes know nothing of them. Keys bound with `bind-verb`
-act on the viewer's own thread, so they work while a binding runs. Other bindings
-reach panes by running the `fux2` command, which can be killed when
-a binding is stopped, and they name a pane as `NAME@ID`. Screens are composed as
+grift: the command library (`library.grift`), the default keys
+(`defaults.grift`), then the user's `view.grift`. The viewer rereads `layout`
+each second and at once after its own edits, keeps the last good one when a
+read fails, and derives what it draws from it and the live panes.
+
+The key table (`keys.rs`) holds each binding with its caption and heading, and
+each group; dispatch and the prefix menu both read it, so nothing else
+defines the menu. Keys bound with `bind-verb` act on the viewer's own thread,
+so they work while a binding runs. Other bindings, and the answers of lists
+and prompts, run on the grift thread with a snapshot of what the viewer shows
+(`Context`), one at a time, five seconds each. A list or prompt is a panel the
+viewer draws over the panes (`panel.rs`); its callback is kept, and the choice
+runs it as a new run, so a person's thinking time is never a binding's. Panes
+and the layout are reached by running the `fux2` command, which can be killed
+when a binding is stopped, and a pane is named as `NAME@ID`.
+
+A mouse drag previews on a copy of the stored layout, with the same `Op` the
+command line runs, and on release calls the library's `drag-border`, which
+edits with `--if` the version the drag began at. Screens are composed as
 cells first; bytes for the terminal are made only from those, with control
 characters and malformed style text dropped.

@@ -141,3 +141,88 @@ program, the elevated session folder and config rule, console signal delivery,
 the job-breakaway report of D-9), and building it for Windows stops at one
 `compile_error!`. The neutral `fuxix` additions stay, since fuxix still serves fux
 on Windows. fux's own Windows CI is as it is on master; fux2 is not built there.
+
+## D-20: the full viewer (a panel, 2026-11-18, two rounds)
+
+The owner: "I think we should still keep those commands that fux has, and have
+the dynamic command viewer ... it has all your keybindings, and then when you
+do prefix key it shows them, and it has it in like a proper hierarchy", and on
+workspaces and tab keys, "yes i want them". Ten seats (2 Fable, 2 Opus, 3
+gpt-6.2-sol, 3 gpt-6.2-astra) decided; ballots are in the owner's notes
+(`fux2-2026-11-18/panel2`, `panel2-r2`).
+
+1. The layout is one file in the session directory, written by viewers and
+   command-line clients and reread by all, so every viewer of a session shows
+   the same workspaces, tabs and splits. It has its own lock with a bounded
+   wait, and writes replace it whole and atomically. 9 of 10; the tenth
+   seat's separate lock is adopted.
+2. Anyone can change the layout through the command line (`fux2 layout`), and
+   the viewer's keys call the same operations. 9 of 10.
+3. Rust gives a few primitives (the layout's operations, a panel, a line, a
+   list, the verbs, focus); the commands are a grift library shipped with the
+   viewer, which the user's config extends or replaces. 10 of 10.
+4. The prefix menu is drawn from the bindings themselves: a binding carries a
+   caption and a heading, a key bound to a group opens that group's menu, and
+   nothing else defines the menu. 10 of 10.
+5. Viewing never resizes a pane; your own layout command does. The shipped
+   split, move and border commands fit the tiles they changed, once, in the
+   acting viewer only (a drag on release), in the library, so a config can
+   drop it. Round 2, 6 of 10; four wanted resizing only on an explicit fit key,
+   because every resize reflows history and makes an agent's `send --if` go
+   stale. The README says that cost.
+6. Whether fux2 replaces fux is not decided now: no bridge to fux, no parity
+   checklist. 9 of 10.
+7. One PR for all of it. Round 2, 6 of 10; the four others wanted the stored
+   layout proven first, so it was built and tested headless first (two
+   writers at once, a writer killed mid-write) before any viewer key used it.
+
+The panel's majorities, for the builder: a tile names `NAME@ID` (7 of 10); the
+TOML `--layout` file is deleted with no import (10 of 10); a pane is in one
+tab, an explicit placement wins and an unplaced pane goes to the first tab in
+stored order whose filter matches, with a catch-all (10 of 10); placing a
+pane is a layout operation and starting one is another, and a placement that
+fails after a start is retried once and then reported, never undone by a kill
+(10 of 10). Added by the orchestrator and agreed by the owner: the layout has
+a version every write advances, and every edit takes `--if VERSION`.
+
+## D-21: decided by the builder of D-20
+
+- **A line-based text file**, not JSON or TOML: fux2 links no parser, and a
+  strict reader of its own lines is less code than either. It names its line
+  when refused.
+- **fux2's own small tree** in the `fux2` library. fux's tree in `fux-wire` is
+  tied to fux's ids and wire format, and moving it would touch fux.
+- **The catch-all** is any tab without `match`, as the default tab `all` is;
+  when every tab has a filter, a tab `other` is shown at the end of the first
+  workspace, and stored only when an edit names it.
+- **Routed panes stay routed** until an edit touches their tab's tree, so a
+  pane killed from the command line before then leaves no missing tile.
+  Renaming, filtering and zooming a tab do not store its routed panes: storing
+  them would pin them there when the tab's filter later changes.
+- **The pane an edit places is not routed during that edit**, so starting a
+  pane and placing it moves no other tile, and the panes `changed` names are
+  exactly those the placement moved.
+- **Borders move by cells as seen in an area** (`--area`, which the viewer
+  passes), or by a percentage, rounded up so a cell asked for is a cell moved;
+  each side of a border keeps at least 5% of its split.
+- **`move PANE DIRECTION` swaps** the pane with its neighbour that way: one
+  rule for any tree, where "beside its neighbour" would need a rule per shape.
+- **Lists and prompts take a callback** and return at once; the choice runs as
+  a run of its own. Parking the grift run would have needed a second run model
+  and a paused clock; this keeps one run at a time, each five seconds.
+- **Keys follow D-14 where #462 set them** (`n p l c [ ( ) L O f d`, digits)
+  and fux's keys elsewhere (`v s x z`, `a`, `t`, `w`, `r`, `m` menus, `:` for
+  the command line as tmux, `?` for the key list, `;` for the last pane,
+  arrows for direction, `g` for a pane picker), since `l`, `c` and `b` already
+  meant something else here.
+- **Focus moves only within the shown tab**; `(focus PANE)` shows the pane's
+  tab first. Focus, the tab shown and the workspace shown are each viewer's
+  own, as before; zoom is stored, so every viewer of the tab shows it.
+- **A pane's title** is stored on its tile (`fux2 layout title`): the pane's
+  name is its daemon's claim, which the layout does not change.
+- **Respawn is left out**: a pane does not say what program it runs, so the
+  library cannot start it again without a daemon change, which this PR does
+  not make.
+- **`fux2 page --close-pane` removes its tile** before ending its pane: the
+  pane was made for the pager, so its tile has nothing to keep.
+
