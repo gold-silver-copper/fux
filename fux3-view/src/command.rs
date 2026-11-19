@@ -43,7 +43,7 @@ pub fn view_dir(workspace: &Workspace) -> Result<File, Failure> {
     match at::rename_new(held, &aside, held, VIEW) {
         Ok(()) => {}
         // Another got there first: theirs is the one, and ours goes.
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => remove_own(held, &aside)?,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => remove_own(held, &aside, &dir)?,
         Err(e) => return Err(fux3::io(VIEW, e)),
     }
     fux3::session::private_dir(held, VIEW, false)
@@ -217,16 +217,14 @@ pub fn run_line(
     }
 }
 
-/// Removes `name` in `dir`, a directory of the viewer's or the core's own
-/// that holds only files, and those files; one missing is no fault. A
+/// Removes `name` in `dir`, held open as `own`: a directory of the
+/// viewer's or the core's own that holds only files, and those files,
+/// through the handle held, never by looking the name up again. A
 /// directory in it is not entered: it stops there, saying which.
-fn remove_own(dir: &File, name: &str) -> Result<(), Failure> {
-    let Ok(own) = at::open_dir(dir, name) else {
-        return Ok(());
-    };
-    for (file, _) in at::names(&own, 1 << 16).map_err(|e| fux3::io(name, e))? {
+fn remove_own(dir: &File, name: &str, own: &File) -> Result<(), Failure> {
+    for (file, _) in at::names(own, 1 << 16).map_err(|e| fux3::io(name, e))? {
         let shown = format!("{name}/{}", file.to_string_lossy());
-        at::remove_file(&own, &file).map_err(|e| fux3::io(shown, e))?;
+        at::remove_file(own, &file).map_err(|e| fux3::io(shown, e))?;
     }
     at::remove_dir(dir, name).map_err(|e| fux3::io(name, e))
 }
@@ -271,14 +269,36 @@ pub fn close_workspace(workspace: &Workspace, cancel: &AtomicBool) -> Result<(),
         // Panes ending are still here, under names nothing lists.
         let left = others(&[])?;
         if left.is_empty() {
-            own.iter()
-                .try_for_each(|name| remove_own(workspace.held(), name))?;
+            for name in own {
+                // One missing is no fault.
+                if let Ok(dir) = at::open_dir(workspace.held(), name) {
+                    remove_own(workspace.held(), name, &dir)?;
+                }
+            }
             let removed = || stays(": it was removed".to_owned());
             let (session, name) = fux3::session::place(workspace.held()).ok_or_else(removed)?;
             return at::remove_dir(&session, &name)
                 .map_err(|e| fux3::io(format!("removing workspace {name}"), e));
         }
+        // What nobody holds is no pane ending: it is what a pane left that
+        // it did not make (a file of the user's, another pane inside it).
+        // Looked at under the session's lock, so no start meets this lock.
+        let held = |name: &&String| {
+            let dir = at::open_dir(workspace.held(), name.as_str());
+            dir.is_ok_and(|dir| !fux3::session::try_lock(&dir).unwrap_or(true))
+        };
+        let mut leftover = left.iter().find(|name| !held(name)).cloned();
+        if leftover.is_some() {
+            // Its holder may have gone just now: cleared again, is it still there?
+            workspace.clear_dead(&lock)?;
+            let still = others(&[])?;
+            leftover = leftover.filter(|name| still.contains(name));
+        }
         drop(lock);
+        if let Some(name) = leftover {
+            let why = "is left, holding what its pane did not make";
+            return Err(stays(format!(": its panes were ended, and {name} {why}")));
+        }
         if begun.elapsed() >= COMMAND_TIME || cancel.load(Ordering::Relaxed) {
             return Err(stays(format!(": {} did not end", left.join(", "))));
         }

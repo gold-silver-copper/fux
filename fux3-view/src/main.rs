@@ -197,8 +197,9 @@ struct View {
     notice: Option<(String, &'static str)>,
     /// The next key is dropped: the workspace it was typed at was removed.
     swallow: bool,
-    /// The workspace this viewer is closing now, by its directory's id.
-    closing: Option<String>,
+    /// The workspace this viewer is closing, by its directory's id, and
+    /// whether the close has removed it.
+    closing: Option<(String, bool)>,
     /// The panes `when-gone` waits for the going of, each with its
     /// workspace's directory (`Workspace::id`).
     watched: Vec<(String, Target)>,
@@ -433,15 +434,18 @@ impl View {
         } else {
             // Another directory may have its name now: that one is shown.
             let left = (self.workspace.session.workspaces()).unwrap_or_default();
+            // This viewer's close of it is under way: its word is waited
+            // for, and only a close that removed it makes this its own.
+            let closing = (self.closing.as_ref()).filter(|(id, _)| *id == self.workspace.id());
+            let Some(own) = closing.map_or(Some(false), |(_, done)| done.then_some(true)) else {
+                return;
+            };
+            self.closing = None;
             let name = std::mem::take(&mut self.workspace.name);
             let next = match left.contains(&name) {
                 true => &name,
                 false => left.first().map_or(DEFAULT_WORKSPACE, String::as_str),
             };
-            let own = self
-                .closing
-                .take()
-                .is_some_and(|id| id == self.workspace.id());
             self.show_workspace(next, now);
             // Said where it is seen, unless this viewer's own close of it
             // took it away; the next key was meant for what was shown
@@ -865,7 +869,7 @@ impl View {
                 | ToViewer::Unbind(_)
                 | ToViewer::Verb(_)
                 | ToViewer::Reread
-                | ToViewer::Closing(_)
+                | ToViewer::Closing(..)
                 | ToViewer::Say(_)
                 | ToViewer::Started(..)
                 | ToViewer::Done(_)
@@ -914,10 +918,13 @@ impl View {
             }
             // What a binding does next may name what the edit made.
             ToViewer::Reread => {
-                self.rescan(now, false);
                 self.closing = None;
+                self.rescan(now, false);
             }
-            ToViewer::Closing(id) => self.closing = Some(id),
+            ToViewer::Closing(id, done) => {
+                self.closing = Some((id, done));
+                self.rescan(now, false);
+            }
             ToViewer::Watch(pane) => {
                 let space = self.workspace.id();
                 (self.watched).extend(Target::parse(&pane).ok().map(|pane| (space, pane)));

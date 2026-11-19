@@ -379,3 +379,23 @@ Append-only: one short entry per decision, newest last.
       no `history` (a rotation between rename and create) it reads `history.1`.
     - Lines: production 5,986 → 5,984. The close lost `empty` and `held`; `remove_own`, the
       listing of what else is there, `start-once` and the viewer's "closing" took most of it back.
+26. **The fix check (2026-11-19, the last pass): four changes.**
+    - **The copy's pane ends itself, tested again.** `the_copy_leaves_a_recipe_under_its_name_alone`
+      renames the open copy's pane, starts another under its old name, ends the editor: the
+      renamed one goes, the other still runs. The check went with the test entry 25 replaced.
+    - **A close that has ended panes says so, at once.** What only shows after the panes end (a
+      file of the user's in a pane's directory, another pane inside one: the holder leaves them
+      in `.gone-ID`) cannot be seen before without entering pane directories, so this close does
+      end the panes. It then stops as soon as what is left is held by nobody (looked at under
+      the session's lock, after clearing once more), instead of waiting 12 s for it "to end",
+      and says "workspace W stays: its panes were ended, and NAME is left, holding what its
+      pane did not make". Nothing is removed. A pane that really does not end still gets its
+      12 s and "did not end".
+    - **`view_dir` removes the staging directory it lost through the handle it holds**, then the
+      name: `remove_own` takes the open directory and never looks the name up again.
+    - **"My own close" means the close removed the directory.** `close-workspace` says when it
+      begins and, only on success, that it is done. While it runs, a viewer that finds the
+      workspace gone waits for that word; a failure (someone else took the workspace away
+      meanwhile) leaves the going an outside one: the notice, and the next key dropped.
+    - Lines: production 5,984 → 6,015 (over the 5,900 band by 115, and 16 over where the viewer
+      started). The leftover check and its message are most of it.

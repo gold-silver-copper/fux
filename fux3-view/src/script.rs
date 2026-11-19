@@ -76,9 +76,10 @@ pub enum ToViewer {
     Panel(Panel),
     /// The layout changed: read it now.
     Reread,
-    /// This viewer is closing the workspace whose directory has this id
-    /// (`Workspace::id`): until the next `Reread`, its going is no surprise.
-    Closing(String),
+    /// This viewer's close of the workspace whose directory has this id
+    /// (`Workspace::id`) has begun, or (true) has removed it. One that
+    /// failed says `Reread` instead.
+    Closing(String, bool),
     /// Run `Job::Gone` for this pane (`NAME`, or one life `NAME@ID`) once
     /// it is gone from the workspace shown.
     Watch(String),
@@ -739,9 +740,12 @@ const WORDS: &[(&str, Word)] = &[
             let why = format!("{held:?} is no workspace held: (hold-workspace NAME) gives one");
             return Err(failed(g, &why));
         };
-        host.tell(ToViewer::Closing(held));
+        host.tell(ToViewer::Closing(held.clone(), false));
         let outcome = crate::command::close_workspace(&workspace, &host.cancel);
-        host.tell(ToViewer::Reread);
+        host.tell(match outcome {
+            Ok(()) => ToViewer::Closing(held, true),
+            Err(_) => ToViewer::Reread,
+        });
         match outcome {
             Ok(()) => inert(),
             Err(failure) => Err(refused(g, host, &failure)),

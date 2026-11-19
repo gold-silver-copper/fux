@@ -712,8 +712,58 @@ fn the_copy_leaves_a_recipe_under_its_name_alone() -> Tested {
         "the copy took another name"
     );
     assert_eq!(recipe(), before, "the copy wrote over the saved recipe");
+    // Renamed while it is open, and another pane started under its old
+    // name: when the editor ends the copy's pane ends itself, wherever it
+    // is, and not the pane that has its name.
+    std::fs::rename(main.join("history-1"), main.join("moved")).map_err(|e| e.to_string())?;
+    let other = lab.run(
+        &lab.view,
+        &["start", "history-1", "--no-recipe", "--", "sleep", "60"],
+    )?;
+    assert!(other.status.success(), "{other:?}");
     std::fs::remove_file(&hold).map_err(|e| e.to_string())?;
-    until("the copy's pane ended", || !main.join("history-1").exists())?;
+    until("the copy's pane ended", || !main.join("moved").exists())?;
+    std::thread::sleep(Duration::from_millis(500));
+    let status = lab.read(&lab.view, "history-1", "status");
+    assert!(
+        status.contains("state running"),
+        "the pane of its old name was ended: {status:?}"
+    );
     assert_eq!(recipe(), before, "the copy removed the saved recipe");
+    Ok(())
+}
+
+/// A close that finds, once its panes have ended, something no pane made
+/// (a file of the user's in a pane's directory) stops at once and says
+/// what is true: the panes were ended, the workspace stays, and what is
+/// left, which is not removed.
+#[test]
+fn a_close_that_ended_panes_says_so_and_names_what_is_left() -> Tested {
+    let lab = Lab::new("left", "")?;
+    lab.start("w/p")?;
+    std::fs::write(lab.view.join("w/p/note"), "mine").map_err(|e| e.to_string())?;
+    lab.viewer("v", "160x30", &["w"])?;
+    lab.shows("v", "$")?;
+    lab.keys("v", b"\x02wx")?;
+    lab.shows("v", "close workspace")?;
+    let asked = Instant::now();
+    lab.keys("v", b"y")?;
+    lab.shows("v", "its panes were ended")?;
+    let took = asked.elapsed();
+    assert!(
+        took < Duration::from_secs(6),
+        "it waited {took:?} on what was not ending"
+    );
+    let screen = lab.read(&lab.harness, "v", "screen");
+    assert!(
+        screen.contains(".gone-"),
+        "what is left is not named:\n{screen}"
+    );
+    let left = std::fs::read_dir(lab.view.join("w")).map_err(|e| e.to_string())?;
+    let notes = left
+        .flatten()
+        .filter(|e| e.path().join("note").exists())
+        .count();
+    assert_eq!(notes, 1, "the user's file went");
     Ok(())
 }
