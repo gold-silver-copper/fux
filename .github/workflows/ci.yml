@@ -96,6 +96,16 @@ jobs:
           cargo build -p fux2 -p fux2-view --locked
           fux2/tests/example.sh
 
+      # fux3's README example with real sh, printf, echo, cat and ls, as a
+      # person would run it, its viewer run in a pane. fux3 runs on Linux
+      # and macOS only.
+      - name: fux3 example
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cargo build -p fux3 -p fux3-view --locked
+          fux3/tests/example.sh
+
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
       # in release, as debug is too slow for the step's 5 minutes; built in
       # a step of its own, and run under an 8 GiB data limit, so a bound

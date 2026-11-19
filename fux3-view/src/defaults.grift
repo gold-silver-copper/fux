@@ -1,0 +1,63 @@
+;; The keys a viewer starts with: fux's keys, wherever fux3 has the command.
+;; Each is a chord, a caption and a heading, and what it does; the prefix
+;; menu is drawn from these alone. `bind-verb` keys act at once, even while
+;; a binding runs; the rest call the commands in library.grift by name when
+;; pressed, so a command your view.grift redefines is the one its key runs.
+(bind-key "C-b v" "split side by side" "Panes" (lambda! () (split-new "right")))
+(bind-key "C-b s" "split stacked" "Panes" (lambda! () (split-new "down")))
+(bind-key "C-b x" "close pane" "Panes" (lambda! () (confirm-close-pane (focused))))
+(bind-key "C-b z" "zoom or restore" "Panes" (lambda! () (edit! (join "zoom " (focused)))))
+(bind-key "C-b c" "history in a pager" "Panes" (lambda! () (history)))
+(bind-verb "C-b f" "fit pane to its tile" "Panes" "fit")
+
+(bind-verb "C-b h" "focus left" "Focus" "focus-left")
+(bind-verb "C-b j" "focus down" "Focus" "focus-down")
+(bind-verb "C-b k" "focus up" "Focus" "focus-up")
+(bind-verb "C-b l" "focus right" "Focus" "focus-right")
+(bind-verb "C-b o" "next pane" "Focus" "next-pane")
+(bind-verb "C-b q" "last pane" "Focus" "last-pane")
+
+(bind-verb "C-b n" "next tab" "Tabs" "next-tab")
+(bind-verb "C-b b" "previous tab" "Tabs" "previous-tab")
+(bind-group "C-b t" "Tabs" "Tabs")
+(bind-key "C-b t n" "new tab" "Tabs" (lambda! () (new-tab)))
+(bind-verb "C-b t h" "previous tab" "Tabs" "previous-tab")
+(bind-verb "C-b t l" "next tab" "Tabs" "next-tab")
+(bind-key "C-b t g" "choose a tab" "Tabs" (lambda! () (choose-tab)))
+(bind-key "C-b t r" "rename tab" "Tabs" (lambda! () (rename-tab (shown-tab))))
+(bind-key "C-b t x" "close tab" "Tabs" (lambda! () (confirm-close-tab (shown-tab))))
+(bind-group "C-b t m" "Reorder" "Reorder")
+(bind-key "C-b t m h" "move tab earlier" "Reorder" (lambda! () (arrange (join "tab move " (shown-tab) " earlier"))))
+(bind-key "C-b t m l" "move tab later" "Reorder" (lambda! () (arrange (join "tab move " (shown-tab) " later"))))
+
+(bind-group "C-b w" "Workspaces" "Workspaces")
+(bind-key "C-b w n" "new workspace" "Workspaces" (lambda! () (new-workspace)))
+(bind-verb "C-b w h" "previous workspace" "Workspaces" "previous-workspace")
+(bind-verb "C-b w l" "next workspace" "Workspaces" "next-workspace")
+(bind-key "C-b w g" "choose a workspace" "Workspaces" (lambda! () (choose-workspace)))
+(bind-key "C-b w x" "close workspace" "Workspaces" (lambda! () (confirm-close-workspace (shown-workspace))))
+
+(bind-key "C-b e" "command prompt" "Session" (lambda! () (command-line)))
+(bind-verb "C-b d" "detach" "Session" "detach")
+(bind-key "C-b ?" "list every key" "Session" (lambda! () (key-list)))
+
+(bind-group "C-b r" "Resize" "Resize")
+(bind-key "C-b r h" "shrink or grow left" "Resize" (lambda! () (edit! (join "border " (focused) " left 1"))))
+(bind-key "C-b r j" "shrink or grow down" "Resize" (lambda! () (edit! (join "border " (focused) " down 1"))))
+(bind-key "C-b r k" "shrink or grow up" "Resize" (lambda! () (edit! (join "border " (focused) " up 1"))))
+(bind-key "C-b r l" "shrink or grow right" "Resize" (lambda! () (edit! (join "border " (focused) " right 1"))))
+
+(bind-group "C-b a" "Pane actions" "Pane actions")
+(bind-key "C-b a x" "close pane" "Pane actions" (lambda! () (confirm-close-pane (focused))))
+(bind-key "C-b a k" "terminate the running command" "Pane actions" (lambda! () (signal (focused) "TERM")))
+(bind-key "C-b a t" "move to tab…" "Pane actions" (lambda! () (move-to-tab (focused))))
+(bind-key "C-b a n" "move to a new tab" "Pane actions" (lambda! () (move-to-new-tab (focused))))
+(bind-group "C-b a m" "Reorder" "Reorder")
+(bind-key "C-b a m h" "move pane earlier" "Reorder" (lambda! () (edit! (join "move " (focused) " earlier"))))
+(bind-key "C-b a m l" "move pane later" "Reorder" (lambda! () (edit! (join "move " (focused) " later"))))
+
+(bind-group "C-b m" "Move" "Move")
+(bind-key "C-b m h" "move left" "Move" (lambda! () (edit! (join "move " (focused) " left"))))
+(bind-key "C-b m j" "move down" "Move" (lambda! () (edit! (join "move " (focused) " down"))))
+(bind-key "C-b m k" "move up" "Move" (lambda! () (edit! (join "move " (focused) " up"))))
+(bind-key "C-b m l" "move right" "Move" (lambda! () (edit! (join "move " (focused) " right"))))

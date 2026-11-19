@@ -59,6 +59,23 @@ pub fn private_dir(path: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
+/// Makes the FIFO `path`, only its user's: mode 0600 (the umask not
+/// asked). One there already fails, as `create_dir` does; a link at the
+/// path is not followed.
+#[cfg(unix)]
+pub fn private_fifo(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "a NUL in the path"))?;
+    // SAFETY: `name` is a NUL-terminated string that outlives the call,
+    // which reads it and touches no other memory.
+    if unsafe { libc::mkfifo(name.as_ptr(), 0o600) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
 /// Where fux's tests and tools make their short-lived files and sockets,
 /// made if it is missing: `$TMPDIR` if it is set and resolves to at most
 /// 40 bytes, else `~/.cache/fux`. A socket's path must stay under 104
@@ -119,6 +136,28 @@ mod tests {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
         std::fs::write(&path, b"y").map_err(|e| e.to_string())?;
         assert_ne!(std::fs::metadata(&path).map(|m| m.ino()).ok(), Some(inode));
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod fifo_tests {
+    use super::*;
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
+    /// A FIFO is made private whatever the umask, and never twice.
+    #[test]
+    fn a_private_fifo_is_its_users_alone() -> std::result::Result<(), String> {
+        let path = scratch()
+            .map_err(|e| e.to_string())?
+            .join(format!("fuxix-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        private_fifo(&path).map_err(|e| e.to_string())?;
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        assert!(meta.file_type().is_fifo());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert!(private_fifo(&path).is_err());
         let _ = std::fs::remove_file(&path);
         Ok(())
     }

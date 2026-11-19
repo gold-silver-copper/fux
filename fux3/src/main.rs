@@ -1,0 +1,504 @@
+//! `fux3`: starts panes, names the session directory, waits for a change,
+//! lists live panes, and starts the viewer. Everything else is a file.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("fux3 runs on Linux and macOS only");
+
+use fux3::files::{self, Head};
+use fux3::holder::{self, DEFAULT_CELL, DEFAULT_HISTORY, MAX_HISTORY, Spec};
+use fux3::session::{self, Session, Workspace};
+use fux3::{Failure, io};
+use std::ffi::OsString;
+use std::io::{BufRead, Read, Write};
+use std::process::{Command, ExitCode, Stdio};
+use std::time::{Duration, Instant};
+
+const USAGE: &str = "\
+fux3: a terminal multiplexer where a pane is a directory of files
+
+  fux3 dir                     print the session directory
+  fux3 start [WORKSPACE/]NAME [OPTIONS] [-- PROGRAM ARGS...]
+                               start a pane in a workspace (default: main;
+                               default program: $SHELL)
+      --size COLSxROWS         its size (default: this terminal's, else 80x24)
+      --cell WxH               a cell's size in pixels, for pictures
+                               (default: this terminal's, else 10x20)
+      --no-pictures            take no sixel pictures
+      --history BYTES          the history file's cap (default 4 MiB, 4096 to 256 MiB)
+      --label KEY=VALUE        a label, shown in status (repeatable)
+      --env NAME=VALUE         a variable for the program, kept in its recipe
+                               (repeatable)
+    With no PROGRAM, WORKSPACE/.recipes/NAME runs if there is one: the
+    recipe each start writes, an sh script that starts the program again.
+  fux3 ls                      list live panes, as WORKSPACE/NAME
+  fux3 wait [WORKSPACE/]NAME [--ms N]
+                               wait until the screen changes (default 10000 ms)
+  fux3 put [WORKSPACE/]NAME [TEXT]
+                               write TEXT (else stdin, at most 512 bytes) to the
+                               pane's in, whole or refused, never waiting
+  fux3 view [WORKSPACE] [--do LINE]
+                               show a workspace's panes, as fux does; with --do,
+                               apply one layout command with no viewer running
+
+Every command first clears the leftovers of panes whose holder is gone.
+Everything else is a file in the pane's directory: see the README.
+";
+
+/// How long `start` waits for the holder's word.
+const START_WAIT: Duration = Duration::from_secs(10);
+/// The longest `wait` waits.
+const MAX_WAIT_MS: u64 = 3_600_000;
+/// How often `wait` looks.
+const WAIT_STEP: Duration = Duration::from_millis(10);
+
+fn main() -> ExitCode {
+    let mut args = std::env::args_os().skip(1);
+    let Some(command) = args.next() else {
+        return say(USAGE);
+    };
+    if command == "__hold" {
+        return holder::main(args);
+    }
+    let outcome = match command.to_str().unwrap_or_default() {
+        "dir" => dir(args),
+        "start" => start(args),
+        "ls" => ls(args),
+        "wait" => wait(args),
+        "view" => view(args),
+        "put" => put(args),
+        "help" | "--help" | "-h" => return say(USAGE),
+        other => Err(Failure::new(format!("no command {other:?}; try fux3 help"))),
+    };
+    match outcome {
+        Ok(code) => code,
+        Err(failure) => {
+            let mut stderr = std::io::stderr();
+            let _ = writeln!(stderr, "fux3: {failure}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn say(text: &str) -> ExitCode {
+    let mut stdout = std::io::stdout();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+type Outcome = Result<ExitCode, Failure>;
+
+fn text(arg: OsString) -> Result<String, Failure> {
+    arg.into_string()
+        .map_err(|a| Failure::new(format!("{a:?} is not UTF-8")))
+}
+
+fn none_left(mut args: impl Iterator<Item = OsString>) -> Result<(), Failure> {
+    match args.next() {
+        None => Ok(()),
+        Some(arg) => Err(Failure::new(format!("unexpected {arg:?}"))),
+    }
+}
+
+/// The session, its dead panes cleared.
+fn session() -> Result<(Session, Vec<String>), Failure> {
+    let session = Session::open()?;
+    let live = session.live()?;
+    Ok((session, live))
+}
+
+fn dir(args: impl Iterator<Item = OsString>) -> Outcome {
+    none_left(args)?;
+    let (session, _) = session()?;
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = session.root.as_os_str().as_bytes().to_vec();
+    out.push(b'\n');
+    let mut stdout = std::io::stdout();
+    match stdout.write_all(&out).and_then(|()| stdout.flush()) {
+        Ok(()) => Ok(ExitCode::SUCCESS),
+        Err(e) => Err(io("stdout", e)),
+    }
+}
+
+fn ls(args: impl Iterator<Item = OsString>) -> Outcome {
+    none_left(args)?;
+    let (_, live) = session()?;
+    let mut out = String::new();
+    for name in live {
+        out.push_str(&name);
+        out.push('\n');
+    }
+    Ok(say(&out))
+}
+
+fn pair(text: &str, what: &str) -> Result<(u16, u16), Failure> {
+    let bad = || Failure::new(format!("{what} {text:?}: it must be NxM"));
+    let (a, b) = text.split_once('x').ok_or_else(bad)?;
+    Ok((a.parse().map_err(|_| bad())?, b.parse().map_err(|_| bad())?))
+}
+
+fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
+    let pane = text(
+        args.next()
+            .ok_or_else(|| Failure::new("start needs a NAME"))?,
+    )?;
+    let (workspace, name) = session::split_pane(&pane)?;
+    let here = fuxix::terminal::stdin_size();
+    let (mut cols, mut rows) =
+        here.map_or((80, 24), |(size, _)| (size.cols.get(), size.rows.get()));
+    let mut cell = here
+        .and_then(|(size, pixels)| {
+            let pixels = pixels?;
+            let w = pixels.width.get().checked_div(size.cols.get())?;
+            let h = pixels.height.get().checked_div(size.rows.get())?;
+            fux_vt::CellSize::new(w, h).map(|_| (w, h))
+        })
+        .unwrap_or(DEFAULT_CELL);
+    let (mut pictures, mut history, mut labels) = (true, DEFAULT_HISTORY, Vec::new());
+    let (mut env, mut argv) = (Vec::new(), Vec::new());
+    while let Some(arg) = args.next() {
+        let mut value = |what: &str| {
+            args.next()
+                .ok_or_else(|| Failure::new(format!("{what} needs a value")))
+                .and_then(text)
+        };
+        match arg.to_str().unwrap_or_default() {
+            "--size" => (cols, rows) = pair(&value("--size")?, "--size")?,
+            "--cell" => cell = pair(&value("--cell")?, "--cell")?,
+            "--no-pictures" => pictures = false,
+            "--history" => {
+                let text = value("--history")?;
+                history = text
+                    .parse()
+                    .ok()
+                    .filter(|n| (holder::MIN_HISTORY..=MAX_HISTORY).contains(n))
+                    .ok_or_else(|| {
+                        let least = holder::MIN_HISTORY;
+                        Failure::new(format!("--history {text}: {least} to {MAX_HISTORY} bytes"))
+                    })?;
+            }
+            "--label" => {
+                labels.push(holder::parse_label(&value("--label")?)?);
+                if labels.len() > holder::MAX_LABELS {
+                    return Err(Failure::new(format!(
+                        "at most {} labels",
+                        holder::MAX_LABELS
+                    )));
+                }
+            }
+            "--env" => {
+                use std::os::unix::ffi::{OsStrExt, OsStringExt};
+                let arg = args
+                    .next()
+                    .ok_or_else(|| Failure::new("--env needs NAME=VALUE"))?;
+                let bytes = arg.as_bytes();
+                let at = (bytes.iter().position(|b| *b == b'='))
+                    .ok_or_else(|| Failure::new("--env needs NAME=VALUE"))?;
+                let key = String::from_utf8_lossy(bytes.get(..at).unwrap_or_default()).into_owned();
+                fux3::recipe::check_env_name(&key)?;
+                let value = bytes
+                    .get(at.saturating_add(1)..)
+                    .unwrap_or_default()
+                    .to_vec();
+                env.push((key, OsString::from_vec(value)));
+                if env.len() > holder::MAX_ENV {
+                    return Err(Failure::new(format!("at most {} --env", holder::MAX_ENV)));
+                }
+            }
+            "--" => {
+                argv.extend(args.by_ref());
+                break;
+            }
+            other => return Err(Failure::new(format!("unknown option {other:?}"))),
+        }
+    }
+    holder::checked_size(cols, rows)?;
+    let session = Session::open()?;
+    let cwd = std::env::current_dir().map_err(|e| io("the current directory", e))?;
+    // With no program, a recipe of the name runs; else the shell, whose
+    // recipe is written as any program's is.
+    let space = session.root.join(&workspace);
+    let saved = fux3::recipe::path(&space, &name);
+    // A recipe there is run only if it is a plain file of a recipe's size;
+    // anything else there is refused, never taken for "no recipe".
+    let from_recipe = argv.is_empty()
+        && match std::fs::symlink_metadata(&saved) {
+            Ok(meta) if meta.is_file() && meta.len() <= recipe_most() => true,
+            Ok(_) => {
+                return Err(Failure::new(format!(
+                    "{} is not a recipe: not a regular file of at most {} bytes",
+                    saved.display(),
+                    fux3::recipe::MAX_RECIPE
+                )));
+            }
+            Err(_) => false,
+        };
+    if from_recipe && !env.is_empty() {
+        return Err(Failure::new(format!(
+            "--env with no program: the recipe {} sets its own variables; give the program to change them",
+            saved.display()
+        )));
+    }
+    if from_recipe {
+        argv = vec!["/bin/sh".into(), saved.clone().into()];
+    } else if argv.is_empty() {
+        let shell = std::env::var_os("SHELL").filter(|s| !s.is_empty());
+        argv.push(shell.unwrap_or_else(|| "/bin/sh".into()));
+    }
+    // Refused before anything starts if it would be too large; the holder
+    // writes it.
+    if !from_recipe {
+        fux3::recipe::render(&cwd, &env, &argv)?;
+    }
+    let spec = Spec {
+        root: session.root.clone(),
+        workspace,
+        name,
+        cols,
+        rows,
+        cell,
+        pictures,
+        history,
+        cwd,
+        labels,
+        env,
+        keep_recipe: from_recipe,
+        argv,
+    };
+    let line = launch(&spec)?;
+    if line != "ok" {
+        return Err(Failure::new(line.strip_prefix("err ").unwrap_or(&line)));
+    }
+
+    // The directory as the system names it, bytes and all.
+    use std::os::unix::ffi::OsStrExt;
+    let dir = spec.root.join(&spec.workspace).join(&spec.name);
+    let mut out = dir.as_os_str().as_bytes().to_vec();
+    out.push(b'\n');
+    let mut stdout = std::io::stdout();
+    match stdout.write_all(&out).and_then(|()| stdout.flush()) {
+        Ok(()) => Ok(ExitCode::SUCCESS),
+        Err(e) => Err(io("stdout", e)),
+    }
+}
+
+fn recipe_most() -> u64 {
+    u64::try_from(fux3::recipe::MAX_RECIPE).unwrap_or(u64::MAX)
+}
+
+/// Starts the holder in a session of its own, holding nothing of this
+/// process's but two pipes, and gives its one line: `ok DIR` or `err WHY`.
+fn launch(spec: &Spec) -> Result<String, Failure> {
+    let exe = std::env::current_exe().map_err(|e| io("finding this program", e))?;
+    let (go_read, mut go) = std::io::pipe().map_err(|e| io("pipe", e))?;
+    let (ready, ready_write) = std::io::pipe().map_err(|e| io("pipe", e))?;
+    let mut command = Command::new(&exe);
+    command
+        .args(spec.to_args())
+        .current_dir(&spec.root)
+        .stdin(Stdio::from(go_read))
+        .stdout(Stdio::from(ready_write))
+        .stderr(Stdio::null());
+    fuxix::process::lead_session(&mut command, false, fuxix::process::Dispositions::Default);
+    let child = command
+        .spawn()
+        .map_err(|e| io(format!("starting {}", exe.display()), e))?;
+    drop(command);
+    let unknown = |why: String| {
+        Failure::new(format!(
+            "pane {}/{} may or may not have started: {why}",
+            spec.workspace, spec.name
+        ))
+    };
+    go.write_all(b"go\n")
+        .and_then(|()| go.write_all(&spec.env_bytes()))
+        .and_then(|()| go.flush())
+        .map_err(|e| unknown(format!("telling it to go: {e}")))?;
+    // The line comes on a thread of its own, so that a holder that says
+    // nothing cannot hold this command past its bound.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .spawn(move || {
+            let mut line = String::new();
+            let got = std::io::BufReader::new(ready.take(64 << 10)).read_line(&mut line);
+            let _ = sender.send(got.map(|_| line));
+        })
+        .map_err(|e| unknown(format!("a thread: {e}")))?;
+    let line = receiver
+        .recv_timeout(START_WAIT)
+        .map_err(|_| unknown(format!("no word within {START_WAIT:?}")))?
+        .map_err(|e| unknown(format!("reading its word: {e}")))?;
+    drop(child);
+    let line = line.trim_end().to_owned();
+    match line.is_empty() {
+        true => Err(Failure::new("the holder ended without a word")),
+        false => Ok(line),
+    }
+}
+
+/// Line 1 of `name`'s screen, or why not.
+fn head(workspace: &Workspace, name: &str) -> Result<Head, Failure> {
+    let path = workspace.pane_dir(name).join(files::SCREEN);
+    let bytes = files::read_small(&path, files::MAX_SCREEN_FILE)?;
+    let text = String::from_utf8_lossy(&bytes);
+    Head::parse(text.lines().next().unwrap_or_default())
+}
+
+fn wait(mut args: impl Iterator<Item = OsString>) -> Outcome {
+    let pane = text(
+        args.next()
+            .ok_or_else(|| Failure::new("wait needs a NAME"))?,
+    )?;
+    let (space, name) = session::split_pane(&pane)?;
+    let pane = format!("{space}/{name}");
+    let mut ms = 10_000u64;
+    while let Some(arg) = args.next() {
+        match arg.to_str().unwrap_or_default() {
+            "--ms" => {
+                let value = args.next().map(text).transpose()?.unwrap_or_default();
+                ms = value
+                    .parse()
+                    .ok()
+                    .filter(|n| *n <= MAX_WAIT_MS)
+                    .ok_or_else(|| Failure::new(format!("--ms {value:?}: 0 to {MAX_WAIT_MS}")))?;
+            }
+            other => return Err(Failure::new(format!("unknown option {other:?}"))),
+        }
+    }
+    let (session, live) = session()?;
+    if !live.contains(&pane) {
+        return Err(Failure::new(format!("no live pane {pane}")));
+    }
+    let workspace = session.workspace(&space, false)?;
+    let first = head(&workspace, &name)?;
+    let until = Instant::now()
+        .checked_add(Duration::from_millis(ms))
+        .unwrap_or_else(Instant::now);
+    loop {
+        match head(&workspace, &name) {
+            Ok(now) if now.version != first.version || now.id != first.id => {
+                return Ok(say(&format!("{}\n", now.line())));
+            }
+            Ok(_) => {}
+            // Gone: its directory removed by a kill, or its holder dead
+            // (asked under the session's lock, so a new pane being claimed
+            // under the name is never taken for a dead one).
+            Err(failure)
+                if !workspace.pane_dir(&name).exists()
+                    || !live_now(&session, &workspace, &name) =>
+            {
+                return Err(Failure::new(format!("pane {pane} is gone: {failure}")));
+            }
+            Err(_) => {}
+        }
+        if Instant::now() >= until {
+            let mut stderr = std::io::stderr();
+            let _ = writeln!(stderr, "fux3: no change in {ms} ms; still {}", first.line());
+            return Ok(ExitCode::from(1));
+        }
+        std::thread::sleep(WAIT_STEP);
+    }
+}
+
+/// The most bytes `put` writes: one write of at most this many reaches a
+/// FIFO whole.
+const MAX_PUT: usize = files::PIPE_BUF;
+
+/// Writes TEXT (or stdin) to a pane's `in` without ever waiting: whole, or
+/// refused saying why.
+fn put(mut args: impl Iterator<Item = OsString>) -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+    let pane = text(
+        args.next()
+            .ok_or_else(|| Failure::new("put needs a NAME"))?,
+    )?;
+    let (space, name) = session::split_pane(&pane)?;
+    let bytes = match args.next() {
+        Some(arg) => arg.as_bytes().to_vec(),
+        None => {
+            let mut bytes = Vec::new();
+            let limit = u64::try_from(MAX_PUT).unwrap_or(u64::MAX).saturating_add(1);
+            std::io::stdin()
+                .take(limit)
+                .read_to_end(&mut bytes)
+                .map_err(|e| io("stdin", e))?;
+            bytes
+        }
+    };
+    none_left(args)?;
+    if bytes.len() > MAX_PUT {
+        return Err(Failure::new(format!(
+            "more than {MAX_PUT} bytes: nothing was written; use ctl's send"
+        )));
+    }
+    // No session lock and no clearing here: `put` never waits.
+    let session = Session::open()?;
+    let shown = format!("{space}/{name}");
+    let pane = session.root.join(&space).join(&name);
+    let real = |path: &std::path::Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
+    if !real(&session.root.join(&space)) || !real(&pane) || !session::is_pane(&pane) {
+        return Err(Failure::new(format!("no pane {shown}")));
+    }
+    if matches!(session::try_lock_dir(&pane), Ok(Some(_))) {
+        return Err(Failure::new(format!(
+            "pane {shown} has no holder: it is dead"
+        )));
+    }
+    let path = pane.join(files::IN);
+    let file = std::fs::File::options()
+        .write(true)
+        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
+        .open(&path)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Failure::new(format!("no pane {shown}"))
+            } else if e.raw_os_error() == Some(ENXIO) {
+                Failure::new(format!("pane {shown} has no holder: it is dead"))
+            } else {
+                io(&shown, e)
+            }
+        })?;
+    if !file.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
+        return Err(Failure::new(format!("{} is not a FIFO", path.display())));
+    }
+    match (&file).write(&bytes) {
+        Ok(n) if n == bytes.len() => Ok(ExitCode::SUCCESS),
+        Ok(n) => Err(Failure::new(format!(
+            "only {n} of {} bytes were written",
+            bytes.len()
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Err(Failure::new(format!(
+            "pane {shown}'s input is full: nothing was written"
+        ))),
+        Err(e) => Err(io(&shown, e)),
+    }
+}
+
+/// What opening a FIFO to write without waiting says when nobody reads it
+/// (the same number on Linux and macOS).
+const ENXIO: i32 = 6;
+
+/// Whether `name`'s holder lives, asked under the session's lock.
+fn live_now(session: &Session, workspace: &Workspace, name: &str) -> bool {
+    match session.lock() {
+        Ok(_lock) => workspace.is_live(name),
+        Err(_) => true,
+    }
+}
+
+/// Runs `fux3-view`, found beside this program, in this process's place.
+fn view(args: impl Iterator<Item = OsString>) -> Outcome {
+    use std::os::unix::process::CommandExt;
+    let (session, _) = session()?;
+    let exe = std::env::current_exe().map_err(|e| io("finding this program", e))?;
+    let viewer = exe.with_file_name("fux3-view");
+    let error = Command::new(&viewer)
+        .args(args)
+        .env("FUX3_DIR", &session.root)
+        .exec();
+    Err(io(format!("running {}", viewer.display()), error))
+}

@@ -1,0 +1,23 @@
+[package]
+name = "fux3"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "A terminal multiplexer where a pane is a directory of ordinary files"
+repository = "https://github.com/gold-silver-copper/fux"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "fux3"
+path = "src/main.rs"
+
+[dependencies]
+fux-vt = { path = "../fux-vt", version = "0.17.0" }
+fuxix = { path = "../fuxix", version = "0.10.0" }
+
+[lints]
+workspace = true

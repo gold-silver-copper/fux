@@ -1,0 +1,22 @@
+[package]
+name = "fux3-view"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "The viewer of fux3: shows a session's panes as fux does, through their files alone"
+repository = "https://github.com/gold-silver-copper/fux"
+publish = false
+
+[[bin]]
+name = "fux3-view"
+path = "src/main.rs"
+
+[dependencies]
+fux3 = { path = "../fux3" }
+fux-vt = { path = "../fux-vt", version = "0.17.0" }
+fuxix = { path = "../fuxix", version = "0.10.0" }
+grift = "7.0.0"
+
+[lints]
+workspace = true
