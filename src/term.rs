@@ -503,7 +503,13 @@ impl Term {
         self.col = self.col.min(cols - 1);
         self.wrap_pending = false;
         self.tabs = (0..cols).map(|c| c % 8 == 0).collect();
-        self.pictures.clear();
+        // A picture stays if it still fits whole where it is.
+        let up = if self.alt { 0 } else { extra };
+        self.pictures.retain_mut(|p| {
+            let fits = p.row >= up && p.row - up + p.rows <= rows && p.col + p.cols <= cols;
+            p.row = p.row.saturating_sub(up);
+            fits
+        });
         (0..rows).for_each(|row| self.tidy(row));
     }
 
@@ -773,6 +779,7 @@ impl Term {
                 for _ in 0..n {
                     self.col = (0..self.col).rev().find(|&c| self.tabs.get(c) == Some(&true)).unwrap_or(0);
                 }
+                self.wrap_pending = false;
             }
             (_, 0, b'J') => match self.arg(0, 0) {
                 0 => {

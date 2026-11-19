@@ -77,6 +77,13 @@ fn queries_are_answered_with_nobody_watching() {
 }
 
 #[test]
+fn a_cursor_waiting_at_the_right_margin_moves_like_any_other() {
+    // After a character in the last column the cursor waits there; a back-tab still goes back.
+    let term = term(80, 3, "\x1b[1;80Hb\x1b[Z.");
+    assert_eq!((term.row, term.col), (0, 73));
+}
+
+#[test]
 fn the_alternate_screen_gives_the_main_one_back_and_keeps_no_history() {
     let mut term = term(20, 4, "one\r\ntwo\x1b[?1049h\x1b[2Jfull\r\n\n\n\n\n\nscreen");
     assert!(term.alt && term.history.is_empty());
@@ -101,6 +108,8 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     assert_eq!((picture.row, picture.col, picture.cols, picture.rows), (0, 2, 3, 1));
     assert!(picture.data.as_ref().is_some_and(|d| d.starts_with(b"\x1bPq") && d.ends_with(b"\x1b\\")));
     assert_eq!((term.row, term.col), (1, 0));
+    term.resize(10, 3);
+    assert_eq!(term.pictures.len(), 1, "a picture that still fits stays through a resize");
     term.feed(b"\x1b[1;4Hx");
     assert!(term.pictures.is_empty());
     term.feed(b"\x1bPq~~\x1b\\\n\n\n\n\n");

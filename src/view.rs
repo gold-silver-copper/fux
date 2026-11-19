@@ -20,6 +20,8 @@ use std::time::Instant;
 /// The most key scripts running at once; one more is refused with a message.
 const SCRIPTS_MAX: usize = 32;
 const LINE_MAX: usize = 4096;
+const TYPED_MAX: usize = 64 << 10;
+const SCRIPT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What the viewer knows of a pane: its last screen, read from the file.
 struct Pane {
@@ -57,6 +59,8 @@ struct View {
     typed: Vec<u8>,
     pasting: bool,
     scripts: Vec<Child>,
+    /// The script the keys wait for: its pid and when it started.
+    waiting: Option<(u32, Instant)>,
     ctl_path: PathBuf,
     ctl_writer: File,
     ctl_line: Vec<u8>,
@@ -111,6 +115,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         typed: Vec::new(),
         pasting: false,
         scripts: Vec::new(),
+        waiting: None,
         ctl_path,
         ctl_writer,
         ctl_line: Vec::new(),
@@ -128,16 +133,42 @@ impl View {
         let mut buffer = vec![0u8; 16 << 10];
         let mut active = Instant::now();
         while !self.quit {
-            if self.frame()? {
+            // A key's script runs before the keys typed after it, as a command
+            // in a shell does: they wait until it ends (and what it printed is
+            // read, and what it changed is drawn). One that takes longer than
+            // two seconds is left running and the keys go on.
+            self.scripts.retain_mut(|script| !matches!(script.try_wait(), Ok(Some(_))));
+            if let Some((pid, since)) = self.waiting {
+                let running = self.scripts.iter().any(|script| script.id() == pid);
+                if running && since.elapsed() > SCRIPT_WAIT {
+                    self.message = "a key script is still running: keys no longer wait for it".into();
+                }
+                if !running || since.elapsed() > SCRIPT_WAIT {
+                    self.waiting = None;
+                }
+            }
+            let n = (&*ctl).read(&mut buffer).unwrap_or(0);
+            for &byte in buffer.get(..n).unwrap_or(&[]) {
+                if byte == b'\n' {
+                    let line = String::from_utf8_lossy(&std::mem::take(&mut self.ctl_line)).into_owned();
+                    self.command(line.trim());
+                } else if self.ctl_line.len() < LINE_MAX {
+                    self.ctl_line.push(byte);
+                }
+            }
+            if self.frame()? || n > 0 {
                 active = Instant::now();
             }
             // Files are looked at often just after something happened and seldom at rest.
             let timeout = match active.elapsed().as_millis() {
+                _ if self.waiting.is_some() => 2,
                 0..300 => 4,
                 300..3000 => 16,
                 _ => 50,
             };
-            let mut wanted = vec![(self.tty.as_raw_fd(), sys::POLLIN), (ctl.as_raw_fd(), sys::POLLIN)];
+            // Typed bytes are not read while 64 KiB of them wait for a script.
+            let typing = if self.carry.len() < TYPED_MAX { sys::POLLIN } else { 0 };
+            let mut wanted = vec![(self.tty.as_raw_fd(), typing), (ctl.as_raw_fd(), sys::POLLIN)];
             let writers: Vec<(String, i32)> = self
                 .panes
                 .iter()
@@ -156,24 +187,12 @@ impl View {
                     return Ok(());
                 }
                 self.carry.extend_from_slice(buffer.get(..n).unwrap_or(&[]));
-                self.keys(false);
-                active = Instant::now();
-            } else if !self.carry.is_empty() {
-                self.keys(true);
-            }
-            if events.get(1).is_some_and(|e| *e != 0) {
-                let n = (&*ctl).read(&mut buffer).unwrap_or(0);
-                for &byte in buffer.get(..n).unwrap_or(&[]) {
-                    if byte == b'\n' {
-                        let line = String::from_utf8_lossy(&std::mem::take(&mut self.ctl_line)).into_owned();
-                        self.command(line.trim());
-                    } else if self.ctl_line.len() < LINE_MAX {
-                        self.ctl_line.push(byte);
-                    }
-                }
                 active = Instant::now();
             }
-            self.scripts.retain_mut(|script| !matches!(script.try_wait(), Ok(Some(_))));
+            if self.waiting.is_none() && !self.carry.is_empty() {
+                // When nothing at all happened for a moment, a lone ESC is the Escape key.
+                self.keys(events.iter().all(|e| *e == 0));
+            }
         }
         Ok(())
     }
@@ -227,6 +246,9 @@ impl View {
                 name if name.starts_with("terminal:") => self.sixel = name.split([':', '?', ';']).any(|n| n == "4"),
                 name => self.key(name, raw),
             }
+            if self.waiting.is_some() {
+                break;
+            }
         }
         self.carry = bytes.get(at..).unwrap_or(&[]).to_vec();
         self.send();
@@ -269,7 +291,10 @@ impl View {
         // A pane a script starts begins at the size of the whole view, right for a new tab.
         script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.saturating_sub(1).to_string());
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
-            Ok(child) => self.scripts.push(child),
+            Ok(child) => {
+                self.waiting = Some((child.id(), Instant::now()));
+                self.scripts.push(child);
+            }
             Err(e) => self.message = format!("{}: {e}", file.display()),
         }
     }
@@ -309,15 +334,16 @@ impl View {
             wrong = layout::command(&directory, &[]).err();
             layout = Layout::load(&directory).0;
         }
-        let line = Cell { ch: '│', ..Cell::blank(Style::default()) };
+        let tab = layout.tab();
+        let tiles = tab.map(|tab| tab.tiles(Rect { x: 0, y: 0, w, h: h.saturating_sub(1) })).unwrap_or_default();
+        // What no tile covers is the line between the parts of a row.
+        let line = Cell { ch: if tiles.is_empty() { ' ' } else { '│' }, ..Cell::blank(Style::default()) };
         let mut back = vec![line; w * h];
         let mut set = |x: usize, y: usize, cell: Cell| {
             if let Some(slot) = back.get_mut(y * w + x).filter(|_| x < w) {
                 *slot = cell;
             }
         };
-        let tab = layout.tab();
-        let tiles = tab.map(|tab| tab.tiles(Rect { x: 0, y: 0, w, h: h.saturating_sub(1) })).unwrap_or_default();
         self.focus = tab.map(|tab| tab.focus.clone());
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         let (mut cursor, mut pictures) = (String::new(), Vec::new());
@@ -383,17 +409,29 @@ impl View {
                 }
             }
         }
-        // The last line: the workspace, its tabs, and a message when there is one.
+        // The last line: the workspace, its tabs (as many as fit, the one shown
+        // among them), and a message when there is one. What is wrong with
+        // the layout file comes first. Nothing here may carry a control code.
         let bold = Style { flags: REVERSE | BOLD, ..Style::default() };
         let mut bar: Vec<(char, Style)> = format!(" {} ", self.workspace).chars().map(|c| (c, bold)).collect();
-        for (i, tab) in layout.tabs.iter().enumerate() {
-            let style = Style { flags: if i == layout.current { REVERSE } else { 0 }, ..Style::default() };
-            bar.extend(format!(" {}:{} ", i + 1, tab.focus).chars().map(|c| (c, style)));
-        }
+        let labels: Vec<String> =
+            layout.tabs.iter().enumerate().map(|(i, t)| format!(" {}:{} ", i + 1, t.focus)).collect();
+        let fits = |first: usize| {
+            let shown = labels.iter().take(layout.current + 1).skip(first);
+            bar.len() + shown.map(|label| label.chars().count()).sum::<usize>() <= w
+        };
+        let first = (0..=layout.current).find(|first| fits(*first)).unwrap_or(layout.current);
         let hint = format!("no panes in {}: keys are scripts in {}", self.workspace, self.keys.display());
-        let note =
-            wrong.as_ref().unwrap_or(if tiles.is_empty() && self.message.is_empty() { &hint } else { &self.message });
+        let note = if tiles.is_empty() && self.message.is_empty() { &hint } else { &self.message };
+        if let Some(wrong) = &wrong {
+            bar.extend(format!(" {wrong} ").chars().map(|c| (c, Style::default())));
+        }
+        for (i, label) in labels.iter().enumerate().skip(first) {
+            let style = Style { flags: if i == layout.current { REVERSE } else { 0 }, ..Style::default() };
+            bar.extend(label.chars().map(|c| (c, style)));
+        }
         bar.extend(format!("  {note}").chars().map(|c| (c, Style::default())));
+        bar.iter_mut().filter(|(c, _)| c.is_control()).for_each(|(c, _)| *c = '?');
         for x in 0..w {
             let (ch, style) = bar.get(x).copied().unwrap_or((' ', Style::default()));
             set(x, h.saturating_sub(1), Cell { ch, marks: ['\0'; 2], style });

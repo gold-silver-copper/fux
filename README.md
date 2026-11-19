@@ -28,6 +28,9 @@ echo kill > "$D/main/build/ctl"             # hangs up the program; what Unix do
 ```
 
 `./example.sh` runs the first lines for real; CI runs it on both systems.
+Two notes on it: the screen is written a few milliseconds after the program
+prints, so a script looks again until it sees what it waits for; and the key
+scripts are written on the first `fux3 view`.
 
 **Beside the merged fux3.** This one reads `FUX3C_DIR` and `FUX3C_KEYS` and
 lives in `$XDG_RUNTIME_DIR/fux3c` (else `~/.cache/fux3c`) and
@@ -44,7 +47,7 @@ two never see each other's panes, whichever binary is called `fux3`.
 | `fux3 view [WORKSPACE]` | the viewer |
 | `fux3 layout [EDIT…]` | prints the layout of workspace `$FUX3C_WS` (default `main`), or edits it (below) |
 
-Names are letters, digits, `.`, `_` and `-`.
+Names are letters, digits, `.`, `_` and `-`, at most 64, not starting with a dot.
 
 ## A pane's files
 
@@ -66,6 +69,7 @@ pid=4242 state=running v=17 size=80x24 cursor=3,8 shape=0 modes=cursor,paste pic
 ```
 
 `v` grows by one with every change written; `cursor` is row,column from 0;
+`state` is `status`'s, with `:` for its space (`exited:0`);
 `modes` lists what is on (`cursor` shown, `appcursor`, `keypad`, `paste`,
 `alt` screen); each `pic=` is a file, its row and column, and its size in
 cells. A screen file is replaced in one step (written as `screen.new`, then
@@ -74,9 +78,9 @@ renamed), so a reader sees a whole old one or a whole new one.
 **Bounds.** The screens are replaced at most 40 times a second, so a flood
 (`yes`) costs at most 80 file replacements and 40 appends to `history` a
 second; the holder reads at most 512 KiB of output between two of them, and
-past that the program waits, as on any slow terminal. At most 64 KiB of typed
-bytes wait for a program that is not reading; past that, writers to `in`
-wait. A screen keeps at most 8 pictures of at most 4 MiB each.
+past that the program waits, as on any slow terminal. The holder keeps at most 64 KiB of typed bytes for a program that is not
+reading; past that it stops reading `in`, and once the FIFO itself is full
+(the kernel's size: 64 KiB or more) writers to `in` wait. A screen keeps at most 8 pictures of at most 4 MiB each.
 
 The program runs with `TERM=xterm-256color` and `FUX3C_PANE` (its pane's
 directory), in the directory `fux3 start` was run in, with the rest of that
@@ -116,8 +120,8 @@ other shows what fits.
 ### Keys are scripts
 
 The keys directory is `$FUX3C_KEYS`, else `~/.config/fux3c/keys`; the viewer
-writes the default scripts there if it does not exist. A key that has an
-executable file of its name runs it. A key that has a directory opens it as a
+writes the default scripts there if it does not exist. A key that has a file
+of its name runs it (a file that cannot be run says so on the last line). A key that has a directory opens it as a
 menu (each script's second line, `# what it does`, is its entry) and the next
 key is looked up there. Any other key goes to the program. So the prefix is
 only a directory: `keys/C-b/v` is "C-b, then v", and `keys/M-left` would be
@@ -131,7 +135,10 @@ names differ by more than case, for macOS); `C-b`, `M-x`, `enter`, `tab`,
 
 A script gets `FUX3C_DIR` (the session), `FUX3C_WS` (the workspace shown),
 `FUX3C_PANE` (the focused pane's directory), `FUX3C_KEYS`, `FUX3C_VIEW`,
-`COLUMNS` and `LINES` (the view's size), and this `fux3` first in `PATH`.
+`COLUMNS` and `LINES` (the size of a pane that fills the view), and this
+`fux3` first in `PATH`. Keys typed after it wait until it ends (two seconds
+at most), so `C-b c` and then text types into the new shell; a script that
+takes longer puts its work in the background, as the defaults do.
 What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace, and anything else (an error
 from `sh`, say) is shown on the last line. Writing the same lines to the FIFO
@@ -170,7 +177,8 @@ fux3 adds nothing to stop these. What happens is what Unix does:
   started in a session of its own. `pid` is in `status`.
 - **Don't write more than 512 bytes to `in` in one go if others write too**:
   larger writes can interleave (4096 on Linux).
-- **Don't kill the viewer with `kill -9`.** Your terminal stays raw (`reset`)
+- **Don't kill the viewer** (with any signal: it handles none; `C-b d`
+  leaves it). Your terminal stays raw (`reset`)
   and a FIFO `.view.PID` stays in the session directory (`rm` it). The panes
   do not care.
 - **Don't put other folders in a workspace**: every folder there is shown as

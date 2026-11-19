@@ -69,18 +69,14 @@ fn start(args: &[OsString]) -> Result<(), String> {
         .create(&workspace)
         .map_err(|e| format!("{}: {e}", workspace.display()))?;
     // Making the directory is what claims the name: two starts cannot both make it.
-    let dir = if pane.is_empty() {
-        (1..10000)
-            .map(|n| workspace.join(n.to_string()))
-            .find(|dir| make_dir(dir).is_ok())
-            .ok_or("no free number for a pane")?
+    let numbered = (1..10000).map(|n| workspace.join(n.to_string()));
+    let (dir, made) = if pane.is_empty() {
+        (numbered.into_iter().find(|dir| make_dir(dir).is_ok()).ok_or("no free number for a pane")?, true)
     } else {
         let dir = workspace.join(pane);
         match make_dir(&dir) {
-            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
-                return Err(format!("{}: {e}", dir.display()));
-            }
-            _ => dir,
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(format!("{}: {e}", dir.display())),
+            made => (dir, made.is_ok()),
         }
     };
     let program: Vec<OsString> = match program {
@@ -120,11 +116,12 @@ fn start(args: &[OsString]) -> Result<(), String> {
         }
         if holder.try_wait().map_err(|e| e.to_string())?.is_some() {
             let log = fs::read_to_string(dir.join("log")).unwrap_or_default();
-            return Err(format!(
-                "{}: {}",
-                dir.display(),
-                log.lines().last().unwrap_or("the holder ended without a word").trim_start_matches("fux3: ")
-            ));
+            let why = log.lines().last().unwrap_or("the holder ended without a word").trim_start_matches("fux3: ");
+            // A folder made for a pane that never was is not left behind.
+            if made {
+                let _ = fs::remove_dir_all(&dir);
+            }
+            return Err(format!("{}: {why}", dir.display()));
         }
         std::thread::sleep(Duration::from_millis(2));
     }

@@ -72,8 +72,6 @@ pub fn replace(name: &str, content: &[u8]) -> io::Result<()> {
 /// ends. `fux3 start` locked the directory and handed the lock over as this
 /// process's standard input: it is held for exactly as long as the holder lives.
 pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
-    let (input, _input_writer) = fifo("in").map_err(|e| format!("cannot make in: {e}"))?;
-    let (ctl, _ctl_writer) = fifo("ctl").map_err(|e| format!("cannot make ctl: {e}"))?;
     // The first size is COLUMNS x LINES when the starter set them (the viewer
     // does, for key scripts), and 80x24 otherwise. `resize` changes it later.
     let number = |name: &str, or: u16| {
@@ -99,6 +97,9 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     sys::new_session(&mut child, true);
     let mut child = child.spawn().map_err(|e| format!("cannot start {}: {e}", program.to_string_lossy()))?;
     let pid = child.id();
+    // The FIFOs are made once there is a program to read them for.
+    let (input, _input_writer) = fifo("in").map_err(|e| format!("cannot make in: {e}"))?;
+    let (ctl, _ctl_writer) = fifo("ctl").map_err(|e| format!("cannot make ctl: {e}"))?;
     // The program's end arrives as a line on a pipe, so the loop below waits
     // on it like on everything else.
     let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
@@ -202,14 +203,18 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
 }
 
 impl Holder {
-    /// A line in `log` (the holder's standard error), which stops at 64 KiB.
+    /// A line in `log` (the holder's standard error). The file never passes
+    /// 64 KiB: its last line says that it is full. Control characters in what
+    /// is quoted are written as `?`, so `cat log` is as safe as the screens.
     fn log(&mut self, line: &str) {
-        if self.logged < LOG_MAX {
+        const FULL: &str = "the log is full: nothing more is written here";
+        let line: String = line.chars().map(|c| if c.is_control() { '?' } else { c }).collect();
+        if self.logged + line.len() + 1 + FULL.len() < LOG_MAX {
             self.logged += line.len() + 1;
             eprintln!("{line}");
-            if self.logged >= LOG_MAX {
-                eprintln!("the log is full: nothing more is written here");
-            }
+        } else if self.logged < LOG_MAX {
+            self.logged = LOG_MAX;
+            eprintln!("{FULL}");
         }
     }
 
@@ -261,7 +266,7 @@ impl Holder {
     fn command(&mut self, line: &str) -> Result<(), String> {
         let mut words = line.split_whitespace();
         match words.next() {
-            Some("kill") => {
+            Some("kill") if words.next().is_none() => {
                 // Closing the master is the hangup. What the program and its
                 // children do about it is theirs to decide.
                 if self.master.take().is_some() {
@@ -271,18 +276,18 @@ impl Holder {
                 Ok(())
             }
             Some("resize") => {
-                let mut number = |low: u16, high: u16| {
-                    words.next().and_then(|w| w.parse::<u16>().ok()).filter(|n| (low..=high).contains(n))
+                let numbers: Vec<u16> = words.map(|word| word.parse().unwrap_or(0)).collect();
+                let (cols, rows, cell) = match numbers.as_slice() {
+                    [cols @ 1..=1000, rows @ 1..=1000] => (*cols, *rows, None),
+                    [cols @ 1..=1000, rows @ 1..=1000, w @ 1..=100, h @ 1..=100] => (*cols, *rows, Some((*w, *h))),
+                    _ => return Err("resize takes COLS ROWS, each 1 to 1000, then perhaps a cell's WIDTH HEIGHT in pixels, each 1 to 100".into()),
                 };
-                let (Some(cols), Some(rows)) = (number(1, 1000), number(1, 1000)) else {
-                    return Err(
-                        "resize takes COLS ROWS, each 1 to 1000, and may take a cell's WIDTH HEIGHT in pixels".into()
-                    );
-                };
-                let cell = (
-                    number(1, 100).unwrap_or(self.term.cell.0 as u16),
-                    number(1, 100).unwrap_or(self.term.cell.1 as u16),
-                );
+                let old = (self.term.cell.0 as u16, self.term.cell.1 as u16);
+                let cell = cell.unwrap_or(old);
+                if cell != old {
+                    // Pictures were laid out in cells of the old size.
+                    self.term.pictures.clear();
+                }
                 let Some(master) = &self.master else {
                     return Err("the program was hung up".into());
                 };

@@ -66,6 +66,11 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     assert!(read(&pane.join("screen")).lines().next().unwrap().contains("size=91x17"));
     assert_eq!(read(&pane.join("screen")).lines().count(), 18, "line 1 and one line a row");
     until("the refusal is logged", || read(&pane.join("log")).contains("fly: not a command"));
+    fs::write(pane.join("ctl"), "kill \x1b]0;now\x07\n").unwrap();
+    until("a refused line is logged without its control codes", || read(&pane.join("log")).contains("kill ?]0;now?"));
+    // A pane whose program cannot start is not left behind.
+    assert!(!session.fux3().args(["start", "none", "--", "/no/such/program"]).output().unwrap().status.success());
+    assert!(!session.0.join("main/none").exists());
     // A second start of a live pane is refused; the first is not disturbed.
     assert!(!session.fux3().args(["start", "build", "--", "sh"]).output().unwrap().status.success());
     fs::write(pane.join("in"), "exit 3\n").unwrap();
@@ -116,7 +121,8 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::create_dir_all(keys.join("C-b")).unwrap();
     let script = "#!/bin/sh\n# split\np=$(fux3 start \"$FUX3C_WS/two\" -- sh) && fux3 layout split row two\necho made $FUX3C_KEYS\n";
     fs::write(keys.join("C-b/v"), script).unwrap();
-    Command::new("chmod").arg("+x").arg(keys.join("C-b/v")).status().unwrap();
+    fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>\"$FUX3C_PANE/in\"\n").unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("C-b/v")).arg(keys.join("C-b/e")).status().unwrap();
     let one = inner.start("one", &["sh"]);
     let viewer = [env!("CARGO_BIN_EXE_fux3"), "view"];
     let command = ["env", &format!("FUX3C_DIR={}", inner.0.display()), &format!("FUX3C_KEYS={}", keys.display())];
@@ -125,6 +131,9 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(view.join("in"), "echo o''ne\r").unwrap();
     until("what is typed reaches the pane and its screen the viewer", || screen().contains("\none\n"));
     assert!(read(&one.join("screen")).contains("\none\n"));
+    // Keys typed after a key with a script wait for the script: here it types `echo `.
+    fs::write(view.join("in"), "\x02ein or''der\r").unwrap();
+    until("the script's typing came first", || screen().contains("\nin order\n"));
     // The prefix opens the menu the directory gives; the key runs the script.
     fs::write(view.join("in"), "\x02").unwrap();
     until("the menu shows the script's second line", || screen().contains("v  split"));
