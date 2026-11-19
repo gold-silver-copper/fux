@@ -315,3 +315,43 @@ Append-only: one short entry per decision, newest last.
     - Lines: production 5,897 at the merge (the core's branch brought 8 in `view_dir`) → 5,924.
       Over the 5,900 band by 24. Paid: `resolve_live` folded into its caller. Nothing else here
       is redundant; each addition is one of the fixes above.
+24. **Review round 2 (2026-11-19, the last round): what changed in the viewer, and why.**
+    - **A workspace is closed only through a directory held.** `(hold-workspace NAME)` opens the
+      name once (the workspace shown is held already) and gives the directory's id;
+      `(close-workspace HELD)` takes only that, and never opens a name. `confirm-close-workspace`
+      holds when it asks, so yes closes the directory the question was about: renamed since, it
+      is that one that goes; removed since, it is refused. Entry 21's rule (a name from the last
+      list, else the name now) fell back to opening the name: with the workspace renamed under
+      the question and another made under the old name, the new one was closed; and only the
+      first 64 of a list were held. The list holds nothing now. 64 are held at once; past that
+      the oldest is let go, and closing it is refused.
+      Before/after for a config: `(close-workspace "x")` → `(close-workspace (hold-workspace "x"))`.
+    - **The copy's recipe is removed by the viewer, as soon as the pane has started**
+      (`(forget-recipe PANE)`: the pane by its id, then the recipe under its name, through the
+      workspace's directory). The script no longer removes one: by content, a program that
+      merely printed the copy's words matched; and the script cannot write its recipe's whole
+      text to compare. `fux3 start` returns after the recipe is written, so nothing is raced, and
+      a copy closed with `C-b x` leaves none either. The script now uses no start-time name.
+    - **The copy's script enters the pane's directory once** and reads `screen`, `history` and
+      `history.1` relative to it (a rename is followed; another pane under the old name is never
+      read); it looks for the id only in regular files (a FIFO called `id` held it up for good);
+      and it opens `history`, then `history.1`, before reading either, so a rotation in between
+      doubles a generation and misses none.
+    - **Closing a workspace looks before it ends anything.** Every directory a holder has locked,
+      four levels down, is listed without being entered; one that is no pane the close can end
+      (starting or ending under a name nothing lists, or a live pane inside another's
+      directory) refuses the close with no pane ended and nothing removed. `empty` itself
+      neither enters nor removes a locked directory.
+    - **A viewer closing its own workspace says nothing and drops no key**: the notice and the
+      dropped key (entry 21) are for a workspace removed from outside, known by no binding of
+      this viewer running when it is found gone. Driven: after `C-b w x`, yes, the next keys
+      went to the workspace shown next.
+    - Notes, not changed: a paste handed to a holder that reads it only after its workspace was
+      renamed names the old path and is lost (the file is where it was; a path that survives a
+      rename would be one in the session's directory, a change to where pastes live). Seat 4's
+      later notes: its 2 (the copy's recipe after a workspace rename) and 4 (a stale list) are
+      closed by the above; its 1 (an outside edit landing while a binding runs is not fitted),
+      3 (a workspace moved to a name that is none) and 5 (`.view.new-*` left after a rename
+      error, in the core's `view_dir`) are as they were.
+    - Lines: production 5,924 → 5,986. Over the 5,900 band by 86: the two words, the listing of
+      held directories and the script are the fixes themselves; nothing was found to pay with.

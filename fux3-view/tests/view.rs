@@ -529,6 +529,9 @@ fn the_history_key_opens_the_history_and_then_the_screen() -> Tested {
         .filter(|row| !row.trim().is_empty())
         .last()
         .ok_or("a blank screen")?;
+    // A FIFO called `id` in a directory that is no pane holds nothing up.
+    private_dir(&lab.view.join("main/zz"))?;
+    fuxix::file::private_fifo(&lab.view.join("main/zz/id")).map_err(|e| e.to_string())?;
     lab.keys("v", b"\x02c")?;
     let copied = lab.base.join("editor.copied");
     until("the editor was given the text", || copied.exists())?;
@@ -625,6 +628,25 @@ fn a_stale_yes_never_closes_or_types_into_a_workspace_made_again() -> Tested {
             "{space}: the answer was typed into the new pane:\n{screen}"
         );
     }
+    // Renamed under the question, another made under its old name: yes
+    // closes the one the question was asked about, whatever it is called.
+    lab.start("asked/p")?;
+    lab.viewer("asked", "100x30", &["asked"])?;
+    lab.shows("asked", "$")?;
+    lab.keys("asked", b"\x02wx")?;
+    lab.shows("asked", "close workspace")?;
+    let renamed = lab.view.join("asked2");
+    std::fs::rename(lab.view.join("asked"), &renamed).map_err(|e| e.to_string())?;
+    lab.start("asked/p")?;
+    std::thread::sleep(Duration::from_millis(1500));
+    lab.keys("asked", b"y")?;
+    until("the workspace asked about closed", || !renamed.exists())?;
+    let listed = lab.run(&lab.view, &["ls"])?;
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    assert!(
+        listed.contains("asked/p"),
+        "the new one was closed: {listed:?}"
+    );
     Ok(())
 }
 
@@ -678,7 +700,12 @@ fn the_copy_removes_no_recipe_but_its_own() -> Tested {
         lab.base.join("editor.copied").exists()
     })?;
     std::fs::rename(main.join("history-1"), main.join("moved")).map_err(|e| e.to_string())?;
-    let other = lab.run(&lab.view, &["start", "history-1", "--", "sleep", "60"])?;
+    // Even one that holds the copy's words.
+    let program = "printf '%s\\n' history-and-screen; exec sleep 60";
+    let other = lab.run(
+        &lab.view,
+        &["start", "history-1", "--", "sh", "-c", program],
+    )?;
     assert!(other.status.success(), "{other:?}");
     std::fs::remove_file(&hold).map_err(|e| e.to_string())?;
     until("the copy's pane ended", || !main.join("moved").exists())?;

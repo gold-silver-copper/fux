@@ -219,8 +219,27 @@ pub fn run_line(
     }
 }
 
+/// Every directory in `dir`, `depth` levels down, whose lock a holder
+/// has, as its path from `dir` (after `under`): none of them is entered.
+fn held(dir: &File, depth: u8, under: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, _) in at::names(dir, 1 << 16).unwrap_or_default() {
+        let Ok(inner) = at::open_dir(dir, &name) else {
+            continue;
+        };
+        let shown = format!("{under}{}", name.to_string_lossy());
+        match (fux3::session::try_lock(&inner), depth.checked_sub(1)) {
+            (Ok(true), Some(depth)) => out.extend(held(&inner, depth, &format!("{shown}/"))),
+            (Ok(true), None) => {}
+            (Ok(false) | Err(_), _) => out.push(shown),
+        }
+    }
+    out
+}
+
 /// Removes everything in `dir`, through its handle: files and links
-/// themselves, directories emptied first, `depth` levels down at most.
+/// themselves, directories emptied first, `depth` levels down at most. A
+/// directory a holder has locked is neither entered nor removed.
 fn empty(dir: &File, depth: u8) -> Result<(), Failure> {
     for (name, _) in at::names(dir, 1 << 16).map_err(|e| fux3::io("listing", e))? {
         let shown = name.to_string_lossy().into_owned();
@@ -228,6 +247,9 @@ fn empty(dir: &File, depth: u8) -> Result<(), Failure> {
             continue;
         }
         let inner = at::open_dir(dir, &name).map_err(|e| fux3::io(&shown, e))?;
+        if !fux3::session::try_lock(&inner)? {
+            return Err(Failure::new(format!("{shown} is a live pane's")));
+        }
         match depth.checked_sub(1) {
             Some(depth) => empty(&inner, depth)?,
             None => return Err(Failure::new(format!("{shown} is too deep to remove"))),
@@ -245,22 +267,26 @@ fn empty(dir: &File, depth: u8) -> Result<(), Failure> {
 pub fn close_workspace(workspace: &Workspace, cancel: &AtomicBool) -> Result<(), Failure> {
     let begun = Instant::now();
     workspace.check()?;
-    for name in workspace.live()? {
+    // Every directory a holder has locked, however deep, before anything
+    // is ended: one that is no pane this can end (starting or ending under
+    // a name nothing lists, or moved inside another's) keeps it all.
+    let live = workspace.live()?;
+    let all = held(workspace.held(), 4, "");
+    if let Some(other) = all.iter().find(|name| !live.contains(name)) {
+        let why = "is a pane starting, ending or inside another's directory";
+        let space = &workspace.name;
+        return Err(Failure::new(format!(
+            "workspace {space} stays, and no pane was ended: {other} {why}"
+        )));
+    }
+    for name in live {
         // One that ended meanwhile has no reader: it is gone already.
         let _ = (workspace.pane(&name)).and_then(|dir| crate::panes::ctl_line(&dir, "kill"));
     }
     loop {
         let lock = workspace.session.lock()?;
         workspace.clear_dead(&lock)?;
-        // Every directory a holder has locked: the live panes, and those
-        // starting or ending under names nothing lists. None is entered.
-        let all = at::names(workspace.held(), 1 << 16).map_err(|e| fux3::io("listing", e))?;
-        let held = |name: &std::ffi::OsString| {
-            let dir = at::open_dir(workspace.held(), name).ok()?;
-            let free = fux3::session::try_lock(&dir).unwrap_or(false);
-            (!free).then(|| name.to_string_lossy().into_owned())
-        };
-        let live: Vec<String> = all.iter().filter_map(|(name, _)| held(name)).collect();
+        let live = held(workspace.held(), 4, "");
         if live.is_empty() {
             empty(workspace.held(), 4)?;
             let removed = || Failure::new(format!("workspace {} was removed", workspace.name));
@@ -308,6 +334,11 @@ mod tests {
                 Some("workspace w was removed")
             );
         }
+        let layout = layout::read(&view_dir(&second)?)?.to_string();
+        assert!(
+            layout.contains("theirs") && !layout.contains("stale"),
+            "{layout}"
+        );
         // One that waited for the layout's lock meanwhile says the same.
         let third = session.workspace("w", false)?;
         let lock = layout::lock(&view_dir(&third)?)?;
@@ -323,40 +354,65 @@ mod tests {
             return Err(Failure::new("the late command was not refused"));
         };
         assert_eq!(late.0, "workspace w was removed");
-        let second = session.workspace("w", false)?;
-        run_line(&second, "tab new theirs", area, &cancel)?;
-        let layout = layout::read(&view_dir(&second)?)?.to_string();
-        assert!(
-            layout.contains("theirs") && !layout.contains("stale"),
-            "{layout}"
-        );
+        let layout = layout::read(&view_dir(&session.workspace("w", false)?)?)?.to_string();
+        assert!(!layout.contains("late"), "{layout}");
         std::fs::remove_dir_all(&root).map_err(|e| fux3::io("removing", e))
     }
 
-    /// Closing a workspace never takes apart a pane that is starting or
-    /// ending in it (a directory a holder has locked, under a name nothing
-    /// lists): it is refused, saying which, and nothing was removed.
+    /// Closing a workspace never takes apart a pane it cannot end: one
+    /// starting or ending under a name nothing lists, or a live one moved
+    /// inside another's directory. It is refused, saying which, before any
+    /// pane is ended and with nothing removed.
     #[test]
-    fn closing_a_workspace_leaves_a_pane_that_is_starting() -> Result<(), Failure> {
+    fn closing_a_workspace_leaves_a_pane_it_cannot_end() -> Result<(), Failure> {
         let scratch = fuxix::file::scratch().map_err(|e| fux3::io("scratch", e))?;
         let root = scratch.join(format!("f3v-close-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         fuxix::file::private_dir(&root).map_err(|e| fux3::io("root", e))?;
         let workspace = Session::at(root.clone())?.workspace("w", true)?;
         view_dir(&workspace)?;
-        let staged = root.join("w/.new-0123456789abcdef");
-        std::fs::create_dir(&staged).map_err(|e| fux3::io("staging", e))?;
-        std::fs::write(staged.join("id"), "0123456789abcdef\n").map_err(|e| fux3::io("id", e))?;
-        let holder = File::open(&staged).map_err(|e| fux3::io("staging", e))?;
-        holder.lock().map_err(|e| fux3::io("locking", e))?;
-        let refused = close_workspace(&workspace, &AtomicBool::new(true)).err();
-        let said = refused.map(|f| f.0).unwrap_or_default();
-        assert!(
-            said.contains(".new-0123456789abcdef did not end"),
-            "{said:?}"
-        );
-        assert!(staged.join("id").exists() && root.join("w/.view/layout").exists());
-        drop(holder);
+        // A directory with a pane's marker, locked as its holder would.
+        let pane = |path: &str| -> Result<File, Failure> {
+            let dir = root.join("w").join(path);
+            std::fs::create_dir_all(&dir).map_err(|e| fux3::io(path, e))?;
+            std::fs::write(dir.join("id"), "0123456789abcdef\n").map_err(|e| fux3::io(path, e))?;
+            let held = File::open(&dir).map_err(|e| fux3::io(path, e))?;
+            held.lock().map_err(|e| fux3::io(path, e))?;
+            Ok(held)
+        };
+        // A live pane with a `ctl` someone reads: no kill may reach it.
+        let live = pane("p")?;
+        let ctl = root.join("w/p/ctl");
+        fuxix::file::private_fifo(&ctl).map_err(|e| fux3::io("ctl", e))?;
+        let reader = {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut options = File::options();
+            options.read(true).custom_flags(fuxix::file::NONBLOCK);
+            options.open(&ctl).map_err(|e| fux3::io("ctl", e))?
+        };
+        for (other, kept) in [(".new-0123456789abcdef", "id"), (".gone-x/inner", "id")] {
+            let holder = pane(other)?;
+            let refused = close_workspace(&workspace, &AtomicBool::new(true)).err();
+            let said = refused.map(|f| f.0).unwrap_or_default();
+            assert!(said.contains(other), "{other}: {said:?}");
+            let mut sent = [0u8; 8];
+            // Nothing was written to it: no bytes, or none to read.
+            let told = fuxix::io::read(&reader, &mut sent).is_ok_and(|n| n > 0);
+            assert!(!told, "{other}: p was told to end");
+            assert!(
+                root.join("w").join(other).join(kept).exists(),
+                "{other} was taken apart"
+            );
+            assert!(
+                root.join("w/.view/layout").exists(),
+                "{other}: the layout went"
+            );
+            drop(holder);
+            std::fs::remove_dir_all(root.join("w").join(other)).map_err(|e| fux3::io(other, e))?;
+            let _ = std::fs::remove_dir(root.join("w/.gone-x"));
+        }
+        drop((live, reader));
+        std::fs::remove_dir_all(root.join("w/p")).map_err(|e| fux3::io("p", e))?;
         close_workspace(&workspace, &AtomicBool::new(true))?;
         assert!(!root.join("w").exists());
         std::fs::remove_dir_all(&root).map_err(|e| fux3::io("removing", e))
