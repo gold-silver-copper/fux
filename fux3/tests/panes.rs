@@ -307,3 +307,21 @@ fn a_pane_started_inside_a_pane_is_part_of_it() -> Result {
     }
     Ok(())
 }
+
+/// Once `fux3 start` has returned, the pane's files are there to read.
+#[test]
+fn start_returns_once_the_files_are_there() -> Result {
+    let s = Session::new("ready")?;
+    for n in 0..20 {
+        let name = format!("p{n}");
+        s.start(&name, &["sh"])?;
+        for file in ["screen", "screen.styled", "status", "errors", "history"] {
+            assert!(
+                s.pane(&name).join(file).exists(),
+                "{name}/{file} missing after start"
+            );
+        }
+        s.write(&name, "ctl", b"kill\n")?;
+    }
+    Ok(())
+}

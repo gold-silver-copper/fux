@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 /// How often the screens are published at most while output goes on. The
 /// first change after a rest is published at once.
 pub const INTERVAL: Duration = Duration::from_millis(40);
+/// How long `start` waits for the first files to be written.
+const START_PUBLISH: Duration = Duration::from_secs(2);
 /// The most bytes of output read at a time.
 const READ: usize = 16 << 10;
 /// The most bytes read from `in` or `ctl` at a time.
@@ -352,6 +354,11 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     match Spec::parse(args).and_then(prepare) {
         Ok(mut holder) => {
             holder.publish(Instant::now());
+            // `ok` only once the files are there: a client reading them at
+            // once finds them. A disk too slow for that is said in status.
+            if !holder.publisher.wait_written(START_PUBLISH) {
+                holder.refuse("start", "the first files took over 2 s to write");
+            }
             let said =
                 writeln!(stdout, "ok {}", holder.dir.display()).and_then(|()| stdout.flush());
             if detach_stdio().is_err() || said.is_err() {

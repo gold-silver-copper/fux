@@ -94,10 +94,14 @@ struct Work {
     new_images: Vec<(String, Arc<Picture>)>,
     gone_images: Vec<String>,
     stop: bool,
+    /// Publishes handed over, and how many of them are written.
+    handed: u64,
+    written: u64,
 }
 
 struct Shared {
     work: Mutex<Work>,
+    written: Condvar,
     wake: Condvar,
 }
 
@@ -114,6 +118,7 @@ impl Publisher {
         let shared = Arc::new(Shared {
             work: Mutex::new(Work::default()),
             wake: Condvar::new(),
+            written: Condvar::new(),
         });
         let theirs = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
@@ -137,6 +142,7 @@ impl Publisher {
     /// written and gone is never written.
     pub fn hand(&self, publish: Publish) {
         self.with_work(|work| {
+            work.handed = work.handed.saturating_add(1);
             if let Some(files) = publish.files {
                 let errors = files
                     .errors
@@ -155,6 +161,23 @@ impl Publisher {
                 work.gone_images.push(name);
             }
         });
+    }
+
+    /// Waits, at most `most`, until every publish handed over is written:
+    /// whether it was.
+    pub fn wait_written(&self, most: std::time::Duration) -> bool {
+        let Ok(work) = self.shared.work.lock() else {
+            return false;
+        };
+        let target = work.handed;
+        match self
+            .shared
+            .written
+            .wait_timeout_while(work, most, |w| w.written < target)
+        {
+            Ok((_, timeout)) => !timeout.timed_out(),
+            Err(_) => false,
+        }
     }
 
     /// Writes what waits, then stops; later work is never written.
@@ -184,8 +207,16 @@ fn run(shared: &Shared, dir: &Path, history_cap: usize) {
                 Err(_) => return,
             };
         }
-        let taken = std::mem::take(&mut *work);
-        work.stop = taken.stop;
+        let taken = Work {
+            files: work.files.take(),
+            history: std::mem::take(&mut work.history),
+            history_lost: std::mem::take(&mut work.history_lost),
+            new_images: std::mem::take(&mut work.new_images),
+            gone_images: std::mem::take(&mut work.gone_images),
+            stop: work.stop,
+            handed: work.handed,
+            written: 0,
+        };
         drop(work);
         let mut writer = Writer { dir, failure: None };
         writer.publish(taken.new_images, taken.files, taken.gone_images);
@@ -200,6 +231,10 @@ fn run(shared: &Shared, dir: &Path, history_cap: usize) {
             }
             text.extend_from_slice(&taken.history);
             history_len = writer.append_history(&text, history_len, history_cap);
+        }
+        if let Ok(mut work) = shared.work.lock() {
+            work.written = taken.handed;
+            shared.written.notify_all();
         }
         if taken.stop {
             return;
