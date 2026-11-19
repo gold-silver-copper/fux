@@ -6,14 +6,15 @@
 use crate::ctl::{self, Command, MAX_SEND};
 use crate::files::{self, Head, Placed};
 use crate::publish::{self, Publisher};
-use crate::session::{self, Session};
+use crate::session::{self, Session, Workspace};
 use crate::{Failure, io};
 use fux_vt::sixel::Picture;
 use fux_vt::{CellSize, Feature, Graphics, Identity, Mode, Options, Parser, Sink, Size, Stop};
 use fuxix::Errno;
+use fuxix::file::at;
 use fuxix::poll::{Events, Poll, PollFd};
 use fuxix::process::{Job, Reach, Scan, Signal, Status};
-use fuxix::pty::Master;
+use fuxix::pty::{Master, Slave};
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs::File;
@@ -73,6 +74,11 @@ const DRAIN_MOST: Duration = Duration::from_secs(1);
 /// kill waits for everything to be gone.
 const HANGUP_GRACE: Duration = Duration::from_millis(200);
 const KILL_WAIT: Duration = Duration::from_secs(2);
+/// How long what a kill asked to end (panes started inside this one
+/// among it) has to end itself before it is killed outright.
+const TERM_GRACE: Duration = Duration::from_secs(1);
+/// The longest record `history` holds, whatever its cap.
+const MAX_RECORD: usize = 64 << 10;
 /// The most variables `--env` names.
 pub const MAX_ENV: usize = 64;
 /// The most labels, and their keys' and values' lengths.
@@ -89,6 +95,9 @@ fn after(now: Instant, wait: Duration) -> Instant {
 pub struct Spec {
     pub root: PathBuf,
     pub workspace: String,
+    /// The directory the workspace must be ([`Workspace::id`]), if the
+    /// starter held one: a workspace removed and made again is another.
+    pub workspace_id: Option<String>,
     pub name: String,
     pub cols: u16,
     pub rows: u16,
@@ -144,6 +153,7 @@ impl Spec {
             "__hold".into(),
             self.root.clone().into(),
             self.workspace.clone().into(),
+            self.workspace_id.clone().unwrap_or_default().into(),
             self.name.clone().into(),
             format!("{}x{}", self.cols, self.rows).into(),
             format!("{}x{}", self.cell.0, self.cell.1).into(),
@@ -179,6 +189,8 @@ impl Spec {
         };
         let root = PathBuf::from(next("root")?);
         let workspace = text(next("workspace")?, "workspace")?;
+        let workspace_id =
+            Some(text(next("workspace id")?, "workspace id")?).filter(|id| !id.is_empty());
         let name = text(next("name")?, "name")?;
         let (cols, rows) = pair(text(next("size")?, "size")?, "size")?;
         let cell = pair(text(next("cell")?, "cell")?, "cell")?;
@@ -207,6 +219,7 @@ impl Spec {
         Ok(Spec {
             root,
             workspace,
+            workspace_id,
             name,
             cols,
             rows,
@@ -384,10 +397,10 @@ struct Images {
 
 struct Holder {
     session: Session,
-    dir: PathBuf,
-    held: Option<File>,
-    workspace: String,
-    name: String,
+    /// The pane: its directory, held open and locked for the holder's
+    /// life. Every file is named relative to it; where it is listed is
+    /// looked up only to take its name away.
+    dir: File,
     labels: Vec<(String, String)>,
     id: String,
     version: u64,
@@ -415,6 +428,8 @@ struct Holder {
     cell: (u16, u16),
     pictures: bool,
     history_end: u64,
+    /// The history line being gathered, not yet a whole record.
+    history_line: String,
     history: Vec<u8>,
     images: Images,
     publisher: Publisher,
@@ -435,17 +450,12 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     let spec = Spec::parse(args, &mut stdin);
     drop(stdin);
     match spec.and_then(prepare) {
-        Ok(mut holder) => {
-            holder.publish(Instant::now());
-            // `ok` only once the files are there, whole: a client reading
-            // them at once finds them. Otherwise the pane is ended and
-            // `start` says why.
-            if !holder.publisher.wait_written(START_PUBLISH) {
+        Ok((mut holder, start)) => {
+            // `ok` only once the pane is whole, named and running, and its
+            // files say so. Otherwise it is ended and `start` says why.
+            if let Err(failure) = holder.begin(start) {
                 holder.kill();
-                let _ = writeln!(
-                    stdout,
-                    "err the first files could not be written within 2 s"
-                );
+                let _ = writeln!(stdout, "err {failure}");
                 let _ = stdout.flush();
                 fuxix::process::end_now(1);
                 return ExitCode::FAILURE;
@@ -486,19 +496,14 @@ fn new_id() -> Result<String, Failure> {
 
 /// Makes a FIFO in `dir` and opens it for reading, holding a write end of
 /// its own so that a writer closing is no end of file.
-fn fifo(dir: &Path, name: &str) -> Result<File, Failure> {
-    let path = dir.join(name);
-    fuxix::file::private_fifo(&path).map_err(|e| io(path.display(), e))?;
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
-        .open(&path)
-        .map_err(|e| io(path.display(), e))?;
+fn fifo(dir: &File, name: &str) -> Result<File, Failure> {
+    at::make_fifo(dir, name).map_err(|e| io(name, e))?;
+    let file =
+        at::open(dir, name, at::READ_WRITE | fuxix::file::NONBLOCK).map_err(|e| io(name, e))?;
     let is_fifo = file.metadata().is_ok_and(|m| m.file_type().is_fifo());
     match is_fifo {
         true => Ok(file),
-        false => Err(Failure::new(format!("{} is no FIFO", path.display()))),
+        false => Err(Failure::new(format!("{name} is no FIFO"))),
     }
 }
 
@@ -538,9 +543,18 @@ fn graphics(cell: (u16, u16), pictures: bool) -> Result<Graphics, Failure> {
     })
 }
 
-/// Claims the name, makes the files, opens the terminal and starts the
-/// program. Whatever fails gives the name back.
-fn prepare(spec: Spec) -> Result<Holder, Failure> {
+/// What is left to do once the pane's directory is made: give it its
+/// name, start the program, write the recipe.
+struct Start {
+    spec: Spec,
+    workspace: Workspace,
+    slave: Slave,
+}
+
+/// Makes the pane, nameless: its directory under a name nothing lists,
+/// locked, with its marker, FIFOs and history, and its terminal opened.
+/// Whatever fails takes it apart again.
+fn prepare(spec: Spec) -> Result<(Holder, Start), Failure> {
     session::check_name(&spec.workspace)?;
     session::check_name(&spec.name)?;
     let size = checked_size(spec.cols, spec.rows)?;
@@ -555,58 +569,55 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
     // Before anything could start: what the program leaves behind stays
     // this process's to find and kill.
     fuxix::process::adopt_orphans().map_err(|e| io("adopting orphans", e))?;
-    let children =
-        fuxix::signal::Pipe::new(&[Signal::Chld]).map_err(|e| io("the signal pipe", e))?;
-    let session = Session {
-        root: spec.root.clone(),
-    };
-    session::check_private(&session.root)?;
-    let (dir, held) = session
-        .workspace(&spec.workspace, true)?
-        .claim(&spec.name)?;
+    // SIGTERM is `kill`: whoever ends a holder politely ends its pane.
+    let children = fuxix::signal::Pipe::new(&[Signal::Chld, Signal::Term])
+        .map_err(|e| io("the signal pipe", e))?;
+    let session = Session::at(spec.root.clone())?;
+    let workspace = session.workspace(&spec.workspace, true)?;
+    if spec
+        .workspace_id
+        .as_ref()
+        .is_some_and(|id| *id != workspace.id())
+    {
+        return Err(Failure::new(format!(
+            "workspace {} was removed",
+            spec.workspace
+        )));
+    }
+    let dir = workspace.stage(&id)?;
     let made = (|| {
-        // The recipe, while this holder owns the name: a start that can't
-        // write it fails, and no older start can overwrite a newer one's.
-        if !spec.keep_recipe {
-            let text = crate::recipe::render(&spec.cwd, &spec.env, &spec.argv)?;
-            crate::recipe::write(&spec.root.join(&spec.workspace), &spec.name, &text)?;
-        }
         let in_fifo = fifo(&dir, files::IN)?;
         let ctl_fifo = fifo(&dir, files::CTL)?;
-        let images = dir.join(files::IMAGES);
-        fuxix::file::private_dir(&images).map_err(|e| io(images.display(), e))?;
-        let history = dir.join(files::HISTORY);
-        let mut options = File::options();
-        options.write(true).create_new(true);
-        fuxix::file::private_file(&mut options)
-            .open(&history)
-            .map_err(|e| io(history.display(), e))?;
+        at::make_dir(&dir, files::IMAGES).map_err(|e| io(files::IMAGES, e))?;
+        files::write_new(&dir, files::HISTORY, b"")?;
+        let theirs = dir.try_clone().map_err(|e| io("the pane's directory", e))?;
         let publisher =
-            Publisher::start(dir.clone(), spec.history).map_err(|e| io("the publisher", e))?;
-        let (master, job) = start_program(&spec, size, &id)?;
-        Ok::<_, Failure>((in_fifo, ctl_fifo, publisher, master, job))
+            Publisher::start(theirs, spec.history).map_err(|e| io("the publisher", e))?;
+        let (master, slave) =
+            fuxix::pty::open(size.nonzero().into()).map_err(|e| io("opening a terminal", e))?;
+        Ok::<_, Failure>((in_fifo, ctl_fifo, publisher, master, slave))
     })();
-    let (in_fifo, ctl_fifo, publisher, master, job) = match made {
+    let (in_fifo, ctl_fifo, publisher, master, slave) = match made {
         Ok(made) => made,
         Err(failure) => {
-            if let Ok(_lock) = session.lock() {
-                let _ = session::remove_pane(&dir, &held);
+            // Dead and nameless: taken apart here, else by the next clearing.
+            if let (true, Some((parent, name))) =
+                (session::clear_pane(&dir, true), session::place(&dir))
+            {
+                let _ = at::remove_dir(&parent, &name);
             }
             return Err(failure);
         }
     };
-    Ok(Holder {
+    let holder = Holder {
         session,
         dir,
-        held: Some(held),
-        workspace: spec.workspace,
-        name: spec.name,
-        labels: spec.labels,
+        labels: spec.labels.clone(),
         id,
         version: 1,
         parser,
         master,
-        job: Some(job),
+        job: None,
         children,
         in_fifo,
         ctl_fifo,
@@ -618,7 +629,7 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         quiet: false,
         check_exit: true,
         exit: None,
-        state: "running".to_owned(),
+        state: "starting".to_owned(),
         commands: 0,
         refused: 0,
         errors: VecDeque::new(),
@@ -627,6 +638,7 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         cell: spec.cell,
         pictures: spec.pictures,
         history_end: 0,
+        history_line: String::new(),
         history: Vec::new(),
         images: Images {
             budget: IMAGE_PIXELS_BURST,
@@ -637,12 +649,18 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         dirty: true,
         published_at: None,
         buffer: vec![0; READ],
-    })
+    };
+    Ok((
+        holder,
+        Start {
+            spec,
+            workspace,
+            slave,
+        },
+    ))
 }
 
-fn start_program(spec: &Spec, size: Size, id: &str) -> Result<(Master, Job), Failure> {
-    let (master, slave) =
-        fuxix::pty::open(size.nonzero().into()).map_err(|e| io("opening a terminal", e))?;
+fn start_program(spec: &Spec, slave: Slave, id: &str) -> Result<Job, Failure> {
     let program = spec
         .argv
         .first()
@@ -651,6 +669,8 @@ fn start_program(spec: &Spec, size: Size, id: &str) -> Result<(Master, Job), Fai
         .spawn(
             &spec.argv,
             |command| {
+                // Where the pane is as it starts: `mv` can change all
+                // three later, and never its id.
                 command
                     .current_dir(&spec.cwd)
                     .env("TERM", "xterm-256color")
@@ -670,7 +690,7 @@ fn start_program(spec: &Spec, size: Size, id: &str) -> Result<(Master, Job), Fai
         )
         .map_err(|e| io(format!("starting {program} in {}", spec.cwd.display()), e))?;
     drop(child);
-    Ok((master, job))
+    Ok(job)
 }
 
 impl Holder {
@@ -678,6 +698,45 @@ impl Holder {
     fn advance(&mut self) {
         self.version = self.version.saturating_add(1);
         self.dirty = true;
+    }
+
+    /// Publishes now and waits until it is on disk, whole.
+    fn publish_whole(&mut self) -> Result<(), Failure> {
+        self.publish(Instant::now());
+        match self.publisher.wait_written(START_PUBLISH) {
+            true => Ok(()),
+            false => Err(Failure::new(
+                "the first files could not be written within 2 s",
+            )),
+        }
+    }
+
+    /// Gives the pane, whole, its name; then starts the program, and once
+    /// the files say it runs, writes the recipe: a start that fails
+    /// leaves the recipe of the last good one.
+    fn begin(&mut self, start: Start) -> Result<(), Failure> {
+        let Start {
+            spec,
+            workspace,
+            slave,
+        } = start;
+        self.publish_whole()?;
+        workspace.name_pane(&self.dir, &spec.name)?;
+        self.job = Some(start_program(&spec, slave, &self.id)?);
+        self.state = "running".to_owned();
+        self.advance();
+        self.publish_whole()?;
+        match spec.keep_recipe {
+            true => Ok(()),
+            false => {
+                let kept = crate::recipe::Kept {
+                    size: Some((spec.cols, spec.rows)),
+                    labels: spec.labels,
+                };
+                let text = crate::recipe::render(&spec.cwd, &spec.env, &spec.argv, &kept)?;
+                crate::recipe::write(workspace.held(), &spec.name, &text)
+            }
+        }
     }
 
     fn running(&self) -> bool {
@@ -703,8 +762,13 @@ impl Holder {
             let (master, fifo_in, fifo_ctl, children) = self.wait(&mut poll, timeout);
             let now = Instant::now();
             if children {
+                let mut asked_to_end = false;
                 while let Some(signal) = self.children.next() {
                     self.check_exit |= signal == Signal::Chld;
+                    asked_to_end |= signal == Signal::Term;
+                }
+                if asked_to_end && self.kill() {
+                    return;
                 }
             }
             self.notice_exit(now);
@@ -934,6 +998,12 @@ impl Holder {
             );
         }
         self.input = Input::default();
+        // The start of a line whose rest is still on the screen: a piece.
+        if !self.history_line.is_empty() {
+            let limit = (self.history_cap / 2).min(MAX_RECORD);
+            let (line, out) = (&mut self.history_line, &mut self.history);
+            publish::record(line, out, publish::CONTINUED, true, limit);
+        }
         self.advance();
         self.reap_if_alone();
     }
@@ -1142,23 +1212,31 @@ impl Holder {
         if numbers.end == self.history_end {
             return;
         }
+        let limit = (self.history_cap / 2).min(MAX_RECORD);
         if numbers.start > self.history_end {
             let lost = numbers.start.saturating_sub(self.history_end);
-            let line = format!("[fux3: {lost} lines scrolled off faster than they were kept]\n");
-            self.history.extend_from_slice(line.as_bytes());
+            let line = format!("[fux3: {lost} lines scrolled off faster than they were kept]");
+            publish::record(&mut self.history_line, &mut self.history, "", true, limit);
+            publish::record(
+                &mut self.history_line,
+                &mut self.history,
+                &line,
+                true,
+                limit,
+            );
             self.history_end = numbers.start;
         }
         let skip = usize::try_from(self.history_end.saturating_sub(numbers.start)).unwrap_or(0);
         let count = usize::try_from(numbers.end.saturating_sub(self.history_end)).unwrap_or(0);
         for row in screen.main_rows().skip(skip).take(count) {
             let text = row.text();
-            if row.continues() {
-                self.history.extend_from_slice(text.as_bytes());
+            let end = !row.continues();
+            let text = if end {
+                text.trim_end_matches(' ')
             } else {
-                self.history
-                    .extend_from_slice(text.trim_end_matches(' ').as_bytes());
-                self.history.push(b'\n');
-            }
+                &text
+            };
+            publish::record(&mut self.history_line, &mut self.history, text, end, limit);
         }
         self.history_end = numbers.end;
     }
@@ -1258,8 +1336,6 @@ impl Holder {
         };
         line(format!("id {}", self.id));
         line(format!("version {}", self.version));
-        line(format!("workspace {}", self.workspace));
-        line(format!("name {}", self.name));
         line(format!("size {} {}", size.cols(), size.rows()));
         line(format!("cell {} {}", self.cell.0, self.cell.1));
         line(format!("pictures {}", on(self.pictures)));
@@ -1376,7 +1452,25 @@ impl Holder {
         let mut missed = Vec::new();
         if let Some(job) = &self.job {
             drop(fuxix::pty::hang_up(&self.master, job));
+            // What left the session, a pane started inside this one among
+            // it, is asked to end too: a holder's SIGTERM is its `kill`,
+            // so an inner pane takes itself apart, in a bounded time.
+            #[cfg(target_os = "linux")]
+            let asked = {
+                let leader = job.leader();
+                let others = fuxix::process::tree()
+                    .pids
+                    .into_iter()
+                    .filter(move |pid| *pid != leader);
+                others
+                    .filter(|pid| fuxix::process::kill(*pid, Signal::Term).is_ok())
+                    .count()
+            };
             self.gone_by(after(Instant::now(), HANGUP_GRACE));
+            #[cfg(target_os = "linux")]
+            if asked > 0 {
+                let _ = self.members_left(after(Instant::now(), TERM_GRACE), false);
+            }
         }
         if let Some(job) = &self.job {
             let sent = job.kill(Reach::Session);
@@ -1411,7 +1505,7 @@ impl Holder {
         if !self.gone_by(after(Instant::now(), KILL_WAIT)) {
             missed.push("the program did not end in time".to_owned());
         }
-        if let Some(alive) = self.members_left(after(Instant::now(), KILL_WAIT)) {
+        if let Some(alive) = self.members_left(after(Instant::now(), KILL_WAIT), true) {
             missed.push(format!("{alive} of its processes are still there"));
         }
         // Reaped only once nothing it started is left: a kill sent again
@@ -1426,15 +1520,10 @@ impl Holder {
         // What is kept for a second kill is not reaped as an orphan.
         let kept = self.job.as_ref().map(Job::leader);
         fuxix::process::reap_orphans(|pid| Some(pid) == kept);
-        if missed.is_empty()
-            && let Some(held) = self.held.take()
-        {
-            match self.remove(&held) {
+        if missed.is_empty() {
+            match self.remove() {
                 Ok(()) => return true,
-                Err(failure) => {
-                    missed.push(failure.0);
-                    self.held = Some(held);
-                }
+                Err(failure) => missed.push(failure.0),
             }
         }
         self.state = format!("kill-incomplete {}", missed.join("; "));
@@ -1446,23 +1535,30 @@ impl Holder {
         false
     }
 
-    /// Removes the pane's directory, once everything handed to the
-    /// publisher is written.
-    fn remove(&mut self, held: &File) -> Result<(), Failure> {
-        // The lock first: a kill that can't remove the directory still has
-        // its publisher, to say so in `status` and `errors`.
-        let _lock = self.session.lock()?;
+    /// Takes the pane apart. Under the session's lock only its name goes,
+    /// by one rename, so the name is free at once and nothing waits on a
+    /// disk under the lock; then the publisher writes what it has and
+    /// stops, and the directory is emptied and removed. A holder that
+    /// dies in between leaves a nameless directory the next clearing
+    /// takes. A rename refused leaves the pane whole, to say so.
+    fn remove(&mut self) -> Result<(), Failure> {
+        let listed = {
+            let lock = self.session.lock()?;
+            session::unname(&self.dir, &self.id, &lock)?
+        };
         self.publisher.stop();
-        let removed = session::remove_pane(&self.dir, held);
-        if removed.is_err() {
-            self.publisher = Publisher::start(self.dir.clone(), self.history_cap)
-                .map_err(|e| io("the publisher", e))?;
+        if let (true, Some((parent, name))) = (session::clear_pane(&self.dir, true), listed) {
+            let _ = at::remove_dir(&parent, &name);
         }
-        removed
+        // What this kill ended outright (a holder inside it that would
+        // not end itself) is dead now: its directory goes with this one.
+        let _ = self.session.live();
+        Ok(())
     }
 
-    /// How many of the job's other processes outlast `deadline`, if any do.
-    fn members_left(&self, deadline: Instant) -> Option<usize> {
+    /// How many of the job's other processes outlast `deadline`, if any
+    /// do; with `kill`, each one seen is killed outright.
+    fn members_left(&self, deadline: Instant, kill: bool) -> Option<usize> {
         let job = self.job.as_ref()?;
         loop {
             let leader = job.leader();
@@ -1472,7 +1568,7 @@ impl Holder {
                 let left: Vec<_> = (fuxix::process::tree().pids.into_iter())
                     .filter(|pid| *pid != leader)
                     .collect();
-                for pid in &left {
+                for pid in left.iter().filter(|_| kill) {
                     let _ = fuxix::process::kill(*pid, Signal::Kill);
                 }
                 left.len()
