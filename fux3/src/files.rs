@@ -19,6 +19,8 @@ pub const HISTORY: &str = "history";
 pub const HISTORY_OLDER: &str = "history.1";
 /// The last refusals, a line each.
 pub const ERRORS: &str = "errors";
+/// There once the program has ended: its state line, as `status` has it.
+pub const EXIT: &str = "exit";
 /// One file per picture shown.
 pub const IMAGES: &str = "images";
 

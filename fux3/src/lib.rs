@@ -18,6 +18,8 @@ pub mod holder;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod publish;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod recipe;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod session;
 
 /// What went wrong, said in one line.

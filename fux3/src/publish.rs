@@ -74,6 +74,8 @@ pub struct Files {
     pub styled: Vec<u8>,
     pub status: Vec<u8>,
     pub errors: Option<Vec<u8>>,
+    /// The program's end, written once, after the screens that show it.
+    pub exit: Option<Vec<u8>>,
 }
 
 /// One publish, as the holder hands it over.
@@ -146,10 +148,14 @@ impl Publisher {
         self.with_work(|work| {
             work.handed = work.handed.saturating_add(1);
             if let Some(files) = publish.files {
-                let errors = files
-                    .errors
-                    .or_else(|| work.files.take().and_then(|f| f.errors));
-                work.files = Some(Files { errors, ..files });
+                // What the replaced publish carried once is carried on.
+                let old = work.files.take();
+                let (old_errors, old_exit) = old.map_or((None, None), |f| (f.errors, f.exit));
+                work.files = Some(Files {
+                    errors: files.errors.or(old_errors),
+                    exit: files.exit.or(old_exit),
+                    ..files
+                });
             }
             work.history.extend_from_slice(&publish.history);
             let over = work.history.len().saturating_sub(MAX_HISTORY_WAITING);
@@ -349,6 +355,9 @@ impl Writer<'_> {
                 let _ = writeln!(status, "publish failed: {failure}");
             }
             self.replace(files::STATUS, &status);
+            if let Some(exit) = &files.exit {
+                self.replace(files::EXIT, exit);
+            }
         }
         // Removed only once a styled screen no longer naming them is
         // written; until then, tried again with the next.

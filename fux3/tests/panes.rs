@@ -477,3 +477,88 @@ fn a_resize_appends_no_line_twice() -> Result {
     );
     Ok(())
 }
+
+/// `exit` appears once the program has ended, holding `status`'s state
+/// line, and only after the last screen is there: a reader that sees it
+/// finds the program's last words on `screen`.
+#[test]
+fn exit_appears_after_the_last_screen() -> Result {
+    let s = Session::new("exit")?;
+    s.start("p", &["sh", "-c", "sleep 0.3; echo last-words; exit 7"])?;
+    assert!(!s.pane("p").join("exit").exists());
+    until("exit", || s.pane("p").join("exit").exists())?;
+    assert_eq!(s.read("p", "exit"), "state exited 7\n");
+    assert!(screen_has(&s, "p", "last-words"));
+    Ok(())
+}
+
+/// A start writes the pane's recipe, an `sh` script outside the pane's
+/// directory; after a kill, `fux3 start NAME` with no program runs it: the
+/// same program, in the same directory, with the variables named at start.
+#[test]
+fn a_recipe_starts_the_same_program_again() -> Result {
+    let s = Session::new("recipe")?;
+    let run = s.root.join("ran");
+    let script = format!("echo \"$PWD $FUX3_T\" >> {}; exec sleep 100", run.display());
+    let out = Command::new(env!("CARGO_BIN_EXE_fux3"))
+        .args([
+            "start",
+            "p",
+            "--env",
+            "FUX3_T=it's",
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .env("FUX3_DIR", &s.root)
+        .current_dir(&s.root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    assert!(out.status.success(), "{out:?}");
+    let recipe = s.root.join("main/.recipes/p");
+    until("the first run", || {
+        std::fs::read_to_string(&run).is_ok_and(|t| t.lines().count() == 1)
+    })?;
+    assert!(std::fs::read_to_string(&recipe).is_ok_and(|t| t.starts_with("#!/bin/sh\n")));
+    s.write("p", "ctl", b"kill\n")?;
+    until("the pane gone", || !s.pane("p").exists())?;
+    assert!(recipe.exists(), "a kill removed the recipe");
+    s.fux3(&["start", "p"])?;
+    until("the second run", || {
+        std::fs::read_to_string(&run).is_ok_and(|t| t.lines().count() == 2)
+    })?;
+    let text = std::fs::read_to_string(&run).map_err(|e| e.to_string())?;
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), lines.next(), "the second run differs");
+    assert!(text.ends_with(" it's\n"), "{text:?}");
+    Ok(())
+}
+
+/// `fux3 put` writes to a live pane, and refuses at once, saying why, a
+/// pane that is not there, one whose holder is dead, and more than 512 bytes.
+#[test]
+fn put_writes_or_refuses_but_never_waits() -> Result {
+    let s = Session::new("put")?;
+    s.start("p", &["sh"])?;
+    s.fux3(&["put", "p", "echo put-$((3+4))\n"])?;
+    until("the put line", || screen_has(&s, "p", "put-7"))?;
+    let refused = |args: &[&str]| -> Result<String> {
+        let start = Instant::now();
+        let said = s.fux3(args).err().ok_or("it was not refused")?;
+        assert!(start.elapsed() < Duration::from_secs(3), "put waited");
+        Ok(said)
+    };
+    assert!(refused(&["put", "nobody", "x"])?.contains("no pane"));
+    let long: String = std::iter::repeat_n('x', 600).collect();
+    assert!(refused(&["put", "p", &long])?.contains("512"));
+    let holder = s.holder("p").ok_or("no holder pid")?;
+    Command::new("kill")
+        .args(["-9", &holder.to_string()])
+        .status()
+        .map_err(|e| e.to_string())?;
+    std::thread::sleep(Duration::from_millis(200));
+    let said = refused(&["put", "p", "x"])?;
+    assert!(said.contains("no pane") || said.contains("dead"), "{said}");
+    Ok(())
+}

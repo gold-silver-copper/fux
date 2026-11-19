@@ -93,6 +93,8 @@ pub struct Spec {
     pub history: usize,
     pub cwd: PathBuf,
     pub labels: Vec<(String, String)>,
+    /// Variables named at start, given to the program after fux3's own.
+    pub env: Vec<(String, OsString)>,
     pub argv: Vec<OsString>,
 }
 
@@ -147,6 +149,12 @@ impl Spec {
         for (key, value) in &self.labels {
             args.push(format!("{key}={value}").into());
         }
+        args.push(self.env.len().to_string().into());
+        for (key, value) in &self.env {
+            let mut arg = OsString::from(format!("{key}="));
+            arg.push(value);
+            args.push(arg);
+        }
         args.extend(self.argv.iter().cloned());
         args
     }
@@ -182,6 +190,24 @@ impl Spec {
         for _ in 0..count {
             labels.push(parse_label(&text(next("label")?, "label")?)?);
         }
+        let count: usize = text(next("env")?, "env")?.parse().map_err(|_| bad("env"))?;
+        let mut env = Vec::new();
+        for _ in 0..count {
+            use std::os::unix::ffi::{OsStrExt, OsStringExt};
+            let arg = next("variable")?;
+            let bytes = arg.as_bytes();
+            let at = bytes
+                .iter()
+                .position(|b| *b == b'=')
+                .ok_or_else(|| bad("variable"))?;
+            let key = String::from_utf8(bytes.get(..at).unwrap_or_default().to_vec())
+                .map_err(|_| bad("variable"))?;
+            let value = bytes
+                .get(at.saturating_add(1)..)
+                .unwrap_or_default()
+                .to_vec();
+            env.push((key, OsString::from_vec(value)));
+        }
         let argv: Vec<OsString> = args.collect();
         if argv.is_empty() {
             return Err(bad("no program"));
@@ -197,6 +223,7 @@ impl Spec {
             history,
             cwd,
             labels,
+            env,
             argv,
         })
     }
@@ -342,6 +369,7 @@ struct Holder {
     errors: VecDeque<String>,
     errors_changed: bool,
     in_dropped: u64,
+    exit_written: bool,
     cell: (u16, u16),
     pictures: bool,
     history_end: u64,
@@ -545,6 +573,7 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         errors: VecDeque::new(),
         errors_changed: true,
         in_dropped: 0,
+        exit_written: false,
         cell: spec.cell,
         pictures: spec.pictures,
         history_end: 0,
@@ -584,7 +613,8 @@ fn start_program(spec: &Spec, size: Size, id: &str) -> Result<(Master, Job), Fai
                         "FUX3_PANE_DIR",
                         spec.root.join(&spec.workspace).join(&spec.name),
                     )
-                    .env("FUX3_PANE_ID", id);
+                    .env("FUX3_PANE_ID", id)
+                    .envs(spec.env.iter().map(|(k, v)| (k, v)));
             },
             fuxix::process::Dispositions::Default,
         )
@@ -1192,6 +1222,13 @@ impl Holder {
         s.into_bytes()
     }
 
+    /// The `exit` file's line, once: when the program's end has settled.
+    fn exit_line(&mut self) -> Option<Vec<u8>> {
+        let ended = self.state.starts_with("exited ") || self.state.starts_with("signalled ");
+        (ended && !std::mem::replace(&mut self.exit_written, true))
+            .then(|| format!("state {}\n", self.state).into_bytes())
+    }
+
     /// Hands the publisher the screens of now.
     fn publish(&mut self, now: Instant) {
         let head = self.head();
@@ -1215,6 +1252,7 @@ impl Holder {
             styled: publish::styled(screen, &head, &placed),
             status: self.status(),
             errors,
+            exit: self.exit_line(),
         });
         // One hand-over: a picture's file is removed only with the screens
         // that no longer name it.
