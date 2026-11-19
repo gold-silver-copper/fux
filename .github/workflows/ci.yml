@@ -97,12 +97,13 @@ jobs:
           fux2/tests/example.sh
 
       # fux3's README example with real sh, printf, echo, cat and ls, as a
-      # person would run it. fux3 runs on Linux and macOS only.
+      # person would run it, its viewer run in a pane. fux3 runs on Linux
+      # and macOS only.
       - name: fux3 example
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          cargo build -p fux3 --locked
+          cargo build -p fux3 -p fux3-view --locked
           fux3/tests/example.sh
 
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),

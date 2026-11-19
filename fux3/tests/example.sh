@@ -54,6 +54,23 @@ until_ok test -s "$W/count"
 
 [ "$(ls "$D")" = build ]
 
+# The viewer, run in a pane of a session of its own (it needs a terminal),
+# and the layout driven with a plain file while it runs.
+V=$(mktemp -d); chmod 700 "$V"
+FUX3_DIR=$V fux3 start viewer --size 100x30 -- env FUX3_DIR="$D" fux3 view >/dev/null
+until_ok test -p "$D/.view/ctl"
+echo "split build right" > "$D/.view/ctl"
+until_ok grep -qs 'pane shell-1@' "$D/.view/layout"
+until_ok test -d "$D/shell-1"
+grep -qx 'size 100 30' "$V/viewer/status"
+echo kill > "$V/viewer/ctl"
+until_ok test ! -e "$V/viewer"
+rm -rf "$V"
+# Killing the viewer leaves every pane running.
+[ "$(fux3 ls)" = "$(printf 'build\nshell-1')" ]
+echo kill > "$D/shell-1/ctl"
+until_ok test ! -e "$D/shell-1"
+
 # A program that ends: its exit in status, its last screen kept, typing
 # after taken and dropped with a line in errors.
 fux3 start short -- sh -c 'echo last words; exit 3' >/dev/null
