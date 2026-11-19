@@ -7,6 +7,8 @@ mod keys;
 mod layout;
 mod sys;
 mod term;
+#[cfg(test)]
+mod tests;
 mod view;
 mod width;
 

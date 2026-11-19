@@ -81,7 +81,13 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     }
     let (input, _input_writer) = fifo("in").map_err(|e| format!("cannot make in: {e}"))?;
     let (ctl, _ctl_writer) = fifo("ctl").map_err(|e| format!("cannot make ctl: {e}"))?;
-    let size = Winsize { cols: 80, rows: 24, xpixel: 800, ypixel: 480 };
+    // The first size is COLUMNS x LINES when the starter set them (the viewer
+    // does, for key scripts), and 80x24 otherwise. `resize` changes it later.
+    let number = |name: &str, or: u16| {
+        std::env::var(name).ok().and_then(|n| n.parse().ok()).filter(|n| (1..=1000).contains(n)).unwrap_or(or)
+    };
+    let (cols, rows) = (number("COLUMNS", 80), number("LINES", 24));
+    let size = Winsize { cols, rows, xpixel: cols * 10, ypixel: rows * 20 };
     let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
     let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
     let Some((program, args)) = command.split_first() else {
@@ -89,7 +95,13 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     };
     let pane = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let mut child = Command::new(program);
-    child.args(args).current_dir(cwd).env("TERM", TERM).env("FUX3C_PANE", pane);
+    child
+        .args(args)
+        .current_dir(cwd)
+        .env("TERM", TERM)
+        .env("FUX3C_PANE", pane)
+        .env_remove("COLUMNS")
+        .env_remove("LINES");
     child.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
     sys::new_session(&mut child, true);
     let mut child = child.spawn().map_err(|e| format!("cannot start {}: {e}", program.to_string_lossy()))?;
@@ -109,7 +121,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     });
     let command = command.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
     let mut holder = Holder {
-        term: Term::new(80, 24),
+        term: Term::new(usize::from(cols), usize::from(rows)),
         master: Some(master),
         _slave: slave,
         pid,

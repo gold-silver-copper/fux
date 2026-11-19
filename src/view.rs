@@ -266,6 +266,8 @@ impl View {
         let mut script = Command::new(file);
         script.env("FUX3C_DIR", &self.session).env("FUX3C_WS", &self.workspace).env("FUX3C_KEYS", &self.keys);
         script.env("FUX3C_PANE", pane.unwrap_or_default()).env("FUX3C_VIEW", &self.ctl_path).env("PATH", path);
+        // A pane a script starts begins at the size of the whole view, right for a new tab.
+        script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.saturating_sub(1).to_string());
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
             Ok(child) => self.scripts.push(child),
             Err(e) => self.message = format!("{}: {e}", file.display()),

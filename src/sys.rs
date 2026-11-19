@@ -74,6 +74,7 @@ unsafe extern "C" {
         winsize: *const Winsize,
     ) -> c_int;
     fn setsid() -> c_int;
+    fn signal(signal: c_int, handler: usize) -> usize;
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn poll(fds: *mut PollFd, nfds: os::Nfds, timeout: c_int) -> c_int;
@@ -117,13 +118,16 @@ pub fn pty(size: Winsize) -> io::Result<(File, File)> {
 /// Makes the command lead a new session when it starts. With `tty`, its
 /// standard input (already the pty's slave) becomes the controlling terminal.
 pub fn new_session(command: &mut Command, tty: bool) {
-    // SAFETY: the closure runs between fork and exec and calls only setsid
-    // and ioctl, both async-signal-safe; it allocates nothing.
+    // SAFETY: the closure runs between fork and exec and calls only setsid,
+    // ioctl and signal, all async-signal-safe; it allocates nothing.
     unsafe {
         command.pre_exec(move || {
             check(setsid())?;
             if tty {
                 check(ioctl(0, os::TIOCSCTTY, 0 as c_int))?;
+                // SIGHUP (1) back to its default (0): a hangup must be able to
+                // end the program even when whoever started the pane ignored it.
+                signal(1, 0);
             }
             Ok(())
         });
