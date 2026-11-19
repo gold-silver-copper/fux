@@ -176,7 +176,10 @@ impl Spec {
             .parse()
             .map_err(|_| bad("labels"))?;
         let mut labels = Vec::new();
-        for _ in 0..count.min(MAX_LABELS) {
+        if count > MAX_LABELS {
+            return Err(bad("labels"));
+        }
+        for _ in 0..count {
             labels.push(parse_label(&text(next("label")?, "label")?)?);
         }
         let argv: Vec<OsString> = args.collect();
@@ -677,7 +680,8 @@ impl Holder {
         let next = publish.into_iter().chain(settle).min()?;
         let wait = next.saturating_duration_since(now);
         Some(match self.exit.is_some() {
-            true => wait.min(Duration::from_millis(5)),
+            // Looked at again soon, never at once: no spin while it settles.
+            true => wait.clamp(Duration::from_millis(1), Duration::from_millis(5)),
             false => wait,
         })
     }
