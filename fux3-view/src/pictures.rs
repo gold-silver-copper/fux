@@ -37,18 +37,47 @@ pub fn place(tile: Tile, first: u16, bottom: u16, dir: &Path, placed: &Placed) -
     })
 }
 
+/// Whether `bytes` are one device control string and nothing else: they
+/// start with `ESC P` and hold no other `ESC` but the closing `ESC \`, so
+/// nothing in a picture file reaches the terminal as another sequence.
+fn one_sixel(bytes: &[u8]) -> bool {
+    let body = bytes
+        .strip_prefix(b"\x1bP")
+        .and_then(|rest| rest.strip_suffix(b"\x1b\\"));
+    body.is_some_and(|body| !body.contains(&0x1b))
+}
+
 /// The bytes that draw `drawn`, the cursor kept where it was; a file that
-/// cannot be read is left out.
+/// cannot be read, or is not one sixel alone, is left out.
 pub fn draw(drawn: &[Drawn], out: &mut Vec<u8>) {
     for one in drawn {
         let Ok(sixel) = fux3::files::read_small(&one.path, MAX_FILE) else {
             continue;
         };
+        if !one_sixel(&sixel) {
+            continue;
+        }
         let (x, y) = one.at;
         out.extend_from_slice(
             format!("\x1b7\x1b[{};{}H", y.saturating_add(1), x.saturating_add(1)).as_bytes(),
         );
         out.extend_from_slice(&sixel);
         out.extend_from_slice(b"\x1b8");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_one_device_control_string_is_a_picture() {
+        assert!(super::one_sixel(b"\x1bPq#0~-\x1b\\"));
+        for wrong in [
+            &b"q#0~\x1b\\"[..],
+            b"\x1bPq#0~",
+            b"\x1bPq\x1b[2J\x1b\\",
+            b"\x1bPq\x1b\\\x1b]0;title\x07",
+        ] {
+            assert!(!super::one_sixel(wrong), "{wrong:?}");
+        }
     }
 }

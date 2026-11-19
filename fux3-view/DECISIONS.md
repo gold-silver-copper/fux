@@ -38,8 +38,11 @@ Append-only: one short entry per decision, newest last.
 10. **Pictures redraw everything when they change.** A sixel's pixels stay until the cells under
     them are written, so when the set of pictures drawn changes (one moves, a menu opens over
     it) the frame is drawn whole, then the pictures. No picture is drawn while a menu, list or
-    prompt is open, nor on the bar's row. Each file is read back into pixels by a fux-vt parser
-    with `Feature::Pictures` once, while its screen names it.
+    prompt is open, nor on the bar's row. Each file is written to the terminal as it is, read
+    again at each redraw, and only if it is one sixel alone: it starts with `ESC P` and holds no
+    `ESC` but its closing `ESC \`, so no other sequence can ride in a picture file. (An earlier
+    text here said each file was parsed back into pixels by fux-vt; the code never did that, and
+    the check above gives the same guarantee for a few lines.)
 11. **Tests drive the viewer inside a pane of a second fux3 session.** Keys are written to that
     pane's `in`, the viewer's screen read from its `screen`, its terminal resized with
     `resize` on its `ctl`. No pty code in the tests, and they read exactly what a person would
