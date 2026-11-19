@@ -37,24 +37,17 @@ const MAX_CHORD_KEYS: usize = 4;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verb {
     NextPane,
-    PreviousPane,
     LastPane,
     Focus(Dir),
     NextTab,
     PreviousTab,
-    LastTab,
-    /// The tab numbered from 1.
-    GoToTab(usize),
     NextWorkspace,
     PreviousWorkspace,
-    LastWorkspace,
     /// Show the tab or workspace with this id.
     ShowTab(u32),
     ShowWorkspace(u32),
     Fit,
     Detach,
-    /// Types the binding's first key itself: a prefix sent through.
-    Literal,
     /// Does what this chord is bound to.
     Chord(String),
 }
@@ -249,20 +242,9 @@ fn program(
         .collect()
 }
 
-fn positive(g: &mut HostCall<'_, Host>, value: Value) -> Result<usize, Error> {
-    if let Value::Integer(n) = value
-        && let Ok(n) = usize::try_from(n)
-        && n > 0
-    {
-        return Ok(n);
-    }
-    Err(g.type_error(value))
-}
-
 fn named_verb(word: &str) -> Option<Verb> {
     Some(match word {
         "next-pane" => Verb::NextPane,
-        "previous-pane" => Verb::PreviousPane,
         "last-pane" => Verb::LastPane,
         "focus-left" => Verb::Focus(Dir::Left),
         "focus-right" => Verb::Focus(Dir::Right),
@@ -270,13 +252,10 @@ fn named_verb(word: &str) -> Option<Verb> {
         "focus-down" => Verb::Focus(Dir::Down),
         "next-tab" => Verb::NextTab,
         "previous-tab" => Verb::PreviousTab,
-        "last-tab" => Verb::LastTab,
         "next-workspace" => Verb::NextWorkspace,
         "previous-workspace" => Verb::PreviousWorkspace,
-        "last-workspace" => Verb::LastWorkspace,
         "fit" => Verb::Fit,
         "detach" => Verb::Detach,
-        "literal" => Verb::Literal,
         _ => return None,
     })
 }
@@ -300,7 +279,6 @@ fn verb_of(g: &mut HostCall<'_, Host>, host: &mut Host, args: &[Value]) -> Resul
         }
     };
     match (word.as_str(), number) {
-        ("go-to-tab", Some(number)) => Ok(Verb::GoToTab(positive(g, number)?)),
         ("show-tab", Some(tab)) => Ok(Verb::ShowTab(id(g, host, tab, 't')?)),
         ("show-workspace", Some(space)) => Ok(Verb::ShowWorkspace(id(g, host, space, 'w')?)),
         ("chord", Some(text)) => {
@@ -508,12 +486,6 @@ const WORDS: &[(&str, Word)] = &[
             Some(id) => g.string(&format!("w{id}")).map(Answer::Now),
             None => Err(failed(g, "no workspace is shown")),
         }
-    }),
-    ("area", |g, host, args| {
-        let [] = *g.exactly(args)?;
-        let area = host.context.area;
-        g.string(&format!("{}x{}", area.w.max(1), area.h.max(1)))
-            .map(Answer::Now)
     }),
     ("workspaces", |g, host, args| {
         let [] = *g.exactly(args)?;

@@ -13,9 +13,9 @@ mod pictures;
 mod render;
 mod script;
 
+use fux_vt::keys::Keystroke;
 use fux_vt::keys::decode::{Decoder, Input, Reply, Timing};
 use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};
-use fux_vt::keys::{KeyPress, Keystroke};
 use fux3::Failure;
 use fux3::session::Session;
 use fuxix::Errno;
@@ -177,13 +177,6 @@ struct Running {
     forced: bool,
 }
 
-/// Where a workspace was left: its tab shown, and the one before it.
-#[derive(Clone, Copy, Default)]
-struct Place {
-    tab: u32,
-    last: u32,
-}
-
 /// A border being dragged: where the press was, and the layout version it
 /// started from.
 struct Drag {
@@ -210,8 +203,8 @@ struct View {
     live: Vec<Live>,
     /// The workspace shown, and the one before it, by id.
     workspace: u32,
-    last_workspace: u32,
-    places: BTreeMap<u32, Place>,
+    /// The tab each workspace shows.
+    places: BTreeMap<u32, u32>,
     panes: BTreeMap<String, Pane>,
     /// Panes seen ending, so each ending is told once.
     ended: Vec<PaneRef>,
@@ -327,7 +320,8 @@ impl View {
         (self.arranged.workspaces.iter()).find(|space| space.id == self.workspace)
     }
 
-    fn place(&self) -> Place {
+    /// The tab the workspace shown shows.
+    fn place(&self) -> u32 {
         self.places
             .get(&self.workspace)
             .copied()
@@ -335,7 +329,7 @@ impl View {
     }
 
     fn shown_tab(&self) -> Option<&LayoutTab> {
-        let tab = self.place().tab;
+        let tab = self.place();
         self.space()?.tabs.iter().find(|t| t.id == tab)
     }
 
@@ -369,12 +363,7 @@ impl View {
             return self.say(format!("no tab t{id}"));
         };
         self.show_workspace(space);
-        let place = self.places.entry(space).or_default();
-        if place.tab != id {
-            *place = Place {
-                tab: id,
-                last: place.tab,
-            };
+        if self.places.insert(space, id) != Some(id) {
             self.tab_changed();
         }
     }
@@ -382,7 +371,6 @@ impl View {
     fn show_workspace(&mut self, id: u32) {
         let known = self.arranged.workspaces.iter().any(|space| space.id == id);
         if id != self.workspace && known {
-            self.last_workspace = self.workspace;
             self.workspace = id;
             self.tab_changed();
         }
@@ -412,22 +400,13 @@ impl View {
             if !spaces.iter().any(|(id, _)| *id == self.workspace) {
                 self.workspace = spaces.first().map_or(0, |(id, _)| *id);
             }
-            if !spaces.iter().any(|(id, _)| *id == self.last_workspace) {
-                self.last_workspace = self.workspace;
-            }
             self.places
                 .retain(|id, _| spaces.iter().any(|(s, _)| s == id));
             for (space, tabs) in &spaces {
                 let first = tabs.first().copied().unwrap_or(0);
-                let place = self.places.entry(*space).or_insert(Place {
-                    tab: first,
-                    last: first,
-                });
-                if !tabs.contains(&place.tab) {
-                    place.tab = first;
-                }
-                if !tabs.contains(&place.last) {
-                    place.last = place.tab;
+                let tab = self.places.entry(*space).or_insert(first);
+                if !tabs.contains(tab) {
+                    *tab = first;
                 }
             }
             self.dirty = true;
@@ -611,10 +590,7 @@ impl View {
             .map(|space| space.tabs.iter().map(|t| t.id).collect())
             .unwrap_or_default();
         let spaces: Vec<u32> = self.arranged.workspaces.iter().map(|s| s.id).collect();
-        let tab_at = tabs
-            .iter()
-            .position(|t| *t == self.place().tab)
-            .unwrap_or(0);
+        let tab_at = tabs.iter().position(|t| *t == self.place()).unwrap_or(0);
         let space_at = spaces
             .iter()
             .position(|s| *s == self.workspace)
@@ -628,14 +604,6 @@ impl View {
                     self.show_tab(tab);
                 }
             }
-            Verb::LastTab => self.show_tab(self.place().last),
-            Verb::GoToTab(number) => match nth(&tabs, number.saturating_sub(1)) {
-                Some(tab) => self.show_tab(tab),
-                None => self.say(format!(
-                    "no tab {number}: this workspace has {}",
-                    tabs.len()
-                )),
-            },
             Verb::ShowTab(tab) => self.show_tab(tab),
             Verb::NextWorkspace | Verb::PreviousWorkspace => {
                 let at = stepped(space_at, spaces.len(), verb == Verb::NextWorkspace);
@@ -643,13 +611,11 @@ impl View {
                     self.show_workspace(space);
                 }
             }
-            Verb::LastWorkspace => self.show_workspace(self.last_workspace),
             Verb::ShowWorkspace(space) => match spaces.contains(&space) {
                 true => self.show_workspace(space),
                 false => self.say(format!("no workspace w{space}")),
             },
-            Verb::NextPane => self.step_pane(true),
-            Verb::PreviousPane => self.step_pane(false),
+            Verb::NextPane => self.step_pane(),
             Verb::LastPane => match self
                 .last_focus
                 .clone()
@@ -672,15 +638,13 @@ impl View {
                 None => self.say("no pane has the focus"),
             },
             Verb::Chord(chord) => self.perform_chord(chord),
-            // Handled where the chord is known.
-            Verb::Literal => {}
         }
     }
 
-    fn step_pane(&mut self, forward: bool) {
+    fn step_pane(&mut self) {
         let visible = self.visible();
         let at = (visible.iter()).position(|p| Some(p) == self.focus.as_ref());
-        let next = at.map_or(0, |at| stepped(at, visible.len(), forward));
+        let next = at.map_or(0, |at| stepped(at, visible.len(), true));
         if let Some(pane) = visible.get(next).cloned() {
             self.focus_on(pane);
         }
@@ -814,13 +778,6 @@ impl View {
 
     fn perform(&mut self, chord: String, action: Action) {
         match action {
-            Action::Verb(Verb::Literal) => {
-                let first = chord.split(' ').next().unwrap_or_default();
-                match first.parse::<KeyPress>() {
-                    Ok(press) => self.type_key(Keystroke { press, kitty: None }),
-                    Err(e) => self.say(e.to_string()),
-                }
-            }
             Action::Verb(verb) => self.apply_verb(verb),
             Action::Script(generation) => {
                 let job = Job::Binding {
@@ -1379,7 +1336,7 @@ impl View {
             return parts;
         };
         parts.push((format!(" {} ", space.title), BAR_BOLD));
-        let shown = self.place().tab;
+        let shown = self.place();
         for tab in &space.tabs {
             let sgr = if tab.id == shown { TAB } else { BAR };
             parts.push((format!(" {} ", tab.title), sgr));
@@ -1674,7 +1631,6 @@ fn run() -> Result<(), Failure> {
         arranged: Arc::new(Layout::default()),
         live: Vec::new(),
         workspace: 0,
-        last_workspace: 0,
         places: BTreeMap::new(),
         panes: BTreeMap::new(),
         ended: Vec::new(),
