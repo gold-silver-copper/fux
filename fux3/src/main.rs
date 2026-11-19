@@ -202,9 +202,18 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
         argv,
     };
     let line = launch(&spec)?;
-    match line.strip_prefix("ok ") {
-        Some(dir) => Ok(say(&format!("{dir}\n"))),
-        None => Err(Failure::new(line.strip_prefix("err ").unwrap_or(&line))),
+    if line != "ok" {
+        return Err(Failure::new(line.strip_prefix("err ").unwrap_or(&line)));
+    }
+    // The directory as the system names it, bytes and all.
+    use std::os::unix::ffi::OsStrExt;
+    let dir = spec.root.join(&spec.workspace).join(&spec.name);
+    let mut out = dir.as_os_str().as_bytes().to_vec();
+    out.push(b'\n');
+    let mut stdout = std::io::stdout();
+    match stdout.write_all(&out).and_then(|()| stdout.flush()) {
+        Ok(()) => Ok(ExitCode::SUCCESS),
+        Err(e) => Err(io("stdout", e)),
     }
 }
 
@@ -301,8 +310,13 @@ fn wait(mut args: impl Iterator<Item = OsString>) -> Outcome {
                 return Ok(say(&format!("{}\n", now.line())));
             }
             Ok(_) => {}
-            // Gone: its directory removed by a kill, or its holder dead.
-            Err(failure) if !workspace.pane_dir(&name).exists() || !workspace.is_live(&name) => {
+            // Gone: its directory removed by a kill, or its holder dead
+            // (asked under the session's lock, so a new pane being claimed
+            // under the name is never taken for a dead one).
+            Err(failure)
+                if !workspace.pane_dir(&name).exists()
+                    || !live_now(&session, &workspace, &name) =>
+            {
                 return Err(Failure::new(format!("pane {pane} is gone: {failure}")));
             }
             Err(_) => {}
@@ -313,6 +327,14 @@ fn wait(mut args: impl Iterator<Item = OsString>) -> Outcome {
             return Ok(ExitCode::from(1));
         }
         std::thread::sleep(WAIT_STEP);
+    }
+}
+
+/// Whether `name`'s holder lives, asked under the session's lock.
+fn live_now(session: &Session, workspace: &Workspace, name: &str) -> bool {
+    match session.lock() {
+        Ok(_lock) => workspace.is_live(name),
+        Err(_) => true,
     }
 }
 

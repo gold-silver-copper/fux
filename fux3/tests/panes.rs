@@ -145,12 +145,11 @@ fn two_writers_then_a_holder_killed_outright() -> Result {
 fn a_send_is_never_split_by_typing() -> Result {
     let s = Session::new("send")?;
     let out = s.root.join("received");
-    let script = format!("stty raw -echo; cat > {}", out.display());
+    let script = format!("stty raw -echo; echo raw-ready; cat > {}", out.display());
     s.start("p", &["sh", "-c", &script])?;
-    until("raw mode", || {
-        s.read("p", "status").contains("state running")
-    })?;
-    std::thread::sleep(Duration::from_millis(300));
+    // Only once the terminal is raw: a line-mode terminal holds a line of
+    // at most 1024 bytes on macOS.
+    until("raw mode", || screen_has(&s, "p", "raw-ready"))?;
     let sent = s.root.join("sent");
     std::fs::write(&sent, std::iter::repeat_n('S', 400_000).collect::<String>())
         .map_err(|e| e.to_string())?;
@@ -443,6 +442,38 @@ fn clearing_dead_panes_never_removes_other_directories() -> Result {
     assert!(
         notes.join("todo.txt").exists(),
         "an ordinary directory was removed"
+    );
+    Ok(())
+}
+
+/// Narrowing a pane reflows its history; the lines already in `history`
+/// are not appended again.
+#[test]
+fn a_resize_appends_no_line_twice() -> Result {
+    let s = Session::new("reflow")?;
+    s.fux3(&["start", "p", "--size", "16x3", "--", "sh"])?;
+    s.write(
+        "p",
+        "in",
+        b"stty -echo; PS1=; printf 'aaaabbbbccccdddd\\neeeeffffgggghhhh\\n1\\n2\\n3\\n4\\n'\n",
+    )?;
+    until("both lines in history", || {
+        s.read("p", "history").contains("eeeeffffgggghhhh")
+    })?;
+    s.write("p", "ctl", b"resize 4 3\n")?;
+    until("the resize", || {
+        s.read("p", "status").contains("\nsize 4 3\n")
+    })?;
+    s.write("p", "in", b"printf 'x\\ny\\nz\\nw\\n'\n")?;
+    until("later output in history", || {
+        s.read("p", "history").lines().any(|l| l == "x")
+    })?;
+    let history = s.read("p", "history");
+    let lines = history.lines().filter(|l| *l == "eeeeffffgggghhhh").count();
+    assert_eq!(lines, 1, "{history:?}");
+    assert!(
+        !history.contains("eeee\n"),
+        "a reflowed row came back: {history:?}"
     );
     Ok(())
 }

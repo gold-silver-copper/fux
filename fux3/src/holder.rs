@@ -361,13 +361,20 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     match Spec::parse(args).and_then(prepare) {
         Ok(mut holder) => {
             holder.publish(Instant::now());
-            // `ok` only once the files are there: a client reading them at
-            // once finds them. A disk too slow for that is said in status.
+            // `ok` only once the files are there, whole: a client reading
+            // them at once finds them. Otherwise the pane is ended and
+            // `start` says why.
             if !holder.publisher.wait_written(START_PUBLISH) {
-                holder.refuse("start", "the first files took over 2 s to write");
+                holder.kill();
+                let _ = writeln!(
+                    stdout,
+                    "err the first files could not be written within 2 s"
+                );
+                let _ = stdout.flush();
+                fuxix::process::end_now(1);
+                return ExitCode::FAILURE;
             }
-            let said =
-                writeln!(stdout, "ok {}", holder.dir.display()).and_then(|()| stdout.flush());
+            let said = writeln!(stdout, "ok").and_then(|()| stdout.flush());
             if detach_stdio().is_err() || said.is_err() {
                 holder.refuse("start", "its standard streams could not be detached");
             }
@@ -995,12 +1002,18 @@ impl Holder {
     /// Prepares the new screen, asks the system, and only then shows it: a
     /// refused resize leaves the screen and its version as they were.
     fn resize(&mut self, size: Size) -> Result<(), Failure> {
+        // What scrolled off before is taken first: a reflow renumbers the
+        // history, and its rows are not new lines.
+        self.gather_history();
         let mut next = self.parser.clone();
         next.resize(size)
             .map_err(|e| Failure::new(format!("resizing: {e}")))?;
         fuxix::terminal::set_window_size(&self.master, size.nonzero().into(), None)
             .map_err(|e| io("resizing the terminal", e))?;
         self.parser = next;
+        // Rows the reflow made of old lines are not appended again (rows it
+        // pushed off the screen are not appended either: README).
+        self.history_end = self.parser.screen().history_numbers().end;
         if let Some(report) = self.parser.resize_report() {
             self.input.reply(&report);
         }

@@ -8,15 +8,23 @@ export FUX3_DIR
 FUX3_DIR=$(mktemp -d)
 chmod 700 "$FUX3_DIR"
 W=$(mktemp -d)
+V=$(mktemp -d)
+chmod 700 "$V"
 cleanup() {
     for pane in $(fux3 ls 2>/dev/null); do echo kill > "$FUX3_DIR/$pane/ctl" || true; done
+    for pane in $(FUX3_DIR=$V fux3 ls 2>/dev/null); do echo kill > "$V/$pane/ctl" || true; done
     sleep 1
-    rm -rf "$FUX3_DIR" "$W"
+    rm -rf "$FUX3_DIR" "$W" "$V"
 }
 trap cleanup EXIT
-# Waits up to five seconds for a command to succeed.
+# Waits up to five seconds for a command to succeed; until_long, twenty
+# (the viewer loads its grift first; a debug build on a slow runner).
 until_ok() {
     for _ in $(seq 100); do "$@" && return 0; sleep 0.05; done
+    "$@"
+}
+until_long() {
+    for _ in $(seq 400); do "$@" && return 0; sleep 0.05; done
     "$@"
 }
 
@@ -57,13 +65,13 @@ until_ok test -s "$W/count"
 
 # The viewer, run in a pane of a session of its own (it needs a terminal),
 # and the layout driven with a plain file while it runs.
-V=$(mktemp -d); chmod 700 "$V"
 FUX3_DIR=$V fux3 start viewer --size 100x30 -- env FUX3_DIR="$D" fux3 view >/dev/null
-until_ok test -p "$D/main/.view/ctl"
+until_long test -p "$D/main/.view/ctl"
 echo "split build right" > "$D/main/.view/ctl"
-until_ok grep -qs 'pane shell-1@' "$D/main/.view/layout"
-until_ok test -d "$D/main/shell-1"
-grep -qx 'size 100 30' "$V/main/viewer/status"
+until_long grep -qs 'pane shell-1@' "$D/main/.view/layout"
+until_long test -d "$D/main/shell-1"
+# The split fitted build to its half of the viewer, once.
+until_ok sh -c "! grep -qx 'size 100 30' '$D/main/build/status'"
 # Killing the viewer outright leaves every pane running and typable.
 kill -9 "$(sed -n 's/^pid //p' "$V/main/viewer/status")"
 until_ok grep -q '^state signalled KILL' "$V/main/viewer/status"
@@ -74,7 +82,6 @@ echo kill > "$D/main/shell-1/ctl"
 until_ok test ! -e "$D/main/shell-1"
 echo kill > "$V/main/viewer/ctl"
 until_ok test ! -e "$V/main/viewer"
-rm -rf "$V"
 
 # A program that ends: its exit in status, its last screen kept, typing
 # after taken and dropped with a line in errors.

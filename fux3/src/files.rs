@@ -28,6 +28,9 @@ pub const MAX_ROWS: u16 = 200;
 /// The longest line `ctl` takes: one write of at most this many bytes
 /// reaches a FIFO whole (POSIX's least `PIPE_BUF`).
 pub const PIPE_BUF: usize = 512;
+/// The most bytes a picture's file may hold: one past it is not written,
+/// and the screen naming it is not either (`status` says why).
+pub const MAX_IMAGE_FILE: usize = 16 << 20;
 /// The most bytes a published screen file may hold; one past it is not
 /// written, and `status` says so.
 pub const MAX_SCREEN_FILE: usize = 8 << 20;
