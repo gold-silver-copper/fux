@@ -413,3 +413,33 @@ fn a_paste_file_outlives_other_writers_commands() -> Tested {
     assert_eq!(pastes, 1, "the paste file went before its wait ended");
     Ok(())
 }
+
+/// Two viewers of one workspace split no `.view/ctl` line between them:
+/// one reads it at a time, so a line that crosses a read's end still runs
+/// whole.
+#[test]
+fn two_viewers_of_a_workspace_split_no_ctl_line() -> Tested {
+    let lab = Lab::new("twoctl", "")?;
+    lab.start("only")?;
+    lab.viewer("v1", "100x30", &[])?;
+    lab.viewer("v2", "100x30", &[])?;
+    let view = lab.view.join("main/.view");
+    let ctl = view.join("ctl");
+    until("a viewer serves ctl", || fifo(&ctl, b"\n").is_ok())?;
+    // Each a line just past a 4096-byte read: a second reader would take
+    // its end alone.
+    for n in 0..8 {
+        let mut bytes = vec![b'\n'; 4094];
+        bytes.extend(format!("tab new kept{n}\n").as_bytes());
+        fifo(&ctl, &bytes)?;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let layout = || std::fs::read_to_string(view.join("layout")).unwrap_or_default();
+    until("every line ran", || {
+        (0..8).all(|n| layout().contains(&format!("\"kept{n}\"")))
+    })
+    .map_err(|e| format!("{e}\n{}", layout()))?;
+    let errors = std::fs::read_to_string(view.join("errors")).unwrap_or_default();
+    assert!(errors.is_empty(), "lines were refused:\n{errors}");
+    Ok(())
+}

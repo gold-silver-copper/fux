@@ -206,9 +206,9 @@ struct View {
     /// A notice for the bar's corner, until the next key: its text and
     /// colours.
     notice: Option<(String, &'static str)>,
-    /// The shown workspace's `.view/ctl`, read by every viewer of it, and a
-    /// line not yet whole.
-    ctl: Option<File>,
+    /// The shown workspace's `.view/ctl`, while this viewer is the one
+    /// reading it, and a line not yet whole.
+    ctl: Option<Ctl>,
     ctl_part: Vec<u8>,
     /// The run in flight, where it came from.
     in_flight: Option<Origin>,
@@ -343,10 +343,9 @@ impl View {
         }
         let opened = self.session.workspace(name, true).and_then(|workspace| {
             let view = command::view_dir(&workspace)?;
-            let (ctl, written) = open_ctl(&view)?;
-            Ok((workspace, view, ctl, written))
+            Ok((workspace, view))
         });
-        let (workspace, view, ctl, written) = match opened {
+        let (workspace, view) = match opened {
             Ok(opened) => opened,
             Err(failure) => return self.say(format!("workspace {name}: {failure}")),
         };
@@ -363,7 +362,7 @@ impl View {
             self.dispatch_job(String::new(), Job::Drop(panel.id()), 0);
         }
         release_ctl(&self.view, self.ctl.take());
-        (self.workspace, self.view, self.ctl) = (workspace, view, Some(ctl));
+        (self.workspace, self.view) = (workspace, view);
         (self.tab, self.focus, self.last_focus) = (tab, focus, None);
         self.panes.clear();
         self.ctl_part.clear();
@@ -371,7 +370,24 @@ impl View {
         (self.layout_text, self.layout_failed, self.layout_seen) = (None, None, false);
         self.rescan(now);
         self.refresh(true);
-        self.take_ctl(&written);
+    }
+
+    /// Starts reading the workspace's `.view/ctl` once no other viewer of
+    /// it does (tried at each rescan), running the lines a regular file
+    /// there holds.
+    fn claim_ctl(&mut self) {
+        if self.ctl.is_some() {
+            return;
+        }
+        match open_ctl(&self.view) {
+            Ok(Some((ctl, written))) => {
+                self.ctl = Some(ctl);
+                self.ctl_part.clear();
+                self.take_ctl(&written);
+            }
+            Ok(None) => {}
+            Err(failure) => self.say(format!(".view/ctl: {failure}")),
+        }
     }
 
     /// The workspace `step` places from the one shown, among the session's
@@ -464,6 +480,7 @@ impl View {
             self.look_at(&name, visible.iter().any(|p| p.name == name));
         }
         self.refresh(changed);
+        self.claim_ctl();
     }
 
     /// Looks at the files of the panes shown.
@@ -962,7 +979,7 @@ impl View {
     fn read_ctl(&mut self) {
         let mut buffer = [0u8; 4096];
         let read = match &self.ctl {
-            Some(ctl) => fuxix::io::read(ctl, &mut buffer),
+            Some(ctl) => fuxix::io::read(&ctl.fifo, &mut buffer),
             None => return,
         };
         let got = match read {
@@ -1394,18 +1411,39 @@ fn do_line(space: &str, line: &str) -> Result<(), Failure> {
         .map_err(|e| io_failure("stdout", e))
 }
 
-/// Stops serving `.view/ctl`; if no other viewer reads it, the FIFO goes,
-/// so a line written later with no viewer running makes a regular file
-/// (which the next viewer runs) instead of waiting for a reader for ever.
-fn release_ctl(view: &std::path::Path, ctl: Option<File>) {
+/// A workspace's `.view/ctl` as the one viewer reading it holds it: the
+/// FIFO, and the lock on `.view/ctl.lock` that makes it the one, so no two
+/// viewers split a line between them.
+struct Ctl {
+    fifo: File,
+    lock: File,
+}
+
+/// Takes `.view/ctl.lock` without waiting: `None` while another viewer of
+/// the workspace holds it.
+fn ctl_lock(view: &std::path::Path) -> Result<Option<File>, Failure> {
+    let path = view.join("ctl.lock");
+    let mut options = File::options();
+    options.read(true).write(true).create(true).truncate(false);
+    let file = (fuxix::file::private_file(&mut options).open(&path))
+        .map_err(|e| io_failure(&path.display().to_string(), e))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(io_failure(&path.display().to_string(), e)),
+    }
+}
+
+/// Stops reading `.view/ctl`; unless a writer holds it open to read too,
+/// the FIFO goes (before the lock, so the next viewer makes its own), so a
+/// line written later with no viewer running makes a regular file (which
+/// the next viewer runs) instead of waiting for a reader for ever.
+fn release_ctl(view: &std::path::Path, ctl: Option<Ctl>) {
     use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-    let Some(ctl) = ctl else {
+    let Some(Ctl { fifo, lock }) = ctl else {
         return;
     };
-    drop(ctl);
-    let Ok(_lock) = layout::lock(view) else {
-        return;
-    };
+    drop(fifo);
     let path = view.join("ctl");
     let fifo = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_fifo());
     let unread = File::options()
@@ -1418,18 +1456,20 @@ fn release_ctl(view: &std::path::Path, ctl: Option<File>) {
     if fifo && unread {
         let _ = std::fs::remove_file(&path);
     }
+    drop(lock);
 }
 
-/// `.view/ctl`, made if missing, opened to read without waiting (and to
-/// write, so it never reads as ended while no writer has it open). A
-/// regular file there was written with no viewer running (a shell's `>`
-/// makes one): its lines are given back to be run, and the FIFO takes its
-/// place.
-fn open_ctl(view: &std::path::Path) -> Result<(File, Vec<u8>), Failure> {
+/// `.view/ctl`, if no other viewer reads it: made if missing, opened to
+/// read without waiting (and to write, so it never reads as ended while no
+/// writer has it open). A regular file there was written with no viewer
+/// reading (a shell's `>` makes one): its lines are given back to be run,
+/// and the FIFO takes its place. Only the lock's holder makes, opens or
+/// removes the FIFO.
+fn open_ctl(view: &std::path::Path) -> Result<Option<(Ctl, Vec<u8>)>, Failure> {
     use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-    // Under the layout's lock, so a viewer leaving can't remove the FIFO
-    // between its making and its opening here.
-    let _lock = layout::lock(view)?;
+    let Some(lock) = ctl_lock(view)? else {
+        return Ok(None);
+    };
     let path = view.join("ctl");
     let mut written = Vec::new();
     if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
@@ -1448,7 +1488,7 @@ fn open_ctl(view: &std::path::Path) -> Result<(File, Vec<u8>), Failure> {
         .open(&path)
         .map_err(|e| io_failure(&path.display().to_string(), e))?;
     match file.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
-        true => Ok((file, written)),
+        true => Ok(Some((Ctl { fifo: file, lock }, written))),
         false => Err(Failure::new(format!("{} is not a FIFO", path.display()))),
     }
 }
@@ -1472,7 +1512,6 @@ fn run() -> Result<(), Failure> {
     let session = Session::open()?;
     let workspace = session.workspace(&space, true)?;
     let view = command::view_dir(&workspace)?;
-    let (ctl, written) = open_ctl(&view)?;
     let stops = [
         Signal::Winch,
         Signal::Term,
@@ -1522,7 +1561,7 @@ fn run() -> Result<(), Failure> {
         column: None,
         panel: None,
         notice: None,
-        ctl: Some(ctl),
+        ctl: None,
         ctl_part: Vec::new(),
         in_flight: None,
         pasted: 0,
@@ -1544,7 +1583,6 @@ fn run() -> Result<(), Failure> {
         quit: false,
     };
     view.refresh(true);
-    view.take_ctl(&written);
     if let Some(note) = note {
         view.say(note);
     }
@@ -1598,7 +1636,7 @@ fn wait(
     let ctl = view
         .ctl
         .as_ref()
-        .map(|ctl| fds.push(PollFd::new(ctl, Events::IN)));
+        .map(|ctl| fds.push(PollFd::new(&ctl.fifo, Events::IN)));
     match fds.poll(Some(timeout)) {
         Ok(_) | Err(Errno::INTR) => {}
         Err(errno) => return Err(io_failure("poll", errno)),

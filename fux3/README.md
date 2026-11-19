@@ -322,7 +322,7 @@ Paths are in the workspace shown, `$D/WORKSPACE/`.
 | `NAME/ctl` | `resize COLS ROWS` (only the fit step below), `paste PATH`, and whatever your grift sends (`kill`, `signal NAME`) |
 | `NAME/history` | paged in a pane of its own by `C-b c` |
 | `.view/layout`, `.view/layout.lock` | the workspace's layout, shared by every viewer of it (below) |
-| `.view/ctl` | a FIFO of layout commands for this workspace, made by the first viewer of it; every viewer showing the workspace reads it, so any one takes a line, and a viewer stops reading it when it shows another or leaves; the last one to stop removes it. So with no viewer, `echo LINE > .view/ctl` makes a regular file, whose lines the next viewer of the workspace runs when it comes. A viewer killed outright leaves the FIFO, and a writer then waits for a reader (guard it as for `in`, below, or use `--do`) |
+| `.view/ctl`, `.view/ctl.lock` | a FIFO of layout commands for this workspace. One viewer showing the workspace reads it at a time, the one holding the lock on `ctl.lock`, so no two split a line; the others try again every second. The reader makes it, and removes it when it shows another workspace or leaves; another viewer of the workspace takes over within a second. So with no viewer, `echo LINE > .view/ctl` makes a regular file, whose lines the next viewer of the workspace runs when it comes. A viewer killed outright leaves the FIFO, and a writer then waits for a reader (guard it as for `in`, below, or use `--do`) |
 | `.view/errors` | the last 32 refused `.view/ctl` lines, `LINE: WHY`, replaced whole |
 | `.view/paste-PID-N` | a paste's text, 0600, removed 10 s after the `paste` command, or when the viewer leaves or switches workspace (after waiting up to 1 s on leaving) |
 

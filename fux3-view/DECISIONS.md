@@ -95,3 +95,32 @@ Append-only: one short entry per decision, newest last.
     - Left as it was: a `.view/ctl` FIFO that no viewer reads makes a writer wait, as before
       (a viewer that switches away, like one that ends, leaves it). Removing it on leaving would
       break another viewer still reading it.
+16. **Review round 1 (2026-11-19): what changed, and why.**
+    - **Paste files are kept their whole 10 s.** The viewer guessed which `commands` count was its
+      paste, but every writer of the pane's `ctl` moves that count, so a guess could remove the
+      file before the holder read it. A file now goes 10 s after its `paste`, or when the viewer
+      leaves (a paste under 1 s old gets the rest of that second first). The files live in the
+      viewer, not its panes, so a workspace switch keeps them too.
+    - **One viewer at a time reads a workspace's `.view/ctl`**: the one holding an flock on
+      `.view/ctl.lock`, taken without waiting and tried again at each rescan, released when it
+      leaves or switches. Two readers of one FIFO can each take part of a line. Only the holder
+      makes, opens or removes the FIFO, so the layout lock no longer guards it.
+    - **A run keeps its workspace.** The viewer knows the run in flight (one at a time) and the
+      workspace it was asked for in; after a switch, that run's sends, focus moves, fits and
+      lists are refused out loud (the list's callback is dropped), and a `.view/ctl` line's
+      refusal goes to its own workspace's `errors`. Refused rather than delivered: the panes of a
+      workspace not shown are not the viewer's to type into. Verbs still act (they are the
+      viewer's own, e.g. a switch). The configuration's load ends with its own message, not a
+      run's, so it can no longer start a second run while the first is in flight.
+    - **Chord hops are capped at 8**, counted from the key along both paths (a verb bound to
+      `chord`, and a binding that runs `(act "chord" …)`); the ninth is refused in the bar.
+    - **A switch dismisses an open list or prompt**, so its answer can't act on the new workspace.
+    - **Layout edits are checked by the reader before they are written**; that check replaced the
+      separate size check, as the reader checks size too.
+    - **Closing a pane or tab ignores only `pane-gone`**, a new error kind raised when the pane's
+      directory went or another life has its name; other failures (a full `ctl`) are said and the
+      tile stays. A holder that died without its directory being cleared counts as a failure,
+      not as gone: the next `fux3` command clears it.
+    - **Tab names**: a bare `tN` is the tab with that id when one exists, before any title; a
+      quoted word is never a keyword. Quoted words are matched with a `"` mark no bare word can
+      hold, so the one grammar table stays.
