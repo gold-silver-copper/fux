@@ -185,6 +185,7 @@ struct View {
     focus: Option<PaneRef>,
     /// The pane focused before, for `last-pane`.
     last_focus: Option<PaneRef>,
+    /// The terminal's size, capped at the largest frame.
     term: (u16, u16),
     keys: Keys,
     /// The keys typed so far of a chord: their menu is shown.
@@ -266,8 +267,8 @@ impl View {
         Rect {
             x: 0,
             y: 0,
-            w: u32::from(cols.min(render::MAX_COLS)),
-            h: u32::from(rows.min(render::MAX_ROWS)),
+            w: u32::from(cols),
+            h: u32::from(rows),
         }
     }
 
@@ -1110,7 +1111,7 @@ impl View {
     /// a list or a prompt is open; else only its right
     /// corner, and only for a notice or the zoom marker. True if drawn.
     fn draw_bar(&self, frame: &mut Frame) -> bool {
-        let (cols, rows) = (frame_cols(self.term), self.term.1);
+        let (cols, rows) = self.term;
         let y = rows.saturating_sub(1);
         let whole = self.column.is_some() || self.panel.is_some();
         let mut right: Vec<(String, &str)> = Vec::new();
@@ -1221,13 +1222,12 @@ impl View {
     }
 }
 
-/// The columns a frame of the terminal's size has.
-fn frame_cols((cols, _): (u16, u16)) -> u16 {
-    cols.min(render::MAX_COLS)
-}
-
+/// The terminal's size, as far as a frame reaches: a bigger terminal is
+/// left blank past it, and the bar is on the frame's last row.
 fn terminal_size() -> (u16, u16) {
-    fuxix::terminal::stdin_size().map_or((80, 24), |(size, _)| (size.cols.get(), size.rows.get()))
+    let (cols, rows) = fuxix::terminal::stdin_size()
+        .map_or((80, 24), |(size, _)| (size.cols.get(), size.rows.get()));
+    (cols.min(render::MAX_COLS), rows.min(render::MAX_ROWS))
 }
 
 const USAGE: &str = "\
@@ -1557,6 +1557,8 @@ fn serve(
             while let Some(signal) = signals.next() {
                 if signal == Signal::Winch {
                     view.term = terminal_size();
+                    // The clear a new size brings erases every picture.
+                    view.pictures.clear();
                     view.dirty = true;
                 } else {
                     view.quit = true;
