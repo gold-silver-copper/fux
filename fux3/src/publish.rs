@@ -344,16 +344,18 @@ impl Writer<'_> {
     fn append_history(&mut self, text: &[u8], len: usize, cap: usize) -> usize {
         let path = self.dir.join(files::HISTORY);
         if len.saturating_add(text.len()) > cap {
-            let mut all = std::fs::read(&path).unwrap_or_default();
-            all.extend_from_slice(text);
+            // Only the newer half is read: the file's tail, then the text.
             let keep = cap / 2;
+            let from_file = keep.saturating_sub(text.len());
+            let mut all = tail(&path, from_file);
+            all.extend_from_slice(text);
             let cut = all.len().saturating_sub(keep);
             let start = all
                 .get(cut..)
                 .and_then(|rest| rest.iter().position(|b| *b == b'\n'))
                 .map_or(cut, |at| cut.saturating_add(at).saturating_add(1));
-            let kept = all.get(start..).unwrap_or_default().to_vec();
-            return match self.replace(files::HISTORY, &kept) {
+            let kept = all.get(start..).unwrap_or_default();
+            return match self.replace(files::HISTORY, kept) {
                 true => kept.len(),
                 false => len,
             };
@@ -375,6 +377,24 @@ impl Writer<'_> {
                 len
             }
         }
+    }
+}
+
+/// The last `most` bytes of the file at `path`; none if it can't be read.
+fn tail(path: &Path, most: usize) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let len = file.metadata().map_or(0, |m| m.len());
+    let most = u64::try_from(most).unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    let read = file
+        .seek(SeekFrom::Start(len.saturating_sub(most)))
+        .and_then(|_| file.take(most).read_to_end(&mut bytes));
+    match read {
+        Ok(_) => bytes,
+        Err(_) => Vec::new(),
     }
 }
 
