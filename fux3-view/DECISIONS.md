@@ -238,3 +238,25 @@ Append-only: one short entry per decision, newest last.
       give its share back (after `C-b c` below a pane stacked in rows, that pane keeps half its
       old share). It was so before this work.
     - Lines: production 5,850 → 5,892.
+21. **A question is about the object it was asked of (the testers' findings, 2026-11-19).**
+    - **`close-workspace NAME` closes the directory the name was given for**: the workspace shown
+      (the run's context holds it), or one the last `(workspaces)` list named (the script thread
+      holds each directory that list gave, 64 at most), and only for a name it got from neither
+      does it open the name now. Before, it opened the name when the question was answered: a
+      "close workspace" answered yes after the workspace was replaced ended the new one's panes
+      and removed it. A directory still there under another name is the one closed; one removed
+      is refused, "workspace W was removed". Pane questions were already held: they act through
+      the run's workspace, and a pane by its id.
+    - **A layout command that fails on a removed workspace says so**, whatever the edit met first
+      (one that waited for the layout's lock found the file gone and advised `reset`).
+    - **A viewer whose workspace was removed says "workspace W was removed"** in the bar's corner
+      and drops the next key with the notice still up: that key was typed at what was shown
+      before (an answer to a question the switch dismissed went into the new workspace's pane).
+      The key after it takes the notice away and acts as usual. Pastes and clicks are not dropped.
+    - **Where a refusal shows**: the bar's right corner is drawn for a notice even when no bar is
+      (one tab, no menu), on the last row over the panes. A tester saw none because none was
+      said: the question was dropped silently, which is the case above.
+    - Left as it is: a close-pane answered yes after the pane ended and another took its name in
+      the same workspace says `no tile for pane NAME@OLDID` (true, and nothing is done to the
+      new pane), in grift's error form rather than a plain sentence.
+    - Lines: production 5,861 → 5,883 (28 added, 6 paid by folding `release_callbacks`).

@@ -383,18 +383,12 @@ fn keep_callbacks(
             }
         }
     }
-    release_callbacks(g, host);
+    for old in (host.callback.take().into_iter()).flat_map(|(_, old)| old) {
+        let _ = g.release(old);
+    }
     host.next_callback = host.next_callback.saturating_add(1);
     host.callback = Some((host.next_callback, kept));
     Ok(host.next_callback)
-}
-
-fn release_callbacks(g: &mut HostCall<'_, Host>, host: &mut Host) {
-    if let Some((_, old)) = host.callback.take() {
-        for one in old {
-            let _ = g.release(one);
-        }
-    }
 }
 
 const WORDS: &[(&str, Word)] = &[
