@@ -29,7 +29,7 @@ pub fn check_name(name: &str) -> Result<(), Failure> {
     match good {
         true => Ok(()),
         false => Err(Failure::new(format!(
-            "bad pane name {name:?}: it must match [a-z0-9][a-z0-9_-]{{0,31}}"
+            "bad name {name:?}: a pane or workspace name must match [a-z0-9][a-z0-9_-]{{0,31}}"
         ))),
     }
 }
