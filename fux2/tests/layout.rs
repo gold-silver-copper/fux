@@ -104,8 +104,10 @@ fn a_writer_killed_mid_write_leaves_a_whole_file() -> Tested {
         std::thread::sleep(Duration::from_micros(round.saturating_mul(300)));
         let _ = child.kill();
         let _ = child.wait();
-        // Readable after every kill, whatever it interrupted.
-        lab.version()?;
+        // The old file or the new one after every kill, never neither: the
+        // tab made before is always there.
+        let layout = fux2::layout::read(&lab.session)?;
+        assert!(layout.tabs().any(|tab| tab.title == "first"), "{layout}");
     }
     // A half-written new file left behind is never read, and is replaced.
     std::fs::write(
@@ -139,8 +141,86 @@ fn an_edit_from_an_old_look_is_stale_and_a_bad_file_is_kept() -> Tested {
     let refused = lab.layout(&["tab", "new"])?;
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
     assert_eq!(std::fs::read_to_string(&path)?, "not a layout\n");
+    // A reset that names a version it cannot have seen is refused.
+    let blind = lab.layout(&["reset", "--if", "0"])?;
+    assert_eq!(blind.status.code(), Some(4), "{blind:?}");
+    assert_eq!(std::fs::read_to_string(&path)?, "not a layout\n");
     let reset = lab.layout(&["reset"])?;
     assert!(reset.status.success(), "{reset:?}");
     assert_eq!(fux2::layout::read(&lab.session)?.tabs().count(), 1);
+    Ok(())
+}
+
+/// Nothing is written that the reader would refuse: an edit whose result
+/// cannot be read back is refused, and the last good file stays.
+#[test]
+fn an_edit_never_writes_what_cannot_be_read_back() -> Tested {
+    let lab = Lab::new()?;
+    lab.layout(&["tab", "new", "--title", "kept"])?;
+    let path = lab.session.root.join("layout");
+    let before = std::fs::read_to_string(&path)?;
+    let refused = lab.layout(&["tab", "new", "--match", "role=a\nb"])?;
+    assert!(!refused.status.success(), "{refused:?}");
+    assert_eq!(std::fs::read_to_string(&path)?, before);
+    let refused = lab.layout(&["tab", "match", "kept", "role=a\nb"])?;
+    assert!(!refused.status.success(), "{refused:?}");
+    assert_eq!(std::fs::read_to_string(&path)?, before);
+    // A version at its end refuses to wrap, so `--if` stays true.
+    let full = before.replacen(
+        &format!("version {}", lab.version()?),
+        &format!("version {}", u64::MAX),
+        1,
+    );
+    std::fs::write(&path, &full)?;
+    let refused = lab.layout(&["tab", "new"])?;
+    assert!(!refused.status.success(), "{refused:?}");
+    assert_eq!(std::fs::read_to_string(&path)?, full);
+    Ok(())
+}
+
+/// What stands at the layout's names is never followed or reused: a link
+/// at `layout` is refused and kept, and a link or a FIFO at `layout.new`
+/// neither truncates the layout nor holds up the writer.
+#[test]
+fn links_and_fifos_in_the_way_harm_nothing() -> Tested {
+    let lab = Lab::new()?;
+    lab.layout(&["tab", "new", "--title", "kept"])?;
+    let path = lab.session.root.join("layout");
+    let temp = lab.session.root.join("layout.new");
+    let good = std::fs::read_to_string(&path)?;
+    std::fs::hard_link(&path, &temp)?;
+    let out = lab.layout(&["tab", "new", "--title", "after-link"])?;
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        fux2::layout::read(&lab.session)?
+            .tabs()
+            .any(|t| t.title == "after-link")
+    );
+    let fifo = Command::new("mkfifo").arg(&temp).status()?;
+    assert!(fifo.success());
+    let mut child = lab
+        .command(&["tab", "new", "--title", "after-fifo"])
+        .spawn()?;
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while child.try_wait()?.is_none() {
+        if std::time::Instant::now() > until {
+            let _ = child.kill();
+            return Err("a FIFO at layout.new held the writer".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        fux2::layout::read(&lab.session)?
+            .tabs()
+            .any(|t| t.title == "after-fifo")
+    );
+    // A dangling link at `layout` is no missing file: refused, and kept.
+    let kept = lab.session.root.join("elsewhere");
+    std::fs::rename(&path, &kept)?;
+    std::os::unix::fs::symlink(lab.session.root.join("nowhere"), &path)?;
+    let refused = lab.layout(&["tab", "new"])?;
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(std::fs::symlink_metadata(&path)?.file_type().is_symlink());
+    let _ = good;
     Ok(())
 }

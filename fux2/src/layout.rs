@@ -1218,6 +1218,15 @@ fn check(layout: &Layout) -> Result<(), String> {
             return Err(format!("id {id} is used twice"));
         }
     }
+    for tab in layout.tabs() {
+        let bad = (tab.tests.iter()).any(|(k, v)| k.chars().chain(v.chars()).any(char::is_control));
+        if bad {
+            return Err(format!(
+                "tab t{}: a match test holds a control character",
+                tab.id
+            ));
+        }
+    }
     let placed = layout.placed();
     if placed.len() > MAX_LEAVES {
         return Err(format!("more than {MAX_LEAVES} tiles"));
@@ -1272,7 +1281,8 @@ pub fn read_small_file(path: &Path, most: u64) -> std::io::Result<String> {
     options.read(true);
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(fuxix::file::NONBLOCK);
+        // Not through a link: what stands at the name is what is read.
+        options.custom_flags(fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW);
     }
     let file = options.open(path)?;
     let meta = file.metadata()?;
@@ -1307,19 +1317,19 @@ pub fn read(session: &Session) -> Result<Layout, Failure> {
 
 /// Replaces the file with `layout`, whole: written beside it, flushed, then
 /// renamed over it. Only under the lock.
-fn write(session: &Session, _lock: &LayoutLock, layout: &Layout) -> Result<(), Failure> {
-    let text = layout.to_string();
-    if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_BYTES {
-        let why = format!(
-            "the layout would be {} bytes, at most {MAX_BYTES}",
-            text.len()
-        );
-        return Err(Failure::new(Code::Limit, why));
-    }
+fn write(session: &Session, _lock: &LayoutLock, text: &str) -> Result<(), Failure> {
     let temp = session.root.join(TEMP);
     let path = session.root.join(FILE);
+    // Whatever was left at the new file's name (a stale file, a link to the
+    // layout, a FIFO) goes, and the new file is made fresh, private and
+    // ours alone: nothing written there can reach another file.
+    match std::fs::remove_file(&temp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io(temp.display(), e)),
+    }
     let mut options = File::options();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     let mut file = fuxix::file::private_file(&mut options)
         .open(&temp)
         .map_err(|e| io(temp.display(), e))?;
@@ -1328,11 +1338,33 @@ fn write(session: &Session, _lock: &LayoutLock, layout: &Layout) -> Result<(), F
         .map_err(|e| io(temp.display(), e))?;
     drop(file);
     std::fs::rename(&temp, &path).map_err(|e| io(path.display(), e))?;
-    // The rename itself is kept too.
-    if let Ok(dir) = File::open(&session.root) {
-        let _ = dir.sync_all();
+    // The rename itself is kept too; if that cannot be confirmed, say so.
+    File::open(&session.root)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| {
+            let why = format!(
+                "the layout was replaced, but {} could not be flushed ({e}): read it before trying again",
+                session.root.display()
+            );
+            Failure::new(Code::Io, why)
+        })
+}
+
+/// The file's text for `layout`, if the reader would read back exactly
+/// this layout: nothing is written that the reader would refuse.
+pub fn encode(layout: &Layout) -> Result<String, Failure> {
+    let text = layout.to_string();
+    let refuse = |why: String| {
+        let why = format!(
+            "the edit would make a layout that cannot be read back ({why}); nothing was changed"
+        );
+        Failure::new(Code::Limit, why)
+    };
+    match parse(&text) {
+        Ok(read) if read == *layout => Ok(text),
+        Ok(_) => Err(refuse("it reads back differently".to_owned())),
+        Err(why) => Err(refuse(why)),
     }
-    Ok(())
 }
 
 /// What an edit did: the version now, any tab or workspace it made, and the
@@ -1366,10 +1398,18 @@ pub fn edit(
     op: &Op,
 ) -> Result<Edited, Failure> {
     let lock = lock(session)?;
-    // A reset is the one way past a file that cannot be read.
+    // A reset is the one way past a file that cannot be read; such a file
+    // has no version to compare with `--if`.
     let reset = matches!(op, Op::Reset);
     let mut layout = match read(session) {
         Ok(layout) => layout,
+        Err(failure) if reset && expected.is_some() => {
+            let why = format!(
+                "{}; it has no version for --if: reset without it",
+                failure.message
+            );
+            return Err(Failure::new(Code::Stale, why));
+        }
         Err(_) if reset => Layout::default(),
         Err(failure) => return Err(failure),
     };
@@ -1392,9 +1432,18 @@ pub fn edit(
             changed: Vec::new(),
         });
     }
-    layout.version = old.version.saturating_add(1);
-    check(&layout).map_err(|why| Failure::new(Code::Limit, why))?;
-    write(session, &lock, &layout)?;
+    // A version never wraps, or an old `--if` could pass again; a reset
+    // starts the count over.
+    layout.version = match old.version.checked_add(1) {
+        Some(version) => version,
+        None if reset => 1,
+        None => {
+            let why = "the layout's version is at its end: fux2 layout reset";
+            return Err(Failure::new(Code::Limit, why));
+        }
+    };
+    let text = encode(&layout)?;
+    write(session, &lock, &text)?;
     Ok(Edited {
         version: layout.version,
         made,
@@ -1603,13 +1652,15 @@ fn store_tab(layout: &mut Layout, shown: &Layout, id: u32) -> Result<u32, Failur
     Ok(id)
 }
 
-/// The pane `op` gives a tile to: while the edit reads the layout, it is
-/// not routed anywhere, so a pane just started moves no other tile.
+/// The pane a split or a replace gives a tile to, most often one just
+/// started: while the edit reads the layout it is not routed anywhere, so
+/// placing it moves no other tile. A move is of a pane already shown.
 fn placing(op: &Op) -> Option<&Target> {
     match op {
         Op::Split { new, .. } | Op::Replace { new, .. } => Some(new),
-        Op::ToTab { pane, .. } | Op::ToWorkspace { pane, .. } => Some(pane),
-        Op::Remove(_)
+        Op::ToTab { .. }
+        | Op::ToWorkspace { .. }
+        | Op::Remove(_)
         | Op::Swap(..)
         | Op::Step { .. }
         | Op::Reorder { .. }
@@ -2058,7 +2109,13 @@ pub fn apply(
 /// The default layout in place of `layout`, its version kept and its ids
 /// new, so no old id names any of it.
 fn fresh(layout: &mut Layout) -> Result<(), Failure> {
-    let (version, next) = (layout.version, layout.next.max(Layout::default().next));
+    let first = Layout::default().next;
+    // Ids that ran out start over: nothing old is left for them to name.
+    let next = match layout.next.checked_add(2) {
+        Some(_) => layout.next.max(first),
+        None => first,
+    };
+    let version = layout.version;
     *layout = Layout {
         version,
         next,
@@ -2364,6 +2421,41 @@ mod tests {
             .collect();
         moved.sort();
         assert_eq!(moved, ["c", "d"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_layout_too_deep_or_with_a_newline_is_never_encoded() -> Result<(), Failure> {
+        let mut layout = Layout::default();
+        let mut panes = vec![live("a", 1, &[])];
+        for n in 2..=10u8 {
+            panes.push(live(&format!("p{n}"), n, &[]));
+            let axis = if n % 2 == 0 {
+                Axis::Columns
+            } else {
+                Axis::Rows
+            };
+            let split = Op::Split {
+                target: target("a"),
+                new: target(&format!("p{n}")),
+                axis,
+                before: false,
+            };
+            apply(&mut layout, &panes, NOMINAL, &split)?;
+        }
+        assert!(encode(&layout).is_err(), "{layout}");
+        let mut layout = Layout::default();
+        let (key, value) = ("role".to_owned(), "a\nb".to_owned());
+        apply(
+            &mut layout,
+            &[],
+            NOMINAL,
+            &Op::MatchTab {
+                tab: "all".to_owned(),
+                tests: vec![(key, value)],
+            },
+        )?;
+        assert!(encode(&layout).is_err());
         Ok(())
     }
 
