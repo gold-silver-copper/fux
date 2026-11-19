@@ -3,7 +3,7 @@
 //! connects; a directory of panes is the whole session.
 //!
 //! This library is the protocol ([`wire`]), a connection ([`conn`]), a blocking
-//! client ([`client`]), the session directory ([`dir`]) and the pane itself
+//! client ([`client`]), the session directory ([`dir`]), its stored layout ([`layout`]) and the pane itself
 //! ([`model`], [`pane`]). It links no language: the viewer, `fux2-view`, is
 //! where keys and commands are configured.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -17,6 +17,8 @@ pub mod conn;
 pub mod dir;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod history;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod layout;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod model;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
