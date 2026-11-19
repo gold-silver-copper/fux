@@ -349,7 +349,7 @@ fn kill_by_label_takes_only_its_group() -> Tested {
 }
 
 /// True while `pid` is a process that has not ended.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn process_alive(pid: &str) -> Result<bool, std::io::Error> {
     Ok(Command::new("kill")
         .args(["-0", pid])
@@ -359,7 +359,7 @@ fn process_alive(pid: &str) -> Result<bool, std::io::Error> {
 }
 
 /// The number the program printed after `left=`, once it has.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn printed_pid(lab: &Lab, pane: &str) -> Result<String, Box<dyn std::error::Error>> {
     let until = soon(Duration::from_secs(10));
     loop {
