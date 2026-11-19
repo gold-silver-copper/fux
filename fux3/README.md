@@ -42,9 +42,10 @@ echo kill > "$D/main/build/ctl"             # ends the program and all it starte
 | Command | What |
 |---|---|
 | `fux3 dir` | prints the session directory, making it if missing |
-| `fux3 start [WORKSPACE/]NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane in WORKSPACE (default `main`, made if missing); prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, 4096 bytes to 256 MiB), `--label KEY=VALUE` (up to 16) |
+| `fux3 start [WORKSPACE/]NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane in WORKSPACE (default `main`, made if missing); prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, 4096 bytes to 256 MiB), `--label KEY=VALUE` (up to 16), `--env NAME=VALUE` (a variable for the program, kept in its recipe). With no program, the workspace's recipe of that name runs if there is one (see "Recipes"), else `$SHELL` |
 | `fux3 ls` | lists the live panes, as `WORKSPACE/NAME` |
 | `fux3 wait [WORKSPACE/]NAME [--ms N]` | waits until the pane's screen changes (default 10000 ms), prints its new line 1; exit 1 if nothing changed in time |
+| `fux3 put [WORKSPACE/]NAME [TEXT]` | writes TEXT (else stdin; at most 512 bytes) to the pane's `in`: whole, or refused saying why (no pane, a dead holder, input full), never waiting |
 | `fux3 view [WORKSPACE] [--do LINE]` | the viewer of a workspace (below); with `--do`, one layout command applied with no viewer running |
 
 Every `fux3` command first clears the leftovers of panes whose holder is gone,
@@ -95,6 +96,7 @@ program, as any program's arguments are shown.
 | `history.1` | the history before `history` last reached half its cap (there once it has) |
 | `errors` | the last 32 refusals, a line each |
 | `images/N.sixel` | one picture the program drew, as sixel: `cat` shows it in a sixel terminal |
+| `exit` | there once the program has ended: its state line (`state exited 3`) |
 
 **Line 1** of `screen` and `screen.styled` is the same in both:
 
@@ -208,6 +210,42 @@ updated (`in: 8 bytes dropped in all: the program has ended (exited 3)`), so
 drops never push a command's refusal out; `in` itself stays,
 so a shell's `> in` never makes a regular file there.
 
+Once the end has settled and the last screen is written, the directory gains
+`exit`, holding the state line (`state exited 3`), written aside and renamed
+in, so never seen empty or half-written. "Has it finished?" is
+`[ -e "$D/main/build/exit" ]`. A waiter also checks the directory is still
+there, since a kill removes it:
+
+```sh
+p=$D/main/build; while [ -d "$p" ] && [ ! -e "$p/exit" ]; do sleep 0.1; done; cat "$p/exit"
+```
+
+## Recipes
+
+Each `fux3 start` writes the pane's recipe, `WORKSPACE/.recipes/NAME`: one
+executable POSIX `sh` script that starts the program again exactly, in the
+same directory, with the variables named by `--env` and no others (never the
+environment `start` ran in, which can hold secrets), every word single-quoted
+so any byte comes back as it was:
+
+```sh
+#!/bin/sh
+cd -- '/home/me/src' || exit 126
+RUST_LOG='debug'; export RUST_LOG
+exec 'cargo' 'watch' '-x' 'test'
+```
+
+It is written aside and renamed in, at most 64 KiB (a start whose recipe would
+be larger is refused), and it lives outside the pane's directory, so a kill
+and the clearing of dead panes leave it. `fux3 start NAME` with no program
+runs it again; `cat "$D/main/.recipes/NAME"` shows what it would run, and
+`sh "$D/main/.recipes/NAME"` runs it in your own terminal. Starting a
+workspace's every recipe:
+
+```sh
+for r in "$D/rig/.recipes"/*; do fux3 start "rig/${r##*/}"; done
+```
+
 ## Kill
 
 `echo kill > "$D/WORKSPACE/NAME/ctl"` hangs up the program, then kills its session; on
@@ -234,15 +272,43 @@ found, and is not reported.
 the next `fux3` command clears it. Until then `ls "$D/main"` shows it, its `status`
 still says `running`, and **`printf … > in` blocks for ever**: a FIFO with no
 reader blocks its writer in `open`. `fux3 ls` tells live panes from dead ones
-(and clears the dead). Guard a write you can't afford to hang:
+(and clears the dead), but checking first is no guard: a holder killed
+between the check and the write still hangs the writer. A write that cannot
+hang opens `in` without waiting: `fux3 put`, or with plain tools the same in
+one line of Perl, which Linux and macOS both ship:
 
 ```sh
-timeout 2 sh -c 'printf "echo hi\n" > "$1"' sh "$D/main/build/in"        # Linux
-perl -e 'alarm 2; exec @ARGV' sh -c 'printf "echo hi\n" > "$1"' sh "$D/main/build/in"   # macOS
+printf 'echo hi\n' | fux3 put main/build
+printf 'echo hi\n' | perl -e 'use Fcntl; sysopen(F, shift, O_WRONLY|O_NONBLOCK) or die "$!\n"; local $/; my $t = <STDIN>; syswrite(F, $t) == length $t or die "$!\n"' "$D/main/build/in"
 ```
+
+Both refuse at once when nobody reads `in` ("No such device or address") or
+the pane is gone, and write at most 512 bytes whole.
 
 **A write over 512 bytes to `in`** may arrive in pieces, mixed with another
 writer's. Use `send` for anything long.
+
+## With plain tools
+
+Things fux3 needs no code for, each with its limit:
+
+- **Viewing from elsewhere.** One open of `screen` is one whole frame, so
+  `ssh host cat "$D/main/build/screen"`, `scp` and `rsync` copy whole frames. A
+  mirror copies to a temporary file, then renames it, or its reader can catch a
+  half-written copy. FIFOs do not cross a network mount: type with `ssh host
+  fux3 put …`.
+- **A screen bookmark.** `ln "$D/main/build/screen" ~/saved` keeps that frame,
+  even after the pane is gone (the next publish replaces the name, not the
+  file). Across filesystems, `cp` to a temporary file beside the destination,
+  then `mv`.
+- **Staying on one pane.** `cd "$D/main/build"` and use relative paths: after a
+  kill and a new pane under the same name, the old directory's files are gone
+  and nothing you write reaches the newcomer.
+- **Write-protecting a pane.** `chmod u-w "$D/main/build/in" "$D/main/build/ctl"`
+  refuses writes from you at once; `chmod u+w` gives them back.
+- **"Is it alive?"** Its directory's lock is held:
+  `perl -e 'use Fcntl qw(:DEFAULT :flock); sysopen(D, shift, O_RDONLY) or die "gone\n"; print flock(D, LOCK_EX|LOCK_NB) ? "dead\n" : "alive\n"' "$D/main/build"`.
+  A sample, not a guard: it may be dead a moment later (use `fux3 put`).
 
 ## Pictures
 

@@ -120,3 +120,14 @@ overruled it, both are recorded.
   `history.1` holds at most half the cap: past it `history` is renamed
   `history.1` and a new one starts, so a follower by name sees each line
   once, and the two together stay under the cap with no gap (tested).
+- **D31. Four Unix analogies built, the rest documented.** Owner, 2026-11-19,
+  on two analogy panels' spikes: "send it, use the sh script format, document
+  the neccessary, and document the leave for later ideas". Built: an `exit`
+  file (written aside, after the last screen); a recipe per pane as one
+  executable `sh` script in `WORKSPACE/.recipes/NAME` holding only `--env`'s
+  variables (`fux3 start NAME` with no program runs it); templates (the
+  layout's bare `pane NAME`); and `fux3 put`, a write that never waits (the
+  README's plain-tools guard is the same open in one line of Perl, as macOS
+  has no `timeout` or `flock`). Documented: viewing over ssh, hard-link
+  bookmarks, standing in a pane's directory, `chmod u-w`, the liveness sample.
+  Ideas not built and tried-and-rejected: DESIGN.md.

@@ -41,6 +41,7 @@ while its lock and FIFOs moved: don't. The pane limit, 128, is per workspace.
 | `history.1` | the generation before | holder, by rename |
 | `errors` | the last 32 refusals, a line each, `WHAT: WHY` (below) | holder, atomic replace |
 | `images/N.sixel` | one picture shown, re-encoded as sixel from the emulator's pixels; written once, removed once no published screen shows it | holder |
+| `exit` | `state exited CODE` or `state signalled NAME` and a newline, once the program's end has settled; written aside and renamed, in the same publish as (after) the screens that show the end | holder, once |
 
 Every file is 0600 and the directory and `images/` are 0700. Files replaced
 whole are written to `.NAME.new` and renamed, so a reader sees an old file or
@@ -184,3 +185,58 @@ number of bytes written, and no picture file outlives its pane.
 version differs from the first look, then prints the new line 1; after `N` ms
 (default 10000) it exits 1. On Linux `inotifywait -e moved_to "$D/WORKSPACE/NAME"` does
 the same with no fux3.
+
+## Recipes and `fux3 put`
+
+`fux3 start` writes `WORKSPACE/.recipes/NAME` after the holder says `ok`: an
+executable `sh` script (`#!/bin/sh`, `cd -- 'DIR' || exit 126`, one
+`NAME='VALUE'; export NAME` per `--env`, `exec 'PROGRAM' 'ARG'…`), every word
+single-quoted with `'` written `'\''`, so any byte but NUL comes back as it
+was. Rendered before the start, refused past 64 KiB; written aside and
+renamed, 0700, in a 0700 `.recipes/`. Only the variables named by `--env` go
+in it, never the inherited environment. With no program, `start` runs
+`/bin/sh .recipes/NAME` when that file is there and writes no new recipe.
+
+`fux3 put` opens `in` with `O_WRONLY|O_NONBLOCK|O_NOFOLLOW` and no create: no
+file is "no pane", `ENXIO` (nobody reads) is "a dead holder"; it writes at most
+`PIPE_BUF` (512) bytes in one call, so the write is whole or `EAGAIN` ("input
+full"). It never waits.
+
+## Ideas not built
+
+From the analogy panels of 2026-11-19 (`notes/projects/fux/fux3-2026-11-18/
+analogies-result.md`), for the owner to pick up later:
+
+- **Moving or renaming a live pane with `mv`.** A holder working relative to
+  its directory handle kept every byte across 60 moves (40 between
+  workspaces). This holder writes by path, so `mv` does not work today: the
+  screen freezes. Open: `mv` onto an existing name nests silently; the viewer
+  must re-find a tile by id; whose tile it is after a move between workspaces.
+- **An `events` file per workspace.** Lossless only with a lock around append
+  and rotation (36,000 of 36,000 with it; lines lost without).
+- **A `notices` file per workspace.** Appending is safe; rotation without a lock
+  lost lines, so it needs a command or a holder to rotate.
+- **A watch-only export** outside the private directories: group permissions
+  worked, but a replace reset the mode and `history`'s size leaked.
+- **A `cwd` link; aliases; `in` and `ctl` as a spool of files; a whole-pane
+  capture as a tar.** Spiked or proposed, not needed by the example.
+
+## Tried and rejected
+
+- A per-pane `events` file: `tail -F` never sees a pane made after it starts;
+  50 of 100 records lost across two rotations.
+- Labels replaced by folders: two labels cut across each other, no folder holds
+  both.
+- Waiting by a blocking FIFO read: a change between the check and the open was
+  missed 50 of 50 times.
+- Delete-to-kill: after `rm -r` the holder and program lived on with nothing left
+  to kill them with.
+- Tabs as folders of symlinks: a reader saw one pane in two tabs 2,121 times in
+  3,000 looks during a correct move.
+- Child panes as subfolders: nothing the kill rule doesn't give, and it broke a
+  pane started from outside.
+- A `.view/focused` link: a writer through it wedged in 15 of 15 kills.
+- A `tty` link: `stty` through it resized the pty behind the holder's back.
+- `tee` into many panes: one stopped pane stalls them all; a 64 KiB write split.
+- Activity from file times: `find -newer` flagged 48 of 48 repaints that changed
+  nothing visible.
