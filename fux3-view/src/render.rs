@@ -83,7 +83,26 @@ impl Frame {
         self.cells.get_mut(index)
     }
 
+    /// Writes one cell; a wide glyph it splits loses its other half too
+    /// (blanked), as the terminal would erase it.
     fn put(&mut self, x: u16, y: u16, text: &str, sgr: &str, tail: bool) {
+        let blank = |cell: &mut Cell| {
+            cell.text.clear();
+            cell.text.push(' ');
+            cell.tail = false;
+        };
+        let was_tail = self.at(x, y).is_some_and(|c| c.tail);
+        if was_tail
+            && !tail
+            && let Some(left) = x.checked_sub(1).and_then(|l| self.at(l, y))
+        {
+            blank(left);
+        }
+        if let Some(right) = x.checked_add(1).and_then(|r| self.at(r, y))
+            && right.tail
+        {
+            blank(right);
+        }
         if let Some(cell) = self.at(x, y) {
             cell.text.clear();
             cell.text.push_str(text);
@@ -266,6 +285,30 @@ impl Frame {
             };
             let sgr = if ring(x, y) { FOCUSED_BORDER } else { BORDER };
             self.put(x, y, glyph, sgr, false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A write over either half of a wide glyph blanks its other half, so
+    /// the frame never holds half a glyph the terminal would not show.
+    #[test]
+    fn a_write_over_half_a_wide_glyph_blanks_the_other_half() {
+        for at in [3u16, 4] {
+            let mut frame = Frame::new(10, 1);
+            frame.label(3, 0, 2, "\u{4e2d}", "");
+            frame.put(at, 0, "x", ";31", false);
+            let texts: Vec<&str> = (frame.cells.iter())
+                .map(|c| c.text.as_str())
+                .skip(3)
+                .take(2)
+                .collect();
+            let other = if at == 3 { texts.get(1) } else { texts.first() };
+            assert_eq!(other, Some(&" "), "write at {at}: {texts:?}");
+            assert!(frame.cells.iter().all(|c| !c.tail), "a tail left at {at}");
         }
     }
 }
