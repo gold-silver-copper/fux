@@ -121,7 +121,7 @@ files stay.
 **`history`** is plain text, never the program's raw bytes: raw bytes shown in
 a terminal replay escape codes, make that terminal answer the program's
 queries into your shell, and let a pane's program attack whoever tails it. A
-soft-wrapped line is one line. `less +G` or `tail -F` reads it.
+soft-wrapped line is one line. `less +G` or `tail -F` reads it. It is appended to, not replaced, so a read while output pours in may end in the middle of a line; the next read has the rest.
 
 ## `ctl`
 
@@ -129,7 +129,7 @@ soft-wrapped line is one line. `less +G` or `tail -F` reads it.
 |---|---|---|
 | `resize COLS ROWS` | `size COLS ROWS`, a new `version` | bad numbers, or the terminal refused: nothing changed |
 | `send PATH` | the file's bytes, whole, go to the program as typed; `queued` grows, then drains | not an absolute path, a link, not a regular file, not yours, over 16 MiB, the queue full, the program ended: nothing was sent |
-| `paste PATH` | as `send`, the file's text as one paste, bracketed if the program asked for that | as `send`, or not UTF-8 |
+| `paste PATH` | the file's text as one paste, as a terminal pastes: line breaks become CR, and it is bracketed if the program asked for that; otherwise as `send` | as `send`, or not UTF-8 |
 | `signal NAME` | the signal (`INT`, `TERM`, `HUP`, …) goes to the program's foreground process group | no such signal, the program ended |
 | `cell W H` | `cell W H`; pictures drawn after it use it | smaller than 2x6 or over 1000 |
 | `kill` | the program and everything it started end, and the directory goes | `kill-incomplete WHAT` in `state` and in `errors`: send `kill` again |
