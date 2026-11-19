@@ -59,7 +59,7 @@ workspace: `$D/rig/build/`. `ls "$D"` lists the workspaces, `ls "$D/rig"` a
 workspace's panes. A workspace is made when its first pane starts (or by
 `mkdir -m 700 "$D/rig"`) and has no file, process or state of its own but the
 viewer's `.view/` (its layout). An empty workspace stays until you remove it
-(`rmdir "$D/rig"`, after removing its `.view` if a viewer made one). A pane's
+(`rm -r "$D/rig/.view" "$D/rig/.recipes"; rmdir "$D/rig"`: a viewer makes `.view`, a start `.recipes`). A pane's
 workspace is fixed when it starts.
 
 Ending a workspace is ending each pane in it:
