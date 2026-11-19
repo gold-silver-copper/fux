@@ -22,7 +22,7 @@
 (define! made (lambda! (text) (line-of "made" text)))
 (define! started (lambda! (text) (line-of "started" text)))
 
-;; What a line written to the session's .view/ctl does: drop the fit
+;; What a line written to a workspace's .view/ctl does: drop the fit
 ;; (`arrange` instead of `edit!`) to leave pane sizes alone.
 (define! layout-command (lambda! (line) (edit! line)))
 
@@ -46,13 +46,14 @@
   (focus (started (edit! (join "split " (focused) " " dir))))))
 
 ;; The focused pane's history in a pager, below it: $PAGER, else less at
-;; the end. When the pager ends, the pane closes its tile (a line to
-;; .view/ctl, opened read-write so that it never waits) and ends itself.
+;; the end. When the pager ends, the pane closes its tile (a line to its
+;; workspace's .view/ctl, opened read-write so that it never waits) and
+;; ends itself.
 (define! history-script
-  "${PAGER:-less +G} \"$1\"; exec 3<>\"$FUX3_DIR/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; echo kill > \"$FUX3_DIR/$FUX3_PANE/ctl\"")
+  "${PAGER:-less +G} \"$1\"; exec 3<>\"$FUX3_DIR/$FUX3_WORKSPACE/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; echo kill > \"$FUX3_PANE_DIR/ctl\"")
 (define! history (lambda! ()
   (let! ((target (focused))
-         (file (join (session-dir) "/" (name-of target) "/history"))
+         (file (join (workspace-dir) "/" (name-of target) "/history"))
          (pane (start-new "history" "sh" "-c" history-script "sh" file)))
     (place-new! pane (lambda! (p) (edit! (join "split " target " down " p)))))))
 
@@ -67,74 +68,63 @@
 (define! confirm-close-pane (lambda! (pane)
   (confirm (join "close pane " (name-of pane) "?") (lambda! () (close-pane pane)))))
 
-;; How lists name things: a pane by its name, a tab or workspace by its id
-;; and title.
+;; How lists name things: a pane by its name, a tab by its id and title,
+;; a workspace by its name (its directory's).
 (define! panes-of (lambda! (tab) (filter (lambda! (row) (equal? (second row) tab)) (panes))))
 (define! panes-text (lambda! (rows)
   (string-join (map (lambda! (row) (name-of (first row))) rows) ", ")))
-(define! tabs-of (lambda! (space) (filter (lambda! (row) (equal? (third row) space)) (tabs))))
 (define! tab-row (lambda! (row current)
   (list (first row) (join (first row) " " (second row) " — " (panes-text (panes-of (first row))))
         (equal? (first row) current))))
-(define! workspace-row (lambda! (row current)
-  (list (first row) (join (first row) " " (second row)) (equal? (first row) current))))
 
-;; Lists. A tab or workspace list renames with r and closes with x.
+;; Lists. A tab list renames with r and closes with x; a workspace list
+;; closes with x.
 (define! choose-tab (lambda! ()
   (let! ((here (shown-tab)))
-    (pick "tabs" (map (lambda! (row) (tab-row row here)) (tabs-of (shown-workspace)))
+    (pick "tabs" (map (lambda! (row) (tab-row row here)) (tabs))
       show-tab
       (list (list "r" "rename" rename-tab) (list "x" "close" confirm-close-tab))))))
 (define! choose-workspace (lambda! ()
   (let! ((here (shown-workspace)))
-    (pick "workspaces" (map (lambda! (row) (workspace-row row here)) (workspaces))
+    (pick "workspaces" (map (lambda! (name) (list name name (equal? name here))) (workspaces))
       show-workspace
-      (list (list "r" "rename" rename-workspace) (list "x" "close" confirm-close-workspace))))))
+      (list (list "x" "close" confirm-close-workspace))))))
 (define! move-to-tab (lambda! (pane)
   (let! ((here (shown-tab)))
     (pick (join "move " (name-of pane) " to tab")
-      (map (lambda! (row) (tab-row row here)) (tabs-of (shown-workspace)))
+      (map (lambda! (row) (tab-row row here)) (tabs))
       (lambda! (tab) (edit! (join "move " pane " tab " tab)))))))
-(define! move-to-workspace (lambda! (pane)
-  (let! ((here (shown-workspace)))
-    (pick (join "move " (name-of pane) " to workspace")
-      (map (lambda! (row) (workspace-row row here)) (workspaces))
-      (lambda! (space) (edit! (join "move " pane " workspace " space)))))))
 (define! move-to-new-tab (lambda! (pane)
   (show-tab (made (edit! (join "move " pane " tab new"))))
   (focus pane)))
-(define! move-to-new-workspace (lambda! (pane)
-  (show-workspace (made (edit! (join "move " pane " workspace new"))))
-  (focus pane)))
 
-;; Prompts, filled with the title now.
+;; A prompt, filled with the title now.
 (define! rename-tab (lambda! (tab)
   (read-line (join "rename tab " tab) (second (row-of (tabs) tab))
     (lambda! (title) (arrange (join "tab rename " tab " " (quote title)))))))
-(define! rename-workspace (lambda! (space)
-  (read-line (join "rename workspace " space) (second (row-of (workspaces) space))
-    (lambda! (title) (arrange (join "workspace rename " space " " (quote title)))))))
 
 ;; Tabs and workspaces: a new one starts with a shell; closing one ends
-;; its panes.
+;; its panes. A new workspace is a directory, named at a prompt; its shell
+;; lands in its one tab, as any pane with no tile does.
 (define! new-tab (lambda! ()
   (let! ((tab (made (arrange (join "tab new after " (shown-tab))))) (pane (start-new "shell")))
     (show-tab tab)
     (place-new! pane (lambda! (p) (edit! (join "move " p " tab " tab)))))))
 (define! new-workspace (lambda! ()
-  (let! ((space (made (arrange "workspace new"))) (pane (start-new "shell")))
-    (show-workspace space)
-    (place-new! pane (lambda! (p) (edit! (join "move " p " workspace " space)))))))
+  (read-line "new workspace" ""
+    (lambda! (name)
+      (if! (empty-list? (filter (lambda! (w) (equal? w name)) (workspaces))) #inert
+        (raise (error (quote! exists) (join "workspace " name " exists"))))
+      (start-new (join name "/shell"))
+      (show-workspace name)))))
 (define! end-panes (lambda! (rows)
   (for-each (lambda! (row) (catch-kind! (kill (first row)) fux3-error gone #inert)) rows)))
 (define! confirm-close-tab (lambda! (tab)
   (confirm (join "close tab " tab " " (second (row-of (tabs) tab)) "?")
     (lambda! () (end-panes (panes-of tab)) (arrange (join "tab close " tab))))))
 (define! confirm-close-workspace (lambda! (space)
-  (confirm (join "close workspace " space " " (second (row-of (workspaces) space)) "?")
-    (lambda! ()
-      (for-each (lambda! (tab) (end-panes (panes-of (first tab)))) (tabs-of space))
-      (arrange (join "workspace close " space))))))
+  (confirm (join "close workspace " space " and end its panes?")
+    (lambda! () (close-workspace space)))))
 
 ;; Type grift; the answer shows in the bar's corner.
 (define! command-line (lambda! ()

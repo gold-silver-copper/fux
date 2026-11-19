@@ -1,5 +1,5 @@
-//! The layout: one plain file, `.view/layout` in the session directory,
-//! shared by every viewer: workspaces, tabs, and per tab a tree of splits
+//! The layout: one plain file per workspace, `.view/layout` in the
+//! workspace's directory, shared by every viewer: tabs, and per tab a tree of splits
 //! with relative shares over panes named with their ids (`NAME@ID`). Every
 //! change is one operation on the file as it is then, under the layout's
 //! lock, written whole: a new file beside it, renamed over it, so a reader
@@ -19,11 +19,10 @@ use std::time::{Duration, Instant};
 pub const FILE: &str = "layout";
 const TEMP: &str = ".layout.new";
 const LOCK: &str = "layout.lock";
-const HEADER: &str = "fux3-layout 1";
+const HEADER: &str = "fux3-layout 2";
 /// The largest layout file read or written.
 pub const MAX_BYTES: usize = 64 << 10;
 const MAX_DEPTH: usize = 8;
-const MAX_WORKSPACES: usize = 32;
 const MAX_TABS: usize = 64;
 const MAX_LEAVES: usize = 2 * fux3::session::MAX_PANES;
 const MAX_TITLE: usize = 64;
@@ -168,19 +167,12 @@ pub struct Tab {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Workspace {
-    pub id: u32,
-    pub title: String,
-    pub tabs: Vec<Tab>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layout {
     /// Advanced by every write.
     pub version: u64,
-    /// The next id a tab or workspace gets: ids are never reused.
+    /// The next id a tab gets: ids are never reused.
     pub next: u32,
-    pub workspaces: Vec<Workspace>,
+    pub tabs: Vec<Tab>,
 }
 
 /// A pane that exists, as routing needs it.
@@ -209,16 +201,12 @@ fn parse_test(text: &str) -> Result<(String, String), Failure> {
 }
 
 impl Default for Layout {
-    /// What a session without a layout file shows: one tab holding every pane.
+    /// What a workspace without a layout file shows: one tab holding every pane.
     fn default() -> Layout {
         Layout {
             version: 0,
-            next: 3,
-            workspaces: vec![Workspace {
-                id: 1,
-                title: "main".to_owned(),
-                tabs: vec![Tab::new(2, "all")],
-            }],
+            next: 2,
+            tabs: vec![Tab::new(1, "all")],
         }
     }
 }
@@ -667,36 +655,22 @@ fn grid(panes: &[PaneRef]) -> Option<Node> {
 }
 
 impl Layout {
-    pub fn tabs(&self) -> impl Iterator<Item = &Tab> {
-        self.workspaces.iter().flat_map(|space| space.tabs.iter())
-    }
-
-    fn tabs_mut(&mut self) -> impl Iterator<Item = &mut Tab> {
-        self.workspaces
-            .iter_mut()
-            .flat_map(|space| space.tabs.iter_mut())
-    }
-
     pub fn tab(&self, id: u32) -> Option<&Tab> {
-        self.tabs().find(|tab| tab.id == id)
+        self.tabs.iter().find(|tab| tab.id == id)
     }
 
     fn tab_mut(&mut self, id: u32) -> Option<&mut Tab> {
-        self.tabs_mut().find(|tab| tab.id == id)
+        self.tabs.iter_mut().find(|tab| tab.id == id)
     }
 
     /// The tab holding `pane`'s tile.
     pub fn tab_of(&self, pane: &PaneRef) -> Option<&Tab> {
-        self.tabs().find(|tab| tab.holds(pane))
-    }
-
-    /// The workspace holding tab `id`.
-    pub fn workspace_of(&self, tab: u32) -> Option<&Workspace> {
-        (self.workspaces.iter()).find(|space| space.tabs.iter().any(|t| t.id == tab))
+        self.tabs.iter().find(|tab| tab.holds(pane))
     }
 
     fn placed(&self) -> Vec<PaneRef> {
-        self.tabs()
+        self.tabs
+            .iter()
             .flat_map(|tab| tab.leaves().into_iter().cloned())
             .collect()
     }
@@ -710,15 +684,15 @@ impl Layout {
 
     /// What is shown: this layout with every live pane that has no tile
     /// put in the first tab, in order, whose filter it passes, or else in a
-    /// tab `other` at the end of the first workspace, as a grid.
+    /// tab `other` at the end, as a grid.
     pub fn shown(&self, live: &[Live]) -> Layout {
         let placed = self.placed();
         let mut sorted: Vec<&Live> = live.iter().filter(|l| !placed.contains(&l.pane)).collect();
         sorted.sort_by(|a, b| a.pane.cmp(&b.pane));
         let mut routed: Vec<(u32, Vec<PaneRef>)> = Vec::new();
         for pane in sorted {
-            let tab =
-                (self.tabs().find(|tab| matches(pane, &tab.tests))).map_or(OTHER, |tab| tab.id);
+            let tab = (self.tabs.iter().find(|tab| matches(pane, &tab.tests)))
+                .map_or(OTHER, |tab| tab.id);
             match routed.iter_mut().find(|(id, _)| *id == tab) {
                 Some((_, list)) => list.push(pane.pane.clone()),
                 None => routed.push((tab, vec![pane.pane.clone()])),
@@ -729,9 +703,7 @@ impl Layout {
             if id == OTHER {
                 let mut tab = Tab::new(OTHER, "other");
                 tab.root = grid(&panes);
-                if let Some(space) = shown.workspaces.first_mut() {
-                    space.tabs.push(tab);
-                }
+                shown.tabs.push(tab);
             } else if let Some(tab) = shown.tab_mut(id) {
                 tab.root = match (tab.root.take(), grid(&panes)) {
                     (Some(root), Some(more)) => Some(root.attach(more)),
@@ -744,7 +716,7 @@ impl Layout {
 
     /// Where each shown pane is, in `area`: its tab and its rectangle.
     fn rects(&self, area: Rect) -> Vec<(PaneRef, Rect)> {
-        self.tabs().flat_map(|tab| tab.tiles(area)).collect()
+        self.tabs.iter().flat_map(|tab| tab.tiles(area)).collect()
     }
 }
 
@@ -795,28 +767,23 @@ impl fmt::Display for Layout {
     /// The file's text.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut out = format!("{HEADER}\nversion {}\nnext {}\n", self.version, self.next);
-        for space in &self.workspaces {
-            out.push_str(&format!("workspace w{} ", space.id));
-            quoted(&space.title, &mut out);
+        for tab in &self.tabs {
+            out.push_str(&format!("tab t{} ", tab.id));
+            quoted(&tab.title, &mut out);
             out.push('\n');
-            for tab in &space.tabs {
-                out.push_str(&format!("tab t{} ", tab.id));
-                quoted(&tab.title, &mut out);
+            if !tab.tests.is_empty() {
+                out.push_str("  match");
+                for (key, value) in &tab.tests {
+                    out.push(' ');
+                    quoted(&format!("{key}={value}"), &mut out);
+                }
                 out.push('\n');
-                if !tab.tests.is_empty() {
-                    out.push_str("  match");
-                    for (key, value) in &tab.tests {
-                        out.push(' ');
-                        quoted(&format!("{key}={value}"), &mut out);
-                    }
-                    out.push('\n');
-                }
-                if let Some(zoom) = &tab.zoom {
-                    out.push_str(&format!("  zoom {zoom}\n"));
-                }
-                if let Some(root) = &tab.root {
-                    write_node(root, 1, None, &mut out);
-                }
+            }
+            if let Some(zoom) = &tab.zoom {
+                out.push_str(&format!("  zoom {zoom}\n"));
+            }
+            if let Some(root) = &tab.root {
+                write_node(root, 1, None, &mut out);
             }
         }
         f.write_str(&out)
@@ -884,12 +851,12 @@ pub fn check_title(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn id(word: Option<&(String, bool)>, prefix: char) -> Result<u32, String> {
+fn id(word: Option<&(String, bool)>) -> Result<u32, String> {
     word.filter(|(_, quoted)| !quoted)
-        .and_then(|(text, _)| text.strip_prefix(prefix))
+        .and_then(|(text, _)| text.strip_prefix('t'))
         .and_then(|digits| digits.parse::<u32>().ok())
         .filter(|id| *id != OTHER)
-        .ok_or_else(|| format!("expected an id {prefix}N"))
+        .ok_or_else(|| "expected an id tN".to_owned())
 }
 
 /// One tree line: its depth, share and node head.
@@ -959,7 +926,7 @@ pub fn parse(text: &str) -> Result<Layout, String> {
     let mut layout = Layout {
         version,
         next,
-        workspaces: Vec::new(),
+        tabs: Vec::new(),
     };
     let mut tree: Vec<TreeLine> = Vec::new();
     let finish_tab = |layout: &mut Layout, tree: &mut Vec<TreeLine>| -> Result<(), String> {
@@ -972,7 +939,7 @@ pub fn parse(text: &str) -> Result<Layout, String> {
             return Err(format!("line {}: a tab has one tree", extra.number));
         }
         tree.clear();
-        match (layout.workspaces.last_mut()).and_then(|space| space.tabs.last_mut()) {
+        match layout.tabs.last_mut() {
             Some(tab) => tab.root = Some(root),
             None => return Err("a tree outside a tab".to_owned()),
         }
@@ -993,32 +960,15 @@ pub fn parse(text: &str) -> Result<Layout, String> {
         let first = words.first().map(|(w, _)| w.as_str());
         if depth == 0 {
             finish_tab(&mut layout, &mut tree)?;
-            match first {
-                Some("workspace") if words.len() == 3 => {
-                    let id = id(words.get(1), 'w').map_err(|why| here(&why))?;
-                    let title = title(words.get(2)).map_err(|why| here(&why))?;
-                    layout.workspaces.push(Workspace {
-                        id,
-                        title,
-                        tabs: Vec::new(),
-                    });
-                }
-                Some("tab") if words.len() == 3 => {
-                    let id = id(words.get(1), 't').map_err(|why| here(&why))?;
-                    let title = title(words.get(2)).map_err(|why| here(&why))?;
-                    let space = layout
-                        .workspaces
-                        .last_mut()
-                        .ok_or(here("a tab before any workspace"))?;
-                    space.tabs.push(Tab::new(id, &title));
-                }
-                _ => return Err(here("expected workspace wN \"TITLE\" or tab tN \"TITLE\"")),
+            if first != Some("tab") || words.len() != 3 {
+                return Err(here("expected tab tN \"TITLE\""));
             }
+            let id = id(words.get(1)).map_err(|why| here(&why))?;
+            let title = title(words.get(2)).map_err(|why| here(&why))?;
+            layout.tabs.push(Tab::new(id, &title));
             continue;
         }
-        let tab = (layout.workspaces.last_mut())
-            .and_then(|space| space.tabs.last_mut())
-            .ok_or(here("indented text outside a tab"))?;
+        let tab = (layout.tabs.last_mut()).ok_or(here("indented text outside a tab"))?;
         let in_tree = !tree.is_empty();
         match (depth, first) {
             (1, Some("match")) if !in_tree && tab.tests.is_empty() && tab.zoom.is_none() => {
@@ -1063,23 +1013,13 @@ pub fn parse(text: &str) -> Result<Layout, String> {
 
 /// What every layout read or written holds to.
 fn check(layout: &Layout) -> Result<(), String> {
-    if layout.workspaces.is_empty() {
-        return Err("no workspace".to_owned());
+    if layout.tabs.is_empty() {
+        return Err("no tab".to_owned());
     }
-    if layout.workspaces.len() > MAX_WORKSPACES {
-        return Err(format!("more than {MAX_WORKSPACES} workspaces"));
-    }
-    if layout.tabs().count() > MAX_TABS {
+    if layout.tabs.len() > MAX_TABS {
         return Err(format!("more than {MAX_TABS} tabs"));
     }
-    let mut ids = Vec::new();
-    for space in &layout.workspaces {
-        if space.tabs.is_empty() {
-            return Err(format!("workspace w{} has no tab", space.id));
-        }
-        ids.push(space.id);
-        ids.extend(space.tabs.iter().map(|tab| tab.id));
-    }
+    let ids: Vec<u32> = layout.tabs.iter().map(|tab| tab.id).collect();
     for (index, id) in ids.iter().enumerate() {
         if *id >= layout.next || *id == OTHER {
             return Err(format!("id {id} is not below next {}", layout.next));
@@ -1107,7 +1047,7 @@ pub struct LayoutLock {
     _file: File,
 }
 
-/// Takes the layout's lock in `view` (the session's `.view`), waiting a
+/// Takes the layout's lock in `view` (a workspace's `.view`), waiting a
 /// bounded time: a stalled layout write holds up only other layout writes.
 pub fn lock(view: &Path) -> Result<LayoutLock, Failure> {
     let path = view.join(LOCK);
@@ -1147,7 +1087,7 @@ pub fn read_text(view: &Path) -> Result<Option<String>, Failure> {
     }
 }
 
-/// The session's layout: the default if there is no file. A file that
+/// The workspace's layout: the default if there is no file. A file that
 /// cannot be read or is wrong is refused, saying why.
 pub fn read(view: &Path) -> Result<Layout, Failure> {
     match read_text(view)? {
@@ -1172,7 +1112,7 @@ pub fn replace(dir: &Path, name: &str, temp: &str, text: &str) -> Result<(), Fai
     std::fs::rename(&temp, &path).map_err(|e| fux3::io(path.display(), e))
 }
 
-/// What an edit did: the version now, any tab or workspace it made, any
+/// What an edit did: the version now, any tab it made, any
 /// pane it started, and the panes whose tiles changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Edited {
@@ -1239,26 +1179,19 @@ pub fn edit(view: &Path, live: &[Live], area: Rect, op: &Op) -> Result<Edited, F
 
 // ---- Operations ----
 
-/// A tab or workspace as a command names it: its id (`t3`, `w1`), or its
-/// title if no other has it.
-fn find_id<'a>(
-    kind: &str,
-    prefix: char,
-    text: &str,
-    items: impl Iterator<Item = (u32, &'a str)>,
-) -> Result<u32, Failure> {
-    let id = text
-        .strip_prefix(prefix)
-        .and_then(|d| d.parse::<u32>().ok());
-    let found: Vec<u32> = items
-        .filter(|(i, title)| Some(*i) == id || *title == text)
-        .map(|(i, _)| i)
+/// A tab as a command names it: its id (`t3`), or its title if no other
+/// tab has it.
+fn tab_id(shown: &Layout, text: &str) -> Result<u32, Failure> {
+    let id = text.strip_prefix('t').and_then(|d| d.parse::<u32>().ok());
+    let found: Vec<u32> = (shown.tabs.iter())
+        .filter(|tab| Some(tab.id) == id || tab.title == text)
+        .map(|tab| tab.id)
         .collect();
     match found.as_slice() {
         [id] => Ok(*id),
-        [] => Err(bad(format!("no {kind} {text}"))),
+        [] => Err(bad(format!("no tab {text}"))),
         _ => Err(bad(format!(
-            "several {kind}s are called {text:?}: give its id"
+            "several tabs are called {text:?}: give its id"
         ))),
     }
 }
@@ -1272,8 +1205,6 @@ pub enum Whither {
     Order(bool),
     /// To a tab (`None`: a new tab after its own).
     Tab(Option<String>),
-    /// To a workspace's first tab (`None`: a new workspace).
-    Workspace(Option<String>),
 }
 
 /// What may change the layout: one command each (see the README).
@@ -1297,10 +1228,6 @@ pub enum Op {
     CloseTab(String),
     /// A tab one place later (true) or earlier.
     MoveTab(String, bool),
-    NewWorkspace(Option<String>),
-    RenameWorkspace(String, String),
-    CloseWorkspace(String),
-    MoveWorkspace(String, bool),
     /// The default layout, over whatever is there.
     Reset,
 }
@@ -1334,10 +1261,6 @@ pub fn parse_command(line: &str) -> Result<Op, Failure> {
             target(pane)?,
             Whither::Tab((*tab != "new").then(|| owned(tab))),
         ),
-        ["move", pane, "workspace", space] => Op::Move(
-            target(pane)?,
-            Whither::Workspace((*space != "new").then(|| owned(space))),
-        ),
         ["move", pane, way @ ("earlier" | "later")] => {
             Op::Move(target(pane)?, Whither::Order(later_of(way)?))
         }
@@ -1360,11 +1283,6 @@ pub fn parse_command(line: &str) -> Result<Op, Failure> {
         ["tab", "rename", tab, text] => Op::RenameTab(owned(tab), title(text)?),
         ["tab", "close", tab] => Op::CloseTab(owned(tab)),
         ["tab", "move", tab, way] => Op::MoveTab(owned(tab), later_of(way)?),
-        ["workspace", "new"] => Op::NewWorkspace(None),
-        ["workspace", "new", text] => Op::NewWorkspace(Some(title(text)?)),
-        ["workspace", "rename", space, text] => Op::RenameWorkspace(owned(space), title(text)?),
-        ["workspace", "close", space] => Op::CloseWorkspace(owned(space)),
-        ["workspace", "move", space, way] => Op::MoveWorkspace(owned(space), later_of(way)?),
         ["reset"] => Op::Reset,
         [] => return Err(bad("an empty command")),
         _ => return Err(bad("no such layout command; see fux3-view's README")),
@@ -1434,19 +1352,14 @@ fn store_tab(layout: &mut Layout, shown: &Layout, id: u32) -> Result<u32, Failur
     }
     let made = Tab::new(layout.take_id()?, &tab.title);
     let id = made.id;
-    layout
-        .workspaces
-        .first_mut()
-        .ok_or_else(|| bad("no workspace"))?
-        .tabs
-        .push(made);
+    layout.tabs.push(made);
     Ok(id)
 }
 
 /// The pane `op` gives a tile to: while the edit reads the layout, it is
 /// not routed anywhere, so a pane just started moves no other tile.
 fn placing(op: &Op) -> Option<&Target> {
-    if let Op::Split(_, new, _) | Op::Move(new, Whither::Tab(_) | Whither::Workspace(_)) = op {
+    if let Op::Split(_, new, _) | Op::Move(new, Whither::Tab(_)) = op {
         return Some(new);
     }
     None
@@ -1465,7 +1378,7 @@ fn routing(op: &Op, live: &[Live]) -> Vec<Live> {
 
 /// Takes `pane`'s tile out of whatever stored tab has it.
 fn unplace(layout: &mut Layout, pane: &PaneRef) {
-    for tab in layout.tabs_mut() {
+    for tab in &mut layout.tabs {
         if tab.zoom.as_ref() == Some(pane) {
             tab.zoom = None;
         }
@@ -1489,70 +1402,18 @@ fn add_to_tab(layout: &mut Layout, tab: u32, pane: &PaneRef) -> Result<(), Failu
     Ok(())
 }
 
-fn tab_id(shown: &Layout, text: &str) -> Result<u32, Failure> {
-    find_id(
-        "tab",
-        't',
-        text,
-        shown.tabs().map(|tab| (tab.id, tab.title.as_str())),
-    )
-}
-
-fn workspace_id(layout: &Layout, text: &str) -> Result<u32, Failure> {
-    find_id(
-        "workspace",
-        'w',
-        text,
-        layout.workspaces.iter().map(|s| (s.id, s.title.as_str())),
-    )
-}
-
-fn space_of(layout: &Layout, tab: u32) -> usize {
-    (layout.workspaces.iter())
-        .position(|s| s.tabs.iter().any(|t| t.id == tab))
-        .unwrap_or(0)
-}
-
-/// A new tab, put after `after` in its workspace, or at the end of
-/// workspace number `space`.
-fn new_tab(
-    layout: &mut Layout,
-    space: usize,
-    after: Option<u32>,
-    title: Option<&str>,
-) -> Result<u32, Failure> {
+/// A new tab, put after `after`, else at the end.
+fn new_tab(layout: &mut Layout, after: Option<u32>, title: Option<&str>) -> Result<u32, Failure> {
     let id = layout.take_id()?;
-    let space = layout
-        .workspaces
-        .get_mut(space)
-        .ok_or_else(|| bad("no such workspace"))?;
-    let title = title.map_or_else(
-        || space.tabs.len().saturating_add(1).to_string(),
-        str::to_owned,
-    );
-    let at = (after.and_then(|after| space.tabs.iter().position(|t| t.id == after)))
-        .map_or(space.tabs.len(), |at| at.saturating_add(1));
-    let mut rest = std::mem::take(&mut space.tabs).into_iter();
-    space.tabs = rest.by_ref().take(at).collect();
-    space.tabs.push(Tab::new(id, &title));
-    space.tabs.extend(rest);
+    let tabs = &mut layout.tabs;
+    let title = title.map_or_else(|| tabs.len().saturating_add(1).to_string(), str::to_owned);
+    let at = (after.and_then(|after| tabs.iter().position(|t| t.id == after)))
+        .map_or(tabs.len(), |at| at.saturating_add(1));
+    let mut rest = std::mem::take(tabs).into_iter();
+    *tabs = rest.by_ref().take(at).collect();
+    tabs.push(Tab::new(id, &title));
+    tabs.extend(rest);
     Ok(id)
-}
-
-fn new_workspace(layout: &mut Layout, title: Option<&str>) -> Result<(u32, u32), Failure> {
-    let id = layout.take_id()?;
-    let title = title.map_or_else(
-        || layout.workspaces.len().saturating_add(1).to_string(),
-        str::to_owned,
-    );
-    layout.workspaces.push(Workspace {
-        id,
-        title,
-        tabs: Vec::new(),
-    });
-    let index = layout.workspaces.len().saturating_sub(1);
-    let tab = new_tab(layout, index, None, None)?;
-    Ok((id, tab))
 }
 
 /// Moves the item at `at` one place earlier or later among `items`.
@@ -1568,8 +1429,7 @@ fn step_item<T>(items: &mut [T], at: usize, later: bool) {
     }
 }
 
-/// Applies `op` to `layout`; `live` is what exists. Gives a tab or
-/// workspace it made.
+/// Applies `op` to `layout`; `live` is what exists. Gives a tab it made.
 pub fn apply(
     layout: &mut Layout,
     live: &[Live],
@@ -1625,23 +1485,8 @@ pub fn apply(
                 Whither::Tab(None) => {
                     let pane = resolve(&everything, live, pane)?;
                     let from = everything.tab_of(&pane).map_or(OTHER, |tab| tab.id);
-                    let id = new_tab(layout, space_of(layout, from), Some(from), None)?;
+                    let id = new_tab(layout, Some(from), None)?;
                     (id, Some(format!("t{id}")))
-                }
-                Whither::Workspace(Some(text)) => {
-                    let id = workspace_id(layout, text)?;
-                    let first = (layout.workspaces.iter().find(|s| s.id == id))
-                        .and_then(|s| s.tabs.first());
-                    (
-                        first
-                            .map(|t| t.id)
-                            .ok_or_else(|| bad("an empty workspace"))?,
-                        None,
-                    )
-                }
-                Whither::Workspace(None) => {
-                    let (space, tab) = new_workspace(layout, None)?;
-                    (tab, Some(format!("w{space}")))
                 }
             };
             // A routed pane just stops being routed.
@@ -1675,14 +1520,11 @@ pub fn apply(
             Ok(None)
         }
         Op::NewTab(title, after, tests) => {
-            let (space, after) = match after {
-                Some(after) => {
-                    let id = store_tab(layout, &shown, tab_id(&shown, after)?)?;
-                    (space_of(layout, id), Some(id))
-                }
-                None => (0, None),
+            let after = match after {
+                Some(after) => Some(store_tab(layout, &shown, tab_id(&shown, after)?)?),
+                None => None,
             };
-            let id = new_tab(layout, space, after, title.as_deref())?;
+            let id = new_tab(layout, after, title.as_deref())?;
             if let Some(tab) = layout.tab_mut(id) {
                 tab.tests = tests.clone();
             }
@@ -1702,47 +1544,16 @@ pub fn apply(
                     "the tab other holds routed panes; it closes when they go",
                 ));
             }
-            for space in &mut layout.workspaces {
-                space.tabs.retain(|tab| tab.id != id);
-            }
-            layout.workspaces.retain(|space| !space.tabs.is_empty());
-            if layout.workspaces.is_empty() {
+            layout.tabs.retain(|tab| tab.id != id);
+            if layout.tabs.is_empty() {
                 fresh(layout)?;
             }
             Ok(None)
         }
         Op::MoveTab(tab, later) => {
             let id = store_tab(layout, &shown, tab_id(&shown, tab)?)?;
-            for space in &mut layout.workspaces {
-                if let Some(at) = space.tabs.iter().position(|t| t.id == id) {
-                    step_item(&mut space.tabs, at, *later);
-                }
-            }
-            Ok(None)
-        }
-        Op::NewWorkspace(title) => {
-            let (space, _) = new_workspace(layout, title.as_deref())?;
-            Ok(Some(format!("w{space}")))
-        }
-        Op::RenameWorkspace(workspace, title) => {
-            let id = workspace_id(layout, workspace)?;
-            if let Some(space) = layout.workspaces.iter_mut().find(|s| s.id == id) {
-                space.title = title.clone();
-            }
-            Ok(None)
-        }
-        Op::CloseWorkspace(workspace) => {
-            let id = workspace_id(layout, workspace)?;
-            layout.workspaces.retain(|space| space.id != id);
-            if layout.workspaces.is_empty() {
-                fresh(layout)?;
-            }
-            Ok(None)
-        }
-        Op::MoveWorkspace(workspace, later) => {
-            let id = workspace_id(layout, workspace)?;
-            if let Some(at) = layout.workspaces.iter().position(|s| s.id == id) {
-                step_item(&mut layout.workspaces, at, *later);
+            if let Some(at) = layout.tabs.iter().position(|t| t.id == id) {
+                step_item(&mut layout.tabs, at, *later);
             }
             Ok(None)
         }
@@ -1769,7 +1580,7 @@ fn swapped_with(
                 .ok_or_else(|| bad(format!("no pane beside {pane} that way")));
         }
         Whither::Order(true) => at.checked_add(1),
-        Whither::Order(false) | Whither::Tab(_) | Whither::Workspace(_) => at.checked_sub(1),
+        Whither::Order(false) | Whither::Tab(_) => at.checked_sub(1),
     };
     Ok(other
         .and_then(|at| leaves.get(at))
@@ -1783,14 +1594,10 @@ fn fresh(layout: &mut Layout) -> Result<(), Failure> {
     *layout = Layout {
         version,
         next,
-        workspaces: Vec::new(),
+        tabs: Vec::new(),
     };
-    let (space, tab) = (layout.take_id()?, layout.take_id()?);
-    layout.workspaces.push(Workspace {
-        id: space,
-        title: "main".to_owned(),
-        tabs: vec![Tab::new(tab, "all")],
-    });
+    let tab = layout.take_id()?;
+    layout.tabs.push(Tab::new(tab, "all"));
     Ok(())
 }
 
@@ -1802,7 +1609,7 @@ fn exchange(layout: &mut Layout, a: &PaneRef, b: &PaneRef) {
         id: String::new(),
     };
     for (from, to) in [(a, &hole), (b, a), (&hole, b)] {
-        for tab in layout.tabs_mut() {
+        for tab in &mut layout.tabs {
             if let Some(root) = tab.root.as_mut() {
                 root.rename(from, to);
             }
@@ -1908,7 +1715,8 @@ mod tests {
         let later = [live("job", '9', &[]), live("shell", '2', &[])];
         let shown = layout.shown(&later);
         let names: Vec<String> = shown
-            .tabs()
+            .tabs
+            .iter()
             .flat_map(|t| t.leaves())
             .map(PaneRef::to_string)
             .collect();
@@ -1929,7 +1737,7 @@ mod tests {
         run(&mut layout, &panes, "split a right b")?;
         let width = |layout: &Layout, name: &str, n: char| -> u32 {
             let shown = layout.shown(&panes);
-            let tiles: Vec<_> = shown.tabs().flat_map(|t| t.tiles(AREA)).collect();
+            let tiles: Vec<_> = shown.tabs.iter().flat_map(|t| t.tiles(AREA)).collect();
             tiles
                 .iter()
                 .find(|(p, _)| *p == pane(name, n))

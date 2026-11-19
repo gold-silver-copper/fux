@@ -120,8 +120,9 @@ impl Lab {
             .ok_or_else(|| format!("{out:?}"))
     }
 
-    /// Starts a viewer called `name`, `size` big, in the harness.
-    fn viewer(&self, name: &str, size: &str) -> Tested {
+    /// Starts a viewer called `name`, `size` big, in the harness, showing
+    /// the workspaces `shown` names (none: `main`).
+    fn viewer(&self, name: &str, size: &str, shown: &[&str]) -> Tested {
         let viewer = viewer();
         let config = self.base.join("config");
         let env = [
@@ -132,6 +133,7 @@ impl Lab {
         args.extend(env.iter().map(String::as_str));
         let program = viewer.to_string_lossy().into_owned();
         args.push(&program);
+        args.extend(shown);
         let out = self.run(&self.harness, &args)?;
         out.status
             .success()
@@ -139,13 +141,14 @@ impl Lab {
             .ok_or_else(|| format!("{out:?}"))
     }
 
+    /// A file of pane `pane` of workspace `main`.
     fn read(&self, session: &Path, pane: &str, file: &str) -> String {
-        std::fs::read_to_string(session.join(pane).join(file)).unwrap_or_default()
+        std::fs::read_to_string(session.join("main").join(pane).join(file)).unwrap_or_default()
     }
 
     /// Types `bytes` into the viewer `name`.
     fn keys(&self, name: &str, bytes: &[u8]) -> Tested {
-        fifo(&self.harness.join(name).join("in"), bytes)?;
+        fifo(&self.harness.join("main").join(name).join("in"), bytes)?;
         std::thread::sleep(Duration::from_millis(150));
         Ok(())
     }
@@ -171,9 +174,15 @@ impl Drop for Lab {
     /// Ends every pane of both sessions, through its `ctl`.
     fn drop(&mut self) {
         for session in [&self.harness, &self.view] {
-            let names = std::fs::read_dir(session).into_iter().flatten().flatten();
-            for entry in names.filter(|e| e.path().join("ctl").exists()) {
-                let _ = fifo(&entry.path().join("ctl"), b"kill\n");
+            let spaces = std::fs::read_dir(session).into_iter().flatten().flatten();
+            let panes = spaces.flat_map(|space| {
+                std::fs::read_dir(space.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+            });
+            for pane in panes.filter(|e| e.path().join("ctl").exists()) {
+                let _ = fifo(&pane.path().join("ctl"), b"kill\n");
             }
         }
         let gone = until("every pane gone", || {
@@ -211,7 +220,7 @@ fn two_writers_of_the_layout_lose_nothing() -> Tested {
         assert!(writer.join().is_ok_and(|done| done), "a writer was refused");
     }
     let layout =
-        std::fs::read_to_string(lab.view.join(".view/layout")).map_err(|e| e.to_string())?;
+        std::fs::read_to_string(lab.view.join("main/.view/layout")).map_err(|e| e.to_string())?;
     assert!(layout.contains("\nversion 20\n"), "{layout}");
     for (w, n) in (0..4).flat_map(|w| (0..5).map(move |n| (w, n))) {
         assert!(
@@ -231,9 +240,9 @@ fn a_wrong_layout_is_refused_and_the_last_good_one_kept() -> Tested {
     lab.start("right")?;
     let out = lab.run(&lab.view, &["--do", "tab new spare"])?;
     assert!(out.status.success(), "{out:?}");
-    lab.viewer("v", "100x30")?;
+    lab.viewer("v", "100x30", &[])?;
     lab.shows("v", "\u{2502}")?;
-    let file = lab.view.join(".view/layout");
+    let file = lab.view.join("main/.view/layout");
     for wrong in [
         "fux3-layout 1\nversion x\n".to_owned(),
         std::iter::repeat_n('x', 70 << 10).collect(),
@@ -259,11 +268,11 @@ fn viewing_focusing_and_resizing_the_viewer_resize_no_pane() -> Tested {
     let lab = Lab::new("sizes", "")?;
     lab.start("a")?;
     lab.start("b")?;
-    lab.viewer("v", "100x30")?;
+    lab.viewer("v", "100x30", &[])?;
     lab.shows("v", "\u{2502}")?;
     lab.keys("v", b"\x02o")?;
     lab.keys("v", b"\x02h")?;
-    fifo(&lab.harness.join("v/ctl"), b"resize 120 40\n")?;
+    fifo(&lab.harness.join("main/v/ctl"), b"resize 120 40\n")?;
     until("the viewer's pane resized", || {
         lab.read(&lab.harness, "v", "status")
             .contains("size 120 40")
@@ -283,7 +292,7 @@ fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
     let config = "(define! spin (lambda! () (spin)))\n(bind-key \"F8\" \"spin\" \"Mine\" spin)\n";
     let lab = Lab::new("loop", config)?;
     lab.start("only")?;
-    lab.viewer("v", "100x30")?;
+    lab.viewer("v", "100x30", &[])?;
     lab.shows("v", "$")?;
     lab.keys("v", b"\x1b[19~")?;
     lab.shows("v", "F8: interrupted")?;
@@ -294,6 +303,32 @@ fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
             .contains("state exited 0")
     })?;
     let listed = lab.run(&lab.view, &["ls"])?;
-    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "only");
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "main/only");
+    Ok(())
+}
+
+/// A layout command written to one workspace's `.view/ctl` changes that
+/// workspace's layout and not another's, with a viewer on each at once.
+#[test]
+fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
+    let lab = Lab::new("spaces", "")?;
+    lab.start("one/a")?;
+    lab.start("two/b")?;
+    lab.viewer("v1", "100x30", &["one"])?;
+    lab.viewer("v2", "100x30", &["two"])?;
+    let space = |name: &str| lab.view.join(name).join(".view");
+    for (name, line) in [("one", "tab new mine\n"), ("two", "tab new theirs\n")] {
+        let ctl = space(name).join("ctl");
+        until(&format!("{name}'s viewer serves its ctl"), || {
+            fifo(&ctl, line.as_bytes()).is_ok()
+        })?;
+    }
+    let layout =
+        |name: &str| std::fs::read_to_string(space(name).join("layout")).unwrap_or_default();
+    until("each workspace's layout has its own tab", || {
+        layout("one").contains("\"mine\"") && layout("two").contains("\"theirs\"")
+    })?;
+    assert!(!layout("one").contains("theirs"), "{}", layout("one"));
+    assert!(!layout("two").contains("mine"), "{}", layout("two"));
     Ok(())
 }

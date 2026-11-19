@@ -1,5 +1,6 @@
-//! fux3-view: shows a fux3 session's panes as fux does, split, in this
-//! terminal, through their files alone, and sends keys to the focused one.
+//! fux3-view: shows a workspace of a fux3 session as fux does, split, in
+//! this terminal, through its files alone, and sends keys to the focused
+//! pane.
 //! It owns nothing: end it however you like and every pane goes on.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("fux3-view runs on Linux and macOS only");
@@ -17,12 +18,12 @@ use fux_vt::keys::Keystroke;
 use fux_vt::keys::decode::{Decoder, Input, Reply, Timing};
 use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};
 use fux3::Failure;
-use fux3::session::Session;
+use fux3::session::{DEFAULT_WORKSPACE, Session, Workspace};
 use fuxix::Errno;
 use fuxix::poll::{Events, Poke, Poll, PollFd, Wake, waker};
 use fuxix::process::Signal;
 use keys::{Action, Keys};
-use layout::{Layout, Live, PaneRef, Rect, Tab as LayoutTab, Target, Workspace};
+use layout::{Layout, Live, PaneRef, Rect, Tab as LayoutTab, Target};
 use panel::{Column, Outcome, Panel};
 use panes::Pane;
 use render::{Frame, Tile};
@@ -37,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
-/// How often the session directory is looked at again.
+/// How often the workspace's directory is looked at again.
 const RESCAN: Duration = Duration::from_secs(1);
 /// How often the files of the panes shown are looked at.
 const LOOK: Duration = Duration::from_millis(20);
@@ -161,7 +162,9 @@ struct Running {
 
 struct View {
     session: Session,
-    /// The session's `.view`: the layout, its lock, `ctl` and `errors`.
+    /// The workspace shown, and its `.view`: the layout, its lock, `ctl`
+    /// and `errors`.
+    workspace: Workspace,
     view: PathBuf,
     /// The last good layout read, and the text it came from.
     stored: Layout,
@@ -174,10 +177,10 @@ struct View {
     arranged: Arc<Layout>,
     /// The live panes `arranged` was made with.
     live: Vec<Live>,
-    /// The workspace shown, by id.
-    workspace: u32,
-    /// The tab each workspace shows.
-    places: BTreeMap<u32, u32>,
+    /// The tab shown.
+    tab: u32,
+    /// The tab and focus each workspace shown before was left with.
+    places: BTreeMap<String, (u32, Option<PaneRef>)>,
     panes: BTreeMap<String, Pane>,
     focus: Option<PaneRef>,
     /// The pane focused before, for `last-pane`.
@@ -191,7 +194,8 @@ struct View {
     /// A notice for the bar's corner, until the next key: its text and
     /// colours.
     notice: Option<(String, &'static str)>,
-    /// `.view/ctl`, read by every viewer, and a line not yet whole.
+    /// The shown workspace's `.view/ctl`, read by every viewer of it, and a
+    /// line not yet whole.
     ctl: Option<File>,
     ctl_part: Vec<u8>,
     /// What the run in flight was started for: a `.view/ctl` line's
@@ -267,21 +271,8 @@ impl View {
         }
     }
 
-    fn space(&self) -> Option<&Workspace> {
-        (self.arranged.workspaces.iter()).find(|space| space.id == self.workspace)
-    }
-
-    /// The tab the workspace shown shows.
-    fn place(&self) -> u32 {
-        self.places
-            .get(&self.workspace)
-            .copied()
-            .unwrap_or_default()
-    }
-
     fn shown_tab(&self) -> Option<&LayoutTab> {
-        let tab = self.place();
-        self.space()?.tabs.iter().find(|t| t.id == tab)
+        self.arranged.tab(self.tab)
     }
 
     /// The tiles drawn: those of the shown tab with room for a cell.
@@ -308,28 +299,60 @@ impl View {
         (self.panes.get_mut(&pane.name)).filter(|p| p.id() == Some(pane.id.as_str()))
     }
 
-    /// Shows tab `id`, in whatever workspace holds it.
     fn show_tab(&mut self, id: u32) {
-        let Some(space) = self.arranged.workspace_of(id).map(|space| space.id) else {
+        if self.arranged.tab(id).is_none() {
             return self.say(format!("no tab t{id}"));
+        }
+        if self.tab != id {
+            self.tab = id;
+            self.dirty = true;
+            self.settle_focus();
+        }
+    }
+
+    /// Shows the workspace `name`, made if missing: its own layout, panes
+    /// and `.view/ctl` (served from now on, the old one no longer), with
+    /// the tab and focus this viewer left it with, if it showed it before.
+    fn show_workspace(&mut self, name: &str, now: Instant) {
+        if name == self.workspace.name {
+            return;
+        }
+        let opened = self.session.workspace(name, true).and_then(|workspace| {
+            let view = command::view_dir(&workspace)?;
+            let (ctl, written) = open_ctl(&view)?;
+            Ok((workspace, view, ctl, written))
+        });
+        let (workspace, view, ctl, written) = match opened {
+            Ok(opened) => opened,
+            Err(failure) => return self.say(format!("workspace {name}: {failure}")),
         };
-        self.show_workspace(space);
-        if self.places.insert(space, id) != Some(id) {
-            self.tab_changed();
-        }
+        let left = (self.tab, self.focus.take());
+        self.places.insert(self.workspace.name.clone(), left);
+        let (tab, focus) = self.places.remove(name).unwrap_or_default();
+        self.panes.values_mut().for_each(Pane::drop_pastes);
+        (self.workspace, self.view, self.ctl) = (workspace, view, Some(ctl));
+        (self.tab, self.focus, self.last_focus) = (tab, focus, None);
+        self.panes.clear();
+        self.ctl_part.clear();
+        self.stored = Layout::default();
+        (self.layout_text, self.layout_failed, self.layout_seen) = (None, None, false);
+        self.rescan(now);
+        self.refresh(true);
+        self.take_ctl(&written);
     }
 
-    fn show_workspace(&mut self, id: u32) {
-        let known = self.arranged.workspaces.iter().any(|space| space.id == id);
-        if id != self.workspace && known {
-            self.workspace = id;
-            self.tab_changed();
+    /// The workspace `step` places from the one shown, among the session's
+    /// by name, wrapping.
+    fn step_workspace(&mut self, forward: bool, now: Instant) {
+        let names = match self.session.workspaces() {
+            Ok(names) => names,
+            Err(failure) => return self.say(failure.to_string()),
+        };
+        let at = names.iter().position(|n| *n == self.workspace.name);
+        let next = at.map_or(0, |at| stepped(at, names.len(), forward));
+        if let Some(name) = names.get(next).cloned() {
+            self.show_workspace(&name, now);
         }
-    }
-
-    fn tab_changed(&mut self) {
-        self.dirty = true;
-        self.settle_focus();
     }
 
     /// The panes whose status has said who they are.
@@ -338,26 +361,14 @@ impl View {
     }
 
     /// Derives what is shown again, if the panes or the layout changed, and
-    /// keeps a workspace and tab shown that still exist.
+    /// keeps a tab shown that still exists.
     fn refresh(&mut self, layout_changed: bool) {
         let live = self.live_now();
         if layout_changed || live != self.live {
             self.live = live;
             self.arranged = Arc::new(self.stored.shown(&self.live));
-            let spaces: Vec<(u32, Vec<u32>)> = (self.arranged.workspaces.iter())
-                .map(|space| (space.id, space.tabs.iter().map(|t| t.id).collect()))
-                .collect();
-            if !spaces.iter().any(|(id, _)| *id == self.workspace) {
-                self.workspace = spaces.first().map_or(0, |(id, _)| *id);
-            }
-            self.places
-                .retain(|id, _| spaces.iter().any(|(s, _)| s == id));
-            for (space, tabs) in &spaces {
-                let first = tabs.first().copied().unwrap_or(0);
-                let tab = self.places.entry(*space).or_insert(first);
-                if !tabs.contains(tab) {
-                    *tab = first;
-                }
+            if self.arranged.tab(self.tab).is_none() {
+                self.tab = self.arranged.tabs.first().map_or(0, |tab| tab.id);
             }
             self.dirty = true;
         }
@@ -388,19 +399,28 @@ impl View {
         self.dirty = true;
     }
 
-    /// Lists the session again: a pane directory new since is watched,
+    /// Lists the workspace again: a pane directory new since is watched,
     /// one gone is let go (its tile stays, shown as gone), and every
-    /// pane's status is looked at, for routing.
+    /// pane's status is looked at, for routing. A workspace whose
+    /// directory went (it was closed) gives way to the first one left,
+    /// else to a new `main`.
     fn rescan(&mut self, now: Instant) {
         self.next_scan = after(now, RESCAN);
+        if fux3::session::check_private(&self.workspace.dir).is_err() {
+            let left = self.session.workspaces().unwrap_or_default();
+            let next = left.first().map_or(DEFAULT_WORKSPACE, String::as_str);
+            let gone = std::mem::take(&mut self.workspace.name);
+            self.places.remove(&gone);
+            return self.show_workspace(next, now);
+        }
         let changed = self.reread_layout();
-        let names = match self.session.names() {
+        let names = match self.workspace.names() {
             Ok(names) => names,
             Err(failure) => return self.say(failure.to_string()),
         };
         self.panes.retain(|name, _| names.contains(name));
         for name in names {
-            let dir = self.session.pane_dir(&name);
+            let dir = self.workspace.pane_dir(&name);
             self.panes
                 .entry(name.clone())
                 .or_insert_with(|| Pane::new(&name, dir));
@@ -515,36 +535,21 @@ impl View {
         }
     }
 
-    fn apply_verb(&mut self, verb: Verb) {
-        let tabs: Vec<u32> = (self.space())
-            .map(|space| space.tabs.iter().map(|t| t.id).collect())
-            .unwrap_or_default();
-        let spaces: Vec<u32> = self.arranged.workspaces.iter().map(|s| s.id).collect();
-        let tab_at = tabs.iter().position(|t| *t == self.place()).unwrap_or(0);
-        let space_at = spaces
-            .iter()
-            .position(|s| *s == self.workspace)
-            .unwrap_or(0);
-        let nth = |list: &[u32], at: usize| list.get(at).copied();
+    fn apply_verb(&mut self, verb: Verb, now: Instant) {
+        let tabs: Vec<u32> = self.arranged.tabs.iter().map(|t| t.id).collect();
+        let tab_at = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
         match verb {
             Verb::Detach => self.quit = true,
             Verb::NextTab | Verb::PreviousTab => {
                 let at = stepped(tab_at, tabs.len(), verb == Verb::NextTab);
-                if let Some(tab) = nth(&tabs, at) {
+                if let Some(tab) = tabs.get(at).copied() {
                     self.show_tab(tab);
                 }
             }
             Verb::ShowTab(tab) => self.show_tab(tab),
-            Verb::NextWorkspace | Verb::PreviousWorkspace => {
-                let at = stepped(space_at, spaces.len(), verb == Verb::NextWorkspace);
-                if let Some(space) = nth(&spaces, at) {
-                    self.show_workspace(space);
-                }
-            }
-            Verb::ShowWorkspace(space) => match spaces.contains(&space) {
-                true => self.show_workspace(space),
-                false => self.say(format!("no workspace w{space}")),
-            },
+            Verb::NextWorkspace => self.step_workspace(true, now),
+            Verb::PreviousWorkspace => self.step_workspace(false, now),
+            Verb::ShowWorkspace(name) => self.show_workspace(&name, now),
             Verb::NextPane => self.step_pane(),
             Verb::LastPane => match self
                 .last_focus
@@ -596,7 +601,7 @@ impl View {
         let tile = tile_of(rect);
         let cols = tile.w.clamp(1, fux3::files::MAX_COLS);
         let rows = tile.h.clamp(1, fux3::files::MAX_ROWS);
-        let dir = self.session.pane_dir(&pane.name);
+        let dir = self.workspace.pane_dir(&pane.name);
         if let Err(failure) = panes::ctl_line(&dir, &format!("resize {cols} {rows}")) {
             self.say(format!("fit: {failure}"));
         }
@@ -610,7 +615,7 @@ impl View {
         Context {
             focus: self.focus.as_ref().map(PaneRef::to_string),
             tab: self.shown_tab().map(|tab| tab.id),
-            workspace: self.space().map(|space| space.id),
+            workspace: self.workspace.name.clone(),
             area: self.area(),
             layout: Arc::clone(&self.arranged),
             keys: Arc::new(keys),
@@ -693,7 +698,7 @@ impl View {
 
     fn perform(&mut self, chord: String, action: Action) {
         match action {
-            Action::Verb(verb) => self.apply_verb(verb),
+            Action::Verb(verb) => self.apply_verb(verb, Instant::now()),
             Action::Script(generation) => {
                 let job = Job::Binding {
                     chord: chord.clone(),
@@ -761,7 +766,7 @@ impl View {
                     None => self.say(format!("no pane {pane} to focus")),
                 }
             }
-            ToViewer::Verb(verb) => self.apply_verb(verb),
+            ToViewer::Verb(verb) => self.apply_verb(verb, now),
             ToViewer::Panel(panel) => {
                 (self.column, self.notice) = (None, None);
                 self.panel = Some(panel);
@@ -1167,14 +1172,9 @@ impl View {
 
     /// The workspace shown, then its tabs, the shown one marked.
     fn bar_left(&self) -> Vec<(String, &'static str)> {
-        let mut parts = Vec::new();
-        let Some(space) = self.space() else {
-            return parts;
-        };
-        parts.push((format!(" {} ", space.title), BAR_BOLD));
-        let shown = self.place();
-        for tab in &space.tabs {
-            let sgr = if tab.id == shown { TAB } else { BAR };
+        let mut parts = vec![(format!(" {} ", self.workspace.name), BAR_BOLD)];
+        for tab in &self.arranged.tabs {
+            let sgr = if tab.id == self.tab { TAB } else { BAR };
             parts.push((format!(" {} ", tab.title), sgr));
         }
         parts
@@ -1220,19 +1220,22 @@ fn terminal_size() -> (u16, u16) {
 }
 
 const USAGE: &str = "\
-fux3-view: shows a fux3 session's panes as fux does, through their files
+fux3-view: shows a workspace of a fux3 session as fux does, through its files
 
-  fux3-view                show the session FUX3_DIR names (fux3 view sets it)
-  fux3-view --do 'LINE'    apply one layout command to .view/layout and print
-                           what it did; a refusal goes to stderr, exit 1
+  fux3-view [WORKSPACE]              show WORKSPACE (default main, made if
+                                     missing) of the session FUX3_DIR names
+                                     (fux3 view sets it)
+  fux3-view [WORKSPACE] --do 'LINE'  apply one layout command to the
+                                     workspace's .view/layout and print what
+                                     it did; a refusal goes to stderr, exit 1
 
 The layout commands, the keys and the configuration: see the README.
 ";
 
-/// What the command line asks for.
+/// What the command line asks for, and of which workspace.
 enum Asked {
-    View,
-    Do(String),
+    View(String),
+    Do(String, String),
     Help,
 }
 
@@ -1241,14 +1244,15 @@ fn parse_args() -> Result<Asked, Failure> {
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    match args
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        [] => Ok(Asked::View),
-        ["--do", line] => Ok(Asked::Do((*line).to_owned())),
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (space, rest) = match words.split_first() {
+        Some((first, rest)) if !first.starts_with('-') && *first != "help" => (*first, rest),
+        _ => (DEFAULT_WORKSPACE, words.as_slice()),
+    };
+    fux3::session::check_name(space)?;
+    match rest {
+        [] => Ok(Asked::View(space.to_owned())),
+        ["--do", line] => Ok(Asked::Do(space.to_owned(), (*line).to_owned())),
         ["--help" | "-h" | "help"] => Ok(Asked::Help),
         _ => Err(Failure::new(format!(
             "unexpected arguments {args:?}; try fux3-view --help"
@@ -1256,10 +1260,10 @@ fn parse_args() -> Result<Asked, Failure> {
     }
 }
 
-/// `--do LINE`: one layout command, on the file, with no viewer, in the
-/// size of this terminal (else 80x24).
-fn do_line(line: &str) -> Result<(), Failure> {
-    let session = Session::open()?;
+/// `--do LINE`: one layout command, on the workspace's file, with no
+/// viewer, in the size of this terminal (else 80x24).
+fn do_line(space: &str, line: &str) -> Result<(), Failure> {
+    let workspace = Session::open()?.workspace(space, true)?;
     let (cols, rows) = terminal_size();
     let area = Rect {
         x: 0,
@@ -1267,7 +1271,7 @@ fn do_line(line: &str) -> Result<(), Failure> {
         w: cols.into(),
         h: rows.into(),
     };
-    let edited = command::run_line(&session, line, area, &AtomicBool::new(false))?;
+    let edited = command::run_line(&workspace, line, area, &AtomicBool::new(false))?;
     let mut out = std::io::stdout();
     out.write_all(edited.to_string().as_bytes())
         .map_err(|e| io_failure("stdout", e))
@@ -1304,23 +1308,24 @@ fn open_ctl(view: &std::path::Path) -> Result<(File, Vec<u8>), Failure> {
 }
 
 fn run() -> Result<(), Failure> {
-    match parse_args()? {
-        Asked::View => {}
-        Asked::Do(line) => return do_line(&line),
+    let space = match parse_args()? {
+        Asked::View(space) => space,
+        Asked::Do(space, line) => return do_line(&space, &line),
         Asked::Help => {
             let mut out = std::io::stdout();
             return out
                 .write_all(USAGE.as_bytes())
                 .map_err(|e| io_failure("stdout", e));
         }
-    }
+    };
     if !fuxix::terminal::on_one_terminal() {
         return Err(Failure::new(
             "the viewer needs one terminal on stdin and stdout",
         ));
     }
     let session = Session::open()?;
-    let view = command::view_dir(&session)?;
+    let workspace = session.workspace(&space, true)?;
+    let view = command::view_dir(&workspace)?;
     let (ctl, written) = open_ctl(&view)?;
     let stops = [
         Signal::Winch,
@@ -1353,6 +1358,7 @@ fn run() -> Result<(), Failure> {
     let now = Instant::now();
     let mut view = View {
         session,
+        workspace,
         view,
         stored: Layout::default(),
         layout_text: None,
@@ -1360,7 +1366,7 @@ fn run() -> Result<(), Failure> {
         layout_seen: false,
         arranged: Arc::new(Layout::default()),
         live: Vec::new(),
-        workspace: 0,
+        tab: 0,
         places: BTreeMap::new(),
         panes: BTreeMap::new(),
         focus: None,

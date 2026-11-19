@@ -11,7 +11,7 @@
 use crate::keys::{Action, Binding, Group};
 use crate::layout::{Dir, Layout, Rect};
 use crate::panel::{Ask, List, Panel, Row};
-use fux3::session::Session;
+use fux3::session::{Session, Workspace};
 use fuxix::poll::Poke;
 use grift::{Answer, Error, Grift, HostCall, HostFunction, Interrupter, Kept, Value};
 use std::collections::HashMap;
@@ -43,9 +43,10 @@ pub enum Verb {
     PreviousTab,
     NextWorkspace,
     PreviousWorkspace,
-    /// Show the tab or workspace with this id.
+    /// Show the tab with this id.
     ShowTab(u32),
-    ShowWorkspace(u32),
+    /// Show the workspace of this name.
+    ShowWorkspace(String),
     Fit,
     Detach,
     /// Does what this chord is bound to.
@@ -89,7 +90,8 @@ pub struct Context {
     /// The pane focused, as `NAME@ID`.
     pub focus: Option<String>,
     pub tab: Option<u32>,
-    pub workspace: Option<u32>,
+    /// The workspace shown, by name: every word acts on it.
+    pub workspace: String,
     /// The room tiles share, as `COLSxROWS`.
     pub area: Rect,
     pub layout: Arc<Layout>,
@@ -214,11 +216,21 @@ fn refused(g: &mut HostCall<'_, Host>, host: &Host, failure: &fux3::Failure) -> 
     }
 }
 
-/// The directory of the pane `NAME` or `NAME@ID` names, refused if that
-/// life of it is over.
+/// The workspace named `name`, refused if it is gone.
+fn workspace_of(g: &mut HostCall<'_, Host>, host: &Host, name: &str) -> Result<Workspace, Error> {
+    (host.session.workspace(name, false)).map_err(|f| failed(g, &f.0))
+}
+
+/// The workspace shown.
+fn shown(g: &mut HostCall<'_, Host>, host: &Host) -> Result<Workspace, Error> {
+    workspace_of(g, host, &host.context.workspace)
+}
+
+/// The directory of the pane `NAME` or `NAME@ID` names in the workspace
+/// shown, refused if that life of it is over.
 fn pane_dir(g: &mut HostCall<'_, Host>, host: &Host, pane: &str) -> Result<PathBuf, Error> {
     let target = crate::layout::Target::parse(pane).map_err(|f| failed(g, &f.0))?;
-    let dir = host.session.pane_dir(&target.name);
+    let dir = shown(g, host)?.pane_dir(&target.name);
     if let Some(id) = &target.id {
         let status = crate::panes::read_status(&dir).map_err(|f| failed(g, &f.0))?;
         if fux3::files::status_value(&status, "id") != Some(id.as_str()) {
@@ -266,19 +278,19 @@ fn verb_of(g: &mut HostCall<'_, Host>, host: &mut Host, args: &[Value]) -> Resul
         _ => return Err(g.arity_error(args)),
     };
     let word = string_arg(g, host, word)?;
-    let id = |g: &mut HostCall<'_, Host>, host: &mut Host, value: Value, prefix: char| {
-        let text = string_arg(g, host, value)?;
-        match text
-            .strip_prefix(prefix)
-            .and_then(|d| d.parse::<u32>().ok())
-        {
-            Some(id) => Ok(id),
-            None => Err(failed(g, &format!("{text:?} is not an id {prefix}N"))),
-        }
-    };
     match (word.as_str(), number) {
-        ("show-tab", Some(tab)) => Ok(Verb::ShowTab(id(g, host, tab, 't')?)),
-        ("show-workspace", Some(space)) => Ok(Verb::ShowWorkspace(id(g, host, space, 'w')?)),
+        ("show-tab", Some(tab)) => {
+            let text = string_arg(g, host, tab)?;
+            match text.strip_prefix('t').and_then(|d| d.parse::<u32>().ok()) {
+                Some(id) => Ok(Verb::ShowTab(id)),
+                None => Err(failed(g, &format!("{text:?} is not an id tN"))),
+            }
+        }
+        ("show-workspace", Some(space)) => {
+            let name = string_arg(g, host, space)?;
+            fux3::session::check_name(&name).map_err(|f| failed(g, &f.0))?;
+            Ok(Verb::ShowWorkspace(name))
+        }
         ("chord", Some(text)) => {
             let text = string_arg(g, host, text)?;
             Ok(Verb::Chord(chord(&text).map_err(|why| failed(g, &why))?))
@@ -468,40 +480,26 @@ const WORDS: &[(&str, Word)] = &[
     }),
     ("shown-workspace", |g, host, args| {
         let [] = *g.exactly(args)?;
-        match host.context.workspace {
-            Some(id) => g.string(&format!("w{id}")).map(Answer::Now),
-            None => Err(failed(g, "no workspace is shown")),
-        }
+        let name = host.context.workspace.clone();
+        g.string(&name).map(Answer::Now)
     }),
     ("workspaces", |g, host, args| {
         let [] = *g.exactly(args)?;
-        let layout = Arc::clone(&host.context.layout);
-        let items: Vec<Vec<String>> = (layout.workspaces.iter())
-            .map(|space| vec![format!("w{}", space.id), space.title.clone()])
-            .collect();
-        rows(g, &items)
+        let names = host.session.workspaces().map_err(|f| failed(g, &f.0))?;
+        strings(g, &names).map(Answer::Now)
     }),
     ("tabs", |g, host, args| {
         let [] = *g.exactly(args)?;
         let layout = Arc::clone(&host.context.layout);
-        let items: Vec<Vec<String>> = (layout.workspaces.iter())
-            .flat_map(|space| {
-                space.tabs.iter().map(|tab| {
-                    vec![
-                        format!("t{}", tab.id),
-                        tab.title.clone(),
-                        format!("w{}", space.id),
-                    ]
-                })
-            })
+        let items: Vec<Vec<String>> = (layout.tabs.iter())
+            .map(|tab| vec![format!("t{}", tab.id), tab.title.clone()])
             .collect();
         rows(g, &items)
     }),
     ("panes", |g, host, args| {
         let [] = *g.exactly(args)?;
         let layout = Arc::clone(&host.context.layout);
-        let items: Vec<Vec<String>> = layout
-            .tabs()
+        let items: Vec<Vec<String>> = (layout.tabs.iter())
             .flat_map(|tab| {
                 (tab.leaves().into_iter())
                     .map(|pane| vec![pane.to_string(), format!("t{}", tab.id)])
@@ -599,7 +597,8 @@ const WORDS: &[(&str, Word)] = &[
         let [line] = *g.exactly(args)?;
         let line = string_arg(g, host, line)?;
         let area = host.context.area;
-        let outcome = crate::command::run_line(&host.session, &line, area, &host.cancel);
+        let workspace = shown(g, host)?;
+        let outcome = crate::command::run_line(&workspace, &line, area, &host.cancel);
         // Whatever happened, the layout is read again now.
         host.tell(ToViewer::Reread);
         match outcome {
@@ -648,9 +647,9 @@ const WORDS: &[(&str, Word)] = &[
         host.tell(ToViewer::Focus(pane));
         inert()
     }),
-    ("session-dir", |g, host, args| {
+    ("workspace-dir", |g, host, args| {
         let [] = *g.exactly(args)?;
-        let path = host.session.root.to_string_lossy().into_owned();
+        let path = shown(g, host)?.dir.to_string_lossy().into_owned();
         g.string(&path).map(Answer::Now)
     }),
     ("start-new", |g, host, args| {
@@ -659,8 +658,28 @@ const WORDS: &[(&str, Word)] = &[
         };
         let prefix = string_arg(g, host, *prefix)?;
         let words = program(g, host, rest)?;
-        match crate::command::start_new(&host.fux3, &host.session, &prefix, &words, &host.cancel) {
+        // `WORKSPACE/PREFIX` starts it in that workspace, made if missing.
+        let (workspace, prefix) = match prefix.split_once('/') {
+            Some((space, prefix)) => (host.session.workspace(space, true), prefix),
+            None => (
+                host.session.workspace(&host.context.workspace, false),
+                &*prefix,
+            ),
+        };
+        let workspace = workspace.map_err(|f| failed(g, &f.0))?;
+        match crate::command::start_new(&host.fux3, &workspace, prefix, &words, &host.cancel) {
             Ok(pane) => g.string(&pane.to_string()).map(Answer::Now),
+            Err(failure) => Err(refused(g, host, &failure)),
+        }
+    }),
+    ("close-workspace", |g, host, args| {
+        let [name] = *g.exactly(args)?;
+        let name = string_arg(g, host, name)?;
+        let workspace = workspace_of(g, host, &name)?;
+        let outcome = crate::command::close_workspace(&workspace, &host.cancel);
+        host.tell(ToViewer::Reread);
+        match outcome {
+            Ok(()) => inert(),
             Err(failure) => Err(refused(g, host, &failure)),
         }
     }),
