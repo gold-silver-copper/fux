@@ -7,6 +7,35 @@ as files, and takes typed bytes and commands from two FIFOs. There is no
 server and no socket: any Unix tool is a client. The viewer, `fux3-view`, is
 one more client of the same files.
 
+## The rule
+
+A pane is its directory and its id; a workspace is its directory; a name is
+only where one is listed right now. Whoever acts on one opens it once and
+stays on that object. A thing gets its name by one rename once it is whole
+and loses it by one rename before it is taken apart. A layout command is an
+edit of the layout file, not a message to a process.
+
+What follows in the code:
+
+- **Handles, not paths.** The session, a workspace and a pane are each a
+  directory held open (`session.rs`), and every file is named relative to
+  one (`fuxix::file::at`: `openat`, `mkdirat`, `mkfifoat`, `renameat`,
+  `unlinkat`, `fdopendir`). No path is looked up twice. The holder writes,
+  reads its FIFOs and takes itself apart through its pane's handle, so `mv`
+  of a live pane changes nothing for it. A path is kept only to show, and
+  to hand to another program (the recipe's `cd`, the pane's variables).
+- **Where a directory is listed now** is asked only when its name must
+  change (`session::place`): open `..` through the handle, find the entry
+  with its inode, check it is the same directory. Not found is "removed".
+- **Naming is one rename that replaces nothing** (`renameat2` with
+  `RENAME_NOREPLACE` on Linux, `renameatx_np` with `RENAME_EXCL` on macOS),
+  under the session's lock.
+- **A command that names a workspace holds its directory from then on.**
+  `Workspace::check` says "workspace W was removed" once that directory is
+  no longer listed in the session, whatever has its name; `fux3 start
+  --workspace-id` lets a caller that named the workspace earlier (the
+  viewer) start a pane in that directory or not at all.
+
 ## The session directory
 
 `FUX3_DIR` if set (it must be absolute), else `$XDG_RUNTIME_DIR/fux3` on Linux
@@ -16,17 +45,19 @@ is a directory of this user's with no group or other bits.
 
 | Entry | What |
 |---|---|
-| `WORKSPACE/` | a workspace: a directory, 0700, holding its panes; nothing of its own but `.view/` |
+| `WORKSPACE/` | a workspace: a directory of the user's (fux3 makes it 0700; `mkdir` makes one too), holding its panes; nothing of its own but `.view/` and `.recipes/` |
 | `WORKSPACE/NAME/` | a pane (both names match `[a-z0-9][a-z0-9_-]{0,31}`, so never a dot-name) |
-| `WORKSPACE/.view/` | the viewer's: the workspace's layout and its own `ctl` and `errors` (see the README) |
-| `.lock` | the session's lock: held briefly to claim a name or clear leftovers |
+| `WORKSPACE/.new-ID/` | a pane being made: whole but for its name |
+| `WORKSPACE/.gone-ID/` | a pane taken out of its name, being taken apart |
+| `WORKSPACE/.view/` | the viewer's: the workspace's layout and its lock (see the README) |
+| `WORKSPACE/.recipes/` | a recipe per pane name |
+| `.lock` | the session's lock: held briefly to give or take a name, and to clear dead panes |
 
 A workspace is made (0700) when its first pane starts, or by `mkdir`; an empty
-one is left alone. Every `fux3` command clears dead panes in every workspace.
-A pane's workspace is fixed at start: the holder writes its files by the
-directory's path, so `mv rig/build harmony/` would leave the holder writing
-into a directory that is gone (its publishes fail and `status` cannot say so),
-while its lock and FIFOs moved: don't. The pane limit, 128, is per workspace.
+one is left alone. Only the session directory must be private (0700, the
+user's): everything in it is behind it. Every `fux3` command clears dead
+panes in every workspace. The pane limit, 128, is per workspace and checked
+when a pane is named.
 
 ## The pane directory (`WORKSPACE/NAME/`)
 
@@ -37,11 +68,12 @@ while its lock and FIFOs moved: don't. The pane limit, 128, is per workspace.
 | `screen` | line 1 (below); then exactly ROWS lines, each a row's text with trailing blanks dropped | holder, atomic replace |
 | `screen.styled` | the same line 1; then exactly ROWS lines, each the row's cells with the SGR changes between them, ending with the pen back at the default; then one line per picture shown (`picture N.sixel at=ROW,COL cells=CxR cropped=K cell=WxH`). Built only from the emulator's cells: the only control sequences in it are SGR | holder, atomic replace |
 | `status` | one fact a line, `KEY VALUE` (below) | holder, atomic replace |
-| `history` | plain text of the lines that scrolled off the main screen, appended; a soft-wrapped line is one line. Each file holds at most half the cap (`--history`, default 4 MiB, at most 256 MiB), filled to a line's end: then `history` is renamed `history.1` (replacing it) and a new `history` starts, so `tail -F` follows it and repeats nothing | holder |
+| `history` | plain text of the lines that scrolled off the main screen, appended as whole **records**; a soft-wrapped line is one line. A record is a line with its newline, at most min(cap/2, 64 KiB) bytes; a longer line is pieces, each a record ending ` [fux3: continued]` before its newline (taking the mark and that newline out gives the line back). The holder gathers a line until it ends or is a piece long, so nothing but whole records reaches the file. Each file holds at most half the cap (`--history`, default 4 MiB, at most 256 MiB): a record that does not fit starts a new one, `history` renamed `history.1` (replacing it), so rotation falls only between records and `tail -F` follows it and repeats nothing | holder |
 | `history.1` | the generation before | holder, by rename |
 | `errors` | the last 32 refusals, a line each, `WHAT: WHY` (below) | holder, atomic replace |
 | `images/N.sixel` | one picture shown, re-encoded as sixel from the emulator's pixels; written once, removed once no published screen shows it | holder |
-| `exit` | `state exited CODE` or `state signalled NAME` and a newline, once the program's end has settled; written aside and renamed, after the screens that show the end, only when they were written whole; tried again each second until it is on disk | holder |
+| `exit` | `state exited CODE` or `state signalled NAME` and a newline, once the program's end has settled; written aside and renamed, after the screens that show the end, only when they and every picture they name were written whole (a picture not written is tried again with each publish); tried again each second until it is on disk; a failed write of it is in `status` | holder |
+| `id` | the pane's id and a newline: the marker that makes a directory a pane's. Written first, before the directory has its name | holder, once |
 
 Every file is 0600 and the directory and `images/` are 0700. Files replaced
 whole are written to `.NAME.new` and renamed, so a reader sees an old file or
@@ -56,15 +88,17 @@ hex digits, new at every start, so a new pane under an old name is told apart.
 A reader skips fields it does not know.
 
 **`status`**, one line each: `id`, `version` (of the screen this status was
-published with), `workspace`, `name`, `size COLS ROWS`, `cell W H` (pixels), `pictures
-on|off`, `state` (`running`, `exited CODE`, `signalled NAME`, or
-`kill-incomplete WHAT`), `pid` (the program's, `none` once reaped), `holder`
+published with), `size COLS ROWS`, `cell W H` (pixels), `pictures
+on|off`, `state` (`starting` until the program is started, `running`,
+`exited CODE`, `signalled NAME`, or `kill-incomplete WHAT`), `pid` (the program's, `none` once reaped), `holder`
 (its own pid), `keys` (how the program asked for keys: `legacy cursor=…
 keypad=… other-keys=… backarrow=…` or `kitty report=… alternate=…
 backarrow=…`), `bracketed-paste`, `newline-mode`, `focus-reports`, `mouse MODE
 ENCODING`, `alternate-screen`, `label KEY VALUE` per label, `commands N` (lines
 `ctl` has taken, refused ones included), `refused N`, `queued N` (bytes waiting
 for the program), and, when the last publish failed, `publish failed: WHY`.
+It names no workspace and no pane: a name is where the directory is listed,
+which the reader came by.
 
 ## `ctl`'s commands
 
@@ -100,25 +134,51 @@ and dropped, counted in one line of `errors` replaced each time
 
 ## The holder
 
-**Start.** `fux3 start NAME [options] [-- PROGRAM ARGS]` starts `fux3 __hold
-…` as a new session leader whose stdin is a pipe and stdout another, stderr
-`/dev/null`. It writes `go`; the holder checks its arguments, adopts orphans
-(Linux: it becomes the subreaper), claims the name, makes the FIFOs, the
-history file and `images/`, starts the publisher thread, opens the pty, starts
-the program, publishes its first screen, and only then writes `ok DIR` (or
-`err WHY`, after removing what it made). `start` prints `DIR`, or the error
-and exits 1; with no word in 10 s it says the pane may or may not have
-started. The holder then points its stdin and stdout at `/dev/null`.
+**Start.** `fux3 start NAME [options] [-- PROGRAM ARGS]` starts `fux3 __hold`
+with its own terminal's size and cell and then its own arguments, as a new
+session leader whose stdin is a pipe and stdout another, stderr `/dev/null`.
+The holder reads those arguments itself: there is one reading of them. The
+values of `--env` are not among them (arguments are public): they come on
+the pipe after `go`, each ended by a NUL. The holder checks everything,
+adopts orphans (Linux: it becomes the subreaper), and then:
 
-**The claim.** Under the session lock (`.lock`, flock, waited for at most
-5 s): every pane directory whose lock can be taken is a dead holder's and is
-removed (`remove_dir_all`, which removes links and never follows them, and
-only if the directory is still the one that was locked); then `WORKSPACE/NAME/` is
-made 0700 and locked (flock on the directory itself, `O_NOFOLLOW|O_DIRECTORY`).
-That lock, held for the holder's life, is the only proof a pane is alive.
-Every `fux3` command clears dead panes this way. A plain `ls "$D"` can show a
-directory whose holder was killed outright until the next `fux3` command; its
-`status` then still says `running`.
+1. **Stages.** Under the session's lock it makes `WORKSPACE/.new-ID/` (0700),
+   opens it and locks it (flock on the directory itself, held for the
+   holder's life: the only proof a pane is alive), and writes `id`. Then,
+   with no lock: the FIFOs, `images/`, `history`, the publisher thread, the
+   pty; and the first `screen`, `screen.styled` and `status` (`state
+   starting`), waited for until they are on disk.
+2. **Names.** Under the session's lock: dead panes are cleared, a live
+   pane's name or a full workspace is refused, and one rename that replaces
+   nothing gives the directory its name. A reader that finds the name finds
+   a whole pane. Anything else at the name (a directory no pane made) is
+   refused and left alone.
+3. **Starts the program**, publishes (`state running`), waits for that to
+   be on disk, writes the recipe, and only then writes `ok` (or `err WHY`,
+   after its own `kill`). So a second start of a live name never runs its
+   program, and a start that fails leaves the last good recipe.
+
+`start` prints the directory, or the error and exits 1; with no word in 10 s
+it says the pane may or may not have started. The holder then points its
+stdin and stdout at `/dev/null`.
+
+**Clearing dead panes.** Under the session's lock, in every workspace, every
+directory named as a pane, or `.new-*`, or `.gone-*`, whose lock can be
+taken is dead: a holder killed outright left it, at whichever step. It is
+cleared through its handle (`clear_pane`): only with the marker (or, a
+`.new-*`/`.gone-*` with nothing in it), and only the files a holder makes,
+by name (`in`, `ctl`, the screens, `status`, `history`, `history.1`,
+`errors`, `exit`, their `.NAME.new`, `images/N.sixel`, and last `id`). No
+directory but `images/` is entered, so a pane moved into another's
+directory, its lock held or not, is never touched. With anything else in it,
+that and the marker stay (a later clearing tries again) and the directory
+keeps its name; emptied, it is removed, if the name still holds the
+directory that was locked. Every `fux3` command but `put` clears this way. A
+plain `ls "$D"` can show a directory whose holder was killed outright until
+the next `fux3` command; its `status` then still says `running`.
+
+The marker can be forged and a `cp -a` of a pane copies it: a copy inside a
+workspace is a dead pane and is cleared as one. Same user, same trust.
 
 **The loop.** One poll over: the SIGCHLD pipe, `ctl`, `in` (only while the
 typed queue has room for a read; once the program ended, always, to drop), and
@@ -145,15 +205,31 @@ output for 20 ms of quiet or at most 1 s, then sets `state exited CODE` or
 `signalled NAME`, advances the version and keeps the last screen. Bytes still
 queued are dropped with a line in `errors`.
 
-**Kill.** Hang up the session (SIGHUP), give it 200 ms, SIGKILL the session; on
-Linux also SIGKILL every descendant and adopted orphan (the holder is the
-subreaper, so a `setsid` child is found); wait up to 2 s for the program and
-up to 2 s for the rest, killing again what appears. If anything is left or a
-process scan was incomplete, the directory stays, `state kill-incomplete WHAT`
-says what, and `kill` may be sent again. Complete, the publisher writes what
-waits, the directory is removed under the session lock, and the holder exits.
-On macOS the holder is no subreaper: what left the program's session and
-double-forked cannot be found, and is not reported.
+**Kill**, by `kill` on `ctl` or SIGTERM to the holder. Hang up the session
+(SIGHUP), give it 200 ms; on Linux ask everything else the program started to
+end (SIGTERM to every descendant and adopted orphan: a holder among them, of
+a pane started inside this one, runs its own kill and takes its pane apart)
+and give that up to 1 s; SIGKILL the session; on Linux also SIGKILL every
+descendant and adopted orphan left (the holder is the subreaper, so a
+`setsid` child is found); wait up to 2 s for the program and up to 2 s for
+the rest, killing again what appears. If anything is left or a process scan
+was incomplete, the directory stays, `state kill-incomplete WHAT` says what,
+and `kill` may be sent again. Complete:
+
+1. under the session's lock, only this: the directory is renamed
+   `.gone-ID` where it is listed now (wherever `mv` put it). The name is
+   free at once, and nothing waits on a disk under the lock;
+2. the publisher writes what waits and stops;
+3. the directory is cleared through its handle, as a dead pane's is, and
+   removed if that emptied it;
+4. dead panes are cleared once more, for what this kill ended outright (an
+   inner holder that did not end itself), and the holder exits.
+
+A holder that dies between 1 and 3 leaves `.gone-ID`, which the next
+clearing takes. A rename refused leaves the pane whole, to say so. On macOS
+the holder is no subreaper: what left the program's session and
+double-forked, an inner pane's holder among it, cannot be found, and is not
+reported.
 
 ## Publishing
 
@@ -188,40 +264,58 @@ the same with no fux3.
 
 ## Recipes and `fux3 put`
 
-The holder writes `WORKSPACE/.recipes/NAME` once it has claimed the name and
-before it says `ok` (a recipe it can't write fails the start, and no older
-start can overwrite a newer one's): an
-executable `sh` script (`#!/bin/sh`, `cd -- 'DIR' || exit 126`, one
-`NAME='VALUE'; export NAME` per `--env`, `exec 'PROGRAM' 'ARG'…`), every word
+The holder writes `WORKSPACE/.recipes/NAME`, in the workspace directory it
+holds, last: once the pane has its name, its program runs and the files say
+so, before it says `ok` (a recipe it can't write fails the start; a start
+that fails writes none, so the last good one stays; and no older start can
+overwrite a newer one's): an
+executable `sh` script (`#!/bin/sh`, `# fux3 size COLSxROWS`, one `# fux3
+label KEY=VALUE` per label, `cd -- 'DIR' || exit 126`, one
+`NAME='VALUE'; export NAME` per `--env`, `exec -- 'PROGRAM' 'ARG'…`), every word
 single-quoted with `'` written `'\''`, so any byte but NUL comes back as it
 was. Rendered before the start, refused past 64 KiB; written aside and
 renamed, 0700, in a 0700 `.recipes/`. Only the variables named by `--env` go
-in it, never the inherited environment. With no program, `start` runs
-`/bin/sh .recipes/NAME` when that file is there and writes no new recipe.
+in it, never the inherited environment. A name `sh` keeps for itself (`PPID`,
+`UID`, `EUID`, `BASHOPTS`, `SHELLOPTS`, `BASH_VERSINFO`) is refused at start.
+With no program, `start` runs `/bin/sh .recipes/NAME` when that file is
+there, with the size and labels its comment lines keep unless the start
+gives its own, and writes no new recipe. A recipe is found by name: it does
+not follow a pane that `mv` renamed.
 
-`--env` values reach the holder on its startup pipe after `go`, each
-`NAME=VALUE` ended by a NUL, never in its arguments (which `ps` shows anyone).
 With no program, `start` runs a recipe only if it is a plain file of at most
 64 KiB; anything else at the name is refused.
 
-`fux3 put` takes no lock and clears nothing. It checks the workspace and pane
-are real directories (no links) holding a pane's FIFOs, refuses one whose lock
-it can take (a dead holder), then opens `in` with
-`O_WRONLY|O_NONBLOCK|O_NOFOLLOW` and no create: no file is "no pane", `ENXIO`
-(nobody reads) is "a dead holder"; it writes at most
-`PIPE_BUF` (512) bytes in one call, so the write is whole or `EAGAIN` ("input
-full"). It never waits.
+`fux3 put` takes no lock and clears nothing. It opens the workspace and then
+the pane's directory, once, and asks everything of that handle: the marker
+(else "no pane"), the lock (taken: a dead holder; an error asking: a
+refusal, never success), `exit` (there: the program has ended, and the bytes
+would be dropped), then `in`, opened relative to the handle with
+`O_WRONLY|O_NONBLOCK|O_NOFOLLOW` and no create: no file is "no pane",
+`ENXIO` (nobody reads) is "a dead holder". So a new pane that took the name
+after the lookup is never typed into. It writes at most `PIPE_BUF` (512)
+bytes in one call, so the write is whole or `EAGAIN` ("input full"). It
+never waits.
+
+## Left open
+
+- **A holder killed outright from outside** (`kill -9`, out of memory) stays
+  documented (owner, 2026-11-19): its directory stays until the next `fux3`
+  command, and a plain write to its `in` or `ctl` can block. The panel was
+  split between request files in place of the FIFOs (5), a keeper process
+  per pane (3) and documenting it (2). The README gives the safe ways.
+- **After `mv`**: the recipe stays under the old name; `FUX3_WORKSPACE`,
+  `FUX3_PANE` and `FUX3_PANE_DIR` are true only at start; a name outside the
+  rule and the pane limit are not checked; `mv` onto a pane nests; `mv` to
+  another filesystem copies and deletes. Each is in the README.
+- **The kill lock**: a filesystem that stalls inside the one rename still
+  holds the session's lock for that long.
+- **macOS**: an inner pane's holder is not found by the outer kill.
 
 ## Ideas not built
 
 From the analogy panels of 2026-11-19 (`notes/projects/fux/fux3-2026-11-18/
 analogies-result.md`), for the owner to pick up later:
 
-- **Moving or renaming a live pane with `mv`.** A holder working relative to
-  its directory handle kept every byte across 60 moves (40 between
-  workspaces). This holder writes by path, so `mv` does not work today: the
-  screen freezes. Open: `mv` onto an existing name nests silently; the viewer
-  must re-find a tile by id; whose tile it is after a move between workspaces.
 - **An `events` file per workspace.** Lossless only with a lock around append
   and rotation (36,000 of 36,000 with it; lines lost without).
 - **A `notices` file per workspace.** Appending is safe; rotation without a lock

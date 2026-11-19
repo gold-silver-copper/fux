@@ -95,7 +95,32 @@ until_ok grep -q '^in: 8 bytes dropped in all' "$D/main/short/errors"
 echo kill > "$D/main/short/ctl"
 until_ok test ! -e "$D/main/short"
 
-echo kill > "$D/main/build/ctl"
-until_ok test ! -e "$D/main/build"
+# The live pane, moved to another workspace and renamed with mkdir and mv:
+# still the same pane, typed into and read where it is now.
+ID=$(cat "$D/main/build/id")
+mkdir "$D/rig" && mv "$D/main/build" "$D/rig/server"
+printf 'echo moved-$((40+2))\n' > "$D/rig/server/in"
+until_ok grep -qx moved-42 "$D/rig/server/screen"
+[ "$(cat "$D/rig/server/id")" = "$ID" ]
+[ "$(fux3 ls)" = rig/server ]
+# A layout command with no viewer running is an edit of the layout file.
+fux3 view rig --do 'tab new logs' >/dev/null
+grep -q 'logs' "$D/rig/.view/layout"
+# A pane started inside a pane: on Linux the outer kill ends it too and its
+# folder goes with it, with no further command. macOS has no subreaper, so
+# there the inner pane lives on and is ended through its own ctl.
+fux3 start outer -- sh -c 'fux3 start inner -- sh; exec sh' >/dev/null
+until_ok test -e "$D/main/inner/screen"
+echo kill > "$D/main/outer/ctl"
+until_ok test ! -e "$D/main/outer"
+if [ "$(uname)" = Linux ]; then
+    until_ok test ! -e "$D/main/inner"
+else
+    [ "$(fux3 ls | sort | tr '\n' ' ')" = "main/inner rig/server " ]
+fi
+# Killing every pane left never hangs after the kills above.
+for c in "$D"/*/*/ctl; do echo kill > "$c"; done
+none_left() { [ -z "$(ls "$D/main")$(ls "$D/rig")" ]; }
+until_ok none_left
 [ -z "$(fux3 ls)" ]
 echo "the example ran"

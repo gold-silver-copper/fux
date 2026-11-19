@@ -131,3 +131,97 @@ overruled it, both are recorded.
   has no `timeout` or `flock`). Documented: viewing over ssh, hard-link
   bookmarks, standing in a pane's directory, `chmod u-w`, the liveness sample.
   Ideas not built and tried-and-rejected: DESIGN.md.
+
+## The open problems, fixed (2026-11-19)
+
+The owner, on the list of problems left after the first PR: "use a panel to
+figure out the most proper solution to all of these, ideally making
+everything possible and do the semantiically and ontologoically correct
+thing. Prove it with spikes". Ten seats (2 Fable, 2 Opus, 3 gpt-6.2-sol,
+3 gpt-6.2-astra), two rounds, every fix proven on a patched copy of the
+merged code (`notes/projects/fux/fux3-2026-11-18/next-result.md`,
+`panel-next/`, `panel-next-r2/`). The rule they converged on is DESIGN.md's
+first section.
+
+- **D32. `mv` of a live pane works**, within and between workspaces of one
+  session: the holder works through its directory handle. Panel 10/10
+  (3,000 of 3,000 lines kept over 60 moves). Reverses D29's "a pane does not
+  move between them".
+- **D33. Whoever names a workspace holds its directory from then on**, and
+  says "workspace W was removed" when that directory is gone, whatever has
+  its name. Panel 10/10 (stale edits on a remade workspace 20/20 to 0/20).
+- **D34. `.view/ctl` and `.view/errors` go; `fux3 view WS --do LINE` edits
+  the layout file under its lock**, with or without a viewer, its refusal
+  its stderr. Panel 10/10 (100 of 100 edits kept against 46 of 100).
+- **D35. A pane is made whole under a name nothing lists and named by one
+  rename that replaces nothing; it is cleared only with its marker, its lock
+  taken and its directory the one locked; nothing a holder did not make is
+  removed.** Panel 10/10 (names stuck half made 11/300 to 0/300; lookalike
+  directories erased 8/8 to 0/8).
+- **D36. Under the session's lock a kill only renames the pane out of its
+  name.** Panel 9/10 in round 2 (other commands failing after 5 s 6/6 to
+  0/10). Dissent: do the whole removal under the lock and bound the wait.
+- **D37. History is records**: a line, or a marked piece of a line longer
+  than min(cap/2, 64 KiB); rotation only between records. Panel 10/10 in
+  round 2 (a 1 MiB line became 17 marked records, 6 of 6 lines byte-exact).
+- **D38. A bare zoom is resolved after routing and stays bare on disk.**
+  Panel 10/10.
+- **D39. A pane's kill ends inner holders properly**: SIGTERM to a holder is
+  its `kill`; the outer kill asks, waits a bounded time, kills outright what
+  is left and clears it. All seats (left directories 15/15 to 0/15).
+  Supersedes D28's "its holder is killed outright, so its folder stays".
+- **D40. A holder killed outright from outside stays documented.** Panel
+  split: request files 5, a keeper process 3, documented 2. Owner,
+  2026-11-19: "leave it documented".
+
+Decided while fixing (by the implementer, with why):
+
+- **D41. The marker is the file `id`** (the id and a newline), written first.
+  It doubles as the way to find a pane by id with `grep`, which a moved pane
+  needs. `is_pane` was "has both FIFOs", which a directory half made also
+  lacks and a lookalike also has.
+- **D42. `status` no longer has `workspace` and `name`.** They were true at
+  start and would be wrong after `mv`; refreshing them means looking the
+  path up at every publish, for a fact the reader already has (it read
+  `WORKSPACE/NAME/status`). The pane's variables `FUX3_WORKSPACE`,
+  `FUX3_PANE` and `FUX3_PANE_DIR` stay, documented as true at start: a
+  program's environment cannot be changed after it starts, and
+  `FUX3_PANE_ID` with the `id` files finds the pane wherever it is.
+- **D43. The pane has its name before its program starts** (`state
+  starting` for an instant). Naming it after the program started would have
+  let a second `start` of a live name run its program for a moment before
+  being refused.
+- **D44. The recipe does not follow a `mv`.** It is found by name, and the
+  name it was written under is the one a later `start` of that name means.
+  Moving it is one more `mv` (README).
+- **D45. A recipe keeps the start's size and labels as comment lines**
+  (`# fux3 size`, `# fux3 label`), read back by a start with no program
+  unless given: still one `sh` script (D31), and a template's tab that
+  matches on a label finds a pane started from its recipe.
+- **D46. `--env` names `sh` keeps for itself are refused at start** (`PPID`,
+  `UID`, `EUID`, `BASHOPTS`, `SHELLOPTS`, `BASH_VERSINFO`: read-only in
+  bash, which is `/bin/sh` on macOS). Replaying them through `env` would
+  misread a program whose name holds `=`.
+- **D47. `fux3 start --workspace-id DEV:INO`**: a caller that named a
+  workspace earlier (the viewer, for a pane a layout command starts) gives
+  the directory's numbers, and the holder refuses unless the directory it
+  opened has them. The start is a separate process, so the handle itself
+  cannot be passed without an inherited descriptor protocol.
+- **D48. A workspace needs no mode of its own.** The session directory must
+  be 0700 and the user's; what is in it is behind it. `mkdir "$D/rig"` (mode
+  755 under the usual umask) then `fux3 view rig` was refused, in the
+  owner's own example.
+- **D49. The holder reads `start`'s arguments itself.** `start` passed a
+  second, positional form of them, parsed again by the holder: 130 lines for
+  one fact. Now `start` passes its terminal's size and its own arguments,
+  and `--env` values still travel on the pipe.
+- **D50. `fuxix::file::at`**: `open`, `open_dir`, `make_dir`, `make_fifo`,
+  `rename`, `rename_new`, `remove_file`, `remove_dir`, `names`, each
+  relative to a directory held open. The spikes used `/proc/self/fd`, which
+  macOS lacks.
+- **D51. No timing test for D36.** It needs a disk that stalls. The tests
+  hold what it leaves: a `.gone-*` directory is cleared by the next command,
+  and the name is whole whenever it is there.
+- **D52. `echo kill 1<>ctl` is the write that cannot hang**: opened to read
+  and write, a FIFO's open never waits. On a dead pane the line goes
+  nowhere, which is right for `kill`; `in` keeps `fux3 put`, which says so.

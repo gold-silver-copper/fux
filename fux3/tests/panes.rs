@@ -683,10 +683,9 @@ fn a_moved_pane_is_the_same_pane() -> Result {
         stop.display()
     );
     s.write("build", "in", ticker.as_bytes())?;
+    // A workspace is a directory: `mkdir` makes one, whatever its mode.
     let rig = s.root.join("rig");
     std::fs::create_dir(&rig).map_err(|e| e.to_string())?;
-    std::fs::set_permissions(&rig, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| e.to_string())?;
     let renamed = s.pane("build").with_file_name("made");
     std::fs::rename(s.pane("build"), &renamed).map_err(|e| e.to_string())?;
     std::fs::rename(&renamed, rig.join("server")).map_err(|e| e.to_string())?;

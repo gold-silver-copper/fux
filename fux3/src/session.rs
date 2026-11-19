@@ -66,8 +66,10 @@ fn same(a: &File, b: &File) -> bool {
     matches!((a.metadata(), b.metadata()), (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino())
 }
 
-/// Checks that `dir`, shown as `shown`, is a directory of this user's alone.
-fn check_held(dir: &File, shown: impl std::fmt::Display) -> Result<(), Failure> {
+/// Checks that `dir`, shown as `shown`, is a directory of this user's; with
+/// `alone`, one nobody else can open. The session's directory is, so what
+/// is in it needs no mode of its own: `mkdir` makes a workspace.
+fn check_held(dir: &File, shown: impl std::fmt::Display, alone: bool) -> Result<(), Failure> {
     let meta = dir.metadata().map_err(|e| io(&shown, e))?;
     if meta.uid() != fuxix::process::geteuid() {
         return Err(Failure::new(format!(
@@ -75,7 +77,7 @@ fn check_held(dir: &File, shown: impl std::fmt::Display) -> Result<(), Failure> 
             meta.uid()
         )));
     }
-    if meta.mode() & 0o077 != 0 {
+    if alone && meta.mode() & 0o077 != 0 {
         return Err(Failure::new(format!(
             "{shown} has mode {:o}, and must be 700",
             meta.mode() & 0o777
@@ -91,7 +93,7 @@ pub fn open_private(path: &std::path::Path) -> Result<File, Failure> {
     let flags = fuxix::file::NOFOLLOW | fuxix::file::DIRECTORY | fuxix::file::NONBLOCK;
     let dir = (File::options().read(true).custom_flags(flags).open(path))
         .map_err(|e| io(format!("{} (a directory, no link)", path.display()), e))?;
-    check_held(&dir, path.display())?;
+    check_held(&dir, path.display(), true)?;
     Ok(dir)
 }
 
@@ -100,9 +102,9 @@ pub fn check_private(path: &std::path::Path) -> Result<(), Failure> {
     open_private(path).map(drop)
 }
 
-/// The private directory `name` in `dir`, made if `make` and missing,
-/// held open; a link, or anything but a directory of this user's alone,
-/// is refused.
+/// The directory `name` in `dir`, made private if `make` and missing,
+/// held open; a link, or anything but a directory of this user's, is
+/// refused.
 pub fn private_dir(dir: &File, name: &str, make: bool) -> Result<File, Failure> {
     let made = match make {
         true => at::make_dir(dir, name),
@@ -114,7 +116,7 @@ pub fn private_dir(dir: &File, name: &str, make: bool) -> Result<File, Failure> 
     }
     let held =
         at::open_dir(dir, name).map_err(|e| io(format!("{name} (a directory, no link)"), e))?;
-    check_held(&held, name)?;
+    check_held(&held, name, false)?;
     Ok(held)
 }
 
