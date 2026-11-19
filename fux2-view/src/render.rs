@@ -1,7 +1,6 @@
 //! Composing the screen: cells in rectangles first, escape sequences only
 //! from the finished result, so nothing a pane printed can reach the outer
 //! terminal as a sequence.
-use crate::layout::Axis;
 use fux2::wire::{Cell as PaneCell, Meta, Row};
 
 /// The largest screen composed; a bigger terminal is left blank past it.
@@ -102,6 +101,39 @@ impl Frame {
         for column in 0..w {
             self.put(x.saturating_add(column), y, text, sgr, false);
         }
+    }
+
+    /// A box with `title` on its top edge, blank inside.
+    pub fn boxed(&mut self, tile: Tile, title: &str) {
+        if tile.w < 2 || tile.h < 2 {
+            return;
+        }
+        let right = tile.x.saturating_add(tile.w).saturating_sub(1);
+        let bottom = tile.y.saturating_add(tile.h).saturating_sub(1);
+        for y in tile.y..=bottom {
+            let edge = y == tile.y || y == bottom;
+            let fill = if edge { "\u{2500}" } else { " " };
+            self.fill(tile.x, y, tile.w, fill, "");
+            if !edge {
+                self.put(tile.x, y, "\u{2502}", "", false);
+                self.put(right, y, "\u{2502}", "", false);
+            }
+        }
+        for (x, y, corner) in [
+            (tile.x, tile.y, "\u{250c}"),
+            (right, tile.y, "\u{2510}"),
+            (tile.x, bottom, "\u{2514}"),
+            (right, bottom, "\u{2518}"),
+        ] {
+            self.put(x, y, corner, "", false);
+        }
+        self.label(
+            tile.x.saturating_add(2),
+            tile.y,
+            tile.w.saturating_sub(4),
+            title,
+            ";1",
+        );
     }
 
     /// Draws one pane's row, clipped to `w` columns from `x`. A wide glyph
@@ -210,56 +242,6 @@ impl Frame {
     }
 }
 
-/// `count` tiles in `area`, a column or row of the area between them left
-/// for a border. Too small a piece is left out: fewer tiles come back.
-pub fn split(area: Tile, count: usize, axis: Axis) -> Vec<Tile> {
-    if count == 0 || area.w == 0 || area.h < 2 {
-        return Vec::new();
-    }
-    if count == 1 {
-        return vec![area];
-    }
-    let across = match axis {
-        Axis::Rows => false,
-        Axis::Columns => true,
-        // A cell is about twice as tall as wide.
-        Axis::Auto => area.w >= area.h.saturating_mul(2),
-    };
-    let first_count = count.div_ceil(2);
-    let share = |side: u16| {
-        let side = usize::from(side);
-        let part = side
-            .saturating_mul(first_count)
-            .checked_div(count)
-            .unwrap_or(0);
-        u16::try_from(part).unwrap_or(0)
-    };
-    let (one, two) = if across {
-        let w = share(area.w.saturating_sub(1));
-        (
-            Tile { w, ..area },
-            Tile {
-                x: area.x.saturating_add(w).saturating_add(1),
-                w: area.w.saturating_sub(w).saturating_sub(1),
-                ..area
-            },
-        )
-    } else {
-        let h = share(area.h);
-        (
-            Tile { h, ..area },
-            Tile {
-                y: area.y.saturating_add(h),
-                h: area.h.saturating_sub(h),
-                ..area
-            },
-        )
-    };
-    let mut tiles = split(one, first_count, axis);
-    tiles.extend(split(two, count.saturating_sub(first_count), axis));
-    tiles
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,29 +292,5 @@ mod tests {
         frame.row(0, 0, 2, &wide_row());
         let out = String::from_utf8_lossy(&frame.diff(&Frame::new(4, 1))).into_owned();
         assert!(out.contains('a') && !out.contains('\u{4e16}'), "{out:?}");
-    }
-
-    #[test]
-    fn tiles_do_not_overlap_and_stay_inside() {
-        let area = Tile {
-            x: 0,
-            y: 0,
-            w: 80,
-            h: 23,
-        };
-        for count in 1..=9 {
-            let tiles = split(area, count, Axis::Auto);
-            assert_eq!(tiles.len(), count);
-            for (index, tile) in tiles.iter().enumerate() {
-                assert!(tile.x.saturating_add(tile.w) <= 80 && tile.y.saturating_add(tile.h) <= 23);
-                for other in tiles.iter().skip(index.saturating_add(1)) {
-                    let apart = tile.x.saturating_add(tile.w) <= other.x
-                        || other.x.saturating_add(other.w) <= tile.x
-                        || tile.y.saturating_add(tile.h) <= other.y
-                        || other.y.saturating_add(other.h) <= tile.y;
-                    assert!(apart, "{tile:?} and {other:?}");
-                }
-            }
-        }
     }
 }

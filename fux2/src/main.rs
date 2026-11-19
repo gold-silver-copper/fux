@@ -693,8 +693,22 @@ fn page(mut args: Args) -> Outcome {
     let id = std::env::var("FUX2_PANE_ID")
         .ok()
         .and_then(|id| PaneId::parse(&id));
-    if let (Some(name), Some(id)) = (own, id)
-        && let Ok(mut client) = connect(&Target { name, id: Some(id) })
+    let own = own.zip(id).map(|(name, id)| Target { name, id: Some(id) });
+    // Its tile goes with it: it was made for this and nothing else.
+    if let Some(own) = &own
+        && let Ok(session) = Session::open()
+        && let Ok(live) = live_panes(&session)
+    {
+        let _ = layout::edit(
+            &session,
+            None,
+            &live,
+            layout::NOMINAL,
+            &Op::Remove(own.clone()),
+        );
+    }
+    if let Some(own) = &own
+        && let Ok(mut client) = connect(own)
     {
         // The answer may never come: this process is what it ends.
         let _ = client.call(&Request::Kill { expected: None }, ANSWER_WAIT);

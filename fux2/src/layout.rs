@@ -1379,7 +1379,7 @@ pub fn edit(
         );
         return Err(Failure::new(Code::Stale, why));
     }
-    let before = layout.shown(live);
+    let before = layout.shown(&routing(op, live));
     let old = layout.clone();
     let made = apply(&mut layout, live, area, op)?;
     if layout == old && !reset {
@@ -1590,6 +1590,60 @@ fn materialize(layout: &mut Layout, shown: &Layout, id: u32) -> Result<u32, Fail
     Ok(id)
 }
 
+/// Makes sure tab `id` is stored, without its routed panes: the tab
+/// `other` becomes a real tab, empty, which still takes them.
+fn store_tab(layout: &mut Layout, shown: &Layout, id: u32) -> Result<u32, Failure> {
+    let Some(tab) = shown.tab(id) else {
+        return Err(Failure::new(Code::Missing, format!("no tab t{id}")));
+    };
+    if id != OTHER {
+        return Ok(id);
+    }
+    let made = Tab::new(layout.take_id()?, &tab.title);
+    let id = made.id;
+    let space = layout
+        .workspaces
+        .first_mut()
+        .ok_or_else(|| invalid("no workspace"))?;
+    space.tabs.push(made);
+    Ok(id)
+}
+
+/// The pane `op` gives a tile to: while the edit reads the layout, it is
+/// not routed anywhere, so a pane just started moves no other tile.
+fn placing(op: &Op) -> Option<&Target> {
+    match op {
+        Op::Split { new, .. } | Op::Replace { new, .. } => Some(new),
+        Op::ToTab { pane, .. } | Op::ToWorkspace { pane, .. } => Some(pane),
+        Op::Remove(_)
+        | Op::Swap(..)
+        | Op::Step { .. }
+        | Op::Reorder { .. }
+        | Op::Border { .. }
+        | Op::Zoom(_)
+        | Op::Title { .. }
+        | Op::NewTab { .. }
+        | Op::RenameTab { .. }
+        | Op::CloseTab(_)
+        | Op::MoveTab { .. }
+        | Op::MatchTab { .. }
+        | Op::NewWorkspace { .. }
+        | Op::RenameWorkspace { .. }
+        | Op::CloseWorkspace(_)
+        | Op::MoveWorkspace { .. }
+        | Op::Reset => None,
+    }
+}
+
+/// `live` as routing sees it during `op`.
+fn routing(op: &Op, live: &[Live]) -> Vec<Live> {
+    let placed = placing(op);
+    let named = |l: &&Live| {
+        placed.is_some_and(|t| t.name == l.pane.name && t.id.is_none_or(|id| id == l.pane.id))
+    };
+    live.iter().filter(|l| !named(l)).cloned().collect()
+}
+
 /// Stores the tab that shows `pane` and gives its id.
 fn materialize_pane(layout: &mut Layout, shown: &Layout, pane: &PaneRef) -> Result<u32, Failure> {
     let id = shown.tab_of(pane).map(|tab| tab.id);
@@ -1717,7 +1771,8 @@ pub fn apply(
     area: Rect,
     op: &Op,
 ) -> Result<Option<String>, Failure> {
-    let shown = layout.shown(live);
+    let everything = layout.shown(live);
+    let shown = layout.shown(&routing(op, live));
     match op {
         Op::Split {
             target,
@@ -1810,10 +1865,15 @@ pub fn apply(
             Ok(None)
         }
         Op::ToTab { pane, tab } => {
-            let pane = resolve(&shown, live, pane)?;
-            let from = materialize_pane(layout, &shown, &pane)?;
+            // A routed pane just stops being routed; its old tab is left
+            // as it is stored.
+            let pane = resolve(&everything, live, pane)?;
+            let from = everything.tab_of(&pane).map_or(OTHER, |tab| tab.id);
             let (to, made) = match tab {
-                Some(text) => (materialize(layout, &shown, tab_id(&shown, text)?)?, None),
+                Some(text) => (
+                    store_tab(layout, &everything, tab_id(&everything, text)?)?,
+                    None,
+                ),
                 None => {
                     let space = (layout.workspaces.iter())
                         .position(|s| s.tabs.iter().any(|t| t.id == from))
@@ -1822,16 +1882,15 @@ pub fn apply(
                     (id, Some(format!("t{id}")))
                 }
             };
-            if to == from {
-                return Ok(None);
+            if layout.tab(to).is_some_and(|tab| tab.holds(&pane)) {
+                return Ok(made);
             }
             unplace(layout, &pane);
             add_to_tab(layout, to, &pane)?;
             Ok(made)
         }
         Op::ToWorkspace { pane, workspace } => {
-            let pane = resolve(&shown, live, pane)?;
-            materialize_pane(layout, &shown, &pane)?;
+            let pane = resolve(&everything, live, pane)?;
             let (to, made) = match workspace {
                 Some(text) => {
                     let id = workspace_id(layout, text)?;
@@ -1845,7 +1904,7 @@ pub fn apply(
                 }
             };
             if layout.tab(to).is_some_and(|tab| tab.holds(&pane)) {
-                return Ok(None);
+                return Ok(made);
             }
             unplace(layout, &pane);
             add_to_tab(layout, to, &pane)?;
@@ -1866,7 +1925,8 @@ pub fn apply(
         }
         Op::Zoom(pane) => {
             let pane = resolve(&shown, live, pane)?;
-            let id = materialize_pane(layout, &shown, &pane)?;
+            let id = shown.tab_of(&pane).map_or(OTHER, |tab| tab.id);
+            let id = store_tab(layout, &shown, id)?;
             let tab = layout.tab_mut(id).ok_or_else(|| invalid("the tab went"))?;
             tab.zoom = match tab.zoom.take() {
                 Some(zoomed) if zoomed == pane => None,
@@ -1898,7 +1958,7 @@ pub fn apply(
             let (space, after) = match (after, workspace) {
                 (Some(after), _) => {
                     let id = tab_id(&shown, after)?;
-                    let id = materialize(layout, &shown, id)?;
+                    let id = store_tab(layout, &shown, id)?;
                     let space = (layout.workspaces.iter())
                         .position(|s| s.tabs.iter().any(|t| t.id == id))
                         .unwrap_or(0);
@@ -1923,7 +1983,7 @@ pub fn apply(
         }
         Op::RenameTab { tab, title } => {
             let title = checked_title(title)?;
-            let id = materialize(layout, &shown, tab_id(&shown, tab)?)?;
+            let id = store_tab(layout, &shown, tab_id(&shown, tab)?)?;
             if let Some(tab) = layout.tab_mut(id) {
                 tab.title = title;
             }
@@ -1955,7 +2015,7 @@ pub fn apply(
             Ok(None)
         }
         Op::MoveTab { tab, later } => {
-            let id = materialize(layout, &shown, tab_id(&shown, tab)?)?;
+            let id = store_tab(layout, &shown, tab_id(&shown, tab)?)?;
             for space in &mut layout.workspaces {
                 if let Some(at) = space.tabs.iter().position(|t| t.id == id) {
                     step_item(&mut space.tabs, at, *later);
@@ -1964,7 +2024,7 @@ pub fn apply(
             Ok(None)
         }
         Op::MatchTab { tab, tests } => {
-            let id = materialize(layout, &shown, tab_id(&shown, tab)?)?;
+            let id = store_tab(layout, &shown, tab_id(&shown, tab)?)?;
             if let Some(tab) = layout.tab_mut(id) {
                 tab.tests = tests.clone();
             }
