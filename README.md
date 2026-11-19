@@ -181,6 +181,9 @@ fux3 adds nothing to stop these. What happens is what Unix does:
   leaves it). Your terminal stays raw (`reset`)
   and a FIFO `.view.PID` stays in the session directory (`rm` it). The panes
   do not care.
+- **Don't run the viewer in a pane of the workspace it shows.** It draws its
+  own pane as one of its tiles and asks it to be that small. In a pane of
+  another workspace or session it is fine.
 - **Don't put other folders in a workspace**: every folder there is shown as
   a pane. Files are fine.
 - **Don't write nonsense to `layout`**: the viewer says what is wrong on its
