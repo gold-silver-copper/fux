@@ -196,7 +196,8 @@ struct View {
     /// A notice for the bar's corner, until the next key: its text and
     /// colours.
     notice: Option<(String, &'static str)>,
-    /// The panes `when-gone` waits for the going of, each with its workspace.
+    /// The panes `when-gone` waits for the going of, each with its
+    /// workspace's directory (`Workspace::id`).
     watched: Vec<(String, Target)>,
     /// The run in flight, where it came from.
     in_flight: Option<Origin>,
@@ -466,12 +467,13 @@ impl View {
         }
         // A watched life is gone once no pane here has its id; a name, once
         // no pane has it.
+        let shown = self.workspace.id();
         let gone = |(space, pane): &(String, Target)| {
             let there = match &pane.id {
                 Some(id) => (self.panes.values()).any(|p| p.id().is_none_or(|now| now == id)),
                 None => self.panes.contains_key(&pane.name),
             };
-            *space == self.workspace.name && !there
+            *space == shown && !there
         };
         let (gone, watched) = std::mem::take(&mut self.watched)
             .into_iter()
@@ -892,7 +894,7 @@ impl View {
             // What a binding does next may name what the edit made.
             ToViewer::Reread => self.rescan(now, false),
             ToViewer::Watch(pane) => {
-                let space = self.workspace.name.clone();
+                let space = self.workspace.id();
                 (self.watched).extend(Target::parse(&pane).ok().map(|pane| (space, pane)));
                 // One gone already is seen now.
                 self.rescan(now, false);

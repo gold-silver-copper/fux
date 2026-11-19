@@ -200,3 +200,41 @@ Append-only: one short entry per decision, newest last.
       its second half; it sends its lines with `--do` and is now
       `a_layout_command_changes_only_the_layout_of_its_workspace`.
     - Lines: production 5,999 → 5,850.
+20. **Handles and ids (the panel's decisions 1 and 2, 2026-11-19).** A pane is its directory and
+    its id, a workspace is its directory, a name is only where one is listed now.
+    - **Every operation holds the workspace's directory from when it is first named**: a viewer
+      (at its start and at each switch), a run (its context carries the `Workspace`, not a name,
+      so a queued confirmation acts on the directory shown when it was asked), a `--do`. The
+      `.view` directory, the layout, its lock, a paste's file, every pane's files and pictures
+      are opened relative to a held directory (`fuxix::file::at`); nothing looks a path up
+      twice. `view_dir` begins with `Workspace::check`, so a command for a removed workspace
+      fails with "workspace W was removed" and never lands on a workspace made again under the
+      name. A pane a layout command starts is started with `--workspace-id`.
+    - **Paths that remain**: the one `paste PATH` hands to a holder and the one `C-b c` hands to
+      `sh` (the workspace's path as it was named: for other programs, as the core says).
+    - **A viewer whose workspace was removed shows the directory that has its name now**, if
+      there is one, else the first workspace, else a new `main`.
+    - **A watch (`when-gone`) belongs to the directory it was made in** (`Workspace::id`), and a
+      life is gone when no pane there has its id. Driven: before this, a close confirmed for a
+      workspace then removed and made again ran against the new one (refused: "no tile").
+      Cost: a watch whose workspace is removed from outside never fires and keeps its place
+      among the 64.
+    - **A tile is found by its pane's id.** When what is shown is derived, and in every edit, a
+      tile whose id a live pane has takes that pane's name: `mv a c` keeps the tile, the focus
+      and the keys. The file is not written for it: the next edit stores the new name. Until
+      then a tile of a renamed pane that then ended says the old name. `NAME@ID` in a command
+      finds the tile by its id, whatever it is called now. A bare tile stays a name: it shows
+      whichever pane has the name.
+    - **A pane moved to another workspace** is gone here (its tile stays, marked gone, as any
+      pane's that went) and has no tile there (it is routed, as any pane that came).
+    - **Closing a workspace** removes what is in the directory held, through it (files and links
+      themselves, directories four levels down at most), then that directory by the name it is
+      listed under now, under the session's lock; never another directory of the same name.
+    - **The history pane ends itself by its id**: `grep -lx "$FUX3_PANE_ID" "$FUX3_DIR"/*/*/id`
+      finds its directory wherever it was moved, and `echo kill 1<>ctl` never waits. Its recipe
+      is removed under the name it started with, where the core keeps it.
+    - `fux3::session::check_private` is no longer called from here.
+    - Not changed, found while driving: a tile closed in a split of its own direction does not
+      give its share back (after `C-b c` below a pane stacked in rows, that pane keeps half its
+      old share). It was so before this work.
+    - Lines: production 5,850 → 5,892.
