@@ -239,3 +239,32 @@ fn a_picture_comes_and_goes_as_a_file() -> Result {
     s.write("p", "in", b"clear\n")?;
     until("the picture's file gone", || !picture.exists())
 }
+
+/// Once the program has ended, its last screen stays: what a child it
+/// left behind prints later changes nothing, and typing is dropped with a
+/// line in `errors`.
+#[test]
+fn an_ended_programs_screen_stays() -> Result {
+    let s = Session::new("ended")?;
+    s.start(
+        "p",
+        &[
+            "sh",
+            "-c",
+            "(trap \"\" HUP; sleep 0.5; echo late) & echo first; exit 4",
+        ],
+    )?;
+    until("the exit", || {
+        s.read("p", "status").contains("\nstate exited 4\n")
+    })?;
+    assert!(screen_has(&s, "p", "first"));
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(
+        !screen_has(&s, "p", "late"),
+        "the screen changed after the exit"
+    );
+    s.write("p", "in", b"typed\n")?;
+    until("the dropped bytes", || {
+        s.read("p", "errors").contains("in: 6 bytes dropped")
+    })
+}

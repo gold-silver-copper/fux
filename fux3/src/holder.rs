@@ -731,6 +731,13 @@ impl Holder {
     /// Gives waiting output to the terminal, a slice at a time, as long as
     /// the replies it may cause have room.
     fn parse(&mut self) {
+        // Settled is settled: what a child left behind still prints is read,
+        // so it never blocks, and dropped, so the last screen stays.
+        if self.exit.is_none() && self.state != "running" {
+            self.unparsed = Vec::new();
+            self.parsed = 0;
+            return;
+        }
         let mut any = false;
         loop {
             let rest = self.unparsed.get(self.parsed..).unwrap_or_default();
