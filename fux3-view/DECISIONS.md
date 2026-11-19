@@ -141,3 +141,22 @@ Append-only: one short entry per decision, newest last.
       ids, and the loop that starts every recipe. Lines: production (without in-file unit
       tests) 5,760 → 5,805; whole files 5,978 → 6,065, of which the new test is 32. Nothing was
       cut: the ceiling is counted on production lines, as the brief states.
+18. **Review round 2's viewer fixes (2026-11-19, the last round).**
+    - **A viewer-started shell names its program**: `start` passes `-- "${SHELL:-/bin/sh}"` when
+      given none, so a reused `shell-N` never runs that name's old recipe. Done in `start`
+      itself, so every caller (`C-b v`/`s`, `split PANE DIR`, new tab, new workspace, a
+      config's `(start-new P)`) gets it; `fux3 start NAME` by hand still runs the recipe.
+    - **The history pager removes its own recipe** before it ends. A pager closed with
+      `C-b x` is killed before it can; the README's template step removes `history-*`.
+    - **`NAME@` names a bare tile no pane has.** `focused` and `panes` give it so for an
+      unbound bare tile; a kill of `NAME@` finds no such life (`pane-gone`), and `close NAME@`
+      takes only that tile. Chosen over a special case in `close-pane`: every command that
+      names the focused pane (zoom, move, border) now acts on the tile shown, not on the live
+      pane of that name in another tab. Bare `NAME` keeps its rule (the live pane's tile).
+    - **`write_first` writes only a missing layout**, checked under the layout's lock.
+    - **A started pane's `status` is read once**: the core publishes it before `ok`.
+    - **A chord dispatched by a run whose workspace is no longer shown is refused**, as its
+      sends, focus and panels are, rather than started with the new workspace's view. Carrying
+      the old workspace into the new run would have given it the old workspace's name with the
+      new one's layout snapshot.
+    - Lines: production 5,999 → 5,999 (comments tightened to fit).

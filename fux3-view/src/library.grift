@@ -47,10 +47,10 @@
 
 ;; The focused pane's history in a pager, below it: $PAGER, else less at
 ;; the end. When the pager ends, the pane closes its tile (a line to its
-;; workspace's .view/ctl, opened read-write so that it never waits) and
-;; ends itself.
+;; workspace's .view/ctl, opened read-write so that it never waits),
+;; removes its recipe (a template never starts a pager) and ends itself.
 (define! history-script
-  "cat \"$1.1\" \"$1\" 2>/dev/null | ${PAGER:-less +G}; exec 3<>\"$FUX3_DIR/$FUX3_WORKSPACE/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; echo kill > \"$FUX3_PANE_DIR/ctl\"")
+  "cat \"$1.1\" \"$1\" 2>/dev/null | ${PAGER:-less +G}; exec 3<>\"$FUX3_DIR/$FUX3_WORKSPACE/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; rm -f \"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"; echo kill > \"$FUX3_PANE_DIR/ctl\"")
 (define! history (lambda! ()
   (let! ((target (focused))
          (file (join (workspace-dir) "/" (name-of target) "/history"))

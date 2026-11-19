@@ -371,9 +371,15 @@ tab.
 D=$(fux3 dir)
 fux3 start build -- sh
 fux3 view                                       # workspace main; runs fux3-view with FUX3_DIR set
-echo "split build right" > "$D/main/.view/ctl"  # every viewer of main changes
-fux3 view main --do 'zoom build'                # the same with no viewer running
+fux3 view main --do 'zoom build'                # a layout command with no viewer running
 fux3 view rig                                   # workspace rig, made if missing
+```
+
+From another terminal, while a viewer of `main` runs:
+
+```sh
+D=$(fux3 dir)
+echo "split build right" > "$D/main/.view/ctl"  # every viewer of main changes
 ```
 
 `fux3 view [WORKSPACE]` shows WORKSPACE (default `main`, made if missing, as
@@ -454,7 +460,7 @@ One line each, acting on one workspace's layout: written to its `.view/ctl` (a
 viewer of it takes it), run with `fux3 view [WORKSPACE] --do 'LINE'` (prints
 what it did; a refusal goes to stderr, exit 1), or from grift with `(arrange
 LINE)` (the workspace shown). `PANE` is `NAME` or `NAME@ID`, a pane of that
-workspace; `TAB` is `tN` (the tab with that id, if there is one) or a title no
+workspace, or `NAME@`, a bare tile no pane has (closing it takes only that tile); `TAB` is `tN` (the tab with that id, if there is one) or a title no
 other tab has; `DIR` is `left`, `right`, `up` or `down`; a title with spaces is
 quoted, `"like this"`. A quoted word is never a keyword: `tab new "match"` makes
 a tab called match, and `"t1"` is the tab titled t1.
@@ -475,7 +481,8 @@ a tab called match, and `"t1"` is the tab titled t1.
 
 What a command did is printed as lines:
 `version N`, `made tN`, `started NAME@ID`, and `changed NAME@ID` for
-every pane whose tile moved or changed size.
+every pane whose tile moved or changed size. It reports geometry only: a pane
+moved to another tab where its tile has the same place and size is not listed.
 
 **Sizes.** Opening a viewer, moving the focus and resizing the viewer's
 terminal resize no pane: a tile clips or pads it. The shipped commands end by fitting the
@@ -489,12 +496,21 @@ f` fits the focused pane by hand. `--do` fits nothing.
 
 A workspace's skeleton is its `.recipes/` (one `sh` script per pane, which
 the core writes when a pane starts) and a `.view/layout` with bare names. To
-turn the running workspace `rig` into a template `$T`, copy the recipes and
-strip the ids from the layout:
+turn the running workspace `rig` into a template `$T`:
+
+- A recipe stays after its pane is gone, so starting every recipe starts
+  closed panes again too. Remove the recipes of panes the template should not
+  start, among them any history pager's (`history-N`; a pager that ends by
+  itself removes its own).
+- The layout may hold two tiles of one name (an ended life's beside the new
+  one's). Close the one you don't want (`fux3 view rig --do 'close NAME@ID'`)
+  before stripping the ids: the reader refuses two `pane NAME`.
+
+Then copy the recipes and strip the ids from the layout:
 
 ```sh
 T=~/templates/rig; mkdir -p -m 700 "$T" && mkdir -m 700 "$T/.view"
-cp -Rp "$D/rig/.recipes" "$T/"
+cp -Rp "$D/rig/.recipes" "$T/" && rm -f "$T/.recipes"/history-*
 sed -E 's/^( +([0-9]+ )?(pane|zoom) [^@ ]+)@[0-9a-f]{16}$/\1/' "$D/rig/.view/layout" > "$T/.view/layout"
 ```
 
@@ -548,9 +564,9 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 | `(bind-verb KEYS CAPTION HEADING VERB [ARG])` | a viewer action, done at once even while a binding runs |
 | `(bind-group KEYS CAPTION HEADING)`, `(unbind-key KEYS)` | a group's menu |
 | `(act VERB [ARG])` | verbs: `next-pane`, `last-pane`, `focus-left` … `focus-down`, `next-tab`, `previous-tab`, `next-workspace`, `previous-workspace`, `show-tab "tN"`, `show-workspace "NAME"` (made if missing), `fit`, `detach`, `chord "C-b v"` |
-| `(focused)`, `(shown-tab)`, `(shown-workspace)` | `NAME@ID`, `tN`, the workspace's name |
+| `(focused)`, `(shown-tab)`, `(shown-workspace)` | `NAME@ID` (`NAME@` for a bare tile no pane has), `tN`, the workspace's name |
 | `(workspaces)` | the session's workspaces, by name |
-| `(tabs)`, `(panes)`, `(key-bindings)` | lists of rows, of the workspace shown: `(tN title)`, `(NAME@ID tN)`, `(keys caption heading)` |
+| `(tabs)`, `(panes)`, `(key-bindings)` | lists of rows, of the workspace shown: `(tN title)`, `(NAME@ID tN)` (`NAME@` as for `focused`), `(keys caption heading)` |
 | `(arrange LINE)` | one layout command; its result lines |
 | `(fit-after RESULT)`, `(line-of KEY RESULT)` | fit the panes a result changed; a result line's value |
 | `(start-new PREFIX PROGRAM ARG…)` | starts `PREFIX-N` in the workspace shown, or in WORKSPACE (made if missing) for `WORKSPACE/PREFIX` (your shell if no program): `NAME@ID` |

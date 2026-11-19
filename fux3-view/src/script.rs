@@ -90,7 +90,7 @@ pub enum ToViewer {
 /// What the viewer shows, as a run sees it.
 #[derive(Clone, Default)]
 pub struct Context {
-    /// The pane focused, as `NAME@ID`.
+    /// The pane focused, as `NAME@ID` (`NAME@`: a bare tile with no pane).
     pub focus: Option<String>,
     pub tab: Option<u32>,
     /// The workspace shown, by name: every word acts on it.
@@ -525,7 +525,7 @@ const WORDS: &[(&str, Word)] = &[
         let items: Vec<Vec<String>> = (layout.tabs.iter())
             .flat_map(|tab| {
                 (tab.leaves().into_iter())
-                    .map(|pane| vec![pane.to_string(), format!("t{}", tab.id)])
+                    .map(|p| vec![format!("{}@{}", p.name, p.id), format!("t{}", tab.id)])
             })
             .collect();
         rows(g, &items)

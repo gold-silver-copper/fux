@@ -71,9 +71,13 @@ pub fn start(
     command
         .args(["start", &format!("{}/{name}", workspace.name)])
         .env("FUX3_DIR", &workspace.session.root);
-    if !program.is_empty() {
-        command.arg("--").args(program);
-    }
+    // Named even for the shell, so a reused name never runs a recipe.
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+    command.arg("--");
+    match program.is_empty() {
+        true => command.arg(shell),
+        false => command.args(program),
+    };
     let mut child = (command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -105,19 +109,9 @@ pub fn start(
         }
         return Err(Failure::new(said.trim().trim_start_matches("fux3: ")));
     }
-    // `fux3 start` may say its pane started before the pane's first files
-    // are written (they are written on a thread of the holder's): they are
-    // waited for, a bounded time.
-    let dir = workspace.pane_dir(name);
-    let status = loop {
-        match read_status(&dir) {
-            Ok(status) => break status,
-            Err(failure) if begun.elapsed() >= COMMAND_TIME => {
-                return Err(Failure::new(format!("pane {name} started, but: {failure}")));
-            }
-            Err(_) => std::thread::sleep(Duration::from_millis(5)),
-        }
-    };
+    // `fux3 start` writes the pane's `status` before it says it started.
+    let status = read_status(&workspace.pane_dir(name))
+        .map_err(|failure| Failure::new(format!("pane {name} started, but: {failure}")))?;
     let id = fux3::files::status_value(&status, "id").filter(|id| layout::is_id(id));
     let id =
         id.ok_or_else(|| Failure::new(format!("pane {name} started, but its status names no id")))?;

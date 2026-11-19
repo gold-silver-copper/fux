@@ -308,6 +308,43 @@ fn viewing_focusing_and_resizing_the_viewer_resize_no_pane() -> Tested {
     Ok(())
 }
 
+/// A shell the viewer starts is a shell even when its name was used
+/// before: the old life's recipe never runs again.
+#[test]
+fn a_new_shell_never_runs_an_old_recipe_of_its_name() -> Tested {
+    let lab = Lab::new("recipe", "")?;
+    lab.start("a")?;
+    let old = lab.run(
+        &lab.view,
+        &[
+            "start",
+            "shell-1",
+            "--",
+            "sh",
+            "-c",
+            "echo rec''ipe; exec sleep 60",
+        ],
+    )?;
+    assert!(old.status.success(), "{old:?}");
+    fifo(&lab.view.join("main/shell-1/ctl"), b"kill\n")?;
+    until("the old shell-1 ended", || {
+        !lab.view.join("main/shell-1").exists()
+    })?;
+    assert!(lab.view.join("main/.recipes/shell-1").exists());
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "$")?;
+    lab.keys("v", b"\x02v")?;
+    until("shell-1 started again", || {
+        lab.read(&lab.view, "shell-1", "status").contains("id ")
+    })?;
+    lab.keys("v", b"echo fre''sh\r")?;
+    until("the new shell-1 is a shell", || {
+        lab.read(&lab.view, "shell-1", "screen").contains("fresh")
+    })?;
+    assert!(!lab.read(&lab.view, "shell-1", "screen").contains("recipe"));
+    Ok(())
+}
+
 /// A binding that loops forever is stopped, a chord that leads to itself
 /// (bound to it, or run by its own binding) is refused, a redefined command
 /// is what its default key runs, and detach works
@@ -352,11 +389,14 @@ fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
 /// A layout command written to one workspace's `.view/ctl` changes that
 /// workspace's layout and not another's, with a viewer on each at once;
 /// and a binding that switches workspace can't send to a pane of the same
-/// name in the one it switched to.
+/// name in the one it switched to, not even through a chord it runs.
 #[test]
 fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
     let config = "(bind-key \"F6\" \"over\" \"Mine\" \
-        (lambda! () (show-workspace \"two\") (send \"a\" \"echo cro''ssed\\r\")))\n";
+        (lambda! () (show-workspace \"two\") (send \"a\" \"echo cro''ssed\\r\")))\n\
+        (bind-key \"F7\" \"back\" \"Mine\" \
+        (lambda! () (show-workspace \"one\") (run-chord \"F8\")))\n\
+        (bind-key \"F8\" \"type\" \"Mine\" (lambda! () (send \"a\" \"echo cha''ined\\r\")))\n";
     let lab = Lab::new("spaces", config)?;
     lab.start("one/a")?;
     lab.start("two/b")?;
@@ -384,6 +424,10 @@ fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
     };
     assert!(!screen("two").contains("crossed"), "{}", screen("two"));
     assert!(!screen("one").contains("crossed"), "{}", screen("one"));
+    lab.keys("v1", b"\x1b[18~")?;
+    lab.shows("v1", "chord F8: refused, it was for workspace two")?;
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!screen("one").contains("chained"), "{}", screen("one"));
     Ok(())
 }
 

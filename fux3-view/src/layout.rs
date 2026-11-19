@@ -122,7 +122,7 @@ impl PaneRef {
     }
 }
 
-/// A pane as a command names it: `NAME`, or `NAME@ID` for one life.
+/// A pane as a command names it: `NAME`, `NAME@ID` (one life) or `NAME@` (its bare tile).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     pub name: String,
@@ -133,7 +133,7 @@ impl Target {
     pub fn parse(text: &str) -> Result<Target, Failure> {
         let (name, id) = match text.split_once('@') {
             None => (text, None),
-            Some((_, id)) if !is_id(id) => {
+            Some((_, id)) if !id.is_empty() && !is_id(id) => {
                 return Err(bad(format!("bad pane id in {text:?}: 16 hex digits")));
             }
             Some((name, id)) => (name, Some(id.to_owned())),
@@ -1144,6 +1144,10 @@ pub fn read(view: &Path) -> Result<Layout, Failure> {
 /// file missing later is known to have been removed.
 pub fn write_first(view: &Path) -> Result<(), Failure> {
     let _lock = lock(view)?;
+    // Another viewer may have made it first, and edited it since.
+    if view.join(FILE).symlink_metadata().is_ok() {
+        return Ok(());
+    }
     replace(view, FILE, TEMP, &Layout::default().to_string())
 }
 
@@ -1873,8 +1877,13 @@ mod tests {
             refused += usize::from(edit(&view, &panes, AREA, &op).is_err());
             read(&view)?;
         }
+        // A viewer that made `.view` late writes no default over the edits.
+        let edited = read(&view)?;
+        write_first(&view)?;
+        let kept = read(&view)?;
         let _ = std::fs::remove_dir_all(&view);
         assert!(refused > 0, "no split was too deep");
+        assert!(edited != Layout::default() && kept == edited);
         Ok(())
     }
 
@@ -1931,6 +1940,24 @@ mod tests {
             shown.tabs.first().and_then(Tab::zoomed),
             Some(&pane("a", '3'))
         );
+        Ok(())
+    }
+
+    /// `NAME@` names a bare tile with no pane of its own: closing it takes
+    /// only that tile, never the tile of the live pane of that name.
+    #[test]
+    fn closing_an_unbound_bare_tile_leaves_the_named_panes_tile() -> Result<(), Failure> {
+        let b = pane("b", '1');
+        let text = format!(
+            "{HEADER}\nversion 1\nnext 3\ntab t1 \"one\"\n  pane b\ntab t2 \"two\"\n  pane {b}\n"
+        );
+        let mut layout = parse(&text).map_err(bad)?;
+        let lives = [live("b", '1', &[])];
+        run(&mut layout, &lives, "close b@")?;
+        let tiles: Vec<(u32, String)> = (layout.tabs.iter())
+            .flat_map(|t| t.leaves().into_iter().map(|p| (t.id, p.to_string())))
+            .collect();
+        assert_eq!(tiles, [(2, b.to_string())]);
         Ok(())
     }
 }

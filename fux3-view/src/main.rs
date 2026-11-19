@@ -668,7 +668,7 @@ impl View {
             .map(|(chord, b)| (chord.clone(), b.caption.clone(), b.heading.clone()))
             .collect();
         Context {
-            focus: self.focus.as_ref().map(PaneRef::to_string),
+            focus: (self.focus.as_ref()).map(|p| format!("{}@{}", p.name, p.id)),
             tab: self.shown_tab().map(|tab| tab.id),
             workspace: self.workspace.name.clone(),
             area: self.area(),
@@ -821,6 +821,8 @@ impl View {
                     self.dispatch_job(String::new(), Job::Drop(panel.id()), 0);
                     Some("a list or prompt".to_owned())
                 }
+                // Its binding would start with the workspace now shown.
+                ToViewer::Verb(Verb::Chord(chord)) => Some(format!("chord {chord}")),
                 ToViewer::Bind(..)
                 | ToViewer::Group(..)
                 | ToViewer::Unbind(_)
