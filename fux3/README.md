@@ -265,7 +265,7 @@ fux3 view --do 'zoom build'                 # the same with no viewer running
 |---|---|
 | `NAME/screen.styled` | drawn in the pane's tile; looked at every 20 ms while shown, and read again only when replaced (its inode, size or time changed) |
 | `NAME/status` | the pane's id, labels, state, size, key mode and newline mode; looked at the same way |
-| `NAME/images/N.sixel` | the pictures the screen names, drawn in sixel, cropped to the cells that show, when this terminal's DA1 says it draws sixel; else the cells stay blank |
+| `NAME/images/N.sixel` | the pictures the screen names: one whole in its tile is written as it is, at its place, when this terminal's DA1 says it draws sixel; else its cells stay blank |
 | `NAME/in` | your keys, encoded for the mode `status` gives (`keys`); Enter is CR LF under `newline-mode on`; at most 512 bytes a write, queued (64 KiB at most) while the pipe is full |
 | `NAME/ctl` | `resize COLS ROWS` (only the fit step below), `paste PATH`, and whatever your grift sends (`kill`, `signal NAME`) |
 | `NAME/history` | paged in a pane of its own by `C-b c` |
@@ -325,7 +325,6 @@ or from grift with `(arrange LINE)`. `PANE` is `NAME` or `NAME@ID`; `TAB` is
 | `split PANE DIR` | starts a shell (`shell-N`, your `$SHELL`) and puts it beside PANE on side DIR |
 | `split PANE DIR NEW` | puts the existing pane NEW beside PANE on side DIR |
 | `close PANE` | takes PANE's tile away (a pane still running comes back where its filter routes it) |
-| `swap PANE PANE` | the two exchange tiles |
 | `move PANE DIR` | swaps PANE with the pane beside it that way |
 | `move PANE earlier` / `later` | swaps PANE with the one before or after it in its tab |
 | `move PANE tab TAB` / `tab new` | moves PANE into a tab, or a new tab after its own |
@@ -337,14 +336,12 @@ or from grift with `(arrange LINE)`. `PANE` is `NAME` or `NAME@ID`; `TAB` is
 | `workspace new [TITLE]`, `workspace rename WS TITLE`, `workspace close WS`, `workspace move WS earlier\|later` | |
 | `reset` | the default layout (one workspace `main`, one tab `all`), over whatever is there |
 
-Any command may end with `if VERSION`: it is refused unless the layout is at
-that version (a mouse drag uses it). What a command did is printed as lines:
+What a command did is printed as lines:
 `version N`, `made tN`/`made wN`, `started NAME@ID`, and `changed NAME@ID` for
 every pane whose tile moved or changed size.
 
 **Sizes.** Opening a viewer, moving the focus and resizing the viewer's
-terminal resize no pane: a tile clips or pads it (`[cut NAME]` in the corner
-says a pane is larger than its tile). The shipped commands end by fitting the
+terminal resize no pane: a tile clips or pads it. The shipped commands end by fitting the
 panes they changed, once (`resize COLS ROWS` on each one's `ctl`, the size of
 its tile in the viewer that ran the command): that step is the library's
 `edit!`; `.view/ctl` lines go through `layout-command`, which is `edit!`.
@@ -363,15 +360,14 @@ group opens that group's menu, and Escape closes it. `C-b` twice sends `C-b`.
 | `C-b x`, `C-b z`, `C-b c`, `C-b f` | close pane (asks), zoom or restore, history in a pager, fit the pane to its tile |
 | `C-b h j k l`, `C-b o`, `C-b q` | focus left/down/up/right, next pane, last pane |
 | `C-b n`, `C-b b` | next / previous tab |
-| `C-b t n h l g r x`, `C-b t m h l` | tabs: new, previous, next, choose, rename, close; reorder (repeats) |
+| `C-b t n h l g r x`, `C-b t m h l` | tabs: new, previous, next, choose, rename, close; reorder |
 | `C-b w n h l g r x`, `C-b w m h l` | workspaces: the same |
-| `C-b r h j k l` | move a border (repeats) |
-| `C-b m h j k l` | move the pane (repeats) |
-| `C-b a x k s t n w W`, `C-b a m h l` | pane actions: close, terminate (`signal TERM`), swap with…, move to tab…, to a new tab, to workspace…, to a new workspace; reorder |
+| `C-b r h j k l` | move a border by a cell |
+| `C-b m h j k l` | move the pane |
+| `C-b a x k t n w W`, `C-b a m h l` | pane actions: close, terminate (`signal TERM`), move to tab…, to a new tab, to workspace…, to a new workspace; reorder |
 | `C-b e`, `C-b ?`, `C-b d` | grift prompt, every key, detach |
 
-Mouse: a click focuses a pane; dragging a border moves it when let go. Mouse
-events are never sent to programs. A paste goes to the focused pane through
+Mouse: a click focuses a pane. Mouse events are never sent to programs. A paste goes to the focused pane through
 `paste` (bracketed if the program asked).
 
 ### Configuration: grift
@@ -389,14 +385,14 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 |---|---|
 | `(bind-key KEYS CAPTION HEADING FUNCTION)` | KEYS is up to 4 keys (`"C-b v"`, `"F7"`) |
 | `(bind-verb KEYS CAPTION HEADING VERB [ARG])` | a viewer action, done at once even while a binding runs |
-| `(bind-group KEYS CAPTION HEADING [REPEAT])`, `(unbind-key KEYS)` | a group's menu; REPEAT `#true` keeps its keys active |
+| `(bind-group KEYS CAPTION HEADING)`, `(unbind-key KEYS)` | a group's menu |
 | `(act VERB [ARG])` | verbs: `next-pane`, `last-pane`, `focus-left` … `focus-down`, `next-tab`, `previous-tab`, `next-workspace`, `previous-workspace`, `show-tab "tN"`, `show-workspace "wN"`, `fit`, `detach`, `chord "C-b v"` |
 | `(focused)`, `(shown-tab)`, `(shown-workspace)` | `NAME@ID`, `tN`, `wN` |
 | `(workspaces)`, `(tabs)`, `(panes)`, `(key-bindings)` | lists of rows: `(wN title)`, `(tN title wN)`, `(NAME@ID tN)`, `(keys caption heading)` |
 | `(arrange LINE)` | one layout command; its result lines |
 | `(fit-after RESULT)`, `(line-of KEY RESULT)` | fit the panes a result changed; a result line's value |
 | `(start-new PREFIX PROGRAM ARG…)` | starts `PREFIX-N` (your shell if no program): `NAME@ID` |
-| `(send PANE TEXT)`, `(send-key PANE KEY)` | to the pane's `in`, after keys typed before |
+| `(send PANE TEXT)` | to the pane's `in`, after keys typed before |
 | `(ctl PANE LINE)` | one line to the pane's `ctl` (`kill`, `signal INT`, …) |
 | `(pick TITLE ROWS FUNCTION [KEYS])`, `(read-line PROMPT INITIAL FUNCTION)` | a list or a line to type; what is chosen goes to FUNCTION |
 | `(focus PANE)`, `(say TEXT)`, `(session-dir)`, `(quote TEXT)` | |
@@ -417,6 +413,22 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 - **Sizes stay.** A pane keeps its size when viewed, focused, or when the
   terminal is resized; only the split, move and border commands (and `C-b f`)
   fit it, once. fux resizes panes to their tiles.
+- **No repeating groups.** `C-b r h` moves a border once; type it again to
+  move it again. No `[cut]` or `[hidden]` marks in the corner, and no notice
+  when a pane's program ends (its tile says so).
+- **Pictures show only whole.** A picture is drawn (its file written as it
+  is) only when all of it fits in its tile; one cut by the tile's edge, the
+  bar or the top of what shows is left blank.
+- **Keys typed while the keys load wait** in the terminal until the library,
+  the default keys and your config have loaded (each part within its time).
+- **No swap.** `C-b a s` is gone; `move PANE DIR` swaps with a neighbour.
+- **No border dragging with the mouse.** A click focuses; borders move with
+  `C-b r h j k l` or `border PANE DIR CELLS`.
+- **A pane's kill ends the panes started inside it.** On Linux a holder
+  adopts what its program leaves behind, and `kill` ends it all: a viewer run
+  in a pane of a session starts its new panes from inside that pane, so
+  killing that pane ends them too. Run the viewer in your own terminal, or
+  start panes with `fux3 start` from outside.
 - **Scrollback is a pager.** `C-b c` pages the pane's `history` in a pane of
   its own (`$PAGER`, else `less +G`), which ends itself with the pager. There
   is no copy mode and no editor history.
