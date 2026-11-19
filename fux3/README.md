@@ -270,21 +270,36 @@ a limit is refused out loud, in `errors`, on stderr or in `status`.
 
 ## The viewer
 
-fux3's viewer: it shows a fux3 session's panes the way fux shows its own, and
-sends your keys to the focused one. It reads and writes only the pane files
-(see `fux3/DESIGN.md`) and its own `.view/` directory in the session. It owns
-nothing: kill it however you like and every pane goes on. Start two and they
-show the same layout; each keeps its own focus and shown tab.
+fux3's viewer: it shows one workspace of a fux3 session the way fux shows its
+own, and sends your keys to the focused pane. It reads and writes only the pane
+files (see `fux3/DESIGN.md`) and the workspace's `.view/` directory. It owns
+nothing: kill it however you like and every pane goes on. Start two on one
+workspace and they show the same layout; each keeps its own focus and shown
+tab.
 
 ```sh
 D=$(fux3 dir)
 fux3 start build -- sh
-fux3 view                                   # runs fux3-view with FUX3_DIR set
-echo "split build right" > "$D/.view/ctl"   # every running viewer changes
-fux3 view --do 'zoom build'                 # the same with no viewer running
+fux3 view                                       # workspace main; runs fux3-view with FUX3_DIR set
+echo "split build right" > "$D/main/.view/ctl"  # every viewer of main changes
+fux3 view main --do 'zoom build'                # the same with no viewer running
+fux3 view rig                                   # workspace rig, made if missing
 ```
 
+`fux3 view [WORKSPACE]` shows WORKSPACE (default `main`, made if missing, as
+`fux3 start` does). The workspace keys go over the session's workspaces, the
+directories of `$D`, by name: next, previous, a list, new (a name at a prompt:
+the directory is made and a shell started in it) and close (asks, then ends
+each pane, waits for them to go, and removes the directory, `.view` and all).
+A viewer whose workspace's directory goes shows the first one left, else a new
+`main`. Each viewer remembers, for each workspace it has shown, the tab and
+focus it left there. Workspaces have no rename (a directory renamed under live
+holders moves their files away from them) and no order but their names'; a
+pane stays in the workspace it started in.
+
 ### What it reads and writes
+
+Paths are in the workspace shown, `$D/WORKSPACE/`.
 
 | Path | What the viewer does with it |
 |---|---|
@@ -294,13 +309,13 @@ fux3 view --do 'zoom build'                 # the same with no viewer running
 | `NAME/in` | your keys, encoded for the mode `status` gives (`keys`); Enter is CR LF under `newline-mode on`; at most 512 bytes a write, queued (64 KiB at most) while the pipe is full |
 | `NAME/ctl` | `resize COLS ROWS` (only the fit step below), `paste PATH`, and whatever your grift sends (`kill`, `signal NAME`) |
 | `NAME/history` | paged in a pane of its own by `C-b c` |
-| `.view/layout`, `.view/layout.lock` | the layout, shared by every viewer (below) |
-| `.view/ctl` | a FIFO of layout commands, made by the first viewer; every viewer reads it, so any one takes a line |
+| `.view/layout`, `.view/layout.lock` | the workspace's layout, shared by every viewer of it (below) |
+| `.view/ctl` | a FIFO of layout commands for this workspace, made by the first viewer of it; every viewer showing the workspace reads it, so any one takes a line, and a viewer stops reading it when it shows another. A regular file there (written with no viewer) has its lines run when a viewer comes to the workspace |
 | `.view/errors` | the last 32 refused `.view/ctl` lines, `LINE: WHY`, replaced whole |
 | `.view/paste-PID-N` | a paste's text, 0600, removed once the pane's `commands` count passed the `paste` command, or after 10 s |
 
-The session directory is listed again once a second and whenever the layout
-changes. A pane whose directory is gone keeps its tile, drawn as `NAME gone`;
+The workspace's directory is listed again once a second and whenever the
+layout changes. A pane whose directory is gone keeps its tile, drawn as `NAME gone`;
 one whose program ended keeps it too, marked `NAME exited 0` (or `signalled
 …`). A new pane under an old name gets its own tile: tiles name a pane with its
 id. Panes the viewer starts get the first free `PREFIX-N` that no pane and no
@@ -308,14 +323,13 @@ tile uses.
 
 ### The layout file
 
-`.view/layout` holds workspaces, tabs, and per tab a tree of splits with
+`.view/layout` holds the workspace's tabs, and per tab a tree of splits with
 relative shares over panes named `NAME@ID`, a zoom, and a filter:
 
 ```
-fux3-layout 1
+fux3-layout 2
 version 7
-next 5
-workspace w1 "main"
+next 4
 tab t2 "all"
   zoom build@4673139adda1fbac
   split columns
@@ -329,7 +343,7 @@ tab t3 "builds"
 
 A pane with no tile of its own is shown in the first tab whose filter it
 passes (every `KEY=VALUE` is one of its labels; `name=NAME` is its name; no
-filter takes any), else in a tab `other` at the end of the first workspace.
+filter takes any), else in a tab `other` at the end.
 Every change is one command applied to the file as it is then, under the lock
 (waited for 2 s at most), and written whole by atomic replace; `version` goes
 up by one. A missing (after one was read), oversized (over 64 KiB) or wrong
@@ -339,11 +353,12 @@ one command that does.
 
 ### Layout commands
 
-One line each, written to `.view/ctl` (a viewer takes it), run with
-`fux3-view --do 'LINE'` (prints what it did; a refusal goes to stderr, exit 1),
-or from grift with `(arrange LINE)`. `PANE` is `NAME` or `NAME@ID`; `TAB` is
-`tN` or a title no other tab has; `WS` likewise `wN` or a title; `DIR` is
-`left`, `right`, `up` or `down`; a title with spaces is quoted, `"like this"`.
+One line each, acting on one workspace's layout: written to its `.view/ctl` (a
+viewer of it takes it), run with `fux3 view [WORKSPACE] --do 'LINE'` (prints
+what it did; a refusal goes to stderr, exit 1), or from grift with `(arrange
+LINE)` (the workspace shown). `PANE` is `NAME` or `NAME@ID`, a pane of that
+workspace; `TAB` is `tN` or a title no other tab has; `DIR` is `left`, `right`,
+`up` or `down`; a title with spaces is quoted, `"like this"`.
 
 | Command | What it does |
 |---|---|
@@ -353,16 +368,14 @@ or from grift with `(arrange LINE)`. `PANE` is `NAME` or `NAME@ID`; `TAB` is
 | `move PANE DIR` | swaps PANE with the pane beside it that way |
 | `move PANE earlier` / `later` | swaps PANE with the one before or after it in its tab |
 | `move PANE tab TAB` / `tab new` | moves PANE into a tab, or a new tab after its own |
-| `move PANE workspace WS` / `workspace new` | moves PANE into a workspace's first tab, or a new workspace |
 | `border PANE DIR CELLS` | moves PANE's border toward DIR by CELLS cells (as seen in the screen it was given in) |
 | `zoom PANE` | shows PANE alone in its tab, or restores the tab |
 | `tab new [TITLE] [after TAB] [match KEY=VALUE…]` | a new tab |
 | `tab rename TAB TITLE`, `tab close TAB`, `tab move TAB earlier\|later` | |
-| `workspace new [TITLE]`, `workspace rename WS TITLE`, `workspace close WS`, `workspace move WS earlier\|later` | |
-| `reset` | the default layout (one workspace `main`, one tab `all`), over whatever is there |
+| `reset` | the default layout (one tab `all`), over whatever is there |
 
 What a command did is printed as lines:
-`version N`, `made tN`/`made wN`, `started NAME@ID`, and `changed NAME@ID` for
+`version N`, `made tN`, `started NAME@ID`, and `changed NAME@ID` for
 every pane whose tile moved or changed size.
 
 **Sizes.** Opening a viewer, moving the focus and resizing the viewer's
@@ -386,10 +399,10 @@ group opens that group's menu, and Escape closes it. `C-b` twice sends `C-b`.
 | `C-b h j k l`, `C-b o`, `C-b q` | focus left/down/up/right, next pane, last pane |
 | `C-b n`, `C-b b` | next / previous tab |
 | `C-b t n h l g r x`, `C-b t m h l` | tabs: new, previous, next, choose, rename, close; reorder |
-| `C-b w n h l g r x`, `C-b w m h l` | workspaces: the same |
+| `C-b w n h l g x` | workspaces: new, previous, next, choose, close |
 | `C-b r h j k l` | move a border by a cell |
 | `C-b m h j k l` | move the pane |
-| `C-b a x k t n w W`, `C-b a m h l` | pane actions: close, terminate (`signal TERM`), move to tab…, to a new tab, to workspace…, to a new workspace; reorder |
+| `C-b a x k t n`, `C-b a m h l` | pane actions: close, terminate (`signal TERM`), move to tab…, to a new tab; reorder |
 | `C-b e`, `C-b ?`, `C-b d` | grift prompt, every key, detach |
 
 Mouse: a click focuses a pane. Mouse events are never sent to programs. A paste goes to the focused pane through
@@ -411,16 +424,18 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 | `(bind-key KEYS CAPTION HEADING FUNCTION)` | KEYS is up to 4 keys (`"C-b v"`, `"F7"`) |
 | `(bind-verb KEYS CAPTION HEADING VERB [ARG])` | a viewer action, done at once even while a binding runs |
 | `(bind-group KEYS CAPTION HEADING)`, `(unbind-key KEYS)` | a group's menu |
-| `(act VERB [ARG])` | verbs: `next-pane`, `last-pane`, `focus-left` … `focus-down`, `next-tab`, `previous-tab`, `next-workspace`, `previous-workspace`, `show-tab "tN"`, `show-workspace "wN"`, `fit`, `detach`, `chord "C-b v"` |
-| `(focused)`, `(shown-tab)`, `(shown-workspace)` | `NAME@ID`, `tN`, `wN` |
-| `(workspaces)`, `(tabs)`, `(panes)`, `(key-bindings)` | lists of rows: `(wN title)`, `(tN title wN)`, `(NAME@ID tN)`, `(keys caption heading)` |
+| `(act VERB [ARG])` | verbs: `next-pane`, `last-pane`, `focus-left` … `focus-down`, `next-tab`, `previous-tab`, `next-workspace`, `previous-workspace`, `show-tab "tN"`, `show-workspace "NAME"` (made if missing), `fit`, `detach`, `chord "C-b v"` |
+| `(focused)`, `(shown-tab)`, `(shown-workspace)` | `NAME@ID`, `tN`, the workspace's name |
+| `(workspaces)` | the session's workspaces, by name |
+| `(tabs)`, `(panes)`, `(key-bindings)` | lists of rows, of the workspace shown: `(tN title)`, `(NAME@ID tN)`, `(keys caption heading)` |
 | `(arrange LINE)` | one layout command; its result lines |
 | `(fit-after RESULT)`, `(line-of KEY RESULT)` | fit the panes a result changed; a result line's value |
-| `(start-new PREFIX PROGRAM ARG…)` | starts `PREFIX-N` (your shell if no program): `NAME@ID` |
+| `(start-new PREFIX PROGRAM ARG…)` | starts `PREFIX-N` in the workspace shown, or in WORKSPACE (made if missing) for `WORKSPACE/PREFIX` (your shell if no program): `NAME@ID` |
+| `(close-workspace NAME)` | ends its panes, then removes its directory (refused, saying which, if a pane will not end within 12 s) |
 | `(send PANE TEXT)` | to the pane's `in`, after keys typed before |
 | `(ctl PANE LINE)` | one line to the pane's `ctl` (`kill`, `signal INT`, …) |
 | `(pick TITLE ROWS FUNCTION [KEYS])`, `(read-line PROMPT INITIAL FUNCTION)` | a list or a line to type; what is chosen goes to FUNCTION |
-| `(focus PANE)`, `(say TEXT)`, `(session-dir)`, `(quote TEXT)` | |
+| `(focus PANE)`, `(say TEXT)`, `(workspace-dir)`, `(quote TEXT)` | `workspace-dir`: the shown workspace's directory |
 
 ```lisp
 ;; ~/.config/fux3/view.grift
@@ -446,6 +461,10 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
   bar or the top of what shows is left blank.
 - **Keys typed while the keys load wait** in the terminal until the library,
   the default keys and your config have loaded (each part within its time).
+- **Workspaces are directories.** One viewer shows one workspace; there is
+  no workspace rename (`C-b w r`), reorder (`C-b w m`), or moving a pane to
+  another workspace (`C-b a w`, `C-b a W`): a pane's workspace is where it
+  started. The list and next/previous go by name.
 - **No swap.** `C-b a s` is gone; `move PANE DIR` swaps with a neighbour.
 - **No border dragging with the mouse.** A click focuses; borders move with
   `C-b r h j k l` or `border PANE DIR CELLS`.

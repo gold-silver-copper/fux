@@ -63,3 +63,32 @@ Append-only: one short entry per decision, newest last.
     `status`, within the start's own time bound (core need written in the status file). A new
     life under a reused name also drops what the viewer kept for the old one (its open `in`, its
     queued keys, its screen).
+15. **One layout per workspace, a workspace a directory (owner, 2026-11-19).** The layout file
+    lost its workspace level: `$D/WORKSPACE/.view/` holds the workspace's layout (tabs and
+    splits; header now `fux3-layout 2`, no old file read), its lock, `ctl` and `errors`. A viewer
+    shows one workspace; switching opens the new one's `ctl` (taking a regular file's lines, as at
+    start), drops the old one's, and starts from its files again, keeping what it remembers per
+    workspace (the tab and focus it left; memory, never a file). Why derive the list from
+    directories: they are the one source of truth the core already keeps; a second list of
+    workspaces in a file could disagree with them.
+    - **No rename.** Renaming the directory moves live holders' directories from under them
+      (they write by path), so it is not safe; a workspace is called what it was made as.
+    - **No reorder, no moving a pane to another workspace.** The order is the names'; a pane's
+      workspace is fixed when it starts (the core's rule).
+    - **New** asks for a name, refuses one that exists, starts `NAME/shell-1` (which makes the
+      directory) and shows it: the shell has no tile, so routing puts it in the one tab.
+    - **Close** asks, ends every pane (`kill` on each `ctl`), waits up to 12 s for them to go,
+      then under the session's lock (so no `fux3 start` can put a pane in it meanwhile) removes the
+      directory, `.view` and all. A pane that will not end is named and the workspace stays.
+      Removing, not leaving an empty directory: an empty one would stay in every list.
+    - **A workspace whose directory goes** (closed here, by another viewer, or `rm -r`) gives way
+      to the first left by name, else a new `main`: one rule for every way it can go.
+    - **A run acts on the workspace shown when it was asked for.** A run's context carries the
+      workspace's name, so a `.view/ctl` line queued before a switch still acts on its own
+      workspace, as does a binding that switches workspaces partway through.
+    - `start-new` takes `WORKSPACE/PREFIX` to start in another workspace (as `fux3 start` takes
+      `WORKSPACE/NAME`); `session-dir` became `workspace-dir`; `(workspaces)` lists names;
+      `show-workspace` takes a name.
+    - Left as it was: a `.view/ctl` FIFO that no viewer reads makes a writer wait, as before
+      (a viewer that switches away, like one that ends, leaves it). Removing it on leaving would
+      break another viewer still reading it.
