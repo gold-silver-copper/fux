@@ -97,11 +97,6 @@ pub fn open_private(path: &std::path::Path) -> Result<File, Failure> {
     Ok(dir)
 }
 
-/// Checks that `path` is a directory of this user's alone.
-pub fn check_private(path: &std::path::Path) -> Result<(), Failure> {
-    open_private(path).map(drop)
-}
-
 /// The directory `name` in `dir`, made private if `make` and missing,
 /// held open; a link, or anything but a directory of this user's, is
 /// refused.
@@ -213,6 +208,11 @@ impl Session {
             }
             _ => {}
         }
+        Session::at(root)
+    }
+
+    /// The session whose directory is `root`: opened once, a link refused.
+    pub fn at(root: PathBuf) -> Result<Session, Failure> {
         let dir = Arc::new(open_private(&root)?);
         Ok(Session { root, dir })
     }
@@ -313,12 +313,6 @@ impl Workspace {
         Ok(names)
     }
 
-    /// Where the pane called `name` was when this workspace was named:
-    /// for showing and for other programs.
-    pub fn pane_dir(&self, name: &str) -> PathBuf {
-        self.dir.join(name)
-    }
-
     /// The directory of the pane called `name` now, held open.
     pub fn pane(&self, name: &str) -> Result<File, Failure> {
         check_name(name)?;
@@ -326,16 +320,6 @@ impl Workspace {
             .ok()
             .filter(is_pane)
             .ok_or_else(|| Failure::new(format!("no pane {}/{name}", self.name)))
-    }
-
-    /// Whether `name`'s holder lives: its directory's lock is held. One
-    /// that can't be looked at counts as live: it is never cleared on a
-    /// guess.
-    pub fn is_live(&self, name: &str) -> bool {
-        !matches!(
-            at::open_dir(&self.held, name).map(|d| try_lock(&d)),
-            Ok(Ok(true))
-        )
     }
 
     /// The live panes here, after clearing every dead one's leftovers.
@@ -422,7 +406,7 @@ impl Workspace {
             place(dir).ok_or_else(|| Failure::new("the pane's directory went"))?;
         at::rename_new(&parent, &staged, &self.held, name).map_err(|e| {
             if e.kind() == std::io::ErrorKind::AlreadyExists {
-                let there = self.pane_dir(name);
+                let there = self.dir.join(name);
                 let why = "is there and holds what no pane made: it was left alone";
                 return Failure::new(format!("{} {why}", there.display()));
             }

@@ -64,15 +64,17 @@ until_ok test -s "$W/count"
 [ "$(ls "$D/main")" = build ]
 
 # The viewer, run in a pane of a session of its own (it needs a terminal),
-# and the layout driven with a plain file while it runs.
+# and a layout command made from outside while it runs: an edit of the
+# layout file, which the viewer shows and fits within its next looks.
 FUX3_DIR=$V fux3 start viewer --size 100x30 -- env FUX3_DIR="$D" fux3 view >/dev/null
-until_long test -p "$D/main/.view/ctl"
-echo "split build right" > "$D/main/.view/ctl"
+printf 'echo viewer-$((1+1))\n' > "$D/main/build/in"
+until_long grep -qs 'viewer-2' "$V/main/viewer/screen"
+fux3 view main --do "split build right" >/dev/null
 until_long grep -qs 'pane shell-1@' "$D/main/.view/layout"
 until_long test -d "$D/main/shell-1"
 # The split fitted build to its half of the viewer, once; the viewer's own
 # pane stays the size it was started at.
-until_ok grep -qx 'size 49 30' "$D/main/build/status"
+until_long grep -qx 'size 49 30' "$D/main/build/status"
 grep -qx 'size 100 30' "$V/main/viewer/status"
 # Killing the viewer outright leaves every pane running and typable.
 kill -9 "$(sed -n 's/^pid //p' "$V/main/viewer/status")"
