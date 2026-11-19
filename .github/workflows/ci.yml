@@ -434,9 +434,12 @@ jobs:
           if (-not $finished) { Stop-Process -Id $run.Id -Force; "the viewer tests timed out" }
           Get-Content $log, "$log.err"
           "exit $(if ($finished) { $run.ExitCode } else { 'timeout' })"
-          Get-Process fux2* -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, StartTime
-          Get-Process fux2* -ErrorAction SilentlyContinue | Stop-Process -Force
-          $failed += [int](-not $finished -or $run.ExitCode -ne 0)
+          # Every pane was killed: none may still be running.
+          Start-Sleep -Seconds 3
+          $left = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'fux2%'")
+          $left | ForEach-Object { "left running: $($_.ProcessId) $($_.CommandLine)" }
+          $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          $failed += [int](-not $finished -or $run.ExitCode -ne 0) + [int]($left.Count -gt 0)
           exit $failed
 
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured

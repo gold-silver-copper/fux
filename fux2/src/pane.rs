@@ -305,7 +305,10 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
         _ => return ExitCode::FAILURE,
     };
     match Spec::parse(args).and_then(|spec| prepare(spec, bound)) {
-        Ok(mut pane) => {
+        Ok(pane) => {
+            // Never dropped: closing a terminal can wait on what runs on it,
+            // and a pane that has answered its kill has nothing left to do.
+            let mut pane = std::mem::ManuallyDrop::new(pane);
             let token = pane.model.token();
             let said = writeln!(stdout, "ok {token}").and_then(|()| stdout.flush());
             // The starter is gone or going: nothing may be written to, or
@@ -436,7 +439,7 @@ impl Pane {
         self.model.limitation(text);
     }
 
-    fn serve(mut self) {
+    fn serve(&mut self) {
         let mut poll = Poll::default();
         loop {
             let now = Instant::now();
