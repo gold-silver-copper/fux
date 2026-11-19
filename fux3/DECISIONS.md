@@ -296,3 +296,15 @@ after must-fixes; `notes/projects/fux/fux3-2026-11-18/round3-result.md`):
 - **D67. `fux3 start --no-recipe`.** The viewer's copy pane (`C-b c`) is
   nobody's to start again: it wrote a recipe `history-N` over whatever was
   saved under that name and removed it afterwards by name.
+- **D68. The fix check** (two fresh reviewers on the round-3 fixes, one
+  pass): both found M4, M5 and M6 closed and M1's failures gone. Fixed from
+  it: a test's lost check (the copy's pane ends itself wherever it was
+  moved); a workspace close that had ended its panes and then waited and
+  said "did not end" about what a pane left behind (it now stops at once and
+  says the panes were ended and what is left); the loser of two makers of
+  `.view` cleans up through the directory it holds; "my own close" means the
+  close removed the directory. Not changed: a file of the user's put inside
+  `.view` or `.recipes` goes with them (the owner's rule for the close: those
+  two hold only fux3's files); the staging directory removed by name when it
+  cannot be opened (only an empty directory swapped in at a random name in
+  that instant could go).

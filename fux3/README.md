@@ -536,9 +536,17 @@ fux3 view main --do "split build right"         # every viewer of main shows it 
 directories of `$D`, by name: next, previous, a list, new (a name at a prompt:
 the directory is made and a shell started in it) and close (asks, then ends
 each pane, waits for them to go, and removes `.view`, `.recipes` and then the
-directory; it never deletes a file or directory of yours: with one in the
-workspace, or a pane still starting or ending, it stops before ending any
-pane and names what is there; move it out and close again).
+directory; it never removes what fux3 did not make).
+
+Closing a workspace stops **before ending any pane** when the workspace
+itself holds something that is not one of its panes, `.view` or `.recipes`: a
+file or directory of yours, or a pane that is still starting or ending. It
+**ends the panes and then stops** when what is in the way only shows once
+they have ended: something no pane made inside a pane's own directory (a
+file you put there, or another pane you moved into it), which the pane leaves
+behind as `.gone-ID`; or a pane that does not end within 12 s. Either way it
+says which: move it out and close again.
+
 A viewer whose workspace's directory goes shows the first one left, else a new
 `main`. Each viewer remembers, for each workspace it has shown, the tab and
 focus it left there. Workspaces have no order but their names'.
