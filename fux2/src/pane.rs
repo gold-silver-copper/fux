@@ -226,6 +226,7 @@ struct Peer {
     /// When its answer must be gone by, however steadily it drains.
     latest: Option<Instant>,
     closing: bool,
+    broken: bool,
     idle_since: Instant,
 }
 
@@ -467,11 +468,13 @@ impl Pane {
                 self.note(format!("{lost} replies to the program were dropped"));
                 self.input.lost_replies = 0;
             }
-            if listener {
-                self.accept(now);
-            }
+            // Served first: what was polled lines up with the connections
+            // as they were, and accepting may close an idle one.
             if self.service(&peers, now) {
                 return;
+            }
+            if listener {
+                self.accept(now);
             }
             if self.model.version() != before {
                 self.wake(now);
@@ -655,6 +658,7 @@ impl Pane {
                 due: None,
                 latest: None,
                 closing: false,
+                broken: false,
                 idle_since: now,
             });
         }
@@ -694,13 +698,16 @@ impl Pane {
             };
             match self.turn(peer, now) {
                 Ok(done) => finishing = done,
-                Err(_) => peer.closing = true,
+                // Broken: nothing more can reach it, so nothing is kept
+                // for it, and a poll would only report it again.
+                Err(_) => {
+                    sys::abandon(&peer.conn.stream);
+                    peer.broken = true;
+                }
             }
         }
-        // Connections accepted this turn wait in `self.peers`: none, as
-        // accepting came first, but nothing here may lose one.
-        peers.extend(std::mem::take(&mut self.peers));
-        peers.retain(|peer| !peer.closing || peer.conn.pending() > 0 || finishing);
+        peers
+            .retain(|peer| !peer.broken && (!peer.closing || peer.conn.pending() > 0 || finishing));
         self.peers = peers;
         if finishing {
             self.finish();
@@ -867,7 +874,6 @@ impl Pane {
                 self.respond(peer, &answer, now);
             }
         }
-        peers.extend(std::mem::take(&mut self.peers));
         self.peers = peers;
     }
 
@@ -892,7 +898,6 @@ impl Pane {
             }
             !overdue
         });
-        peers.extend(std::mem::take(&mut self.peers));
         self.peers = peers;
     }
 
