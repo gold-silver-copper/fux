@@ -54,7 +54,6 @@
 (bind-group "C-b a" "Pane actions" "Pane actions")
 (bind-key "C-b a x" "close pane" "Pane actions" (lambda! () (confirm-close-pane (focused))))
 (bind-key "C-b a k" "terminate the running command" "Pane actions" (lambda! () (signal (focused) "TERM")))
-(bind-key "C-b a s" "swap with…" "Pane actions" (lambda! () (swap-with (focused))))
 (bind-key "C-b a t" "move to tab…" "Pane actions" (lambda! () (move-to-tab (focused))))
 (bind-key "C-b a n" "move to a new tab" "Pane actions" (lambda! () (move-to-new-tab (focused))))
 (bind-key "C-b a w" "move to workspace…" "Pane actions" (lambda! () (move-to-workspace (focused))))

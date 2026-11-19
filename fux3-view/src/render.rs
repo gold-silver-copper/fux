@@ -1,6 +1,7 @@
 //! Composing the screen: cells in rectangles first, escape sequences only
 //! from the finished result, so nothing a pane printed can reach the outer
 //! terminal as a sequence.
+use crate::layout::{Axis, Border};
 use crate::panes::Screen;
 
 /// The largest screen composed; a bigger terminal is left blank past it.
@@ -213,21 +214,22 @@ pub fn first_row(screen: &Screen, tile: Tile) -> u16 {
 pub const BORDER: &str = ";38;5;240";
 pub const FOCUSED_BORDER: &str = ";32";
 
-/// One cell of a border: where it is, and whether its line runs up and
-/// down (between panes side by side) or across.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Edge {
-    pub x: u16,
-    pub y: u16,
-    pub upright: bool,
-}
-
 impl Frame {
-    /// Draws border cells as lines, each joined to the border cells beside
-    /// it; those touching `focus` (its edges and corners) in green.
-    pub fn borders(&mut self, edges: &[Edge], focus: Option<Tile>) {
+    /// Draws `borders` as lines, each cell joined to the border cells
+    /// beside it; those touching `focus` (its edges and corners) in green.
+    pub fn borders(&mut self, borders: &[Border], focus: Option<Tile>) {
+        let small = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
+        let along = |b: &Border| b.from..b.from.saturating_add(b.length);
+        let edges: Vec<(u16, u16, bool)> = (borders.iter())
+            .flat_map(|b| {
+                along(b).map(move |at| match b.axis {
+                    Axis::Columns => (small(b.at), small(at), true),
+                    Axis::Rows => (small(at), small(b.at), false),
+                })
+            })
+            .collect();
         let set: std::collections::HashSet<(u16, u16)> =
-            edges.iter().map(|edge| (edge.x, edge.y)).collect();
+            edges.iter().map(|(x, y, _)| (*x, *y)).collect();
         let has = |x: Option<u16>, y: Option<u16>| match (x, y) {
             (Some(x), Some(y)) => set.contains(&(x, y)),
             _ => false,
@@ -244,8 +246,7 @@ impl Frame {
                     && y <= bottom
             })
         };
-        for edge in edges {
-            let (x, y) = (edge.x, edge.y);
+        for &(x, y, upright) in &edges {
             let up = has(Some(x), y.checked_sub(1));
             let down = has(Some(x), y.checked_add(1));
             let left = has(x.checked_sub(1), Some(y));
@@ -260,7 +261,7 @@ impl Frame {
                 (true, false, true, false) => "\u{2518}",
                 (false, true, false, true) => "\u{250c}",
                 (false, true, true, false) => "\u{2510}",
-                _ if edge.upright => "\u{2502}",
+                _ if upright => "\u{2502}",
                 _ => "\u{2500}",
             };
             let sgr = if ring(x, y) { FOCUSED_BORDER } else { BORDER };

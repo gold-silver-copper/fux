@@ -71,15 +71,6 @@ impl Dir {
         }
     }
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Dir::Left => "left",
-            Dir::Right => "right",
-            Dir::Up => "up",
-            Dir::Down => "down",
-        }
-    }
-
     fn axis(self) -> Axis {
         match self {
             Dir::Left | Dir::Right => Axis::Columns,
@@ -564,17 +555,6 @@ pub struct Border {
     pub length: u32,
     pub before: PaneRef,
     pub after: PaneRef,
-}
-
-impl Border {
-    /// Whether the cell `(x, y)` is on it.
-    pub fn holds(&self, x: u32, y: u32) -> bool {
-        let along = self.from..self.from.saturating_add(self.length);
-        match self.axis {
-            Axis::Columns => x == self.at && along.contains(&y),
-            Axis::Rows => y == self.at && along.contains(&x),
-        }
-    }
 }
 
 fn borders_of(node: &Node, area: Rect, out: &mut Vec<Border>) {
@@ -1217,15 +1197,9 @@ impl fmt::Display for Edited {
     }
 }
 
-/// Applies `op` to the layout as it is now, under the lock, and writes it,
-/// if `expected` (when given) is still its version. `live` is what exists.
-pub fn edit(
-    view: &Path,
-    expected: Option<u64>,
-    live: &[Live],
-    area: Rect,
-    op: &Op,
-) -> Result<Edited, Failure> {
+/// Applies `op` to the layout as it is now, under the lock, and writes it.
+/// `live` is what exists.
+pub fn edit(view: &Path, live: &[Live], area: Rect, op: &Op) -> Result<Edited, Failure> {
     let lock = lock(view)?;
     // A reset is the one way past a file that cannot be read.
     let reset = matches!(op, Op::Reset);
@@ -1234,14 +1208,6 @@ pub fn edit(
         Err(_) if reset => Layout::default(),
         Err(failure) => return Err(failure),
     };
-    if let Some(expected) = expected
-        && expected != layout.version
-    {
-        return Err(bad(format!(
-            "the layout is at version {}, not {expected}",
-            layout.version
-        )));
-    }
     let before = layout.shown(&routing(op, live));
     let old = layout.clone();
     let made = apply(&mut layout, live, area, op)?;
@@ -1320,7 +1286,6 @@ pub enum Op {
     SplitNew(Target, Dir),
     /// Takes a pane's tile away.
     Close(Target),
-    Swap(Target, Target),
     Move(Target, Whither),
     /// Moves a pane's border toward DIR, by a number of cells.
     Border(Target, Dir, u32),
@@ -1340,14 +1305,6 @@ pub enum Op {
     Reset,
 }
 
-/// One command line read: what it does, and the version it insists on
-/// (`... if VERSION`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Command {
-    pub op: Op,
-    pub expected: Option<u64>,
-}
-
 fn later_of(word: &str) -> Result<bool, Failure> {
     match word {
         "earlier" => Ok(false),
@@ -1357,17 +1314,9 @@ fn later_of(word: &str) -> Result<bool, Failure> {
 }
 
 /// Reads one layout command (the grammar is in the README).
-pub fn parse_command(line: &str) -> Result<Command, Failure> {
+pub fn parse_command(line: &str) -> Result<Op, Failure> {
     let all = words(line.trim()).map_err(bad)?;
-    let mut words: Vec<&str> = all.iter().map(|(w, _)| w.as_str()).collect();
-    let mut expected = None;
-    if let [.., "if", version] = words.as_slice() {
-        let version = version
-            .parse()
-            .map_err(|_| bad(format!("if {version:?}: a version number")))?;
-        expected = Some(version);
-        words.truncate(words.len().saturating_sub(2));
-    }
+    let words: Vec<&str> = all.iter().map(|(w, _)| w.as_str()).collect();
     let target = Target::parse;
     let owned = |w: &str| w.to_owned();
     let title = |w: &str| check_title(w).map(|()| w.to_owned()).map_err(bad);
@@ -1381,7 +1330,6 @@ pub fn parse_command(line: &str) -> Result<Command, Failure> {
         ["split", pane, way] => Op::SplitNew(target(pane)?, dir(way)?),
         ["split", pane, way, new] => Op::Split(target(pane)?, target(new)?, dir(way)?),
         ["close", pane] => Op::Close(target(pane)?),
-        ["swap", a, b] => Op::Swap(target(a)?, target(b)?),
         ["move", pane, "tab", tab] => Op::Move(
             target(pane)?,
             Whither::Tab((*tab != "new").then(|| owned(tab))),
@@ -1421,7 +1369,7 @@ pub fn parse_command(line: &str) -> Result<Command, Failure> {
         [] => return Err(bad("an empty command")),
         _ => return Err(bad("no such layout command; see fux3-view's README")),
     };
-    Ok(Command { op, expected })
+    Ok(op)
 }
 
 /// The tile `target` names in the shown layout: a live pane of that name
@@ -1660,13 +1608,6 @@ pub fn apply(
             }
             Ok(None)
         }
-        Op::Swap(a, b) => {
-            let (a, b) = (resolve(&shown, live, a)?, resolve(&shown, live, b)?);
-            materialize(layout, &shown, &a)?;
-            materialize(layout, &shown, &b)?;
-            exchange(layout, &a, &b);
-            Ok(None)
-        }
         Op::Move(pane, to) => {
             let (to, made) = match to {
                 Whither::Beside(_) | Whither::Order(_) => {
@@ -1901,7 +1842,7 @@ mod tests {
     };
 
     fn run(layout: &mut Layout, live: &[Live], line: &str) -> Result<Option<String>, Failure> {
-        apply(layout, live, AREA, &parse_command(line)?.op)
+        apply(layout, live, AREA, &parse_command(line)?)
     }
 
     #[test]

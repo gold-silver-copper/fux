@@ -149,7 +149,7 @@ pub fn run_line(
 ) -> Result<Edited, Failure> {
     let command = layout::parse_command(line)?;
     let view = view_dir(session)?;
-    let (op, started) = if let Op::SplitNew(target, dir) = &command.op {
+    let (op, started) = if let Op::SplitNew(target, dir) = &command {
         {
             // The pane split must have a tile before a shell is started for it.
             let shown = layout::read(&view)?.shown(&live_panes(session));
@@ -169,9 +169,9 @@ pub fn run_line(
             (Op::Split(target, new, dir), Some(pane))
         }
     } else {
-        (command.op.clone(), None)
+        (command.clone(), None)
     };
-    let edited = layout::edit(&view, command.expected, &live_panes(session), area, &op);
+    let edited = layout::edit(&view, &live_panes(session), area, &op);
     match (edited, started) {
         (Ok(edited), started) => Ok(Edited { started, ..edited }),
         (Err(failure), Some(pane)) => Err(Failure::new(format!(

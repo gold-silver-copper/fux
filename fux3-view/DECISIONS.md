@@ -45,3 +45,15 @@ Append-only: one short entry per decision, newest last.
     `resize` on its `ctl`. No pty code in the tests, and they read exactly what a person would
     see. Writes to FIFOs in tests are non-blocking, so a gone holder is an error, not a hang.
     `cargo test -p fux3-view` builds `fux3` first if the run did not (`$CARGO build -p fux3`).
+12. **Clearly under 6,000 lines (owner, 2026-11-19): what went.** Repeating key groups, the
+    `[hidden]`/`[cut]` corner, the notice when a program ends (its tile says so), holding keys typed
+    while the keys load (they now wait in the terminal; loading is bounded per part, so detach
+    still comes within those bounds), `swap` and `C-b a s`, `send-key`, sixel cropping (a picture
+    shows only whole; the owner's prompt allowed this), and mouse border dragging with the
+    `if VERSION` guard it needed (a click still focuses; `C-b r` and `border` move borders). Kept,
+    as the owner listed: the look, the layout file, `.view/ctl`, the menu from bindings, lists and
+    prompts; and the pictures, part of fux's look. Why drag over pictures: the keyboard and the
+    `border` command cover what a drag did; nothing else draws a picture.
+13. **The painter is one busy flag.** It is set before the writer thread can see a frame, and the
+    writer clears it when the frame is out: the next frame is made only then. An earlier order
+    (set after the hand-over) could leave it set forever and stop painting; a test run caught it.

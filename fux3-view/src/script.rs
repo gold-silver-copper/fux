@@ -77,8 +77,6 @@ pub enum ToViewer {
     Say(String),
     /// Bytes for a pane's program, after any keys typed before them.
     Type(String, Vec<u8>),
-    /// A key for a pane's program, encoded as the program asked.
-    Key(String, fux_vt::keys::KeyPress),
     /// A run begins: what stops it, and its time.
     Started(Interrupter, Duration),
     /// The run ended: what went wrong, if anything.
@@ -672,17 +670,6 @@ const WORDS: &[(&str, Word)] = &[
         pane_dir(g, host, &pane)?;
         let bytes = string_arg(g, host, text)?.into_bytes();
         host.tell(ToViewer::Type(pane, bytes));
-        inert()
-    }),
-    ("send-key", |g, host, args| {
-        let [pane, key] = *g.exactly(args)?;
-        let pane = string_arg(g, host, pane)?;
-        pane_dir(g, host, &pane)?;
-        let key = string_arg(g, host, key)?;
-        let key = key
-            .parse::<fux_vt::keys::KeyPress>()
-            .map_err(|e| failed(g, &e.to_string()))?;
-        host.tell(ToViewer::Key(pane, key));
         inert()
     }),
     ("ctl", |g, host, args| {

@@ -90,12 +90,6 @@
     (pick "workspaces" (map (lambda! (row) (workspace-row row here)) (workspaces))
       show-workspace
       (list (list "r" "rename" rename-workspace) (list "x" "close" confirm-close-workspace))))))
-(define! swap-with (lambda! (pane)
-  (let! ((others (filter (lambda! (row) (not? (equal? (first row) pane))) (panes-of (shown-tab)))))
-    (when! (empty-list? others) (raise (error (quote! fail) "only one pane in this tab")))
-    (pick (join "swap " (name-of pane) " with")
-      (map (lambda! (row) (list (first row) (name-of (first row)))) others)
-      (lambda! (other) (edit! (join "swap " pane " " other)))))))
 (define! move-to-tab (lambda! (pane)
   (let! ((here (shown-tab)))
     (pick (join "move " (name-of pane) " to tab")
@@ -153,7 +147,3 @@
     (map (lambda! (b) (list (first b) (join (first b) "  " (second b) "  (" (third b) ")")))
          (key-bindings))
     run-chord)))
-
-;; What a mouse drag of a border does when it is let go.
-(define! drag-border (lambda! (pane way cells version)
-  (edit! (join "border " pane " " way " " cells " if " version))))

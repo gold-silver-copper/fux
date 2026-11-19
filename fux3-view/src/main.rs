@@ -22,7 +22,7 @@ use fuxix::Errno;
 use fuxix::poll::{Events, Poke, Poll, PollFd, Wake, waker};
 use fuxix::process::Signal;
 use keys::{Action, Keys};
-use layout::{Dir, Layout, Live, PaneRef, Rect, Tab as LayoutTab, Target, Workspace};
+use layout::{Layout, Live, PaneRef, Rect, Tab as LayoutTab, Target, Workspace};
 use panel::{Column, Outcome, Panel};
 use panes::Pane;
 use render::{Frame, Tile};
@@ -77,9 +77,9 @@ const PASTE_LEAVE_WAIT: Duration = Duration::from_secs(1);
 const TIMING: Timing = Timing::new(50, 1000);
 
 /// The alternate screen, pastes bracketed, the cursor hidden, and the mouse
-/// reported (buttons and drags, SGR encoding); leaving undoes them.
-const ENTER: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[c";
-const LEAVE: &str = "\x1b[0m\x1b[0 q\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?2004l\x1b[?1049l";
+/// reported (buttons, SGR encoding); leaving undoes them.
+const ENTER: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[2J\x1b[c";
+const LEAVE: &str = "\x1b[0m\x1b[0 q\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?2004l\x1b[?1049l";
 
 fn after(now: Instant, wait: Duration) -> Instant {
     now.checked_add(wait).unwrap_or(now)
@@ -159,15 +159,6 @@ struct Running {
     forced: bool,
 }
 
-/// A border being dragged: where the press was, and the layout version it
-/// started from.
-struct Drag {
-    border: layout::Border,
-    from: (u16, u16),
-    to: (u16, u16),
-    version: u64,
-}
-
 struct View {
     session: Session,
     /// The session's `.view`: the layout, its lock, `ctl` and `errors`.
@@ -183,7 +174,7 @@ struct View {
     arranged: Arc<Layout>,
     /// The live panes `arranged` was made with.
     live: Vec<Live>,
-    /// The workspace shown, and the one before it, by id.
+    /// The workspace shown, by id.
     workspace: u32,
     /// The tab each workspace shows.
     places: BTreeMap<u32, u32>,
@@ -195,9 +186,8 @@ struct View {
     keys: Keys,
     /// The keys typed so far of a chord: their menu is shown.
     column: Option<Column>,
-    /// The group whose keys act again without the keys before them.
+    /// A list or a line to type, open over the panes.
     panel: Option<Panel>,
-    drag: Option<Drag>,
     /// A notice for the bar's corner, until the next key: its text and
     /// colours.
     notice: Option<(String, &'static str)>,
@@ -339,7 +329,6 @@ impl View {
 
     fn tab_changed(&mut self) {
         self.dirty = true;
-        self.drag = None;
         self.settle_focus();
     }
 
@@ -445,7 +434,7 @@ impl View {
         }
     }
 
-    /// Looks at one pane's files; tells of its program's end once.
+    /// Looks at one pane's files.
     fn look_at(&mut self, name: &str, shown: bool, now: Instant) {
         let Some(pane) = self.panes.get_mut(name) else {
             return;
@@ -484,8 +473,6 @@ impl View {
                 }
                 self.layout_seen |= text.is_some();
                 self.layout_text = text;
-                // A drag in progress was made against the old one.
-                self.drag = None;
                 let changed = stored != self.stored;
                 self.stored = stored;
                 changed
@@ -788,9 +775,6 @@ impl View {
             }
             ToViewer::Say(text) => self.note(text),
             ToViewer::Type(pane, bytes) => self.type_into(&pane, |_| bytes),
-            ToViewer::Key(pane, press) => {
-                self.type_into(&pane, |p| p.key_bytes(Keystroke { press, kitty: None }))
-            }
             ToViewer::Started(stop, limit) => {
                 self.running = Some(Running {
                     stop,
@@ -983,42 +967,10 @@ impl View {
         }
     }
 
-    /// A click focuses the tile under it; a border dragged moves, and is
-    /// stored when let go.
+    /// A click focuses the tile under it.
     fn on_mouse(&mut self, event: MouseEvent) {
-        let at = (event.col, event.row);
-        match event.action {
-            MouseAction::Press(MouseButton::Left) => {
-                let area = self.area();
-                let border = (self.shown_tab())
-                    .map(|tab| tab.borders(area))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find(|b| b.holds(u32::from(at.0), u32::from(at.1)));
-                match border {
-                    Some(border) => {
-                        self.drag = Some(Drag {
-                            border,
-                            from: at,
-                            to: at,
-                            version: self.stored.version,
-                        });
-                    }
-                    None => self.click(at),
-                }
-            }
-            MouseAction::Motion(Some(MouseButton::Left)) => {
-                if let Some(drag) = &mut self.drag {
-                    drag.to = at;
-                }
-            }
-            MouseAction::Release(_) => {
-                let Some(drag) = self.drag.take() else {
-                    return;
-                };
-                drag_or_click(self, drag, at);
-            }
-            MouseAction::Press(_) | MouseAction::Motion(_) => {}
+        if event.action == MouseAction::Press(MouseButton::Left) {
+            self.click((event.col, event.row));
         }
     }
 
@@ -1066,7 +1018,7 @@ impl View {
             }
         }
         if let Some(tab) = self.shown_tab() {
-            frame.borders(&edges(&tab.borders(area)), focused_tile);
+            frame.borders(&tab.borders(area), focused_tile);
         }
         let all = self.shown_tab().map_or(0, |tab| tab.tiles(area).len());
         if all == 0 {
@@ -1139,7 +1091,7 @@ impl View {
     }
 
     /// The bar, on the last row, as fux draws it: all of it while a menu,
-    /// a repeating group, a list or a prompt is open; else only its right
+    /// a list or a prompt is open; else only its right
     /// corner, and only for a notice or the zoom marker. True if drawn.
     fn draw_bar(&self, frame: &mut Frame) -> bool {
         let (cols, rows) = (frame_cols(self.term), self.term.1);
@@ -1258,76 +1210,9 @@ impl View {
     }
 }
 
-/// The cells of `borders`, as the frame draws them.
-fn edges(borders: &[layout::Border]) -> Vec<render::Edge> {
-    let small = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
-    let mut out = Vec::new();
-    for border in borders {
-        let along = border.from..border.from.saturating_add(border.length);
-        for at in along {
-            out.push(match border.axis {
-                layout::Axis::Columns => render::Edge {
-                    x: small(border.at),
-                    y: small(at),
-                    upright: true,
-                },
-                layout::Axis::Rows => render::Edge {
-                    x: small(at),
-                    y: small(border.at),
-                    upright: false,
-                },
-            });
-        }
-    }
-    out
-}
-
 /// The columns a frame of the terminal's size has.
 fn frame_cols((cols, _): (u16, u16)) -> u16 {
     cols.min(render::MAX_COLS)
-}
-
-/// The edit a drag makes: the pane whose border moves, which way, and how
-/// many cells; `None` if it has not moved.
-fn drag_edit(drag: &Drag) -> Option<(PaneRef, Dir, u32)> {
-    let (moved, forward) = match drag.border.axis {
-        layout::Axis::Columns => (drag.to.0.abs_diff(drag.from.0), drag.to.0 > drag.from.0),
-        layout::Axis::Rows => (drag.to.1.abs_diff(drag.from.1), drag.to.1 > drag.from.1),
-    };
-    if moved == 0 {
-        return None;
-    }
-    // The pane on the side the border moves away from, so the nearest
-    // split along that axis is the one this border belongs to.
-    let edit = match (drag.border.axis, forward) {
-        (layout::Axis::Columns, true) => (drag.border.before.clone(), Dir::Right),
-        (layout::Axis::Columns, false) => (drag.border.after.clone(), Dir::Left),
-        (layout::Axis::Rows, true) => (drag.border.before.clone(), Dir::Down),
-        (layout::Axis::Rows, false) => (drag.border.after.clone(), Dir::Up),
-    };
-    Some((edit.0, edit.1, u32::from(moved)))
-}
-
-/// A border let go: stored through the configuration's `drag-border`, or,
-/// if it never moved, a click.
-fn drag_or_click(view: &mut View, mut drag: Drag, at: (u16, u16)) {
-    drag.to = at;
-    let Some((pane, dir, cells)) = drag_edit(&drag) else {
-        return view.click(drag.from);
-    };
-    let args = vec![
-        pane.to_string(),
-        dir.name().to_owned(),
-        cells.to_string(),
-        drag.version.to_string(),
-    ];
-    view.dispatch_job(
-        "drag-border".to_owned(),
-        Job::Call {
-            name: "drag-border".to_owned(),
-            args,
-        },
-    );
 }
 
 fn terminal_size() -> (u16, u16) {
@@ -1484,7 +1369,6 @@ fn run() -> Result<(), Failure> {
         keys: Keys::default(),
         column: None,
         panel: None,
-        drag: None,
         notice: None,
         ctl: Some(ctl),
         ctl_part: Vec::new(),
