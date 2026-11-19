@@ -135,7 +135,10 @@ queued are dropped with a line in `errors`.
 
 **Kill.** Hang up the session (SIGHUP), give it 200 ms, SIGKILL the session; on
 Linux also SIGKILL every descendant and adopted orphan (the holder is the
-subreaper, so a `setsid` child is found); wait up to 2 s for the program and
+subreaper, so a `setsid` child is found), sparing any process whose command
+line is another holder's (`fux3 __hold …`) and everything under it: a pane
+started from inside this one is adopted when its starter exits, yet is a
+pane of its own; wait up to 2 s for the program and
 up to 2 s for the rest, killing again what appears. If anything is left or a
 process scan was incomplete, the directory stays, `state kill-incomplete WHAT`
 says what, and `kill` may be sent again. Complete, the publisher writes what
