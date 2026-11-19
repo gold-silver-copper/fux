@@ -979,14 +979,14 @@ impl View {
                 Outcome::Stay => return,
                 Outcome::Cancel => {
                     self.panel = None;
-                    return self.dispatch_job("the panel".to_owned(), Job::Drop(id));
+                    return self.dispatch_job(String::new(), Job::Drop(id));
                 }
                 Outcome::Chosen(value) => (value, None),
                 Outcome::Action(n, value) => (value, Some(n)),
             };
             self.panel = None;
             let job = Job::Answer { id, value, action };
-            return self.dispatch_job("the panel".to_owned(), job);
+            return self.dispatch_job(String::new(), job);
         }
         if let Some(group) = self.repeat.clone() {
             self.dirty = true;

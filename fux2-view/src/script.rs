@@ -174,7 +174,7 @@ pub enum Job {
 }
 
 pub struct Run {
-    /// What it is called on the status line.
+    /// What its errors are said to come from; empty for none.
     pub label: String,
     pub job: Job,
     pub context: Context,
@@ -1044,7 +1044,12 @@ fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
         });
         let (function, args) = function;
         let outcome = g.call(&mut host, &function, &args).err();
-        let why = outcome.map(|e| format!("{}: {}", run.label, describe(&g, &e)));
+        // A run with no label (an answer from a list or prompt) says its
+        // error alone, as fux does.
+        let why = outcome.map(|e| match run.label.as_str() {
+            "" => describe(&g, &e),
+            label => format!("{label}: {}", describe(&g, &e)),
+        });
         host.tell(ToViewer::Done(why));
     }
 }
