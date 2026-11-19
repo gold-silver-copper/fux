@@ -40,7 +40,14 @@ impl Lab {
 }
 
 impl Drop for Lab {
+    /// Ends the panes a test started, then removes the session.
     fn drop(&mut self) {
+        for name in self.session.names().unwrap_or_default() {
+            let _ = Command::new(env!("CARGO_BIN_EXE_fux2"))
+                .args(["kill", &name])
+                .env("FUX2_DIR", &self.session.root)
+                .output();
+        }
         let _ = std::fs::remove_dir_all(&self.session.root);
     }
 }
@@ -222,5 +229,37 @@ fn links_and_fifos_in_the_way_harm_nothing() -> Tested {
     assert!(!refused.status.success(), "{refused:?}");
     assert!(std::fs::symlink_metadata(&path)?.file_type().is_symlink());
     let _ = good;
+    Ok(())
+}
+
+/// Closing a tab with `--end-panes` ends the panes the shared layout has
+/// there when it closes: one moved away before that is left running.
+#[test]
+fn closing_a_tab_ends_only_what_it_holds_then() -> Tested {
+    let lab = Lab::new()?;
+    for name in ["kept", "ended", "moved"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_fux2"))
+            .args(["start", "--name", name, "--", "sleep", "300"])
+            .env("FUX2_DIR", &lab.session.root)
+            .output()?;
+        assert!(out.status.success(), "{out:?}");
+    }
+    let made = String::from_utf8_lossy(&lab.layout(&["tab", "new", "--title", "doomed"])?.stdout)
+        .into_owned();
+    assert!(made.contains("made t"), "{made}");
+    for name in ["ended", "moved"] {
+        let out = lab.layout(&["move", name, "--tab", "doomed"])?;
+        assert!(out.status.success(), "{out:?}");
+    }
+    // Someone else moves one away before the close.
+    let out = lab.layout(&["move", "moved", "--tab", "all"])?;
+    assert!(out.status.success(), "{out:?}");
+    let out = lab.layout(&["tab", "close", "doomed", "--end-panes"])?;
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(text.contains("ended ended@"), "{text}");
+    let mut left = lab.session.names()?;
+    left.sort();
+    assert_eq!(left, ["kept", "moved"]);
     Ok(())
 }

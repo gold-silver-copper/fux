@@ -293,6 +293,7 @@ const CONFIG: &str = r#"
 (bind-key "F8" "spin forever" "Mine" (lambda! () (spin)))
 (unbind-key "C-b n")
 (bind-key "C-b F5" "my own command" "Mine" from-binding)
+(define! command-line (lambda! () (say "my-own-prompt")))
 "#;
 
 /// Two panes split, keys to the focused one, a rebound key running the
@@ -337,6 +338,9 @@ fn the_viewer_steers_panes_and_they_outlive_it() -> Tested {
     viewer.keys(b"\x1b[F")?;
     viewer.shows("F5  my own command")?;
     viewer.keys(b"\x1b")?;
+    // A default key runs the command as the configuration redefined it.
+    viewer.keys(b"\x02e")?;
+    viewer.shows("my-own-prompt")?;
 
     let job = viewer.job.as_ref().ok_or("no job")?;
     let _ = job.kill(Reach::Session);

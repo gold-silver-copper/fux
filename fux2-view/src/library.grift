@@ -68,10 +68,12 @@
 (define! confirm (lambda! (question then)
   (pick question (list (list "yes" "Yes")) (lambda! (answer) (then)))))
 
-;; Ends a pane and takes its tile away; one already gone just loses its tile.
+;; Ends a pane and takes its tile away. A pane already gone just loses its
+;; tile, and a routed pane has no tile once it is gone; any other failure
+;; of either step is said.
 (define! close-pane (lambda! (pane)
-  (catch-kind! (kill pane) fux2-error gone #inert)
-  (edit! "remove" pane)))
+  (catch-kind! (kill pane) fux2-gone gone #inert)
+  (catch-kind! (edit! "remove" pane) fux2-gone gone #inert)))
 (define! confirm-close-pane (lambda! (pane)
   (confirm (join "close pane " (pane-label pane) "?") (lambda! () (close-pane pane)))))
 
@@ -108,9 +110,9 @@
       (map (lambda! (row)
              (let! ((space (first row)) (tabs-here (length (tabs-of (first row)))))
                (list space
-                     (join (if! (equal? space here) "* " "  ") space " " (second row) " — "
+                     (join space " " (second row) " — "
                            (count-of tabs-here "tab") ", " (count-of (length (workspace-panes space)) "pane"))
-                     "selected")))
+                     (equal? space here))))
            (workspaces))
       show-workspace
       (list (list "r" "rename" rename-workspace) (list "x" "close" confirm-close-workspace))))))
@@ -162,21 +164,27 @@
   (let! ((space (made (arrange "workspace" "new"))) (pane (start-new "shell")))
     (show-workspace space)
     (place-new! pane (lambda! (p) (edit! "move" p "--workspace" space))))))
-(define! end-panes (lambda! (rows)
-  (for-each (lambda! (row) (catch-kind! (kill (first row)) fux2-error gone #inert)) rows)))
+;; Closing ends the panes the shared layout has there when it closes, not
+;; those this viewer saw: one moved away meanwhile is left alone.
 (define! confirm-close-tab (lambda! (tab)
   (confirm (join "close tab " tab " " (second (row-of (tabs) tab)) "?")
-    (lambda! () (end-panes (panes-of tab)) (arrange "tab" "close" tab)))))
+    (lambda! () (arrange "tab" "close" tab "--end-panes")))))
 (define! confirm-close-workspace (lambda! (space)
   (confirm (join "close workspace " space " " (second (row-of (workspaces) space)) "?")
-    (lambda! ()
-      (for-each (lambda! (tab) (end-panes (panes-of (first tab)))) (tabs-of space))
-      (arrange "workspace" "close" space)))))
+    (lambda! () (arrange "workspace" "close" space "--end-panes")))))
+
+;; Every form of `text`, in turn, in the top-level context: the last one's
+;; value. Text that does not read is an error, wherever it is.
+(define! run-text (lambda! (text)
+  (let! ((step (lambda! (from last)
+                 (let! ((form (read-form text from)))
+                   (if! (empty-list? form) last
+                     (step (third form) (evaluate (first form) top)))))))
+    (step 0 #inert))))
 
 ;; Type grift; the answer shows in the bar's corner.
 (define! command-line (lambda! ()
-  (read-line ":" ""
-    (lambda! (text) (say (value-to-string (evaluate (first (read-form text 0)) top)))))))
+  (read-line ":" "" (lambda! (text) (say (value-to-string (run-text text)))))))
 
 ;; Every key, to read or to run.
 (define! key-list (lambda! ()

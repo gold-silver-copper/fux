@@ -282,9 +282,22 @@ fn read_all(pipe: Option<impl Read>) -> Option<String> {
     fits.then(|| String::from_utf8_lossy(&text).into_owned())
 }
 
+/// Why a command failed, and whether it said what it named is gone (exit
+/// 3: missing, replaced or gone).
+struct Failed {
+    why: String,
+    gone: bool,
+}
+
+impl From<String> for Failed {
+    fn from(why: String) -> Failed {
+        Failed { why, gone: false }
+    }
+}
+
 /// Runs `fux2` with `args`, `input` on its stdin: its output. The viewer's
 /// stop ends it, and so does running out of time.
-fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<String, String> {
+fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<String, Failed> {
     let mut child = Command::new(&host.fux2)
         .args(args)
         .stdin(if input.is_some() {
@@ -295,7 +308,7 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("{}: {e}", host.fux2.display()))?;
+        .map_err(|e| Failed::from(format!("{}: {e}", host.fux2.display())))?;
     let stdin = child.stdin.take();
     let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
     let helpers = (|| -> std::io::Result<_> {
@@ -314,7 +327,7 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
         Err(e) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("a thread: {e}"));
+            return Err(format!("a thread: {e}").into());
         }
     };
     let start = Instant::now();
@@ -322,13 +335,15 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(e.to_string().into()),
         }
         let late = start.elapsed() >= COMMAND_TIME;
         if late || host.cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(if late { "it took too long" } else { "stopped" }.to_owned());
+            return Err(if late { "it took too long" } else { "stopped" }
+                .to_owned()
+                .into());
         }
         std::thread::sleep(Duration::from_millis(2));
     };
@@ -336,8 +351,11 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
     let err = err.join().ok().flatten().unwrap_or_default();
     match (status.success(), out) {
         (true, Some(out)) => Ok(out),
-        (true, None) => Err(format!("its output passed {MAX_OUTPUT} bytes")),
-        (false, _) => Err(err.trim().to_owned()),
+        (true, None) => Err(format!("its output passed {MAX_OUTPUT} bytes").into()),
+        (false, _) => Err(Failed {
+            why: err.trim().to_owned(),
+            gone: status.code() == Some(3),
+        }),
     }
 }
 
@@ -351,7 +369,13 @@ fn run_word(
     match command(host, &args, input) {
         Ok(out) => Ok(out),
         Err(_) if host.cancel.load(Ordering::Relaxed) => Err(g.limit("interrupted", &[])),
-        Err(why) => Err(failed(g, &why)),
+        // What it named is gone: its own kind, so a caller can pass over
+        // exactly that and nothing else.
+        Err(Failed { why, gone: true }) => Err(match g.string(&why) {
+            Ok(text) => g.error("fux2-gone", &[text]),
+            Err(error) => error,
+        }),
+        Err(Failed { why, gone: false }) => Err(failed(g, &why)),
     }
 }
 
@@ -812,11 +836,11 @@ const WORDS: &[(&str, Word)] = &[
                     let pane = id.map_or_else(|| name.clone(), |id| format!("{name}@{id}"));
                     return g.string(&pane).map(Answer::Now);
                 }
-                Err(why) if why.contains("exists:") => {}
+                Err(failed_start) if failed_start.why.contains("exists:") => {}
                 Err(_) if host.cancel.load(Ordering::Relaxed) => {
                     return Err(g.limit("interrupted", &[]));
                 }
-                Err(why) => return Err(failed(g, &why)),
+                Err(failed_start) => return Err(failed(g, &failed_start.why)),
             }
         }
         Err(failed(g, &format!("no free name {prefix}-N")))

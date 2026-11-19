@@ -1374,6 +1374,9 @@ pub struct Edited {
     pub version: u64,
     pub made: Option<String>,
     pub changed: Vec<PaneRef>,
+    /// The panes a closed tab or workspace held, as the layout had them
+    /// under the lock: what `--end-panes` ends.
+    pub let_go: Vec<PaneRef>,
 }
 
 impl fmt::Display for Edited {
@@ -1423,6 +1426,7 @@ pub fn edit(
         return Err(Failure::new(Code::Stale, why));
     }
     let before = layout.shown(&routing(op, live));
+    let let_go = held_by(&layout, &layout.shown(live), op);
     let old = layout.clone();
     let made = apply(&mut layout, live, area, op)?;
     if layout == old && !reset {
@@ -1430,6 +1434,7 @@ pub fn edit(
             version: layout.version,
             made,
             changed: Vec::new(),
+            let_go: Vec::new(),
         });
     }
     // A version never wraps, or an old `--if` could pass again; a reset
@@ -1448,7 +1453,45 @@ pub fn edit(
         version: layout.version,
         made,
         changed: changed(&before, &layout.shown(live), area),
+        let_go,
     })
+}
+
+/// The panes shown in the tab or workspace `op` closes.
+fn held_by(layout: &Layout, shown: &Layout, op: &Op) -> Vec<PaneRef> {
+    let tabs: Vec<u32> = match op {
+        Op::CloseTab(tab) => tab_id(shown, tab).into_iter().collect(),
+        Op::CloseWorkspace(space) => match workspace_id(layout, space) {
+            Ok(id) => (shown.workspaces.iter())
+                .filter(|s| s.id == id)
+                .flat_map(|s| s.tabs.iter().map(|t| t.id))
+                .collect(),
+            Err(_) => Vec::new(),
+        },
+        Op::Split { .. }
+        | Op::Remove(_)
+        | Op::Replace { .. }
+        | Op::Swap(..)
+        | Op::Step { .. }
+        | Op::Reorder { .. }
+        | Op::ToTab { .. }
+        | Op::ToWorkspace { .. }
+        | Op::Border { .. }
+        | Op::Zoom(_)
+        | Op::Title { .. }
+        | Op::NewTab { .. }
+        | Op::RenameTab { .. }
+        | Op::MoveTab { .. }
+        | Op::MatchTab { .. }
+        | Op::NewWorkspace { .. }
+        | Op::RenameWorkspace { .. }
+        | Op::MoveWorkspace { .. }
+        | Op::Reset => Vec::new(),
+    };
+    (shown.tabs())
+        .filter(|tab| tabs.contains(&tab.id))
+        .flat_map(|tab| tab.leaves().into_iter().map(|leaf| leaf.pane.clone()))
+        .collect()
 }
 
 // ---- Operations ----
