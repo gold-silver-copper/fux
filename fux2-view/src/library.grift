@@ -30,6 +30,9 @@
 ;; viewer only. `arrange` alone edits and resizes nothing.
 (define! edit! (lambda! words (fit-after (apply arrange words))))
 
+;; A pane's name, without the `@ID` of its life.
+(define! name-of (lambda! (pane) (first (string-split pane "@"))))
+
 ;; The row of `rows` whose first item is `id`.
 (define! row-of (lambda! (rows id)
   (let! ((found (filter (lambda! (row) (equal? (first row) id)) rows)))
@@ -71,11 +74,12 @@
   (catch-kind! (kill pane) fux2-error gone #inert)
   (edit! "remove" pane)))
 (define! confirm-close-pane (lambda! (pane)
-  (confirm (join "close " pane "?") (lambda! () (close-pane pane)))))
+  (confirm (join "close " (name-of pane) "?") (lambda! () (close-pane pane)))))
 
 (define! pane-rows (lambda! (rows)
   (map (lambda! (row)
-         (list (first row) (if! (equal? (third row) "") (first row) (join (third row) " (" (first row) ")"))))
+         (let! ((name (name-of (first row))))
+           (list (first row) (if! (equal? (third row) "") name (join (third row) " (" name ")")))))
        rows)))
 (define! tabs-here (lambda! ()
   (let! ((space (shown-workspace)))
@@ -88,12 +92,12 @@
 (define! choose-tab (lambda! () (pick "tabs" (tabs-here) show-tab)))
 (define! choose-workspace (lambda! () (pick "workspaces" (workspaces) show-workspace)))
 (define! swap-with (lambda! (pane)
-  (pick (join "swap " pane " with") (pane-rows (panes-of (shown-tab)))
+  (pick (join "swap " (name-of pane) " with") (pane-rows (panes-of (shown-tab)))
     (lambda! (other) (edit! "swap" pane other)))))
 (define! move-to-tab (lambda! (pane)
-  (pick (join "move " pane " to") (tabs-here) (lambda! (tab) (edit! "move" pane "--tab" tab)))))
+  (pick (join "move " (name-of pane) " to") (tabs-here) (lambda! (tab) (edit! "move" pane "--tab" tab)))))
 (define! move-to-workspace (lambda! (pane)
-  (pick (join "move " pane " to") (workspaces)
+  (pick (join "move " (name-of pane) " to") (workspaces)
     (lambda! (space) (edit! "move" pane "--workspace" space)))))
 (define! move-to-new-tab (lambda! (pane)
   (show-tab (made (edit! "move" pane "--tab" "new")))
@@ -104,7 +108,7 @@
 
 ;; Prompts.
 (define! rename-pane (lambda! (pane)
-  (read-line (join "title of " pane) "" (lambda! (title) (arrange "title" pane title)))))
+  (read-line (join "title of " (name-of pane)) "" (lambda! (title) (arrange "title" pane title)))))
 (define! rename-tab (lambda! (tab)
   (read-line "rename tab" (second (row-of (tabs) tab))
     (lambda! (title) (arrange "tab" "rename" tab title)))))

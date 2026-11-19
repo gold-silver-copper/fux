@@ -538,9 +538,11 @@ impl Amount {
             Amount::Percent(n) => (u64::from(n), 100),
             Amount::Cells(n) => (u64::from(n), u64::from(room)),
         };
+        // Rounded up, so a cell asked for is at least a cell moved.
         let shares = total
             .saturating_mul(num)
-            .checked_div(den)
+            .checked_next_multiple_of(den)
+            .and_then(|whole| whole.checked_div(den))
             .ok_or_else(|| invalid("the split has no room to move a border in"))?;
         Ok(shares.max(1))
     }
