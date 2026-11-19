@@ -158,7 +158,14 @@ impl Pane {
         let status_stamp = stamp(&self.dir.join(files::STATUS));
         if status_stamp != self.stamps.1 {
             self.stamps.1 = status_stamp;
+            let was = self.id().map(str::to_owned);
             self.status = read_status(&self.dir)?;
+            // A new life under this name: nothing meant for the old one,
+            // nor its `in`, carries over.
+            if was.is_some() && self.id() != was.as_deref() {
+                (self.input, self.screen) = (None, None);
+                self.queued.clear();
+            }
             changed = true;
             self.settle_pastes(now);
         }

@@ -98,7 +98,19 @@ pub fn start(
         }
         return Err(Failure::new(said.trim().trim_start_matches("fux3: ")));
     }
-    let status = read_status(&session.pane_dir(name))?;
+    // `fux3 start` may say its pane started before the pane's first files
+    // are written (they are written on a thread of the holder's): they are
+    // waited for, a bounded time.
+    let dir = session.pane_dir(name);
+    let status = loop {
+        match read_status(&dir) {
+            Ok(status) => break status,
+            Err(failure) if begun.elapsed() >= COMMAND_TIME => {
+                return Err(Failure::new(format!("pane {name} started, but: {failure}")));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    };
     let id = fux3::files::status_value(&status, "id").filter(|id| layout::is_id(id));
     let id =
         id.ok_or_else(|| Failure::new(format!("pane {name} started, but its status names no id")))?;

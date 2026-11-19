@@ -57,3 +57,9 @@ Append-only: one short entry per decision, newest last.
 13. **The painter is one busy flag.** It is set before the writer thread can see a frame, and the
     writer clears it when the frame is out: the next frame is made only then. An earlier order
     (set after the hand-over) could leave it set forever and stop painting; a test run caught it.
+14. **A pane just started is waited for.** `fux3 start` can return before the pane's first files
+    exist: the holder hands its first screen to its publisher thread and says `ok` at once. About
+    one `C-b c` in five failed with `history-1/status: No such file`. The viewer now waits for
+    `status`, within the start's own time bound (core need written in the status file). A new
+    life under a reused name also drops what the viewer kept for the old one (its open `in`, its
+    queued keys, its screen).
