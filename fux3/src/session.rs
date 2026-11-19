@@ -229,12 +229,18 @@ impl Session {
     /// one's leftovers in every workspace. Workspaces, empty ones too, stay.
     pub fn live(&self) -> Result<Vec<String>, Failure> {
         let lock = self.lock()?;
+        self.clear_all(&lock)
+    }
+
+    /// Clears every workspace's dead panes, under the session's lock: the
+    /// live ones as `WORKSPACE/NAME`.
+    pub fn clear_all(&self, lock: &SessionLock) -> Result<Vec<String>, Failure> {
         let mut live = Vec::new();
         for name in self.workspaces()? {
             let Ok(workspace) = self.workspace(&name, false) else {
                 continue;
             };
-            for pane in workspace.clear_dead(&lock)? {
+            for pane in workspace.clear_dead(lock)? {
                 live.push(format!("{name}/{pane}"));
             }
         }
@@ -267,7 +273,8 @@ impl Workspace {
     }
 
     /// Removes the directory of every pane here whose lock nobody holds,
-    /// and gives the names of those that remain.
+    /// and gives the names of those that remain. Only a pane's directory
+    /// goes (`is_pane`): anything else here, named like one or not, stays.
     pub fn clear_dead(&self, _lock: &SessionLock) -> Result<Vec<String>, Failure> {
         let mut live = Vec::new();
         for name in self.names()? {
@@ -276,7 +283,9 @@ impl Workspace {
                 Ok(Some(held)) => {
                     // Leftovers that will not go stay for whoever asks
                     // for that name, which says why.
-                    let _ = remove_pane(&dir, &held);
+                    if is_pane(&dir) {
+                        let _ = remove_pane(&dir, &held);
+                    }
                 }
                 Ok(None) | Err(_) => live.push(name),
             }
@@ -290,6 +299,8 @@ impl Workspace {
     pub fn claim(&self, name: &str) -> Result<(PathBuf, File), Failure> {
         check_name(name)?;
         let lock = self.session.lock()?;
+        // Every workspace's dead panes go, as with every `fux3` command.
+        self.session.clear_all(&lock)?;
         let live = self.clear_dead(&lock)?;
         let shown = format!("{}/{name}", self.name);
         if live.iter().any(|n| n == name) {
@@ -315,6 +326,17 @@ impl Workspace {
             None => Err(Failure::new(format!("pane {shown} exists"))),
         }
     }
+}
+
+/// Whether `dir` is a pane's directory: it holds the two FIFOs its holder
+/// made, `in` and `ctl`. Nothing else is ever removed as a dead pane, so a
+/// session directory pointed at a place holding other files loses none.
+pub fn is_pane(dir: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    let fifo = |name: &str| {
+        std::fs::symlink_metadata(dir.join(name)).is_ok_and(|m| m.file_type().is_fifo())
+    };
+    fifo(crate::files::IN) && fifo(crate::files::CTL)
 }
 
 /// Removes a pane's directory and what is in it, unless the directory

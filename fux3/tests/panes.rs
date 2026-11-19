@@ -426,3 +426,23 @@ fn wait_ends_when_its_pane_goes() -> Result {
     assert!(said.contains("gone") || out.status.success(), "{said}");
     Ok(())
 }
+
+/// Clearing dead panes removes only what a holder made: an ordinary
+/// directory that happens to be named like a pane, in a session directory
+/// pointed at a place with other files, stays with all it holds.
+#[test]
+fn clearing_dead_panes_never_removes_other_directories() -> Result {
+    let s = Session::new("keep")?;
+    let notes = s.root.join("main").join("notes");
+    std::fs::create_dir_all(&notes).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(s.root.join("main"), std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(notes.join("todo.txt"), "keep me").map_err(|e| e.to_string())?;
+    s.start("other/p", &["sh"])?;
+    assert_eq!(s.fux3(&["ls"])?, "other/p\n");
+    assert!(
+        notes.join("todo.txt").exists(),
+        "an ordinary directory was removed"
+    );
+    Ok(())
+}
