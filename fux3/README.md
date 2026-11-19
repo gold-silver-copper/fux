@@ -33,7 +33,7 @@ echo "send $HOME/paste.txt" > "$D/main/build/ctl" # a send of any size up to 16 
 ls "$D"                                     # the workspaces: main
 ls "$D/main"                                # its panes: build
 fux3 view                                   # workspace main as fux shows it (see "The viewer"); C-b d detaches
-echo "split build right" > "$D/main/.view/ctl" # the layout, driven with a plain file too
+echo "split build right" > "$D/main/.view/ctl" # from another terminal while the viewer runs: the layout, by a plain file
 echo kill > "$D/main/build/ctl"             # ends the program and all it started; the directory goes
 ```
 
@@ -70,13 +70,17 @@ fux3 ls >/dev/null; for p in "$D/rig"/*/; do echo kill > "${p}ctl"; done
 (`fux3 ls` first clears dead panes, whose `ctl` would block the writer.)
 
 A program in a pane finds itself in its environment: `FUX3_DIR` (the
-session), `FUX3_WORKSPACE`, `FUX3_PANE` (its name) and `FUX3_PANE_DIR` (its
-directory).
+session), `FUX3_WORKSPACE`, `FUX3_PANE` (its name), `FUX3_PANE_ID` (the id
+on line 1) and `FUX3_PANE_DIR` (its directory).
 
 The session directory is `$FUX3_DIR` if set (an absolute path), else
 `$XDG_RUNTIME_DIR/fux3` on Linux and `~/Library/Caches/fux3` on macOS. It and
-everything in it are private to you (0700 and 0600); fux3 refuses a session
-directory anyone else can open.
+everything fux3 makes in it are private to you (0700 and 0600); fux3 refuses
+a session directory anyone else can open. Keep it under directories only you
+can change (as `$XDG_RUNTIME_DIR` and your home are): fux3 checks the
+directory itself, not its parents, and not ACLs on macOS. A holder's command
+line (`ps`) shows the session's path, the pane's name and labels, and its
+program, as any program's arguments are shown.
 
 ## The pane directory
 
@@ -150,16 +154,16 @@ files stay.
 **`history`** is plain text, never the program's raw bytes: raw bytes shown in
 a terminal replay escape codes, make that terminal answer the program's
 queries into your shell, and let a pane's program attack whoever tails it. A
-soft-wrapped line is one line. `less +G` or `tail -F` reads it. It is appended to, so a read while output pours in may end in the middle of a line; the next read has the rest. Each file holds at most half the cap (`--history`, default 4 MiB): past it, `history` is renamed `history.1` (the older `history.1` goes) and a new `history` starts. `tail -F history` follows the new file and repeats nothing; it sees every line once as long as it looks again before the new file fills too (it looks once a second): under a flood with a small cap a whole generation can come and go between two looks, and is then only in `history.1`, or gone. `tail -f` stops at the old file. `cat history.1 history` is everything kept, in order, under the cap; what neither holds is gone.
+soft-wrapped line is one line. `less +G` or `tail -F` reads it. It is appended to, so a read while output pours in may end in the middle of a line; the next read has the rest. Each file holds at most half the cap (`--history`, default 4 MiB): past it, `history` is renamed `history.1` (the older `history.1` goes) and a new `history` starts. `tail -F history` follows the new file and repeats nothing; it sees every line once as long as it looks again before the new file fills too (it looks once a second): under a flood with a small cap a whole generation can come and go between two looks, and is then only in `history.1`, or gone. `tail -f` stops at the old file. `cat history.1 history` is everything kept, in order, under the cap; what neither holds is gone. A resize takes what scrolled off before it; lines the resize itself pushes off the screen are not added.
 
 ## `ctl`
 
 | Line | Effect, as `status` shows it | Refused: a line in `errors` |
 |---|---|---|
 | `resize COLS ROWS` | `size COLS ROWS`, a new `version` | bad numbers, or the terminal refused: nothing changed |
-| `send PATH` | the file's bytes, whole, go to the program as typed; `queued` grows, then drains | not an absolute path, a link, not a regular file, not yours, over 16 MiB, the queue full, the program ended: nothing was sent |
+| `send PATH` | the file's bytes go into the program's input queue whole, as typed; `queued` grows, then drains (a program that ends first gets what it read; the rest is dropped, noted in `errors`) | not an absolute path, a link, not a regular file, not yours, over 16 MiB, the queue full, the program ended: nothing was sent |
 | `paste PATH` | the file's text as one paste, as a terminal pastes: line breaks become CR, and it is bracketed if the program asked for that; otherwise as `send` | as `send`, or not UTF-8 |
-| `signal NAME` | the signal (`INT`, `TERM`, `HUP`, …) goes to the program's foreground process group | no such signal, the program ended |
+| `signal NAME` | the signal (`INT`, `TERM`, `HUP`, …; one leading `SIG` is dropped) goes to the terminal's foreground process group, else the program's | no such signal, the program ended |
 | `cell W H` | `cell W H`; pictures drawn after it use it | smaller than 2x6 or over 1000 |
 | `kill` | the program and everything it started end, and the directory goes | `kill-incomplete WHAT` in `state` and in `errors`: send `kill` again |
 
@@ -170,11 +174,15 @@ A refusal reads `N LINE: WHY`, where `N` is the command's number, the value
 of `commands` once it was taken. **Telling your command's outcome:** read
 `commands` (say 6), write your line, wait until `commands` is 7 or more, then
 look for a line starting `7 ` in `errors`: there is one only if it was
-refused. With several writers of `ctl` at once, `N` is the holder's order.
+refused. This holds for one writer with one command at a time: with several
+writers of `ctl` at once, `N` is the holder's order, not yours; and compare
+`refused` too, as `errors` keeps 32 lines. `fux3 wait` returns on a screen
+change only, and a refused command changes no screen: poll `status`.
 
 `send` reads the whole file before anything is sent, so typing on `in` and
 other sends never land inside it. The path is the rest of the line, spaces
-and all.
+and all. The file is read in the holder's loop: a file on a stalled network
+mount stalls the pane until it is read.
 
 What is typed into `in` is never read as a command: pasted text or a
 program's echo cannot resize or kill a pane.
@@ -264,10 +272,12 @@ mkdir -m 700 /Volumes/fux3/s && export FUX3_DIR=/Volumes/fux3/s
 
 ## Limits
 
-At most 128 panes a workspace, 500x200 cells a pane, 16 MiB a `send`, 16 MiB
-waiting for a program, 512 bytes a `ctl` line, 64 KiB of the terminal's
+At most 128 panes a workspace, 500x200 cells a pane, 16 MiB a `send`, 16 MiB and 64 KiB
+of typing waiting for a program, 512 bytes a `ctl` line, 64 KiB of the terminal's
 replies waiting (more are dropped, noted in `errors`), 32 lines of `errors`,
-8 MiB a screen file, 64 pictures and 16 MiB of their pixels. Everything past
+8 MiB a screen file, 64 pictures and 16 MiB of their pixels, 16 MiB a
+picture's file (a larger one is not written, and the styled screen naming it
+waits). Everything past
 a limit is refused out loud, in `errors`, on stderr or in `status`.
 
 ## The viewer
