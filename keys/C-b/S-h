@@ -1,0 +1,3 @@
+#!/bin/sh
+# narrower
+fux3 layout size row -5

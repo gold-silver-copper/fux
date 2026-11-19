@@ -1,0 +1,3 @@
+#!/bin/sh
+# previous tab
+fux3 layout tab prev

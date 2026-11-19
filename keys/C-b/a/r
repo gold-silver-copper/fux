@@ -1,0 +1,3 @@
+#!/bin/sh
+# all panes in a row
+fux3 layout arrange row

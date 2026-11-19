@@ -1,0 +1,6 @@
+#!/bin/sh
+# new workspace with a shell
+n=1; while ! mkdir "$FUX3C_DIR/w$n" 2>/dev/null; do n=$((n + 1)); done
+p=$(fux3 start "w$n/") || exit
+echo "workspace w$n"
+(fux3 wait "$p" >/dev/null; rm -rf "$p") >/dev/null 2>&1 &

@@ -2,7 +2,6 @@
 //! Every `extern` is declared by hand from the C prototypes; the constants
 //! are Linux's and macOS's own and differ where the two systems differ.
 #![allow(unsafe_code)]
-#![allow(dead_code)] // until the viewer uses the terminal calls
 
 use std::ffi::{CString, c_char, c_int, c_ulong, c_void};
 use std::fs::File;

@@ -3,8 +3,11 @@
 //! the viewer and every other client only read and write files.
 
 mod holder;
+mod keys;
+mod layout;
 mod sys;
 mod term;
+mod view;
 mod width;
 
 use std::ffi::OsString;
@@ -18,6 +21,8 @@ const USAGE: &str = "\
 fux3 dir                         print the session directory (FUX3C_DIR sets it)
 fux3 start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/
 fux3 wait PANE-DIRECTORY         wait until the pane's holder is gone; print its status
+fux3 view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: main)
+fux3 layout [EDIT…]              print the layout of workspace $FUX3C_WS (default: main), or edit it
 The files of a pane, and everything else, are in the README.";
 
 /// The session directory: `$FUX3C_DIR`, else `$XDG_RUNTIME_DIR/fux3c`, else `~/.cache/fux3c`.
@@ -135,6 +140,26 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         Some("start") => start(rest),
         Some("wait") => wait(rest),
+        Some("view") => {
+            let workspace = rest.first().map_or("main".into(), |name| name.to_string_lossy().into_owned());
+            if rest.len() > 1 || !is_name(&workspace) {
+                return Err("view takes one workspace's name".into());
+            }
+            let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+            let config = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")));
+            let keys = var("FUX3C_KEYS").or_else(|| config.map(|config| config.join("fux3c/keys")));
+            view::view(session()?, workspace, keys.ok_or("no keys directory: set FUX3C_KEYS")?)
+        }
+        Some("layout") => {
+            let workspace = std::env::var("FUX3C_WS").ok().filter(|name| is_name(name)).unwrap_or("main".into());
+            let words: Vec<String> = rest.iter().map(|word| word.to_string_lossy().into_owned()).collect();
+            let text =
+                layout::command(&session()?.join(workspace), &words.iter().map(String::as_str).collect::<Vec<_>>())?;
+            if words.is_empty() {
+                print!("{text}");
+            }
+            Ok(())
+        }
         Some("hold") => match rest.split_first() {
             Some((cwd, program)) => holder::hold(program, cwd),
             None => Err("hold is started by `fux3 start`".into()),

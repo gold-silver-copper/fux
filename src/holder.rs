@@ -44,6 +44,8 @@ struct Holder {
     ctl_line: Vec<u8>,
     pictures: Vec<u32>,
     command: String,
+    /// `running`, `hungup`, `exited CODE` or `killed SIGNAL`: in `status` and on line 1 of the screens.
+    state: String,
     logged: usize,
 }
 
@@ -116,12 +118,13 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         ctl_line: Vec::new(),
         pictures: Vec::new(),
         command,
+        state: "running".into(),
         logged: 0,
     };
     let _ = fs::remove_file("history.1");
     File::create("history").map_err(|e| format!("cannot make history: {e}"))?;
     holder.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
-    holder.status("running").map_err(|e| format!("cannot write status: {e}"))?;
+    holder.status().map_err(|e| format!("cannot write status: {e}"))?;
 
     let mut buffer = vec![0u8; 64 << 10];
     let (mut dirty, mut published, mut budget) = (false, Instant::now(), READ_BUDGET);
@@ -183,9 +186,9 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
                     n => left -= n.min(left),
                 }
             }
-            holder.master = None;
+            (holder.master, holder.state) = (None, state);
             let _ = holder.publish();
-            let _ = holder.status(&state);
+            let _ = holder.status();
             let _ = fs::remove_file("in");
             let _ = fs::remove_file("ctl");
             return Ok(());
@@ -205,8 +208,8 @@ impl Holder {
         }
     }
 
-    fn status(&self, state: &str) -> io::Result<()> {
-        replace("status", format!("pid {}\nstate {state}\ncommand {}\n", self.pid, self.command).as_bytes())
+    fn status(&self) -> io::Result<()> {
+        replace("status", format!("pid {}\nstate {}\ncommand {}\n", self.pid, self.state, self.command).as_bytes())
     }
 
     /// Feeds the emulator what the program wrote; says how many bytes.
@@ -257,7 +260,8 @@ impl Holder {
                 // Closing the master is the hangup. What the program and its
                 // children do about it is theirs to decide.
                 if self.master.take().is_some() {
-                    self.status("hungup").map_err(|e| e.to_string())?;
+                    self.state = "hungup".into();
+                    self.status().map_err(|e| e.to_string())?;
                 }
                 Ok(())
             }
@@ -320,8 +324,9 @@ impl Holder {
         ];
         let modes: Vec<&str> = modes.iter().filter(|m| m.0).map(|m| m.1).collect();
         let header = format!(
-            "pid={} v={} size={}x{} cursor={},{} shape={} modes={}{pictures}\n",
+            "pid={} state={} v={} size={}x{} cursor={},{} shape={} modes={}{pictures}\n",
             self.pid,
+            self.state.replace(' ', ":"),
             self.version,
             term.cols,
             term.rows,

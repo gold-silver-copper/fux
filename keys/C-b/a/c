@@ -1,0 +1,3 @@
+#!/bin/sh
+# all panes in a column
+fux3 layout arrange col

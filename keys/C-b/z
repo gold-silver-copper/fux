@@ -1,0 +1,3 @@
+#!/bin/sh
+# zoom this pane, or stop
+fux3 layout zoom

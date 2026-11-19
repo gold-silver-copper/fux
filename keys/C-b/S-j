@@ -1,0 +1,3 @@
+#!/bin/sh
+# shorter
+fux3 layout size col -5

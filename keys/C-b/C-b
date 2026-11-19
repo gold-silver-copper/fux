@@ -1,0 +1,3 @@
+#!/bin/sh
+# send C-b itself to the pane
+[ -p "$FUX3C_PANE/in" ] && printf '\002' 1<>"$FUX3C_PANE/in"

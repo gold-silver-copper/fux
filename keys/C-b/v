@@ -1,0 +1,5 @@
+#!/bin/sh
+# new shell beside this pane
+p=$(fux3 start "$FUX3C_WS/") || exit
+fux3 layout split row "${p##*/}"
+(fux3 wait "$p" >/dev/null; rm -rf "$p") >/dev/null 2>&1 &

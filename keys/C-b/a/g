@@ -1,0 +1,3 @@
+#!/bin/sh
+# all panes in a grid
+fux3 layout arrange grid

@@ -1,0 +1,3 @@
+#!/bin/sh
+# swap with the next pane
+fux3 layout swap next

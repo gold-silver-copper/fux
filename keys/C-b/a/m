@@ -1,0 +1,3 @@
+#!/bin/sh
+# one big pane, the rest beside it
+fux3 layout arrange main

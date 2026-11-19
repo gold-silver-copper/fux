@@ -1,0 +1,3 @@
+#!/bin/sh
+# focus the pane to the right
+fux3 layout focus right

@@ -1,0 +1,4 @@
+#!/bin/sh
+# next workspace
+next=$(ls "$FUX3C_DIR" | grep -A1 -x "$FUX3C_WS" | tail -n 1)
+echo "workspace ${next:-$FUX3C_WS}"

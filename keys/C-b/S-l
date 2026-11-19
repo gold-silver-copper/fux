@@ -1,0 +1,3 @@
+#!/bin/sh
+# wider
+fux3 layout size row +5

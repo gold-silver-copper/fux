@@ -1,0 +1,3 @@
+#!/bin/sh
+# move this pane to a tab of its own
+fux3 layout break

@@ -1,0 +1,4 @@
+#!/bin/sh
+# previous workspace
+prev=$(ls "$FUX3C_DIR" | grep -B1 -x "$FUX3C_WS" | head -n 1)
+echo "workspace ${prev:-$FUX3C_WS}"
