@@ -61,7 +61,16 @@ fn main() -> ExitCode {
         return say(USAGE);
     };
     if command == "__hold" {
-        return holder::main(args);
+        // `start`'s own arguments again, after its terminal's size; the
+        // variables' values come on the pipe, as arguments are public.
+        let mut input = std::io::stdin().lock();
+        let mut go = [0; 3];
+        if input.read_exact(&mut go).is_err() || &go != b"go\n" {
+            return ExitCode::FAILURE;
+        }
+        let spec = spec(args, &mut input);
+        drop(input);
+        return holder::main(spec);
     }
     let outcome = match command.to_str().unwrap_or_default() {
         "dir" => dir(args),
@@ -145,23 +154,76 @@ fn pair(text: &str, what: &str) -> Result<(u16, u16), Failure> {
     Ok((a.parse().map_err(|_| bad())?, b.parse().map_err(|_| bad())?))
 }
 
+/// Starts a pane: its holder reads these arguments itself ([`spec`]), so
+/// there is one reading of them; this passes its terminal's size and cell
+/// first (`-` with none) and prints the pane's directory.
 fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    let pane = (args.next()).ok_or_else(|| Failure::new("start needs a NAME"))?;
+    let (workspace, name) = session::split_pane(&text(pane.clone())?)?;
+    let session = Session::open()?;
+    let here = fuxix::terminal::stdin_size();
+    let size = here.map(|(size, _)| format!("{}x{}", size.cols, size.rows));
+    let cell = here.and_then(|(size, pixels)| {
+        let pixels = pixels?;
+        let w = pixels.width.get().checked_div(size.cols.get())?;
+        let h = pixels.height.get().checked_div(size.rows.get())?;
+        fux_vt::CellSize::new(w, h).map(|_| format!("{w}x{h}"))
+    });
+    let or_none = |text: Option<String>| OsString::from(text.unwrap_or_else(|| "-".to_owned()));
+    let mut public = vec![or_none(size), or_none(cell), pane];
+    let mut private = Vec::new();
+    while let Some(arg) = args.next() {
+        let (env, program) = (arg == "--env", arg == "--");
+        public.push(arg);
+        if program {
+            public.extend(args);
+            break;
+        }
+        if env {
+            let value = (args.next()).ok_or_else(|| Failure::new("--env needs NAME=VALUE"))?;
+            private.extend_from_slice(value.as_bytes());
+            private.push(0);
+        }
+    }
+    let shown = format!("{workspace}/{name}");
+    let line = launch(&shown, public, private)?;
+    if line != "ok" {
+        return Err(Failure::new(line.strip_prefix("err ").unwrap_or(&line)));
+    }
+    // The directory as the system names it, bytes and all.
+    let dir = session.root.join(&workspace).join(&name);
+    let mut out = dir.as_os_str().as_bytes().to_vec();
+    out.push(b'\n');
+    let mut stdout = std::io::stdout();
+    match stdout.write_all(&out).and_then(|()| stdout.flush()) {
+        Ok(()) => Ok(ExitCode::SUCCESS),
+        Err(e) => Err(io("stdout", e)),
+    }
+}
+
+/// What a start's arguments ask for, read in the holder: the starter's
+/// terminal's size and cell, the pane, the options, the program. Each
+/// `--env`'s `NAME=VALUE` comes from `input`, ended by a NUL.
+fn spec(
+    mut args: impl Iterator<Item = OsString>,
+    input: &mut impl BufRead,
+) -> Result<Spec, Failure> {
+    let mut here = |what: &str| -> Result<Option<(u16, u16)>, Failure> {
+        let text = text(
+            args.next()
+                .ok_or_else(|| Failure::new("holder arguments"))?,
+        )?;
+        (text != "-").then(|| pair(&text, what)).transpose()
+    };
+    let (here, here_cell) = (here("size")?, here("cell")?);
     let pane = text(
         args.next()
             .ok_or_else(|| Failure::new("start needs a NAME"))?,
     )?;
     let (workspace, name) = session::split_pane(&pane)?;
-    let here = fuxix::terminal::stdin_size();
-    let mut size = None;
-    let mut workspace_id = None;
-    let mut cell = here
-        .and_then(|(size, pixels)| {
-            let pixels = pixels?;
-            let w = pixels.width.get().checked_div(size.cols.get())?;
-            let h = pixels.height.get().checked_div(size.rows.get())?;
-            fux_vt::CellSize::new(w, h).map(|_| (w, h))
-        })
-        .unwrap_or(DEFAULT_CELL);
+    let (mut size, mut workspace_id) = (None, None);
+    let mut cell = here_cell.unwrap_or(DEFAULT_CELL);
     let (mut pictures, mut history, mut labels) = (true, DEFAULT_HISTORY, Vec::new());
     let (mut env, mut argv) = (Vec::new(), Vec::new());
     while let Some(arg) = args.next() {
@@ -196,11 +258,15 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
                 }
             }
             "--env" => {
-                use std::os::unix::ffi::{OsStrExt, OsStringExt};
-                let arg = args
-                    .next()
-                    .ok_or_else(|| Failure::new("--env needs NAME=VALUE"))?;
-                let bytes = arg.as_bytes();
+                use std::os::unix::ffi::OsStringExt;
+                let mut bytes = Vec::new();
+                let most = u64::try_from(fux3::recipe::MAX_RECIPE).unwrap_or(u64::MAX);
+                let read = input.by_ref().take(most).read_until(0, &mut bytes);
+                if read.is_err() || bytes.pop() != Some(0) {
+                    return Err(Failure::new(
+                        "--env needs NAME=VALUE, shorter than a recipe",
+                    ));
+                }
                 let at = (bytes.iter().position(|b| *b == b'='))
                     .ok_or_else(|| Failure::new("--env needs NAME=VALUE"))?;
                 let key = String::from_utf8_lossy(bytes.get(..at).unwrap_or_default()).into_owned();
@@ -246,27 +312,32 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
         // The size and labels of the start that wrote it, unless given.
         let kept = fux3::recipe::kept(recipe);
         size = size.or(kept.size);
-        labels.extend(kept.labels.into_iter().rev());
+        let given = |key: &String| labels.iter().any(|(k, _)| k == key);
+        let unset: Vec<_> = kept.labels.into_iter().filter(|(k, _)| !given(k)).collect();
+        labels.extend(unset);
         argv = vec!["/bin/sh".into(), saved.clone().into()];
     } else if argv.is_empty() {
         let shell = std::env::var_os("SHELL").filter(|s| !s.is_empty());
         argv.push(shell.unwrap_or_else(|| "/bin/sh".into()));
     }
-    let (cols, rows) = size
-        .or_else(|| here.map(|(size, _)| (size.cols.get(), size.rows.get())))
-        .unwrap_or((80, 24));
+    let (cols, rows) = size.or(here).unwrap_or((80, 24));
     holder::checked_size(cols, rows)?;
-    // Refused before anything starts if it would be too large or could
-    // not run; the holder writes it.
-    if recipe.is_none() {
-        let kept = fux3::recipe::Kept {
-            size: Some((cols, rows)),
-            labels: labels.clone(),
-        };
-        fux3::recipe::render(&cwd, &env, &argv, &kept)?;
-    }
-    let spec = Spec {
-        root: session.root.clone(),
+    // Refused before anything is made if it would be too large or could
+    // not run; written once the pane runs.
+    let recipe = match recipe {
+        Some(_) => None,
+        None => {
+            let kept = fux3::recipe::Kept {
+                size: Some((cols, rows)),
+                labels: labels.clone(),
+            };
+            Some(fux3::recipe::render(&cwd, &env, &argv, &kept)?)
+        }
+    };
+    // The program starts in the starter's directory; the holder leaves it.
+    std::env::set_current_dir(&session.root).map_err(|e| io(session.root.display(), e))?;
+    Ok(Spec {
+        session,
         workspace,
         workspace_id,
         name,
@@ -278,36 +349,22 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
         cwd,
         labels,
         env,
-        keep_recipe: recipe.is_some(),
+        recipe,
         argv,
-    };
-    let line = launch(&spec)?;
-    if line != "ok" {
-        return Err(Failure::new(line.strip_prefix("err ").unwrap_or(&line)));
-    }
-
-    // The directory as the system names it, bytes and all.
-    use std::os::unix::ffi::OsStrExt;
-    let dir = spec.root.join(&spec.workspace).join(&spec.name);
-    let mut out = dir.as_os_str().as_bytes().to_vec();
-    out.push(b'\n');
-    let mut stdout = std::io::stdout();
-    match stdout.write_all(&out).and_then(|()| stdout.flush()) {
-        Ok(()) => Ok(ExitCode::SUCCESS),
-        Err(e) => Err(io("stdout", e)),
-    }
+    })
 }
 
-/// Starts the holder in a session of its own, holding nothing of this
-/// process's but two pipes, and gives its one line: `ok DIR` or `err WHY`.
-fn launch(spec: &Spec) -> Result<String, Failure> {
+/// Starts the holder of pane `shown` in a session of its own, holding
+/// nothing of this process's but two pipes, and gives its one line: `ok`
+/// or `err WHY`. `private` goes to it on its pipe, never as an argument.
+fn launch(shown: &str, public: Vec<OsString>, private: Vec<u8>) -> Result<String, Failure> {
     let exe = std::env::current_exe().map_err(|e| io("finding this program", e))?;
     let (go_read, mut go) = std::io::pipe().map_err(|e| io("pipe", e))?;
     let (ready, ready_write) = std::io::pipe().map_err(|e| io("pipe", e))?;
     let mut command = Command::new(&exe);
     command
-        .args(spec.to_args())
-        .current_dir(&spec.root)
+        .arg("__hold")
+        .args(public)
         .stdin(Stdio::from(go_read))
         .stdout(Stdio::from(ready_write))
         .stderr(Stdio::null());
@@ -316,21 +373,16 @@ fn launch(spec: &Spec) -> Result<String, Failure> {
         .spawn()
         .map_err(|e| io(format!("starting {}", exe.display()), e))?;
     drop(command);
-    let unknown = |why: String| {
-        Failure::new(format!(
-            "pane {}/{} may or may not have started: {why}",
-            spec.workspace, spec.name
-        ))
-    };
-    go.write_all(b"go\n")
-        .and_then(|()| go.write_all(&spec.env_bytes()))
-        .and_then(|()| go.flush())
-        .map_err(|e| unknown(format!("telling it to go: {e}")))?;
-    // The line comes on a thread of its own, so that a holder that says
-    // nothing cannot hold this command past its bound.
+    let unknown =
+        |why: String| Failure::new(format!("pane {shown} may or may not have started: {why}"));
+    // On a thread of its own, so that a holder that neither reads nor
+    // says anything cannot hold this command past its bound. A holder
+    // that ended early says why in its line, so a failed write is not.
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .spawn(move || {
+            let _ = go.write_all(b"go\n").and_then(|()| go.write_all(&private));
+            drop(go);
             let mut line = String::new();
             let got = std::io::BufReader::new(ready.take(64 << 10)).read_line(&mut line);
             let _ = sender.send(got.map(|_| line));

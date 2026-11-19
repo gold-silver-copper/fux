@@ -211,11 +211,6 @@ impl Session {
             }
             _ => {}
         }
-        Session::at(root)
-    }
-
-    /// The session whose directory is `root`: opened once, a link refused.
-    pub fn at(root: PathBuf) -> Result<Session, Failure> {
         let dir = Arc::new(open_private(&root)?);
         Ok(Session { root, dir })
     }
