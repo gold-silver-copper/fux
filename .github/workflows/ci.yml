@@ -87,6 +87,15 @@ jobs:
           # The pane process's crate with what its features add.
           cargo clippy -p fux-pane --features testing,in-process --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
 
+      # fux2's README example with a real shell and no server, as a person
+      # would run it.
+      - name: fux2 example
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cargo build -p fux2 -p fux2-view --locked
+          fux2/tests/example.sh
+
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
       # in release, as debug is too slow for the step's 5 minutes; built in
       # a step of its own, and run under an 8 GiB data limit, so a bound
@@ -335,7 +344,7 @@ jobs:
         run: |
           set -euo pipefail
           packages=(-p fux-vt -p fux-vt-peak -p fuxix -p fux-wire)
-          cargo clippy "${packages[@]}" -p fux-pane -p fux-server -p fux --all-targets --locked -- -D warnings
+          cargo clippy "${packages[@]}" -p fux-pane -p fux-server -p fux -p fux2 -p fux2-view --all-targets --locked -- -D warnings
           cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings
           cargo test "${packages[@]}" --locked -- --skip another_user_is_refused
 
@@ -401,6 +410,17 @@ jobs:
             $failed += [int]($run.ExitCode -ne 0)
           }
           exit $failed
+
+      # fux2's tests, then its README example with a real shell. One test
+      # at a time: Windows has one polling thread per process.
+      - name: fux2
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          cargo test -p fux2 -p fux2-view --locked -- --test-threads 1
+          cargo build -p fux2 -p fux2-view --locked
+          fux2/tests/example.sh
 
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured
       # in the log: a flood both ways with signals, no lost wake-up, an idle
