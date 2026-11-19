@@ -2,7 +2,7 @@
 //! viewer's own: a binding that loops or waits holds only this thread, the
 //! viewer stops it when its time is up, and it can detach at any moment.
 //! What a binding does to a pane it does through the pane's files; to the
-//! layout, through the one layout command grammar `.view/ctl` takes.
+//! layout, through the layout command grammar `--do` takes.
 //!
 //! The words here are the primitives. The commands (split, move, zoom,
 //! pickers, prompts) are grift in `library.grift`, and the keys are grift in
@@ -30,6 +30,8 @@ pub const CONFIG_TIME: Duration = Duration::from_secs(2);
 pub const BINDING_TIME: Duration = Duration::from_secs(5);
 /// The most text a binding run copies out of the language, over all its words.
 const MAX_COPIED: usize = 16 << 20;
+/// The most panes whose going a callback waits for.
+const MAX_WATCHED: usize = 64;
 /// The most keys in one chord.
 const MAX_CHORD_KEYS: usize = 4;
 
@@ -72,6 +74,9 @@ pub enum ToViewer {
     Panel(Panel),
     /// The layout changed: read it now.
     Reread,
+    /// Run `Job::Gone` for this pane (`NAME`, or one life `NAME@ID`) once
+    /// it is gone from the workspace shown.
+    Watch(String),
     /// Resize these panes to their tiles (the layout was just read again).
     Fit(Vec<String>),
     /// A line for the bar's corner.
@@ -115,8 +120,8 @@ pub enum Job {
     },
     /// Callback `id` is no longer wanted.
     Drop(u64),
-    /// The function the configuration names `name`, with string arguments.
-    Call { name: String, args: Vec<String> },
+    /// The pane `when-gone` named is gone: its callback, once.
+    Gone(String),
 }
 
 pub struct Run {
@@ -152,6 +157,8 @@ struct Host {
     /// what each of its keys calls.
     callback: Option<(u64, Vec<Kept>)>,
     next_callback: u64,
+    /// What `when-gone` calls, by pane.
+    gone: HashMap<String, Kept>,
 }
 
 impl Host {
@@ -670,6 +677,21 @@ const WORDS: &[(&str, Word)] = &[
         host.tell(ToViewer::Focus(pane));
         inert()
     }),
+    ("when-gone", |g, host, args| {
+        let [pane, function] = *g.exactly(args)?;
+        let pane = string_arg(g, host, pane)?;
+        let pane = crate::layout::Target::parse(&pane).map_err(|f| failed(g, &f.0))?;
+        let pane = pane.to_string();
+        if host.gone.len() >= MAX_WATCHED && !host.gone.contains_key(&pane) {
+            return Err(failed(g, &format!("more than {MAX_WATCHED} panes watched")));
+        }
+        let kept = g.keep(function)?;
+        if let Some(old) = host.gone.insert(pane.clone(), kept) {
+            let _ = g.release(old);
+        }
+        host.tell(ToViewer::Watch(pane));
+        inert()
+    }),
     ("workspace-dir", |g, host, args| {
         let [] = *g.exactly(args)?;
         let path = shown(g, host)?.dir.to_string_lossy().into_owned();
@@ -733,16 +755,6 @@ fn describe(g: &Grift<Host>, error: &Error) -> String {
         Ok(_) => text.as_str().replace('\n', " "),
         Err(_) => "the program failed".to_owned(),
     }
-}
-
-/// What a primitive said in an error grift describes as
-/// `fux3-error "WHY" in …` (or `pane-gone …`), else the description whole.
-fn said(described: &str) -> String {
-    let quoted = (described.strip_prefix("fux3-error \""))
-        .or_else(|| described.strip_prefix("pane-gone \""))
-        .and_then(|rest| rest.split_once("\" in "))
-        .map(|(why, _)| why.replace("\\\"", "\""));
-    quoted.unwrap_or_else(|| described.to_owned())
 }
 
 fn prepare() -> Result<Grift<Host>, String> {
@@ -824,16 +836,13 @@ fn function_of(
             }
             Ok(None)
         }
-        Job::Call { name, args } => {
-            let symbol = g.symbol(&name).map_err(|e| describe(g, &e))?;
-            let top = g.top_level();
-            let function = g.lookup(&top, &symbol).map_err(|e| describe(g, &e))?;
-            let function = function.ok_or_else(|| format!("nothing is called {name}"))?;
-            let mut values = Vec::with_capacity(args.len());
-            for arg in args {
-                values.push(g.string(&arg).map_err(|e| describe(g, &e))?);
-            }
-            Ok(Some((function, values)))
+        Job::Gone(pane) => {
+            let Some(function) = host.gone.remove(&pane) else {
+                return Ok(None);
+            };
+            let called = kept(g, &function);
+            let _ = g.release(function);
+            Ok(Some((called?, Vec::new())))
         }
     }
 }
@@ -864,11 +873,9 @@ fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
         let (function, args) = function;
         let outcome = g.call(&mut host, &function, &args).err();
         // A run with no label (an answer from a list or prompt) says its
-        // error alone, as fux does; a `.view/ctl` line's refusal is what a
-        // primitive said, if one did, for `.view/errors`.
+        // error alone, as fux does.
         let why = outcome.map(|e| match run.label.as_str() {
             "" => describe(&g, &e),
-            label if label.starts_with("ctl: ") => said(&describe(&g, &e)),
             label => format!("{label}: {}", describe(&g, &e)),
         });
         host.tell(ToViewer::Done(why));
@@ -914,6 +921,7 @@ pub fn start(
         next_generation: 0,
         callback: None,
         next_callback: 0,
+        gone: HashMap::new(),
         cancel: Arc::clone(&cancel),
         fux3,
         session,

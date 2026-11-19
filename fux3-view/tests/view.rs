@@ -509,7 +509,8 @@ fn the_history_key_opens_the_history_and_then_the_screen() -> Tested {
     })?;
     let screen = lab.read(&lab.view, "only", "screen");
     let last = (screen.lines().skip(1))
-        .rfind(|row| !row.trim().is_empty())
+        .filter(|row| !row.trim().is_empty())
+        .last()
         .ok_or("a blank screen")?;
     lab.keys("v", b"\x02c")?;
     let copied = lab.base.join("editor.copied");

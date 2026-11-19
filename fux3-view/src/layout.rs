@@ -748,6 +748,17 @@ impl Layout {
                 };
             }
         }
+        // A bare zoom is whichever pane of that name its tab holds now
+        // that every pane has its tile, a routed one too.
+        for tab in &mut shown.tabs {
+            let bare = (tab.zoom.as_ref()).filter(|zoom| zoom.id.is_empty() && !tab.holds(zoom));
+            let found = bare.and_then(|zoom| {
+                (live.iter()).find(|l| l.pane.name == zoom.name && tab.holds(&l.pane))
+            });
+            if let Some(found) = found {
+                tab.zoom = Some(found.pane.clone());
+            }
+        }
         shown
     }
 
@@ -1613,13 +1624,11 @@ fn apply_bound(
         }
         Op::Zoom(pane) => {
             let pane = resolve(&shown, live, pane)?;
-            let id = shown.tab_of(&pane).map_or(OTHER, |tab| tab.id);
-            let id = store_tab(layout, &shown, id)?;
-            let tab = layout.tab_mut(id).ok_or_else(went)?;
-            tab.zoom = match tab.zoom.take() {
-                Some(zoomed) if zoomed == pane => None,
-                _ => Some(pane),
-            };
+            let tab = shown.tab_of(&pane).ok_or_else(went)?;
+            // As shown: a bare zoom on this pane is restored too.
+            let restore = tab.zoomed() == Some(&pane);
+            let id = store_tab(layout, &shown, tab.id)?;
+            layout.tab_mut(id).ok_or_else(went)?.zoom = (!restore).then_some(pane);
             Ok(None)
         }
         Op::NewTab(title, after, tests) => {

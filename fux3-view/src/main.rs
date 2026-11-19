@@ -29,7 +29,6 @@ use panes::Pane;
 use render::{Frame, Tile};
 use script::{Context, Job, Run, Script, ToViewer, Verb};
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -72,10 +71,6 @@ const MAX_CHORD_HOPS: u8 = 8;
 const SCRIPT_TURN: usize = 64;
 /// The longest paste passed on.
 const MAX_PASTE: usize = 1 << 20;
-/// The longest line `.view/ctl` takes, and the most refusals `.view/errors`
-/// keeps.
-const MAX_CTL_LINE: usize = fux3::files::PIPE_BUF;
-const MAX_ERRORS: usize = 32;
 /// How long a paste's file is kept for its pane to take it; the viewer
 /// can't tell when it has (another writer's command moves the same
 /// `commands` count), so it keeps each the whole time.
@@ -169,8 +164,7 @@ struct Running {
 
 struct View {
     session: Session,
-    /// The workspace shown, and its `.view`: the layout, its lock, `ctl`
-    /// and `errors`.
+    /// The workspace shown, and its `.view`: the layout and its lock.
     workspace: Workspace,
     view: PathBuf,
     /// The last good layout read, and the text it came from.
@@ -202,10 +196,8 @@ struct View {
     /// A notice for the bar's corner, until the next key: its text and
     /// colours.
     notice: Option<(String, &'static str)>,
-    /// The shown workspace's `.view/ctl`, while this viewer is the one
-    /// reading it, and a line not yet whole.
-    ctl: Option<Ctl>,
-    ctl_part: Vec<u8>,
+    /// The panes `when-gone` waits for the going of, each with its workspace.
+    watched: Vec<(String, Target)>,
     /// The run in flight, where it came from.
     in_flight: Option<Origin>,
     /// Pastes handed over, to name their files, and the files kept, each
@@ -235,12 +227,10 @@ struct View {
     quit: bool,
 }
 
-/// Where a run came from: what it was started for (a `.view/ctl` line's
-/// refusal goes to `.view/errors`), the workspace shown when it was asked
-/// for (what it does to panes and panels is for that workspace alone), and
-/// how many chords led to it.
+/// Where a run came from: the workspace shown when it was asked for (what
+/// it does to panes and panels is for that workspace alone), and how many
+/// chords led to it.
 struct Origin {
-    label: String,
     workspace: String,
     hops: u8,
 }
@@ -324,9 +314,9 @@ impl View {
         }
     }
 
-    /// Shows the workspace `name`, made if missing: its own layout, panes
-    /// and `.view/ctl` (served from now on, the old one no longer), with
-    /// the tab and focus this viewer left it with, if it showed it before.
+    /// Shows the workspace `name`, made if missing: its own layout and
+    /// panes, with the tab and focus this viewer left it with, if it showed
+    /// it before.
     fn show_workspace(&mut self, name: &str, now: Instant) {
         if name == self.workspace.name {
             return;
@@ -351,33 +341,13 @@ impl View {
         if let Some(panel) = self.panel.take() {
             self.dispatch_job(String::new(), Job::Drop(panel.id()), 0);
         }
-        release_ctl(&self.view, self.ctl.take());
         (self.workspace, self.view) = (workspace, view);
         (self.tab, self.focus, self.last_focus) = (tab, focus, None);
         self.panes.clear();
-        self.ctl_part.clear();
         self.stored = Layout::default();
         (self.layout_text, self.layout_failed, self.layout_seen) = (None, None, false);
-        self.rescan(now);
+        self.rescan(now, false);
         self.refresh(true);
-    }
-
-    /// Starts reading the workspace's `.view/ctl` once no other viewer of
-    /// it does (tried at each rescan), running the lines a regular file
-    /// there holds.
-    fn claim_ctl(&mut self) {
-        if self.ctl.is_some() {
-            return;
-        }
-        match open_ctl(&self.view) {
-            Ok(Some((ctl, written))) => {
-                self.ctl = Some(ctl);
-                self.ctl_part.clear();
-                self.take_ctl(&written);
-            }
-            Ok(None) => {}
-            Err(failure) => self.say(format!(".view/ctl: {failure}")),
-        }
     }
 
     /// The workspace `step` places from the one shown, among the session's
@@ -442,8 +412,10 @@ impl View {
     /// one gone is let go (its tile stays, shown as gone), and every
     /// pane's status is looked at, for routing. A workspace whose
     /// directory went (it was closed) gives way to the first one left,
-    /// else to a new `main`.
-    fn rescan(&mut self, now: Instant) {
+    /// else to a new `main`. With `fit`, a layout file changed since it was
+    /// last read was edited from outside (`--do`, another viewer), which
+    /// fits nothing: the panes whose tiles it changed are fitted here.
+    fn rescan(&mut self, now: Instant, fit: bool) {
         self.next_scan = after(now, RESCAN);
         let gone = std::fs::symlink_metadata(&self.workspace.dir);
         if matches!(gone, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
@@ -452,6 +424,7 @@ impl View {
             self.workspace.name.clear();
             return self.show_workspace(next, now);
         }
+        let old = (fit && self.layout_seen).then(|| self.stored.clone());
         let changed = self.reread_layout();
         let names = match self.workspace.names() {
             Ok(names) => names,
@@ -470,7 +443,24 @@ impl View {
             self.look_at(&name, visible.iter().any(|p| p.name == name));
         }
         self.refresh(changed);
-        self.claim_ctl();
+        if let Some(old) = old.filter(|_| changed) {
+            for pane in layout::changed(&old.shown(&self.live), &self.arranged, self.area()) {
+                self.fit(&pane);
+            }
+        }
+        // A watched pane is gone once its name is, or another life has it.
+        let gone = |(space, pane): &(String, Target)| {
+            let other =
+                |p: &Pane| (pane.id.as_deref().zip(p.id())).is_some_and(|(id, now)| id != now);
+            *space == self.workspace.name && self.panes.get(&pane.name).is_none_or(other)
+        };
+        let (gone, watched) = std::mem::take(&mut self.watched)
+            .into_iter()
+            .partition(gone);
+        self.watched = watched;
+        for (_, pane) in Vec::from_iter(gone) {
+            self.dispatch_job(String::new(), Job::Gone(pane.to_string()), 0);
+        }
     }
 
     /// Looks at the files of the panes shown.
@@ -789,7 +779,6 @@ impl View {
     fn start_run(&mut self, run: Run, hops: u8) {
         self.run_sent = true;
         self.in_flight = Some(Origin {
-            label: run.label.clone(),
             workspace: run.context.workspace.clone(),
             hops,
         });
@@ -816,6 +805,7 @@ impl View {
             let refused = match &message {
                 ToViewer::Focus(pane) => Some(format!("focus {pane}")),
                 ToViewer::Fit(_) => Some("fit".to_owned()),
+                ToViewer::Watch(pane) => Some(format!("when-gone {pane}")),
                 ToViewer::Type(pane, _) => Some(format!("send to {pane}")),
                 ToViewer::Panel(panel) => {
                     self.dispatch_job(String::new(), Job::Drop(panel.id()), 0);
@@ -854,7 +844,7 @@ impl View {
             }
             ToViewer::Focus(pane) => {
                 // It may have just been started: look now.
-                self.rescan(now);
+                self.rescan(now, false);
                 let target = Target::parse(&pane).ok();
                 let found = target.and_then(|t| {
                     let live = self.live.iter().find(|l| l.pane.name == t.name)?;
@@ -875,7 +865,13 @@ impl View {
                 self.panel = Some(panel);
             }
             // What a binding does next may name what the edit made.
-            ToViewer::Reread => self.rescan(now),
+            ToViewer::Reread => self.rescan(now, false),
+            ToViewer::Watch(pane) => {
+                let space = self.workspace.name.clone();
+                (self.watched).extend(Target::parse(&pane).ok().map(|pane| (space, pane)));
+                // One gone already is seen now.
+                self.rescan(now, false);
+            }
             ToViewer::Fit(panes) => {
                 for pane in panes.iter().filter_map(|p| PaneRef::parse(p).ok()) {
                     self.fit(&pane);
@@ -902,12 +898,9 @@ impl View {
                 self.next_run();
             }
             ToViewer::Done(why) => {
-                let run = self.in_flight.take();
-                if let Some((why, run)) = why.zip(run) {
-                    match run.label.strip_prefix("ctl: ") {
-                        Some(line) => self.refuse_line(&run.workspace, line, &why),
-                        None => self.say(why),
-                    }
+                self.in_flight = None;
+                if let Some(why) = why {
+                    self.say(why);
                 }
                 self.next_run();
             }
@@ -940,88 +933,6 @@ impl View {
         };
         if let Err(why) = typed {
             self.say(why);
-        }
-    }
-
-    /// Says a `.view/ctl` line of workspace `space` was refused, here and
-    /// in its `.view/errors` (the last lines, replaced whole under the
-    /// layout's lock).
-    fn refuse_line(&mut self, space: &str, line: &str, why: &str) {
-        let said = format!("{line}: {why}").replace('\n', " ");
-        self.say(said.clone());
-        let view = match space == self.workspace.name {
-            true => Ok(self.view.clone()),
-            false => (self.session.workspace(space, false)).and_then(|w| command::view_dir(&w)),
-        };
-        let written = view.and_then(|view| {
-            let _lock = layout::lock(&view)?;
-            let path = view.join("errors");
-            let old = fux3::files::read_small(&path, 64 << 10).unwrap_or_default();
-            let old = String::from_utf8_lossy(&old);
-            let mut lines: Vec<&str> = old.lines().collect();
-            lines.push(&said);
-            let keep = lines.len().saturating_sub(MAX_ERRORS);
-            let text: String = lines.iter().skip(keep).flat_map(|l| [*l, "\n"]).collect();
-            layout::replace(&view, "errors", ".errors.new", &text)
-        });
-        if let Err(failure) = written {
-            self.say(format!("{said} (and .view/errors: {failure})"));
-        }
-    }
-
-    /// Takes the whole lines waiting in `.view/ctl`: each runs the
-    /// library's `layout-command`, in turn with the bindings.
-    fn read_ctl(&mut self) {
-        let mut buffer = [0u8; 4096];
-        let read = match &self.ctl {
-            Some(ctl) => fuxix::io::read(&ctl.fifo, &mut buffer),
-            None => return,
-        };
-        let got = match read {
-            Ok(n) => buffer.get(..n).unwrap_or_default().to_vec(),
-            Err(Errno::AGAIN | Errno::INTR) => return,
-            Err(errno) => {
-                self.ctl = None;
-                return self.say(format!(".view/ctl: {errno}; no longer read"));
-            }
-        };
-        self.take_ctl(&got);
-    }
-
-    /// Runs the whole lines in `got`, keeping a part line for later.
-    fn take_ctl(&mut self, got: &[u8]) {
-        for &byte in got {
-            if byte != b'\n' {
-                if self.ctl_part.len() <= MAX_CTL_LINE {
-                    self.ctl_part.push(byte);
-                }
-                continue;
-            }
-            let bytes = std::mem::take(&mut self.ctl_part);
-            let line = String::from_utf8_lossy(&bytes).trim().to_owned();
-            if line.is_empty() {
-                continue;
-            }
-            if bytes.len() > MAX_CTL_LINE {
-                let start: String = line.chars().take(40).collect();
-                let space = self.workspace.name.clone();
-                self.refuse_line(
-                    &space,
-                    &format!("{start}…"),
-                    &format!("a line is at most {MAX_CTL_LINE} bytes"),
-                );
-                continue;
-            }
-            if self.waiting_runs.len() >= MAX_WAITING_RUNS {
-                let space = self.workspace.name.clone();
-                self.refuse_line(&space, &line, "too many commands waiting; dropped");
-                continue;
-            }
-            let job = Job::Call {
-                name: "layout-command".to_owned(),
-                args: vec![line.clone()],
-            };
-            self.dispatch_job(format!("ctl: {line}"), job, 0);
         }
     }
 
@@ -1406,88 +1317,6 @@ fn do_line(space: &str, line: &str) -> Result<(), Failure> {
         .map_err(|e| fux3::io("stdout", e))
 }
 
-/// A workspace's `.view/ctl` as the one viewer reading it holds it: the
-/// FIFO, and the lock on `.view/ctl.lock` that makes it the one, so no two
-/// viewers split a line between them.
-struct Ctl {
-    fifo: File,
-    lock: File,
-}
-
-/// Takes `.view/ctl.lock` without waiting: `None` while another viewer of
-/// the workspace holds it.
-fn ctl_lock(view: &std::path::Path) -> Result<Option<File>, Failure> {
-    let path = view.join("ctl.lock");
-    let mut options = File::options();
-    options.read(true).write(true).create(true).truncate(false);
-    let file = (fuxix::file::private_file(&mut options).open(&path))
-        .map_err(|e| fux3::io(path.display(), e))?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(e)) => Err(fux3::io(path.display(), e)),
-    }
-}
-
-/// Stops reading `.view/ctl`; unless a writer holds it open to read too,
-/// the FIFO goes (before the lock, so the next viewer makes its own), so a
-/// line written later with no viewer running makes a regular file (which
-/// the next viewer runs) instead of waiting for a reader for ever.
-fn release_ctl(view: &std::path::Path, ctl: Option<Ctl>) {
-    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-    let Some(Ctl { fifo, lock }) = ctl else {
-        return;
-    };
-    drop(fifo);
-    let path = view.join("ctl");
-    let fifo = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_fifo());
-    let unread = File::options()
-        .write(true)
-        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
-        // A private FIFO opened to write without waiting fails only when
-        // nobody reads it (ENXIO).
-        .open(&path)
-        .is_err();
-    if fifo && unread {
-        let _ = std::fs::remove_file(&path);
-    }
-    drop(lock);
-}
-
-/// `.view/ctl`, if no other viewer reads it: made if missing, opened to
-/// read without waiting (and to write, so it never reads as ended while no
-/// writer has it open). A regular file there was written with no viewer
-/// reading (a shell's `>` makes one): its lines are given back to be run,
-/// and the FIFO takes its place. Only the lock's holder makes, opens or
-/// removes the FIFO.
-fn open_ctl(view: &std::path::Path) -> Result<Option<(Ctl, Vec<u8>)>, Failure> {
-    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-    let Some(lock) = ctl_lock(view)? else {
-        return Ok(None);
-    };
-    let path = view.join("ctl");
-    let mut written = Vec::new();
-    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
-        written = fux3::files::read_small(&path, 64 << 10)?;
-        std::fs::remove_file(&path).map_err(|e| fux3::io(path.display(), e))?;
-    }
-    match fuxix::file::private_fifo(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(fux3::io(path.display(), e)),
-    }
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
-        .open(&path)
-        .map_err(|e| fux3::io(path.display(), e))?;
-    match file.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
-        true => Ok(Some((Ctl { fifo: file, lock }, written))),
-        false => Err(Failure::new(format!("{} is not a FIFO", path.display()))),
-    }
-}
-
 fn run() -> Result<(), Failure> {
     let space = match parse_args()? {
         Asked::View(space) => space,
@@ -1555,8 +1384,7 @@ fn run() -> Result<(), Failure> {
         column: None,
         panel: None,
         notice: None,
-        ctl: None,
-        ctl_part: Vec::new(),
+        watched: Vec::new(),
         in_flight: None,
         pasted: 0,
         pastes: Vec::new(),
@@ -1584,7 +1412,6 @@ fn run() -> Result<(), Failure> {
     let ended = serve(&mut view, &signals, &paint_wake, &script_wake);
     view.end_run();
     view.leave_pastes();
-    release_ctl(&view.view, view.ctl.take());
     view.painter.finish(LEAVE.as_bytes().to_vec());
     drop(raw);
     ended
@@ -1611,7 +1438,6 @@ struct Ready {
     signals: bool,
     paint: bool,
     script: bool,
-    ctl: bool,
 }
 
 fn wait(
@@ -1627,10 +1453,6 @@ fn wait(
     let signal_entry = fds.push(PollFd::new(signals.reader(), Events::IN));
     let paint_entry = fds.push(PollFd::new(paint, Events::IN));
     let script_entry = fds.push(PollFd::new(script, Events::IN));
-    let ctl = view
-        .ctl
-        .as_ref()
-        .map(|ctl| fds.push(PollFd::new(&ctl.fifo, Events::IN)));
     match fds.poll(Some(timeout)) {
         Ok(_) | Err(Errno::INTR) => {}
         Err(errno) => return Err(fux3::io("poll", errno)),
@@ -1640,7 +1462,6 @@ fn wait(
         signals: !fds.events(signal_entry).is_empty(),
         paint: !fds.events(paint_entry).is_empty(),
         script: !fds.events(script_entry).is_empty(),
-        ctl: ctl.is_some_and(|entry| !fds.events(entry).is_empty()),
     })
 }
 
@@ -1659,7 +1480,7 @@ fn serve(
     while !view.quit {
         let now = Instant::now();
         if now >= view.next_scan {
-            view.rescan(now);
+            view.rescan(now, true);
         }
         if now >= view.next_look {
             view.look(now);
@@ -1703,9 +1524,6 @@ fn serve(
                     view.quit = true;
                 }
             }
-        }
-        if ready.ctl {
-            view.read_ctl();
         }
         let mut inputs = Vec::new();
         if ready.stdin {

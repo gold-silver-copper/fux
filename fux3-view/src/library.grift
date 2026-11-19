@@ -22,10 +22,6 @@
 (define! made (lambda! (text) (line-of "made" text)))
 (define! started (lambda! (text) (line-of "started" text)))
 
-;; What a line written to a workspace's .view/ctl does: drop the fit
-;; (`arrange` instead of `edit!`) to leave pane sizes alone.
-(define! layout-command (lambda! (line) (edit! line)))
-
 ;; A pane's name, without the `@ID` of its life.
 (define! name-of (lambda! (pane) (first (string-split pane "@"))))
 
@@ -45,28 +41,48 @@
 (define! split-new (lambda! (dir)
   (focus (started (edit! (join "split " (focused) " " dir))))))
 
-;; The focused pane's history in a pager, below it: $PAGER, else less at
-;; the end. When the pager ends, the pane closes its tile (a line to its
-;; workspace's .view/ctl, opened read-write so that it never waits),
-;; removes its recipe (a template never starts a pager) and ends itself.
+;; Takes a pane's tile away, if a tile still has its name.
+(define! close-tile (lambda! (pane)
+  (if! (empty-list? (filter (lambda! (row) (equal? (name-of (first row)) (name-of pane))) (panes)))
+    #inert
+    (edit! (join "close " pane)))))
+
+;; The focused pane's history and then its screen (as it is when the key
+;; is pressed, without trailing blank rows), as one text in a private file
+;; (in a directory of its own in the session's, so what an editor writes
+;; beside it goes with it), opened at its end in a pane below: $EDITOR, else
+;; $PAGER, else less. The text is a copy: editing it changes nothing in the
+;; pane. When the editor ends, the pane removes the file and its recipe (a
+;; template never starts one) and ends itself; this viewer then closes its
+;; tile.
 (define! history-script
-  "if [ -e \"$1.1\" ]; then cat \"$1.1\" \"$1\" | ${PAGER:-less +G}; else ${PAGER:-less +G} \"$1\"; fi; exec 3<>\"$FUX3_DIR/$FUX3_WORKSPACE/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; rm -f \"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"; echo kill > \"$FUX3_PANE_DIR/ctl\"")
+  "umask 077; d=\"$FUX3_DIR/.history-$FUX3_PANE_ID\"; f=history-and-screen
+trap 'rm -rf \"$d\"' EXIT; trap 'exit 1' HUP INT TERM; mkdir \"$d\" && cd \"$d\" || exit 1
+{ if [ -e \"$1.1\" ]; then cat \"$1.1\"; fi; cat \"$1\"; awk 'NR>1{if(/[^ ]/){printf b;print;b=e}else b=b ORS}' \"${1%history}screen\"; } > \"$f\"
+e=${EDITOR%% *}; case \"${e##*/}\" in
+  vi|vim|nvim|nano|emacs) $EDITOR \"+$(($(wc -l < \"$f\")))\" \"$f\";;
+  '') ${PAGER:-less +G} \"$f\";;
+  *) $EDITOR \"$f\";;
+esac
+rm -rf \"$d\" \"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"; echo kill > \"$FUX3_PANE_DIR/ctl\"")
 (define! history (lambda! ()
   (let! ((target (focused))
          (file (join (workspace-dir) "/" (name-of target) "/history"))
          (pane (start-new "history" "sh" "-c" history-script "sh" file)))
+    (when-gone pane (lambda! () (close-tile pane)))
     (place-new! pane (lambda! (p) (edit! (join "split " target " down " p)))))))
 
 ;; Asks, as a list with one row, Yes, and calls `then` only if it is chosen.
 (define! confirm (lambda! (question then)
   (pick question (list (list "yes" "Yes")) (lambda! (answer) (then)))))
 
-;; Ends a pane and takes its tile away; one already gone just loses its
+;; Ends a pane and takes its tile away once it is gone, so the panes that
+;; get its room are fitted to what is left; one already gone just loses its
 ;; tile. A kill that fails otherwise (its ctl full) is said, and the tile
 ;; stays while the program runs.
 (define! close-pane (lambda! (pane)
   (catch-kind! (kill pane) pane-gone gone #inert)
-  (edit! (join "close " pane))))
+  (when-gone pane (lambda! () (close-tile pane)))))
 (define! confirm-close-pane (lambda! (pane)
   (confirm (join "close pane " (name-of pane) "?") (lambda! () (close-pane pane)))))
 
