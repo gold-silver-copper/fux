@@ -279,3 +279,39 @@ Append-only: one short entry per decision, newest last.
     - With two viewers of one workspace, the other one still fits the pane copied to its own
       tile when it sees the split (entry 19's cost).
     - Lines: production 5,883 → 5,889.
+23. **Review round 1 (2026-11-19): what changed in the viewer, and why.**
+    - **A workspace renamed with `mv` is followed.** `command::named` gives a workspace as it is
+      called now (`place` of the directory held): the viewer takes it at each look (the bar, the
+      names it remembers), and a start, a paste's path and `(workspace-dir)` take it when they are
+      used. Before, a split was refused "workspace rig was removed", and a paste named a path the
+      holder could not read and was lost without a word. A rename between that look and the
+      start is still refused by `--workspace-id`: refused, never misdirected.
+    - **`C-b c` finds the pane by its id and reads `screen` first.** The script is given the
+      pane's id, not a path, and finds its directory as it finds its own; it takes the screen,
+      then the history files, and writes history then that screen. With the core appending to
+      `history` before it replaces the screens, no line is in neither; one that scrolled off
+      between the reads is there twice.
+    - **The copy's pane removes a recipe only if it is a copy's**: the one under the name it
+      started with, and only while that file still holds the copy's own script (after the pane
+      was renamed, another program may have started under the name). Removing it when the pane
+      starts was the other way: the holder writes the recipe after the program runs, so the
+      script would race it.
+    - **A pane renamed keeps what the viewer holds for it**: the same `Pane`, with the keys
+      waiting for its `in`, is carried to the new name (the viewer made a new one and dropped
+      the queue). No test: filling a pane's `in` and renaming it between two looks of a real
+      viewer is not something the harness can time; read in source.
+    - **`NAME@ID` names a pane by its id everywhere a command resolves one**: the pane a split
+      places (`split b right a@ID`), the pane routing leaves out during an edit, and the tile a
+      new shell is split from (`split a@ID right` now uses the layout's own `resolve`).
+    - **Closing a workspace waits for every directory a holder has locked**, named or not: a
+      pane starting (`.new-ID`) or ending (`.gone-ID`) counts as one that has not ended, and the
+      workspace stays, saying which, with nothing removed. Checked under the session's lock,
+      under which such a directory is made and renamed, so none appears after the check.
+    - **A watch is held back only by a pane of its own name** whose `status` is not read yet,
+      not by any such pane in the workspace.
+    - Tests made to mean what they say: the depth test gives its panes distinct ids and checks
+      the refusal says "deep"; the moved-pane test types after the viewer has looked again; the
+      copy test waits for the prompt after the last row.
+    - Lines: production 5,897 at the merge (the core's branch brought 8 in `view_dir`) → 5,924.
+      Over the 5,900 band by 24. Paid: `resolve_live` folded into its caller. Nothing else here
+      is redundant; each addition is one of the fixes above.

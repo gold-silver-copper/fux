@@ -52,6 +52,18 @@ pub fn view_dir(workspace: &Workspace) -> Result<File, Failure> {
     fux3::session::private_dir(held, VIEW, false)
 }
 
+/// `workspace` as it is called now (a workspace renamed with `mv` is the
+/// same one): the name and path to hand other programs. Refused once it
+/// was removed.
+pub fn named(workspace: &Workspace) -> Result<Workspace, Failure> {
+    workspace.check()?;
+    let mut now = workspace.clone();
+    if let Some((_, name)) = fux3::session::place(workspace.held()) {
+        (now.dir, now.name) = (workspace.session.root.join(&name), name);
+    }
+    Ok(now)
+}
+
 /// The `fux3` program beside this one.
 pub fn fux3_program() -> Result<PathBuf, Failure> {
     let exe = std::env::current_exe().map_err(|e| fux3::io("finding this program", e))?;
@@ -83,6 +95,7 @@ pub fn start(
     program: &[String],
     cancel: &AtomicBool,
 ) -> Result<PaneRef, Failure> {
+    let workspace = &named(workspace)?;
     let mut command = Command::new(fux3);
     command
         .args(["start", &format!("{}/{name}", workspace.name)])
@@ -181,13 +194,8 @@ pub fn run_line(
     let (op, started) = if let Op::SplitNew(target, dir) = &command {
         {
             // The pane split must have a tile before a shell is started for it.
-            let shown = layout::read(&view)?.shown(&live_panes(workspace));
-            if !(shown.tabs.iter())
-                .flat_map(|t| t.leaves())
-                .any(|p| p.name == target.name)
-            {
-                return Err(Failure::new(format!("no tile for pane {target}")));
-            }
+            let live = live_panes(workspace);
+            layout::resolve(&layout::read(&view)?.shown(&live), &live, target)?;
             let pane = start_new(&fux3_program()?, workspace, "shell", &[], cancel)?;
             let new = Target {
                 name: pane.name.clone(),
@@ -243,7 +251,16 @@ pub fn close_workspace(workspace: &Workspace, cancel: &AtomicBool) -> Result<(),
     }
     loop {
         let lock = workspace.session.lock()?;
-        let live = workspace.clear_dead(&lock)?;
+        workspace.clear_dead(&lock)?;
+        // Every directory a holder has locked: the live panes, and those
+        // starting or ending under names nothing lists. None is entered.
+        let all = at::names(workspace.held(), 1 << 16).map_err(|e| fux3::io("listing", e))?;
+        let held = |name: &std::ffi::OsString| {
+            let dir = at::open_dir(workspace.held(), name).ok()?;
+            let free = fux3::session::try_lock(&dir).unwrap_or(false);
+            (!free).then(|| name.to_string_lossy().into_owned())
+        };
+        let live: Vec<String> = all.iter().filter_map(|(name, _)| held(name)).collect();
         if live.is_empty() {
             empty(workspace.held(), 4)?;
             let removed = || Failure::new(format!("workspace {} was removed", workspace.name));
@@ -313,6 +330,35 @@ mod tests {
             layout.contains("theirs") && !layout.contains("stale"),
             "{layout}"
         );
+        std::fs::remove_dir_all(&root).map_err(|e| fux3::io("removing", e))
+    }
+
+    /// Closing a workspace never takes apart a pane that is starting or
+    /// ending in it (a directory a holder has locked, under a name nothing
+    /// lists): it is refused, saying which, and nothing was removed.
+    #[test]
+    fn closing_a_workspace_leaves_a_pane_that_is_starting() -> Result<(), Failure> {
+        let scratch = fuxix::file::scratch().map_err(|e| fux3::io("scratch", e))?;
+        let root = scratch.join(format!("f3v-close-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        fuxix::file::private_dir(&root).map_err(|e| fux3::io("root", e))?;
+        let workspace = Session::at(root.clone())?.workspace("w", true)?;
+        view_dir(&workspace)?;
+        let staged = root.join("w/.new-0123456789abcdef");
+        std::fs::create_dir(&staged).map_err(|e| fux3::io("staging", e))?;
+        std::fs::write(staged.join("id"), "0123456789abcdef\n").map_err(|e| fux3::io("id", e))?;
+        let holder = File::open(&staged).map_err(|e| fux3::io("staging", e))?;
+        holder.lock().map_err(|e| fux3::io("locking", e))?;
+        let refused = close_workspace(&workspace, &AtomicBool::new(true)).err();
+        let said = refused.map(|f| f.0).unwrap_or_default();
+        assert!(
+            said.contains(".new-0123456789abcdef did not end"),
+            "{said:?}"
+        );
+        assert!(staged.join("id").exists() && root.join("w/.view/layout").exists());
+        drop(holder);
+        close_workspace(&workspace, &AtomicBool::new(true))?;
+        assert!(!root.join("w").exists());
         std::fs::remove_dir_all(&root).map_err(|e| fux3::io("removing", e))
     }
 }

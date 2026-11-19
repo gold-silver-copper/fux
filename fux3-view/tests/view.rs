@@ -92,7 +92,9 @@ impl Lab {
         std::fs::create_dir_all(base.join("config/fux3")).map_err(|e| e.to_string())?;
         std::fs::write(base.join("config/fux3/view.grift"), config).map_err(|e| e.to_string())?;
         // The viewers' $EDITOR: it keeps a copy of the file it is given.
-        let editor = "#!/bin/sh\ncp \"$1\" \"$0.tmp\" && mv \"$0.tmp\" \"$0.copied\"\n";
+        // It stays open while a file `editor.hold` is there.
+        let editor = "#!/bin/sh\ncp \"$1\" \"$0.tmp\" && mv \"$0.tmp\" \"$0.copied\"\n\
+            while [ -e \"$0.hold\" ]; do sleep 0.1; done\n";
         std::fs::write(base.join("editor"), editor).map_err(|e| e.to_string())?;
         {
             use std::os::unix::fs::PermissionsExt;
@@ -516,8 +518,11 @@ fn the_history_key_opens_the_history_and_then_the_screen() -> Tested {
         "v",
         b"i=0; while [ $i -lt 40 ]; do i=$((i+1)); echo row-$i; done\r",
     )?;
-    until("the rows are out", || {
-        lab.read(&lab.view, "only", "screen").contains("row-40\n")
+    // The prompt after the last row is part of the screen copied.
+    until("the rows are out and the prompt is back", || {
+        let screen = lab.read(&lab.view, "only", "screen");
+        let last = screen.lines().rfind(|row| !row.trim().is_empty());
+        screen.contains("row-40\n") && last.is_some_and(|row| row.trim_end().ends_with('$'))
     })?;
     let screen = lab.read(&lab.view, "only", "screen");
     let last = (screen.lines().skip(1))
@@ -557,6 +562,9 @@ fn a_moved_pane_keeps_its_tile_by_its_id() -> Tested {
     lab.shows("v", "\u{2502}")?;
     let main = lab.view.join("main");
     std::fs::rename(main.join("a"), main.join("c")).map_err(|e| e.to_string())?;
+    // Typed once the viewer has looked again: the keys go to the pane it
+    // found under the new name, not through what it held open before.
+    std::thread::sleep(Duration::from_millis(1500));
     lab.keys("v", b"echo mo''ved\r")?;
     until("keys reach the renamed pane", || {
         lab.read(&lab.view, "c", "screen").contains("moved")
@@ -617,5 +625,67 @@ fn a_stale_yes_never_closes_or_types_into_a_workspace_made_again() -> Tested {
             "{space}: the answer was typed into the new pane:\n{screen}"
         );
     }
+    Ok(())
+}
+
+/// A workspace renamed with `mv` is the same workspace: its viewer names it
+/// as it is called now, starts panes in it, pastes into it and copies from it.
+#[test]
+fn a_viewer_follows_its_workspace_through_a_rename() -> Tested {
+    let lab = Lab::new("renamed", "")?;
+    lab.start("rig/a")?;
+    lab.viewer("v", "100x30", &["rig"])?;
+    lab.shows("v", "$")?;
+    let now = lab.view.join("rig2");
+    std::fs::rename(lab.view.join("rig"), &now).map_err(|e| e.to_string())?;
+    std::thread::sleep(Duration::from_millis(1500));
+    lab.keys("v", b"\x02")?;
+    lab.shows("v", " rig2 ")?;
+    lab.keys("v", b"v")?;
+    let file = |pane: &str, file: &str| {
+        std::fs::read_to_string(now.join(pane).join(file)).unwrap_or_default()
+    };
+    until("a shell started in the renamed workspace", || {
+        file("shell-1", "status").contains("state running")
+    })
+    .map_err(|e| format!("{e}:\n{}", lab.read(&lab.harness, "v", "screen")))?;
+    lab.shows("v", "\u{2502}")?;
+    lab.keys("v", b"\x1b[200~echo pas''ted\x1b[201~\r")?;
+    until("the paste reached the new shell", || {
+        file("shell-1", "screen").contains("pasted")
+    })
+    .map_err(|e| format!("{e}:\n{}", lab.read(&lab.harness, "v", "screen")))?;
+    lab.keys("v", b"\x02c")?;
+    let copied = lab.base.join("editor.copied");
+    until("the editor was given the text", || copied.exists())?;
+    let text = std::fs::read_to_string(&copied).map_err(|e| e.to_string())?;
+    assert!(text.contains("\npasted\n"), "{text:?}");
+    Ok(())
+}
+
+/// The copy's pane removes only its own recipe: one another program left
+/// under the name it started with, after it was renamed, stays.
+#[test]
+fn the_copy_removes_no_recipe_but_its_own() -> Tested {
+    let lab = Lab::new("recipes", "")?;
+    lab.start("only")?;
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "$")?;
+    let (hold, main) = (lab.base.join("editor.hold"), lab.view.join("main"));
+    std::fs::write(&hold, "").map_err(|e| e.to_string())?;
+    lab.keys("v", b"\x02c")?;
+    until("the editor is open", || {
+        lab.base.join("editor.copied").exists()
+    })?;
+    std::fs::rename(main.join("history-1"), main.join("moved")).map_err(|e| e.to_string())?;
+    let other = lab.run(&lab.view, &["start", "history-1", "--", "sleep", "60"])?;
+    assert!(other.status.success(), "{other:?}");
+    std::fs::remove_file(&hold).map_err(|e| e.to_string())?;
+    until("the copy's pane ended", || !main.join("moved").exists())?;
+    let recipe = std::fs::read_to_string(main.join(".recipes/history-1")).unwrap_or_default();
+    assert!(
+        recipe.contains("sleep"),
+        "the other program's recipe went: {recipe:?}"
+    );
     Ok(())
 }

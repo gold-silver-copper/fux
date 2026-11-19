@@ -674,7 +674,8 @@ const WORDS: &[(&str, Word)] = &[
     }),
     ("workspace-dir", |g, host, args| {
         let [] = *g.exactly(args)?;
-        let path = host.context.workspace.dir.to_string_lossy().into_owned();
+        let now = crate::command::named(&host.context.workspace).map_err(|f| failed(g, &f.0))?;
+        let path = now.dir.to_string_lossy().into_owned();
         g.string(&path).map(Answer::Now)
     }),
     ("start-new", |g, host, args| {
