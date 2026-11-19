@@ -111,16 +111,18 @@ directory whose holder was killed outright until the next `fux3` command; its
 **The loop.** One poll over: the SIGCHLD pipe, `ctl`, `in` (only while the
 typed queue has room for a read; once the program ended, always, to drop), and
 the pty (read while nothing waits to be parsed; write while bytes are queued).
-Each turn: note the program's end; read at most 64 KiB of output; parse it 512
+Each turn: note the program's end; read at most 16 KiB of output; parse it 512
 bytes at a time, each slice only when the reply queue has room for its
 replies (so a program asking questions without end is slowed, never
 answered partly); act on `ctl`'s lines in order; read `in`; write the queue to
 the pty; take the rows that scrolled into history; publish if due.
 
-Bounds: 64 KiB of output read at a time; the typed queue at most 16 MiB +
+Bounds: 16 KiB of output read at a time; the typed queue at most 16 MiB +
 64 KiB (a whole `send` and typing beside it); replies at most 64 KiB (a reply
-that does not fit is dropped and counted in `errors`); the terminal keeps 8 MiB
-of history between looks (a look follows every read, so none is lost); 64
+that does not fit is dropped and counted in `errors`); the terminal keeps 2 MiB
+of history between looks (a look follows every read, enough for ordinary
+text; rows lost to output built to fill rows cheaply are counted in
+`history`; kept small because a resize reflows all of it); 64
 pictures and 16 MiB of pixels (`fux-vt` allows 96); `errors` 32 lines; screen
 files at most 8 MiB (a larger one is not written, and `status` says so); at
 most 128 panes a session.

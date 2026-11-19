@@ -63,7 +63,7 @@ pub fn parse(line: &str) -> Result<Command, Failure> {
         }
         _ => {
             return Err(Failure::new(
-                "no such command: resize, send, paste, cell, signal and kill are",
+                "no such command; the commands are resize, send, paste, signal, cell and kill",
             ));
         }
     };

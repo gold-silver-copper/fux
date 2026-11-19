@@ -22,11 +22,12 @@ fux3: a terminal multiplexer where a pane is a directory of files
       --cell WxH               a cell's size in pixels, for pictures
                                (default: this terminal's, else 10x20)
       --no-pictures            take no sixel pictures
-      --history BYTES          the history file's cap (default 4 MiB)
+      --history BYTES          the history file's cap (default 4 MiB, 4096 to 256 MiB)
       --label KEY=VALUE        a label, shown in status (repeatable)
   fux3 ls                      list live panes
   fux3 wait NAME [--ms N]      wait until NAME's screen changes (default 10000 ms)
-  fux3 view                    show the session's panes, as fux does
+  fux3 view [--do LINE]        show the session's panes, as fux does; with --do,
+                               apply one layout command with no viewer running
 
 Every command first clears the leftovers of panes whose holder is gone.
 Everything else is a file in the pane's directory: see the README.
@@ -155,9 +156,10 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
                 history = text
                     .parse()
                     .ok()
-                    .filter(|n| *n <= MAX_HISTORY)
+                    .filter(|n| (holder::MIN_HISTORY..=MAX_HISTORY).contains(n))
                     .ok_or_else(|| {
-                        Failure::new(format!("--history {text}: at most {MAX_HISTORY}"))
+                        let least = holder::MIN_HISTORY;
+                        Failure::new(format!("--history {text}: {least} to {MAX_HISTORY} bytes"))
                     })?;
             }
             "--label" => {

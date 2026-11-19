@@ -41,7 +41,7 @@ echo kill > "$D/build/ctl"                  # ends the program and all it starte
 | Command | What |
 |---|---|
 | `fux3 dir` | prints the session directory, making it if missing |
-| `fux3 start NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane; prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, at most 256 MiB), `--label KEY=VALUE` (up to 16) |
+| `fux3 start NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane; prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, 4096 bytes to 256 MiB), `--label KEY=VALUE` (up to 16) |
 | `fux3 ls` | lists the live panes |
 | `fux3 wait NAME [--ms N]` | waits until NAME's screen changes (default 10000 ms), prints its new line 1; exit 1 if nothing changed in time |
 | `fux3 view [--do LINE]` | the viewer; with `--do`, one layout command applied with no viewer running |
@@ -83,8 +83,11 @@ then renamed): you never read half a screen. Rows and columns count from 0.
 program's bytes: the only escape codes in it set colours (SGR). `cat` shows it
 correctly in a terminal and cannot set your title, move your cursor or make
 your terminal answer anything. Each picture shown is a line after the rows:
-`picture 1.sixel at=ROW,COL cells=COLSxROWS cropped=K cell=WxH` (ROW may be
-negative: the picture's top has scrolled off; K top rows of it are gone).
+`picture 1.sixel at=ROW,COL cells=COLSxROWS cropped=K cell=WxH`. ROW is
+negative once the picture's top rows have scrolled into history; a picture
+with no row left on the screen is no longer listed and its file goes. K
+counts top rows cut off for good by a scroll region or the alternate screen.
+Writing text over any cell of a picture removes the whole picture.
 
 **`status`**:
 
@@ -133,6 +136,9 @@ soft-wrapped line is one line. `less +G` or `tail -F` reads it. It is appended t
 | `signal NAME` | the signal (`INT`, `TERM`, `HUP`, …) goes to the program's foreground process group | no such signal, the program ended |
 | `cell W H` | `cell W H`; pictures drawn after it use it | smaller than 2x6 or over 1000 |
 | `kill` | the program and everything it started end, and the directory goes | `kill-incomplete WHAT` in `state` and in `errors`: send `kill` again |
+
+Once the program has ended, every command but `kill` is refused. Blank lines
+are ignored and not counted.
 
 A refusal reads `N LINE: WHY`, where `N` is the command's number, the value
 of `commands` once it was taken. **Telling your command's outcome:** read

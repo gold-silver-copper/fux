@@ -89,8 +89,12 @@ overruled it, both are recorded.
   panes, 96 MiB each would be 12 GiB.
 - **D25. A `send` is at most 16 MiB**: a large paste or file, still well within
   memory, read whole before anything is queued.
-- **D26. The terminal keeps 8 MiB of history between looks**, and the holder
-  looks after every read of at most 64 KiB, so no line is lost between looks
-  even under a flood (tested with 100,000 lines).
+- **D26. The terminal keeps 2 MiB of history between looks**, and the holder
+  looks after every read of at most 16 KiB, so no ordinary line is lost
+  between looks even under a flood (tested with 1,000,000 lines by a tester).
+  First 8 MiB and 64 KiB reads; a real-use tester measured a resize under
+  `yes` taking 0.45 s, as a resize reflows the terminal's whole history: now
+  about 0.1 s. Output built to fill rows cheaply can still outrun it; the
+  loss is counted in `history`.
 - **D27. `fuxix::file::private_fifo`** is the one primitive added to fuxix
   (`mkfifo`, mode 0600): the workspace forbids `unsafe` outside fuxix.

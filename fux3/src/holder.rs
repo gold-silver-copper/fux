@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 /// first change after a rest is published at once.
 pub const INTERVAL: Duration = Duration::from_millis(40);
 /// The most bytes of output read at a time.
-const READ: usize = 64 << 10;
+const READ: usize = 16 << 10;
 /// The most bytes read from `in` or `ctl` at a time.
 const FIFO_READ: usize = 4096;
 /// The most typed bytes waiting for the program: a whole `send` and room
@@ -40,13 +40,16 @@ const REPLY_ROOM: usize = 64 << 10;
 /// a reply of up to 64 bytes, which must have room first.
 const SLICE: usize = 512;
 const REPLY_NEED: usize = SLICE * 64;
-/// Bytes of history the terminal keeps between two looks (24 a row and 8
-/// a cell): the holder looks after every read of at most [`READ`] bytes,
-/// which can scroll at most that many rows, so none is lost between looks.
-const TERMINAL_HISTORY: usize = 8 << 20;
+/// Bytes of history the terminal keeps between two looks (24 a row, 8 a
+/// stored cell): the holder looks after every read of at most [`READ`]
+/// bytes, which scroll at most that many rows; ordinary text needs a few
+/// hundred KiB for them. Rows lost to output built to fill rows cheaply are
+/// counted in `history`. Kept small, as a resize reflows all of it.
+const TERMINAL_HISTORY: usize = 2 << 20;
 /// The history file's size unless `start` says.
 pub const DEFAULT_HISTORY: usize = 4 << 20;
-/// The largest history file `start` allows.
+/// The smallest and largest history file `start` allows.
+pub const MIN_HISTORY: usize = 4096;
 pub const MAX_HISTORY: usize = 256 << 20;
 /// The most bytes of pixels a pane's pictures hold together.
 pub const PICTURE_BYTES: usize = 16 << 20;
@@ -443,7 +446,7 @@ fn graphics(cell: (u16, u16), pictures: bool) -> Result<Graphics, Failure> {
 fn prepare(spec: Spec) -> Result<Holder, Failure> {
     session::check_name(&spec.name)?;
     let size = checked_size(spec.cols, spec.rows)?;
-    if spec.history > MAX_HISTORY {
+    if !(MIN_HISTORY..=MAX_HISTORY).contains(&spec.history) {
         return Err(Failure::new(format!(
             "history {}: at most {MAX_HISTORY}",
             spec.history
@@ -472,8 +475,8 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         fuxix::file::private_file(&mut options)
             .open(&history)
             .map_err(|e| io(history.display(), e))?;
-        let publisher = Publisher::start(dir.clone(), spec.history.max(1024))
-            .map_err(|e| io("the publisher", e))?;
+        let publisher =
+            Publisher::start(dir.clone(), spec.history).map_err(|e| io("the publisher", e))?;
         let (master, job) = start_program(&spec, size, &id)?;
         Ok::<_, Failure>((in_fifo, ctl_fifo, publisher, master, job))
     })();
@@ -1026,7 +1029,11 @@ impl Holder {
         }
         let mut placed = Vec::new();
         let mut kept = Vec::new();
-        let shown: Vec<_> = self.parser.screen().pictures().collect();
+        // Only those with a row on the screen: one scrolled wholly into
+        // history shows nothing, and its file goes.
+        let shown: Vec<_> = (self.parser.screen().pictures())
+            .filter(|p| p.row.saturating_add(i64::from(p.rows)) > 0)
+            .collect();
         for picture in shown {
             let known =
                 (self.images.written.iter()).position(|(p, _)| Arc::ptr_eq(p, picture.picture));

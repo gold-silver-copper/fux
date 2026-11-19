@@ -240,7 +240,15 @@ fn a_picture_comes_and_goes_as_a_file() -> Result {
     let bytes = std::fs::read(&picture).map_err(|e| e.to_string())?;
     assert!(bytes.starts_with(b"\x1bP") && bytes.ends_with(b"\x1b\\"));
     s.write("p", "in", b"clear\n")?;
-    until("the picture's file gone", || !picture.exists())
+    until("the picture's file gone", || !picture.exists())?;
+    // Drawn again, then scrolled wholly into history: no longer shown.
+    s.write("p", "in", draw.as_bytes())?;
+    let second = s.pane("p").join("images/2.sixel");
+    until("the second picture", || second.exists())?;
+    s.write("p", "in", b"seq 1 40\n")?;
+    until("the scrolled picture's file gone", || !second.exists())?;
+    assert!(!s.read("p", "screen.styled").contains("\npicture "));
+    Ok(())
 }
 
 /// Once the program has ended, its last screen stays: what a child it
