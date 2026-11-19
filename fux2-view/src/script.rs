@@ -36,6 +36,8 @@ const MAX_OUTPUT: u64 = 8 << 20;
 const MAX_COPIED: usize = 16 << 20;
 /// How many numbers a new pane's name is tried with.
 const MAX_NEW_NAMES: u32 = 128;
+/// The most panels whose answers can be waiting at once.
+const MAX_PANELS: usize = 8;
 /// The most keys in one chord.
 const MAX_CHORD_KEYS: usize = 4;
 
@@ -195,29 +197,65 @@ struct Host {
     fux2: PathBuf,
     /// Bytes copied out of the language in this run.
     copied: usize,
-    /// Chords bound to viewer actions or groups, which count too.
-    others: std::collections::HashSet<String>,
+    /// Chords bound to viewer actions, and chords that are groups: they
+    /// count toward the limit too.
+    verbs: std::collections::HashSet<String>,
+    groups: std::collections::HashSet<String>,
     /// Each chord's binding, numbered: a run queued for an older one is
     /// refused out loud, never run with whatever replaced it.
     generations: HashMap<String, u64>,
     next_generation: u64,
-    /// The open panel's callbacks, by number: what choosing calls, then
-    /// what each of its keys calls.
-    callback: Option<(u64, Vec<Kept>)>,
+    /// Each panel's callbacks, by number, until its answer runs or it is
+    /// let go of: what choosing calls, then what each of its keys calls.
+    /// The oldest go past [`MAX_PANELS`].
+    callbacks: std::collections::VecDeque<(u64, Vec<Kept>)>,
     next_callback: u64,
 }
 
 impl Host {
     /// Room for a binding on `chord`, and the number its new binding gets.
     fn rebind(&mut self, chord: &str) -> Result<u64, String> {
-        let known = self.kept.contains_key(chord) || self.others.contains(chord);
-        if !known && self.kept.len().saturating_add(self.others.len()) >= MAX_BINDINGS {
+        let known = self.kept.contains_key(chord)
+            || self.verbs.contains(chord)
+            || self.groups.contains(chord);
+        let count = (self.kept.len())
+            .saturating_add(self.verbs.len())
+            .saturating_add(self.groups.len());
+        if !known && count >= MAX_BINDINGS {
             return Err(format!("more than {MAX_BINDINGS} bindings"));
         }
         self.next_generation = self.next_generation.saturating_add(1);
         self.generations
             .insert(chord.to_owned(), self.next_generation);
         Ok(self.next_generation)
+    }
+
+    /// Why `chord` cannot be bound as a command (`leaf`) or a group: a key
+    /// is one or the other, never both, so every entry of the menu can be
+    /// reached by its keys.
+    fn conflict(&self, chord: &str, leaf: bool) -> Option<String> {
+        let is_leaf = |c: &str| self.kept.contains_key(c) || self.verbs.contains(c);
+        let below = format!("{chord} ");
+        let holds = (self.kept.keys())
+            .chain(self.verbs.iter())
+            .chain(self.groups.iter())
+            .any(|c| c.starts_with(&below));
+        if leaf && (holds || self.groups.contains(chord)) {
+            return Some(format!("{chord} holds other keys: unbind them first"));
+        }
+        if !leaf && is_leaf(chord) {
+            return Some(format!("{chord} is bound to a command: unbind it first"));
+        }
+        let mut prefix = chord;
+        while let Some((shorter, _)) = prefix.rsplit_once(' ') {
+            if is_leaf(shorter) {
+                return Some(format!(
+                    "{shorter} is bound to a command, so it holds no keys"
+                ));
+            }
+            prefix = shorter;
+        }
+        None
     }
 
     fn tell(&self, message: ToViewer) {
@@ -484,7 +522,8 @@ fn captions(
     Ok((caption, heading))
 }
 
-/// Keeps `functions` as the open panel's callbacks, letting go of any before.
+/// Keeps `functions` as a new panel's callbacks; past [`MAX_PANELS`] the
+/// oldest panel's go, and an answer that comes for it is refused out loud.
 fn keep_callbacks(
     g: &mut HostCall<'_, Host>,
     host: &mut Host,
@@ -502,18 +541,16 @@ fn keep_callbacks(
             }
         }
     }
-    release_callbacks(g, host);
-    host.next_callback = host.next_callback.saturating_add(1);
-    host.callback = Some((host.next_callback, kept));
-    Ok(host.next_callback)
-}
-
-fn release_callbacks(g: &mut HostCall<'_, Host>, host: &mut Host) {
-    if let Some((_, old)) = host.callback.take() {
-        for one in old {
-            let _ = g.release(one);
+    while host.callbacks.len() >= MAX_PANELS {
+        if let Some((_, old)) = host.callbacks.pop_front() {
+            for one in old {
+                let _ = g.release(one);
+            }
         }
     }
+    host.next_callback = host.next_callback.saturating_add(1);
+    host.callbacks.push_back((host.next_callback, kept));
+    Ok(host.next_callback)
 }
 
 const WORDS: &[(&str, Word)] = &[
@@ -522,6 +559,9 @@ const WORDS: &[(&str, Word)] = &[
         let text = string_arg(g, host, key)?;
         let chord = chord(&text).map_err(|why| failed(g, &why))?;
         let (caption, heading) = captions(g, host, caption, heading)?;
+        if let Some(why) = host.conflict(&chord, true) {
+            return Err(failed(g, &why));
+        }
         // Kept first: a binding that can't be made leaves the old one whole.
         let kept = g.keep(function)?;
         let generation = match host.rebind(&chord) {
@@ -531,7 +571,7 @@ const WORDS: &[(&str, Word)] = &[
                 return Err(failed(g, &why));
             }
         };
-        host.others.remove(&chord);
+        host.verbs.remove(&chord);
         if let Some(old) = host.kept.insert(chord.clone(), kept) {
             let _ = g.release(old);
         }
@@ -551,11 +591,17 @@ const WORDS: &[(&str, Word)] = &[
         let chord = chord(&text).map_err(|why| failed(g, &why))?;
         let (caption, heading) = captions(g, host, *caption, *heading)?;
         let verb = verb_of(g, host, rest)?;
+        if let Some(why) = host.conflict(&chord, true) {
+            return Err(failed(g, &why));
+        }
+        if verb == Verb::Chord(chord.clone()) {
+            return Err(failed(g, &format!("{chord} cannot do what {chord} does")));
+        }
         let generation = host.rebind(&chord).map_err(|why| failed(g, &why))?;
         if let Some(old) = host.kept.remove(&chord) {
             let _ = g.release(old);
         }
-        host.others.insert(chord.clone());
+        host.verbs.insert(chord.clone());
         host.tell(ToViewer::BindVerb {
             chord,
             caption,
@@ -579,11 +625,11 @@ const WORDS: &[(&str, Word)] = &[
         let text = string_arg(g, host, key)?;
         let chord = chord(&text).map_err(|why| failed(g, &why))?;
         let (caption, heading) = captions(g, host, caption, heading)?;
-        let generation = host.rebind(&chord).map_err(|why| failed(g, &why))?;
-        if let Some(old) = host.kept.remove(&chord) {
-            let _ = g.release(old);
+        if let Some(why) = host.conflict(&chord, false) {
+            return Err(failed(g, &why));
         }
-        host.others.insert(chord.clone());
+        let generation = host.rebind(&chord).map_err(|why| failed(g, &why))?;
+        host.groups.insert(chord.clone());
         host.tell(ToViewer::Group {
             chord,
             caption,
@@ -600,7 +646,8 @@ const WORDS: &[(&str, Word)] = &[
         if let Some(old) = host.kept.remove(&chord) {
             let _ = g.release(old);
         }
-        host.others.remove(&chord);
+        host.verbs.remove(&chord);
+        host.groups.remove(&chord);
         host.generations.remove(&chord);
         host.tell(ToViewer::Unbind(chord));
         inert()
@@ -746,6 +793,13 @@ const WORDS: &[(&str, Word)] = &[
         let [prompt, initial, function] = *g.exactly(args)?;
         let prompt = string_arg(g, host, prompt)?;
         let initial = string_arg(g, host, initial)?;
+        if initial.chars().count() > crate::panel::MAX_LINE {
+            let why = format!(
+                "a line starts with at most {} characters",
+                crate::panel::MAX_LINE
+            );
+            return Err(failed(g, &why));
+        }
         let id = keep_callbacks(g, host, &[function])?;
         host.tell(ToViewer::Ask {
             id,
@@ -999,13 +1053,12 @@ fn function_of(
             }
         }
         Job::Answer { id, value, action } => {
-            let Some((own, functions)) = host.callback.take() else {
-                return Ok(None);
+            let at = host.callbacks.iter().position(|(own, _)| *own == id);
+            let Some((_, functions)) = at.and_then(|at| host.callbacks.remove(at)) else {
+                return Err(format!(
+                    "the answer to a panel {MAX_PANELS} newer panels replaced was not run"
+                ));
             };
-            if own != id {
-                host.callback = Some((own, functions));
-                return Ok(None);
-            }
             let wanted = action.map_or(0, |n| n.saturating_add(1));
             let function = functions.get(wanted).map(|f| kept(g, f));
             for one in functions {
@@ -1018,11 +1071,9 @@ fn function_of(
             }
         }
         Job::Drop(id) => {
-            if let Some((own, functions)) = host.callback.take() {
-                match own == id {
-                    true => functions.into_iter().for_each(|f| drop(g.release(f))),
-                    false => host.callback = Some((own, functions)),
-                }
+            let at = host.callbacks.iter().position(|(own, _)| *own == id);
+            if let Some((_, functions)) = at.and_then(|at| host.callbacks.remove(at)) {
+                functions.into_iter().for_each(|f| drop(g.release(f)));
             }
             Ok(None)
         }
@@ -1107,10 +1158,11 @@ pub fn start(
         kept: HashMap::new(),
         context: Context::default(),
         copied: 0,
-        others: std::collections::HashSet::new(),
+        verbs: std::collections::HashSet::new(),
+        groups: std::collections::HashSet::new(),
         generations: HashMap::new(),
         next_generation: 0,
-        callback: None,
+        callbacks: std::collections::VecDeque::new(),
         next_callback: 0,
         cancel: Arc::clone(&cancel),
         fux2,
@@ -1220,6 +1272,12 @@ mod tests {
         }
         let menu = keys.menu("C-b t");
         assert!(menu.contains(&Line::Heading("Mine".to_owned())), "{menu:?}");
+        // A key is a command or a group, never both: the menu can always
+        // reach what it shows.
+        let (_, why) = loaded(r#"(bind-key "C-b t" "mine" "Mine" (lambda! () 1))"#)?;
+        assert!(why.is_some_and(|why| why.contains("holds other keys")));
+        let (_, why) = loaded(r#"(bind-key "C-b d x" "mine" "Mine" (lambda! () 1))"#)?;
+        assert!(why.is_some_and(|why| why.contains("bound to a command")));
         // Without a caption, a binding is refused out loud.
         let (_, why) = loaded(r#"(bind-key "C-b y" "" "Mine" (lambda! () 1))"#)?;
         assert!(why.is_some_and(|why| why.contains("caption")));

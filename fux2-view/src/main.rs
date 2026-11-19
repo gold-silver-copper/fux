@@ -74,6 +74,10 @@ const HOLD_FOR_FOCUS: Duration = Duration::from_secs(2);
 const END_RUN_WAIT: Duration = Duration::from_secs(1);
 /// How long a focus asked for waits for its pane.
 const FOCUS_WAIT: Duration = Duration::from_secs(10);
+/// How long keys typed after a binding's key wait for it to open a panel.
+const HOLD_FOR_RUN: Duration = Duration::from_secs(1);
+/// How many `chord` aliases may lead one to another.
+const MAX_CHORD_DEPTH: u8 = 8;
 /// Panes waiting to be fitted.
 const MAX_FITS: usize = 256;
 /// How many messages from the language are taken in one turn.
@@ -286,6 +290,14 @@ struct View {
     focus_moved: bool,
     /// The keys have loaded; held input waits for a focused pane until then.
     keys_loaded: Option<Instant>,
+    /// A key's binding is running: what is typed after it waits, until it
+    /// opens a panel or ends, or this time, so a panel it opens gets the
+    /// keys meant for it and a binding that loops holds nothing for long.
+    awaiting_run: Option<Instant>,
+    /// How deep `chord` aliases have led, so one that leads to itself stops.
+    chord_depth: u8,
+    /// Each tab's focus, so coming back to a tab finds it where it was.
+    tab_focus: BTreeMap<u32, PaneRef>,
     /// A run was handed to the language and has not finished.
     run_sent: bool,
     painter: Painter,
@@ -544,8 +556,29 @@ impl View {
 
     fn tab_changed(&mut self) {
         self.dirty = true;
-        self.drag = None;
+        // A drag of another tab's border, and its preview, are over.
+        if self.drag.take().is_some() {
+            self.arranged = Arc::new(self.stored.shown(&self.live));
+        }
+        // The tab's own focus, as it was left.
+        let tab = self.place().tab;
+        if let Some(pane) = self.tab_focus.get(&tab).cloned()
+            && self.visible().contains(&pane)
+        {
+            self.focus_name = Some(pane.name.clone());
+            self.focus = Some(pane);
+            self.focus_moved = true;
+        }
         self.settle_focus();
+    }
+
+    /// Notes the focus as the shown tab's own.
+    fn keep_tab_focus(&mut self) {
+        let tab = self.place().tab;
+        match self.focus.clone() {
+            Some(pane) => self.tab_focus.insert(tab, pane),
+            None => self.tab_focus.remove(&tab),
+        };
     }
 
     /// The panes that have said who they are.
@@ -656,6 +689,7 @@ impl View {
             .map(|p| p.name.clone())
             .or_else(|| self.focus_name.take());
         self.focus = chosen;
+        self.keep_tab_focus();
     }
 
     /// Moves the focus to `pane` by hand.
@@ -668,6 +702,7 @@ impl View {
         self.focus_moved = true;
         self.back = None;
         self.dirty = true;
+        self.keep_tab_focus();
     }
 
     fn rescan(&mut self, now: Instant) {
@@ -896,7 +931,14 @@ impl View {
                 Some(pane) => self.fit(&pane),
                 None => self.say("no pane has the focus"),
             },
-            Verb::Chord(chord) => self.perform_chord(chord),
+            Verb::Chord(chord) => {
+                if self.chord_depth >= MAX_CHORD_DEPTH {
+                    return self.say(format!("{chord} leads back to itself, and was stopped"));
+                }
+                self.chord_depth = self.chord_depth.saturating_add(1);
+                self.perform_chord(chord);
+                self.chord_depth = self.chord_depth.saturating_sub(1);
+            }
             // Handled where the chord is known.
             Verb::Literal => {}
         }
@@ -983,6 +1025,7 @@ impl View {
                 }
                 Outcome::Chosen(value) => (value, None),
                 Outcome::Action(n, value) => (value, Some(n)),
+                Outcome::Refused(why) => return self.say(why),
             };
             self.panel = None;
             let job = Job::Answer { id, value, action };
@@ -995,16 +1038,26 @@ impl View {
                 return;
             }
             let chord = format!("{group} {name}");
-            if self.keys.bindings.contains_key(&chord) {
+            if self.keys.bindings.contains_key(&chord) || self.keys.opens(&chord) {
                 return self.perform_chord(chord);
             }
+            // Any other key ends the mode; the prefix, or another bound key,
+            // then does what it does, as in fux.
             self.repeat = None;
-            return self.say(format!("{name} is not one of this mode's keys"));
+            if !(self.keys.bindings.contains_key(&name) || self.keys.opens(&name)) {
+                return self.say(format!("{name} is not one of this mode's keys"));
+            }
+            return self.perform_chord(name);
         }
         if let Some(mut column) = self.column.take() {
             self.dirty = true;
             let lines = self.keys.menu(&column.keys);
             let entries = Column::entries(&lines);
+            // A bound key runs, even one that would move the selection.
+            let own = format!("{} {name}", column.keys);
+            if self.keys.bindings.contains_key(&own) || self.keys.opens(&own) {
+                return self.perform_chord(own);
+            }
             if column.moves(press, entries.len()) {
                 self.column = Some(column);
                 return;
@@ -1070,6 +1123,7 @@ impl View {
                     generation,
                 };
                 self.dispatch_job(chord, job);
+                self.awaiting_run = Some(after(Instant::now(), HOLD_FOR_RUN));
             }
         }
     }
@@ -1176,6 +1230,7 @@ impl View {
                 rows,
                 actions,
             } => {
+                self.replace_panel();
                 self.column = None;
                 self.repeat = None;
                 self.notice = None;
@@ -1196,12 +1251,14 @@ impl View {
                     actions,
                     selected,
                 }));
+                self.run_answered();
             }
             ToViewer::Ask {
                 id,
                 prompt,
                 initial,
             } => {
+                self.replace_panel();
                 self.column = None;
                 self.repeat = None;
                 self.notice = None;
@@ -1212,6 +1269,7 @@ impl View {
                     cursor: text.len(),
                     text,
                 }));
+                self.run_answered();
             }
             ToViewer::Reread => self.next_scan = now,
             ToViewer::Fit { version, panes } => {
@@ -1247,7 +1305,16 @@ impl View {
                 if let Some(run) = self.waiting_runs.pop_front() {
                     self.start_run(run);
                 }
+                self.run_answered();
             }
+        }
+    }
+
+    /// A panel still open when another opens is let go of, unanswered, so
+    /// its callbacks do not linger.
+    fn replace_panel(&mut self) {
+        if let Some(old) = self.panel.take() {
+            self.dispatch_job(String::new(), Job::Drop(old.id()));
         }
     }
 
@@ -1277,13 +1344,26 @@ impl View {
         }
     }
 
+    /// The key's binding has finished, or opened a panel: what was typed
+    /// after it goes on, in order.
+    fn run_answered(&mut self) {
+        if self.awaiting_run.take().is_some() && !self.loading {
+            let held = std::mem::take(&mut self.held);
+            self.on_inputs(held);
+        }
+    }
+
     /// Lets held input go once the keys have loaded and a pane has the focus,
     /// or the wait for one is over.
     fn release_held(&mut self, now: Instant) {
         let Some(until) = self.keys_loaded else {
             return;
         };
-        if self.focus.is_some() || now >= until {
+        let live = self
+            .focus
+            .as_ref()
+            .is_some_and(|f| self.live_pane(f).is_some());
+        if live || now >= until {
             self.keys_loaded = None;
             self.loading = false;
             let held = std::mem::take(&mut self.held);
@@ -1318,7 +1398,7 @@ impl View {
             // The keys are still loading, and may bind what was typed: it
             // waits, in order, the load's own time at most. The way out
             // does not wait.
-            if self.loading {
+            if self.loading || self.awaiting_run.is_some() {
                 let key = match &input {
                     Input::Key(k) => Some(k.press.to_string()),
                     Input::Paste(_)
@@ -1335,7 +1415,7 @@ impl View {
                 } else if self.held.len() < MAX_HELD_KEYS {
                     self.held.push(input);
                 } else {
-                    self.say("keys typed while the keys load were dropped");
+                    self.say("keys typed while a binding ran were dropped");
                 }
                 continue;
             }
@@ -1343,12 +1423,21 @@ impl View {
                 Input::Key(stroke) => self.on_key(stroke.press),
                 // Typed into an open panel, never a pane.
                 Input::Paste(text) if self.panel.is_some() => {
-                    if let Some(panel) = &mut self.panel {
-                        panel.paste(&text);
+                    let refused = self
+                        .panel
+                        .as_mut()
+                        .and_then(|panel| panel.paste(&text).err());
+                    if let Some(why) = refused {
+                        self.say(why);
                     }
                     self.dirty = true;
                 }
+                // A paste ends the menu or the repeating keys before it goes
+                // to the pane, as in fux.
                 Input::Paste(text) if text.len() <= MAX_PASTE => {
+                    self.column = None;
+                    self.repeat = None;
+                    self.dirty = true;
                     self.type_parts(vec![Part::Paste(text)]);
                 }
                 Input::Paste(_) | Input::PasteTooLong => {
@@ -1772,6 +1861,9 @@ impl View {
         if let Some(until) = self.keys_loaded {
             consider(until);
         }
+        if let Some(until) = self.awaiting_run {
+            consider(until);
+        }
         if self.dirty && self.painter.is_idle() {
             consider(self.next_paint);
         }
@@ -1978,7 +2070,11 @@ fn run() -> Result<(), Failure> {
         loading_prefix: false,
         focus_moved: false,
         keys_loaded: None,
-        run_sent: false,
+        awaiting_run: None,
+        chord_depth: 0,
+        tab_focus: BTreeMap::new(),
+        // The configuration's load is a run: leaving stops it too.
+        run_sent: true,
         painter,
         drawn: Frame::default(),
         dirty: true,
@@ -2066,6 +2162,9 @@ fn serve(
         }
         view.retry_rested(now);
         view.release_held(now);
+        if view.awaiting_run.is_some_and(|until| now >= until) {
+            view.run_answered();
+        }
         view.police_run(now);
         if (view.notice.as_ref()).is_some_and(|(_, _, until)| until.is_some_and(|u| now >= u)) {
             view.notice = None;

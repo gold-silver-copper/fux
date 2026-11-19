@@ -60,6 +60,8 @@ pub enum Outcome {
     Chosen(String),
     /// Closed with action number `n` on this value.
     Action(usize, String),
+    /// Open still; the key was refused, for this reason.
+    Refused(String),
 }
 
 impl Panel {
@@ -77,13 +79,26 @@ impl Panel {
         }
     }
 
-    /// Text pasted while open: into the line, never a pane.
-    pub fn paste(&mut self, text: &str) {
-        if let Panel::Ask(ask) = self {
-            text.chars()
-                .filter(|c| !c.is_control())
-                .for_each(|c| ask.insert(c));
+    /// Text pasted while open: into the line whole, never a pane, or
+    /// refused whole, saying why. A list takes no paste.
+    pub fn paste(&mut self, text: &str) -> Result<(), String> {
+        let Panel::Ask(ask) = self else {
+            return Err("a list takes no paste".to_owned());
+        };
+        if text.chars().any(char::is_control) {
+            return Err(
+                "a line takes no newline or control character: nothing was pasted".to_owned(),
+            );
         }
+        if ask.text.len().saturating_add(text.chars().count()) > MAX_LINE {
+            return Err(format!(
+                "the line would pass {MAX_LINE} characters: nothing was pasted"
+            ));
+        }
+        for c in text.chars() {
+            ask.insert(c);
+        }
+        Ok(())
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Tile) {
@@ -173,6 +188,10 @@ fn window(rows: Vec<(String, &str)>, selected: usize, room: usize) -> Vec<(Strin
     if rows.len() <= room {
         return rows;
     }
+    // Too little room for the `more` lines: the selected row alone.
+    if room < 3 {
+        return rows.into_iter().skip(selected).take(1).collect();
+    }
     let shown = room.saturating_sub(2).max(1);
     let end = selected.saturating_add(1).max(shown).min(rows.len());
     let start = end.saturating_sub(shown);
@@ -189,14 +208,17 @@ fn window(rows: Vec<(String, &str)>, selected: usize, room: usize) -> Vec<(Strin
 }
 
 impl Ask {
-    fn insert(&mut self, c: char) {
-        if self.text.len() < MAX_LINE {
-            let at = self.cursor.min(self.text.len());
-            let tail = split_off(&mut self.text, at);
-            self.text.push(c);
-            self.text.extend(tail);
-            self.cursor = at.saturating_add(1);
+    /// Puts `c` at the cursor: false, changing nothing, if the line is full.
+    fn insert(&mut self, c: char) -> bool {
+        if self.text.len() >= MAX_LINE {
+            return false;
         }
+        let at = self.cursor.min(self.text.len());
+        let tail = split_off(&mut self.text, at);
+        self.text.push(c);
+        self.text.extend(tail);
+        self.cursor = at.saturating_add(1);
+        true
     }
 
     fn remove(&mut self, at: usize) {
@@ -227,8 +249,10 @@ impl Ask {
             }
             "Delete" | "C-d" => self.remove(self.cursor),
             _ => {
-                if let Some(c) = plain(press) {
-                    self.insert(c);
+                if let Some(c) = plain(press)
+                    && !self.insert(c)
+                {
+                    return Outcome::Refused(format!("a line holds at most {MAX_LINE} characters"));
                 }
             }
         }
@@ -236,21 +260,44 @@ impl Ask {
     }
 
     /// The line with its cursor, cut to `room` cells around the cursor, a
-    /// `…` on each side cut off.
+    /// `…` on each side cut off. Widths are counted in cells.
     fn shown(&self, room: usize) -> String {
         let cursor = self.cursor.min(self.text.len());
         let mut all: Vec<char> = self.text.iter().take(cursor).copied().collect();
         all.push(CURSOR);
         all.extend(self.text.iter().skip(cursor));
-        if all.len() <= room {
+        let width = |c: &char| fux_vt::str_width(c.encode_utf8(&mut [0; 4])).max(1);
+        let total: usize = all.iter().map(width).sum();
+        if total <= room {
             return all.into_iter().collect();
         }
-        let after = room.saturating_sub(2) / 4;
-        let end = cursor
-            .saturating_add(1)
-            .saturating_add(after)
-            .min(all.len());
-        let start = end.saturating_sub(room.saturating_sub(2));
+        // Some room after the cursor, then as much before it as fits.
+        let inner = room.saturating_sub(2).max(1);
+        let after_room = inner / 4;
+        let mut end = cursor.saturating_add(1);
+        let mut used: usize = all.get(cursor).map_or(1, width);
+        while let Some(c) = all.get(end) {
+            if used.saturating_add(width(c)) > after_room.saturating_add(1) {
+                break;
+            }
+            used = used.saturating_add(width(c));
+            end = end.saturating_add(1);
+        }
+        let mut start = cursor;
+        while let Some(c) = start.checked_sub(1).and_then(|i| all.get(i)) {
+            if used.saturating_add(width(c)) > inner {
+                break;
+            }
+            used = used.saturating_add(width(c));
+            start = start.saturating_sub(1);
+        }
+        while let Some(c) = all.get(end) {
+            if used.saturating_add(width(c)) > inner {
+                break;
+            }
+            used = used.saturating_add(width(c));
+            end = end.saturating_add(1);
+        }
         let mut out = String::new();
         if start > 0 {
             out.push('\u{2026}');
@@ -439,7 +486,8 @@ mod tests {
             text: "ac".chars().collect(),
             cursor: 1,
         });
-        ask.paste("b\x1b");
+        assert!(ask.paste("b\x1b").is_err());
+        assert!(ask.paste("b").is_ok());
         ask.key(press("End"));
         ask.key(press("BSpace"));
         assert_eq!(ask.key(press("Enter")), Outcome::Chosen("ab".to_owned()));

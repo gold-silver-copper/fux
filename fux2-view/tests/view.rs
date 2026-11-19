@@ -290,7 +290,10 @@ const CONFIG: &str = r#"
   (lambda! () (send (focused) "echo from-binding\r")))
 (bind-key "F7" "type a line" "Mine" from-binding)
 (define! spin (lambda! () (spin)))
-(bind-key "F8" "spin forever" "Mine" (lambda! () (spin)))
+(bind-key "F8" "spin forever" "Mine"
+  (lambda! () (send (focused) "echo spinning\r") (spin)))
+(bind-verb "F9" "an alias" "Mine" "chord" "F10")
+(bind-verb "F10" "its alias back" "Mine" "chord" "F9")
 (unbind-key "C-b n")
 (bind-key "C-b F5" "my own command" "Mine" from-binding)
 (define! command-line (lambda! () (say "my-own-prompt")))
@@ -342,6 +345,10 @@ fn the_viewer_steers_panes_and_they_outlive_it() -> Tested {
     viewer.keys(b"\x02e")?;
     viewer.shows("my-own-prompt")?;
 
+    // An alias that leads back to itself is stopped, out loud.
+    viewer.keys(b"\x1b[20~")?;
+    viewer.shows("leads back to itself")?;
+
     let job = viewer.job.as_ref().ok_or("no job")?;
     let _ = job.kill(Reach::Session);
     assert!(viewer.ended()?, "the viewer did not die");
@@ -361,9 +368,14 @@ fn detach_works_while_a_binding_runs() -> Tested {
     lab.start("only")?;
     let mut viewer = Viewer::start(&lab)?;
     viewer.shows("pane-only")?;
+    // Repeating keys give the prefix back: C-b d there detaches too, so
+    // first leave the mode that way and come back.
+    viewer.keys(b"\x02rh")?;
+    viewer.bar()?;
     viewer.keys(b"\x1b[19~")?;
-    // Long enough for the binding to be spinning.
-    viewer.pump(Duration::from_millis(300))?;
+    // The binding has started, and spins.
+    lab.pane_shows("only", "spinning")?;
+    viewer.keys(b"\x02rh")?;
     viewer.keys(b"\x02d")?;
     assert!(viewer.ended()?, "the viewer did not leave");
     let listed = lab.fux2(&["ls"])?;
@@ -420,6 +432,15 @@ fn stored_tabs_choose_what_is_shown_and_only_fit_resizes() -> Tested {
     viewer.shows("expected version N")?;
     assert!(viewer.text().contains("pane-two"), "{}", viewer.text());
     std::fs::write(&file, good)?;
+
+    // A prompt's key and what is typed for it, all in one read, reach the
+    // prompt, not the pane.
+    viewer.keys(b"\x02e\x1b[200~(string-join (list \"panel\" \"got-it\") \"-\")\x1b[201~\r")?;
+    viewer.shows("panel-got-it")?;
+    assert!(
+        !lab.screen("two")?.contains("got-it"),
+        "the pane got the prompt's keys"
+    );
 
     viewer.keys(b"\x02f")?;
     let until = soon(PATIENCE);
@@ -495,6 +516,18 @@ fn only_a_split_resizes_and_only_what_it_changed() -> Tested {
         assert_eq!(size(&lab, name)?, "80x24", "{name} was resized by viewing");
     }
     viewer.keys(b"\x02o")?;
+    // b is focused. Away to another tab and back, the focus is still b.
+    layout(&lab, &["tab", "new", "--title", "elsewhere"])?;
+    let until = soon(PATIENCE);
+    while !viewer.bar()?.contains(" elsewhere ") {
+        assert!(Instant::now() < until, "the new tab never showed");
+    }
+    viewer.keys(b"\x02n")?;
+    viewer.shows("no panes here")?;
+    viewer.keys(b"\x02b")?;
+    viewer.shows("pane-b")?;
+    viewer.keys(b"echo still-on-b\r")?;
+    lab.pane_shows("b", "still-on-b")?;
     // b is focused: split it, side by side.
     viewer.keys(b"\x02v")?;
     // In 100 columns: a keeps 49; b and the new pane share b's 50, one
@@ -541,6 +574,12 @@ fn workspaces_and_tabs_choose_what_is_shown() -> Tested {
 
     viewer.keys(b"\x02wl")?;
     viewer.shows("pane-beta")?;
+    let bar = viewer.bar()?;
+    assert!(bar.starts_with(" second  tb "), "{bar:?}");
+    // The workspace list starts on the workspace shown: Enter keeps it.
+    viewer.keys(b"\x02wg")?;
+    viewer.shows("workspaces")?;
+    viewer.keys(b"\r")?;
     let bar = viewer.bar()?;
     assert!(bar.starts_with(" second  tb "), "{bar:?}");
     assert!(!viewer.text().contains("pane-alpha"), "{}", viewer.text());
