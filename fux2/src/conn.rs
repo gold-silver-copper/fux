@@ -69,9 +69,11 @@ impl Conn {
 
     /// What to wait for.
     pub fn events(&self) -> Events {
+        // One request at a time: nothing is read while an answer is going
+        // out, so asking for input then would only wake the poll for nothing.
         match self.pending() {
             0 => Events::IN,
-            _ => Events::IN | Events::OUT,
+            _ => Events::OUT,
         }
     }
 

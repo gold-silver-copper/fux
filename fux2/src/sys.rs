@@ -66,9 +66,26 @@ mod unix {
     }
 
     /// The directory itself is what is locked: a cleaner of old files
-    /// leaves a directory holding a live socket.
+    /// leaves a directory holding a live socket. A link, or anything but a
+    /// directory, is refused unopened.
     pub(super) fn claim_file(dir: &Path) -> std::io::Result<File> {
-        File::open(dir)
+        use std::os::unix::fs::OpenOptionsExt;
+        File::options()
+            .read(true)
+            .custom_flags(libc_flags())
+            .open(dir)
+    }
+
+    fn libc_flags() -> i32 {
+        fuxix::file::NOFOLLOW | fuxix::file::DIRECTORY | fuxix::file::NONBLOCK
+    }
+
+    /// Whether `dir` is still the directory `claim` holds.
+    pub fn still_claimed(dir: &Path, claim: &File) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let held = claim.metadata();
+        let there = std::fs::symlink_metadata(dir);
+        matches!((held, there), (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino())
     }
 
     /// Checks that `path`, a directory, is ours alone.
@@ -231,6 +248,9 @@ mod windows {
     pub type Stream = fuxix::io::Stream;
     pub type Listener = fuxix::socket::Listener;
 
+    /// A marker holds a pane id: 32 hex digits.
+    const MARKER_MOST: u64 = 64;
+
     fn marker(dir: &Path) -> PathBuf {
         dir.join("marker")
     }
@@ -245,6 +265,12 @@ mod windows {
         let mut options = File::options();
         options.read(true).write(true).create(true).truncate(false);
         fuxix::file::private_file(&mut options).open(dir.join("claim"))
+    }
+
+    /// Whether `dir` is still the directory `claim` holds: a directory
+    /// holding a file open without delete sharing cannot be moved, so it is.
+    pub fn still_claimed(_dir: &Path, _claim: &File) -> bool {
+        true
     }
 
     /// Checks that `path`, a directory, is ours alone.
@@ -302,7 +328,11 @@ mod windows {
     pub fn connect(dir: &Path) -> Result<(Stream, Option<PaneId>), Failure> {
         let path = marker(dir);
         let shown = path.display();
-        let text = std::fs::read_to_string(&path).map_err(|e| {
+        let mut text = String::new();
+        let read = File::open(&path).and_then(|file| {
+            std::io::Read::read_to_string(&mut std::io::Read::take(file, MARKER_MOST), &mut text)
+        });
+        read.map_err(|e| {
             let gone = e.kind() == std::io::ErrorKind::NotFound;
             let code = if gone { Code::Missing } else { Code::Io };
             Failure::new(code, format!("{shown}: {e}"))
@@ -350,6 +380,7 @@ mod windows {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(io(bin.display(), e)),
         }
+        check_private(&bin)?;
         let name = format!("fux2-{:016x}.exe", hasher.finish());
         let path = bin.join(&name);
         if !path.exists() {
@@ -357,8 +388,19 @@ mod windows {
             std::fs::write(&scratch, &bytes).map_err(|e| io(scratch.display(), e))?;
             std::fs::rename(&scratch, &path).map_err(|e| io(path.display(), e))?;
         }
+        // Only this program's own copies, finished ones, go: the caller holds
+        // the session's lock, so no start is between staging and renaming.
+        // A copy a running pane uses cannot be removed, and stays.
         for entry in std::fs::read_dir(&bin).into_iter().flatten().flatten() {
-            if entry.file_name() != name.as_str() {
+            let file = entry.file_name();
+            let file = file.to_string_lossy();
+            let copy = file
+                .strip_prefix("fux2-")
+                .and_then(|rest| rest.strip_suffix(".exe"))
+                .is_some_and(|hash| {
+                    hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                });
+            if copy && file != name.as_str() {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

@@ -8,7 +8,9 @@ use fuxix::poll::{Events, PollFd, poll};
 use std::time::{Duration, Instant};
 
 /// How long connecting and greeting may take.
-const CONNECT_WAIT: Duration = Duration::from_secs(2);
+/// Longer than a pane gives a request in progress, so that a slot always
+/// frees within it.
+const CONNECT_WAIT: Duration = Duration::from_secs(8);
 /// How long an answer that needs no waiting may take.
 pub const ANSWER_WAIT: Duration = Duration::from_secs(10);
 
@@ -16,6 +18,9 @@ pub const ANSWER_WAIT: Duration = Duration::from_secs(10);
 pub struct Client {
     conn: Conn,
     pub hello: Hello,
+    /// A call gave up waiting: what comes next may be its answer, so the
+    /// connection is finished.
+    spent: bool,
 }
 
 fn deadline(wait: Duration) -> Instant {
@@ -39,7 +44,7 @@ pub fn dial(
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(failure) if failure.code == Code::Missing => {
-                let held = session.claim_held(name).unwrap_or(false);
+                let held = session.claim_held(name, until)?;
                 let why = match held {
                     true => format!("pane {name} is starting, or cannot be reached"),
                     false => format!("no pane {name}"),
@@ -55,7 +60,11 @@ pub fn dial(
 }
 
 /// What a greeting must say: this revision, and the id the entry named.
-pub fn check_hello(answer: Answer, id: Option<crate::wire::PaneId>) -> Result<Hello, Failure> {
+pub fn check_hello(
+    answer: Answer,
+    id: Option<crate::wire::PaneId>,
+    name: &str,
+) -> Result<Hello, Failure> {
     let answer = answer.accepted()?;
     let Answer::Hello(hello) = answer else {
         return Err(Failure::new(
@@ -66,6 +75,10 @@ pub fn check_hello(answer: Answer, id: Option<crate::wire::PaneId>) -> Result<He
     if hello.revision != REVISION {
         let why = format!("the pane speaks revision {}", hello.revision);
         return Err(Failure::new(Code::Protocol, why));
+    }
+    if hello.label("name") != Some(name) {
+        let why = format!("the pane answering for {name} is {:?}", hello.label("name"));
+        return Err(Failure::new(Code::Replaced, why));
     }
     if id.is_some_and(|id| id != hello.id) {
         let why = format!("the pane answering is {}, not the one named", hello.id);
@@ -81,6 +94,7 @@ impl Client {
         loop {
             let (conn, id) = dial(session, name, until)?;
             let mut client = Client {
+                spent: false,
                 conn,
                 hello: Hello {
                     revision: REVISION,
@@ -95,7 +109,7 @@ impl Client {
             let hello = Request::Hello { revision: REVISION };
             match client.call(&hello, CONNECT_WAIT) {
                 Ok(answer) => {
-                    client.hello = check_hello(answer, id)?;
+                    client.hello = check_hello(answer, id, name)?;
                     return Ok(client);
                 }
                 // A pane out of free slots closes the newcomer: try again.
@@ -110,6 +124,10 @@ impl Client {
     /// Sends `request` and waits for its answer, at most `wait`. No answer
     /// leaves the request's effect unknown: `indeterminate`, never retried.
     pub fn call(&mut self, request: &Request, wait: Duration) -> Result<Answer, Failure> {
+        if self.spent {
+            let why = "an earlier call on this connection gave up waiting";
+            return Err(Failure::new(Code::Indeterminate, why));
+        }
         self.conn.queue(&request.encode())?;
         let until = deadline(wait);
         loop {
@@ -119,6 +137,7 @@ impl Client {
             }
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                self.spent = true;
                 let why = format!("no answer within {wait:?}");
                 return Err(Failure::new(Code::Indeterminate, why));
             }
@@ -132,6 +151,19 @@ impl Client {
                 }
             }
         }
+    }
+
+    /// Writes `request` and does not wait for its answer: for a caller that
+    /// means to leave it pending. The bytes are handed over before it returns.
+    pub fn send_only(&mut self, request: &Request) -> Result<(), Failure> {
+        self.conn.queue(&request.encode())?;
+        let until = deadline(CONNECT_WAIT);
+        while self.conn.pending() > 0 && Instant::now() < until {
+            self.conn.flush().map_err(Failure::from)?;
+            let mut fds = [PollFd::new(&self.conn.stream, Events::OUT)];
+            let _ = poll(&mut fds, Some(Duration::from_millis(5)));
+        }
+        Ok(())
     }
 
     /// As [`Client::call`], with a refusal as an error.

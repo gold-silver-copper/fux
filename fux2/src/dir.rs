@@ -13,6 +13,8 @@ pub const MAX_PANES: usize = 128;
 /// How long a change waits for the session's lock.
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 const PREFIX: &str = "p-";
+/// The most entries a listing reads before it refuses.
+const MAX_ENTRIES: usize = 4 * MAX_PANES;
 
 fn io(what: impl std::fmt::Display, error: impl std::fmt::Display) -> Failure {
     Failure::new(Code::Io, format!("{what}: {error}"))
@@ -147,52 +149,72 @@ impl Session {
 
     /// Takes the session's lock, waiting a bounded time.
     pub fn lock(&self) -> Result<SessionLock, Failure> {
+        let now = Instant::now();
+        self.lock_by(now.checked_add(LOCK_WAIT).unwrap_or(now))
+    }
+
+    /// Takes the session's lock, trying until `until`.
+    pub fn lock_by(&self, until: Instant) -> Result<SessionLock, Failure> {
         let path = self.root.join("lock");
         let mut options = File::options();
         options.read(true).write(true).create(true).truncate(false);
         let file = fuxix::file::private_file(&mut options)
             .open(&path)
             .map_err(|e| io(path.display(), e))?;
-        let deadline = Instant::now().checked_add(LOCK_WAIT);
         loop {
             match file.try_lock() {
                 Ok(()) => return Ok(SessionLock { _file: file }),
                 Err(std::fs::TryLockError::WouldBlock) => {}
                 Err(std::fs::TryLockError::Error(e)) => return Err(io(path.display(), e)),
             }
-            if deadline.is_none_or(|at| Instant::now() >= at) {
-                let why = format!("{} is held; waited {LOCK_WAIT:?}", path.display());
+            if Instant::now() >= until {
+                let why = format!("{} is held by another fux2", path.display());
                 return Err(Failure::new(Code::Busy, why));
             }
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 
-    /// The names with a directory here, sorted. Nothing is opened.
+    /// The names with a pane directory here, sorted. Links and anything that
+    /// is not a directory are no pane. Nothing is opened.
     pub fn names(&self) -> Result<Vec<String>, Failure> {
         let entries = std::fs::read_dir(&self.root).map_err(|e| io(self.root.display(), e))?;
-        let mut names: Vec<String> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let name = entry.file_name().into_string().ok()?;
-                let name = name.strip_prefix(PREFIX)?.to_owned();
-                check_name(&name).ok()?;
-                Some(name)
-            })
-            .collect();
+        let mut names = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Some(name) = name.strip_prefix(PREFIX) else {
+                continue;
+            };
+            let real = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            if !real || check_name(name).is_err() {
+                continue;
+            }
+            if names.len() >= MAX_ENTRIES {
+                let why = format!(
+                    "more than {MAX_ENTRIES} pane entries in {}",
+                    self.root.display()
+                );
+                return Err(Failure::new(Code::Limit, why));
+            }
+            names.push(name.to_owned());
+        }
         names.sort();
         Ok(names)
     }
 
     /// Removes the leftovers of every pane whose claim nobody holds, and
-    /// says how many panes remain. The session's lock must be held.
-    pub fn reclaim(&self, _lock: &SessionLock) -> Result<usize, Failure> {
+    /// says how many panes remain. Leftovers that will not go are left for
+    /// whoever asks for that name.
+    pub fn reclaim(&self, lock: &SessionLock) -> Result<usize, Failure> {
         let mut live = 0usize;
         for name in self.names()? {
             let dir = self.pane_dir(&name);
-            match sys::try_claim(&dir)? {
-                Some(claim) => remove_pane(&dir, claim),
-                None => live = live.saturating_add(1),
+            match sys::try_claim(&dir) {
+                Ok(Some(claim)) => drop(remove_pane(lock, &dir, claim)),
+                Ok(None) => live = live.saturating_add(1),
+                Err(_) => {}
             }
         }
         Ok(live)
@@ -200,12 +222,19 @@ impl Session {
 
     /// Takes `name`, under the session's lock: its directory made and its
     /// claim held. A name another process holds is `exists`; a full session
-    /// is `limit`.
+    /// is `limit`; leftovers that cannot be removed say why.
     pub fn claim(&self, lock: &SessionLock, name: &str) -> Result<(PathBuf, File), Failure> {
         let live = self.reclaim(lock)?;
         let dir = self.pane_dir(name);
-        if dir.exists() {
-            return Err(Failure::new(Code::Exists, format!("pane {name} exists")));
+        if std::fs::symlink_metadata(&dir).is_ok() {
+            return match sys::try_claim(&dir)? {
+                // Nobody holds it, yet reclaiming left it: say why.
+                Some(claim) => match remove_pane(lock, &dir, claim) {
+                    Ok(()) => self.claim(lock, name),
+                    Err(failure) => Err(failure),
+                },
+                None => Err(Failure::new(Code::Exists, format!("pane {name} exists"))),
+            };
         }
         if live >= MAX_PANES {
             let why = format!("{live} panes, at most {MAX_PANES}");
@@ -220,11 +249,12 @@ impl Session {
 
     /// Whether the pane `name` has a live daemon that cannot be reached
     /// yet or any more: its claim is held. Asked under the session's lock,
-    /// so that the look cannot be taken for a claim by a starting pane.
-    pub fn claim_held(&self, name: &str) -> Result<bool, Failure> {
-        let _lock = self.lock()?;
+    /// tried until `until`; past it, the answer is `busy`, never a guess.
+    pub fn claim_held(&self, name: &str, until: Instant) -> Result<bool, Failure> {
+        let _lock = self.lock_by(until)?;
         let dir = self.pane_dir(name);
-        if !dir.exists() {
+        let real = std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir());
+        if !real {
             return Ok(false);
         }
         Ok(sys::try_claim(&dir)?.is_none())
@@ -232,12 +262,16 @@ impl Session {
 }
 
 /// Removes a pane's directory, its claim given up first, as Windows needs
-/// and every system allows. The session's lock must be held.
-pub fn remove_pane(dir: &Path, claim: File) {
+/// and every system allows. Nothing is removed unless the directory there
+/// is still the one claimed: one moved aside and replaced is another pane's.
+pub fn remove_pane(_lock: &SessionLock, dir: &Path, claim: File) -> Result<(), Failure> {
+    if !sys::still_claimed(dir, &claim) {
+        return Ok(());
+    }
     sys::remove_endpoint(dir);
     drop(claim);
     let _ = std::fs::remove_file(dir.join("claim"));
-    let _ = std::fs::remove_dir(dir);
+    std::fs::remove_dir(dir).map_err(|e| io(format!("removing {}", dir.display()), e))
 }
 
 /// Whether `labels` (a pane's, its name among them) pass every `key=value`

@@ -33,6 +33,7 @@ pub struct Model {
     pub id: PaneId,
     version: u64,
     epoch: u64,
+    history_end: u64,
     issued: VecDeque<Issued>,
     state: State,
     limitations: Vec<String>,
@@ -77,6 +78,7 @@ impl Model {
             id,
             version: 1,
             epoch: 0,
+            history_end: 0,
             issued: VecDeque::new(),
             state: State::Running,
             limitations: Vec::new(),
@@ -129,16 +131,28 @@ impl Model {
     /// Parses `bytes`, at most a [`SLICE`], replies going to `sink`: how
     /// many it took, and whether its work budget stopped it.
     pub fn parse(&mut self, bytes: &[u8], sink: &mut impl Sink) -> (usize, bool) {
-        match self.parser.process_until_stop(bytes, sink) {
+        // Frozen is frozen: whatever still comes changes nothing.
+        if !self.running() {
+            return (bytes.len(), false);
+        }
+        let parsed = match self.parser.process_until_stop(bytes, sink) {
             None => (bytes.len(), false),
             Some((taken, Stop::Budget)) => (taken, true),
             Some((taken, Stop::Begun | Stop::Ended)) => (taken, false),
+        };
+        // A hard reset starts history's numbers over: a read in progress
+        // must not take the new row 5 for the old one.
+        let end = self.parser.screen().history_numbers().end;
+        if end < self.history_end {
+            self.epoch = self.epoch.saturating_add(1);
         }
+        self.history_end = end;
+        parsed
     }
 
     /// Whether the parser owes work with no new byte.
     pub fn owes_work(&self) -> bool {
-        self.parser.has_work_left()
+        self.running() && self.parser.has_work_left()
     }
 
     /// The token of now, remembered so that a later read can patch from it.
@@ -277,31 +291,35 @@ impl Model {
             let why = format!("row {first} is gone; {}..{} remain", range.start, range.end);
             return Err(Failure::new(Code::Gone, why));
         }
-        // Numbers go on past history down the primary screen, and a row
-        // keeps its number as it scrolls up into history.
+        // Numbers go on past history down the primary screen. A history row
+        // keeps its number for good; a screen row's holds only for this
+        // answer, which is why the screen is sent whole or not at all.
         let kept = u64::try_from(screen.main_rows().len()).unwrap_or(u64::MAX);
         let screen_end = range.start.saturating_add(kept);
         let end = first.saturating_add(count).min(screen_end);
         let skip = usize::try_from(first.saturating_sub(range.start)).unwrap_or(usize::MAX);
         let mut rows = Writer::default();
-        let mut count = 0usize;
+        let mut sent = 0usize;
         for (number, row) in (first..end.max(first)).zip(screen.main_rows().skip(skip)) {
+            if number < range.end && rows.0.len() >= HISTORY_PAGE {
+                break;
+            }
+            // A wide glyph that did not fit left a blank that is no part of
+            // what the program wrote.
+            let width = row.len().saturating_sub(usize::from(row.ends_in_spacer()));
             let wrapped_at = match row.continues() {
-                true => u64::try_from(row.len()).unwrap_or(0),
+                true => u64::try_from(width).unwrap_or(0),
                 false => 0,
             };
             rows.array(3);
             rows.uint(number);
             rows.uint(wrapped_at);
             rows.screen_row(&row);
-            count = count.saturating_add(1);
-            if rows.0.len() >= HISTORY_PAGE {
-                break;
-            }
+            sent = sent.saturating_add(1);
         }
         let mut w = Writer::default();
         let range = (range.start, range.end, screen_end);
-        history_head(&mut w, self.epoch, range, count);
+        history_head(&mut w, self.epoch, range, sent);
         w.0.extend_from_slice(&rows.0);
         checked(w)
     }
@@ -490,6 +508,24 @@ mod tests {
         };
         assert_eq!(moved, 1);
         assert!(rows.len() <= 2, "{rows:?}");
+        Ok(())
+    }
+
+    /// A5: once a pane has reported its end, its screen and version stay.
+    #[test]
+    fn a_frozen_screen_does_not_change() -> Result<(), Failure> {
+        let mut model = model(20, 3)?;
+        feed(&mut model, b"before");
+        model.set_state(State::Failed {
+            why: "ended".to_owned(),
+        });
+        let version = model.version();
+        let before = fresh_rows(&mut model)?;
+        let (taken, _) = model.parse(b"after", &mut ());
+        assert_eq!(taken, 5);
+        assert_eq!(model.version(), version);
+        assert_eq!(fresh_rows(&mut model)?, before);
+        assert!(!model.owes_work());
         Ok(())
     }
 

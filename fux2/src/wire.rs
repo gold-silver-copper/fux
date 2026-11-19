@@ -17,8 +17,10 @@ pub const MAX_COLS: u16 = 256;
 /// The most rows one history read asks for; an answer may hold fewer, to
 /// stay within [`HISTORY_PAGE`].
 pub const MAX_HISTORY_ROWS: u64 = 4096;
-/// Past this many bytes a history answer stops adding rows.
-pub const HISTORY_PAGE: usize = MAX_ANSWER / 2;
+/// Past this many bytes a history answer adds no more history rows. The screen
+/// below them always fits after it, so one answer can end a read atomically.
+pub const HISTORY_PAGE: usize = 512 << 10;
+const _: () = assert!(HISTORY_PAGE + WORST_ROW + WORST_SCREEN < MAX_ANSWER);
 /// The longest a wait lasts; a client renews it.
 pub const MAX_WAIT_MS: u32 = 30_000;
 /// The most parts one send has.
@@ -44,6 +46,8 @@ const WORST_CELL: usize = 128 + 3 + 96 + 6;
 pub const WORST_SCREEN: usize =
     (MAX_ROWS as usize * MAX_COLS as usize * WORST_CELL) + (MAX_ROWS as usize * 8) + (32 << 10);
 const _: () = assert!(WORST_SCREEN < MAX_ANSWER);
+/// The most one row costs.
+const WORST_ROW: usize = MAX_COLS as usize * WORST_CELL + 8;
 
 /// Why something was refused, by name: the design's closed list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -421,6 +425,19 @@ pub struct HistoryRow {
     /// The row's width if its line goes on in the next row, else 0.
     pub wrapped_at: u64,
     pub row: Row,
+}
+
+/// Rows as lines of text, blank rows at the end left out.
+pub fn screen_text(rows: &[Row]) -> String {
+    let mut lines: Vec<String> = rows.iter().map(Row::text).collect();
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    let mut text = lines.join("\n");
+    if !lines.is_empty() {
+        text.push('\n');
+    }
+    text
 }
 
 /// How a screen differs from the one a token saw.
@@ -1184,7 +1201,10 @@ impl Answer {
                         r.fields(3)?;
                         Ok(HistoryRow {
                             number: r.uint()?,
-                            wrapped_at: r.uint()?,
+                            wrapped_at: match r.uint()? {
+                                width if width <= u64::from(MAX_COLS) => width,
+                                _ => return Err(malformed("a row wider than a pane")),
+                            },
                             row: r.row()?,
                         })
                     })

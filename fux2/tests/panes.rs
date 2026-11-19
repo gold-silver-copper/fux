@@ -289,3 +289,246 @@ fn kill_by_label_takes_only_its_group() -> Tested {
     assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "c");
     Ok(())
 }
+
+/// True while `pid` is a process that has not ended.
+#[cfg(unix)]
+fn process_alive(pid: &str) -> Result<bool, std::io::Error> {
+    Ok(Command::new("kill")
+        .args(["-0", pid])
+        .output()?
+        .status
+        .success())
+}
+
+/// The number the program printed after `left=`, once it has.
+#[cfg(unix)]
+fn printed_pid(lab: &Lab, pane: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let until = soon(Duration::from_secs(10));
+    loop {
+        let out = lab.fux2(&["read", pane])?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        if let Some(rest) = text.split("left=").nth(1)
+            && let Some(pid) = rest.split_whitespace().next()
+        {
+            return Ok(pid.to_owned());
+        }
+        assert!(Instant::now() < until, "no pid on the screen: {text}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A1: a process that left the session is still the pane's to end, on the
+/// system that can find it.
+#[cfg(target_os = "linux")]
+#[test]
+fn kill_reaches_a_process_that_left_the_session() -> Tested {
+    let lab = Lab::new()?;
+    let script = "setsid sleep 300 & echo left=$!; exec sleep 300";
+    lab.start("escaper", &program(script, ""))?;
+    let pid = printed_pid(&lab, "escaper")?;
+    assert!(process_alive(&pid)?, "it should be running");
+    let killed = lab.fux2(&["kill", "escaper"])?;
+    assert!(killed.status.success(), "{killed:?}");
+    assert!(
+        !process_alive(&pid)?,
+        "{pid} outlived a kill that said all was gone"
+    );
+    Ok(())
+}
+
+/// A4: what a finished program leaves behind is still reaped as it ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_ended_pane_leaves_no_zombies() -> Tested {
+    let lab = Lab::new()?;
+    let script = "trap '' HUP; (i=0; while [ $i -lt 8 ]; do (sleep 0 &); i=$((i+1)); sleep 0.05; done) & exit 0";
+    lab.start("litter", &program(script, ""))?;
+    let pid = lab.client("litter")?.hello.pid;
+    std::thread::sleep(Duration::from_millis(1200));
+    let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))?;
+    let zombies = children
+        .split_whitespace()
+        .filter(|child| {
+            std::fs::read_to_string(format!("/proc/{child}/stat")).is_ok_and(|stat| {
+                stat.rsplit(')')
+                    .next()
+                    .is_some_and(|r| r.trim_start().starts_with('Z'))
+            })
+        })
+        .count();
+    // The program itself stays unreaped until the pane is killed.
+    assert!(zombies <= 1, "{zombies} zombies among {children}");
+    Ok(())
+}
+
+/// A3: a frame's time limit does not restart with each byte, so connections
+/// dribbling requests cannot keep a kill out.
+#[test]
+fn slow_requests_cannot_lock_out_a_kill() -> Tested {
+    let lab = Lab::new()?;
+    let token = lab.start("slow", &idle())?;
+    let mut parked = Vec::new();
+    for _ in 0..12 {
+        let mut client = lab.client("slow")?;
+        client.send_only(&Request::Wait {
+            after: token,
+            ms: 30_000,
+        })?;
+        parked.push(client);
+    }
+    let dir = lab.session.pane_dir("slow");
+    let mut dribblers = Vec::new();
+    for _ in 0..4 {
+        let (stream, _) = fux2::sys::connect(&dir)?;
+        // A header promising 1000 bytes that come one at a time.
+        fuxix::io::write(&stream, &1000u32.to_be_bytes())?;
+        dribblers.push(stream);
+    }
+    let mut killer = Command::new(env!("CARGO_BIN_EXE_fux2"))
+        .args(["kill", "slow"])
+        .env("FUX2_DIR", &lab.session.root)
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let until = soon(Duration::from_secs(12));
+    let status = loop {
+        if let Some(status) = killer.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= until {
+            let _ = killer.kill();
+            let _ = killer.wait();
+            return Err("the kill never got through".into());
+        }
+        for stream in &dribblers {
+            let _ = fuxix::io::write(stream, b"x");
+            let mut fds = [fuxix::poll::PollFd::new(stream, fuxix::poll::Events::OUT)];
+            let _ = fuxix::poll::poll(&mut fds, Some(Duration::from_millis(1)));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(status.success(), "{status:?}");
+    Ok(())
+}
+
+/// B1: a call that gave up leaves its connection finished: the next call
+/// cannot be handed the old answer.
+#[test]
+fn a_timed_out_client_does_not_read_an_old_answer() -> Tested {
+    let lab = Lab::new()?;
+    let token = lab.start("late", &idle())?;
+    let mut client = lab.client("late")?;
+    let wait = Request::Wait {
+        after: token,
+        ms: 100,
+    };
+    let gave_up = client.call(&wait, Duration::from_millis(5));
+    assert_eq!(gave_up.err().map(|f| f.code), Some(Code::Indeterminate));
+    std::thread::sleep(Duration::from_millis(200));
+    let next = client.call(&Request::Screen { since: None }, ANSWER_WAIT);
+    assert_eq!(next.err().map(|f| f.code), Some(Code::Indeterminate));
+    Ok(())
+}
+
+/// B5: a token from an earlier life is refused even with nothing to wait for.
+#[test]
+fn since_checks_its_token_without_a_wait() -> Tested {
+    let lab = Lab::new()?;
+    let old = lab.start("again", &idle())?.to_string();
+    assert!(lab.fux2(&["kill", "again"])?.status.success());
+    lab.start("again", &idle())?;
+    let out = lab.fux2(&["read", "again", "--since", &old, "--text"])?;
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    Ok(())
+}
+
+/// B7: past a limit is the exit code the README gives for it.
+#[test]
+fn too_much_history_is_a_limit() -> Tested {
+    let lab = Lab::new()?;
+    let out = lab.fux2(&["start", "--name", "x", "--history", "16777217", "--", "sh"])?;
+    assert_eq!(out.status.code(), Some(6), "{out:?}");
+    Ok(())
+}
+
+/// E1: `page` from inside an ordinary pane leaves that pane alone; only a
+/// pane started to show the pager asks to go.
+#[test]
+fn page_removes_only_a_pane_made_for_it() -> Tested {
+    let lab = Lab::new()?;
+    lab.start("shown", &idle())?;
+    lab.start("caller", &idle())?;
+    let cat = if cfg!(windows) { "findstr ." } else { "cat" };
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_fux2"))
+            .args(["page", "shown"])
+            .args(extra)
+            .env("FUX2_DIR", &lab.session.root)
+            .env("FUX2_PANE", "caller")
+            .env("PAGER", cat)
+            .output()
+    };
+    assert!(run(&[])?.status.success());
+    assert!(
+        lab.client("caller").is_ok(),
+        "page killed the pane it ran in"
+    );
+    assert!(run(&["--close-pane"])?.status.success());
+    assert!(lab.client("caller").is_err(), "--close-pane left its pane");
+    Ok(())
+}
+
+/// C1, C3 and C4: what is in the directory decides nothing by its name alone.
+#[cfg(unix)]
+mod directory {
+    use super::*;
+
+    /// A daemon whose directory was moved aside leaves its replacement be.
+    #[test]
+    fn a_moved_pane_does_not_remove_its_replacement() -> Tested {
+        let lab = Lab::new()?;
+        lab.start("job", &idle())?;
+        let mut old = lab.client("job")?;
+        let dir = lab.session.pane_dir("job");
+        let aside = lab.session.root.join("aside");
+        std::fs::rename(&dir, &aside)?;
+        lab.start("job", &idle())?;
+        let _ = old.call(&Request::Kill { expected: None }, ANSWER_WAIT);
+        assert!(lab.client("job").is_ok(), "the replacement lost its socket");
+        Ok(())
+    }
+
+    /// A link at a pane's name does not lead to another pane.
+    #[test]
+    fn a_link_is_not_a_pane() -> Tested {
+        let lab = Lab::new()?;
+        lab.start("real", &idle())?;
+        let link = lab.session.pane_dir("fake");
+        std::os::unix::fs::symlink(lab.session.pane_dir("real"), &link)?;
+        let out = lab.fux2(&["send", "fake", "x"])?;
+        assert!(!out.status.success(), "{out:?}");
+        let dangling = lab.session.pane_dir("gone");
+        std::os::unix::fs::symlink(lab.session.root.join("nowhere"), &dangling)?;
+        lab.start("other", &idle())?;
+        std::fs::remove_file(&link)?;
+        std::fs::remove_file(&dangling)?;
+        Ok(())
+    }
+
+    /// A dead pane's directory that cannot be cleared says why, by path.
+    #[test]
+    fn a_stuck_leftover_is_reported() -> Tested {
+        let lab = Lab::new()?;
+        let dir = lab.session.pane_dir("stuck");
+        fuxix::file::private_dir(&dir)?;
+        std::fs::write(dir.join("extra"), "x")?;
+        let out = lab.fux2(&["start", "--name", "stuck", "--", "sh"])?;
+        let told = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success());
+        assert!(
+            told.contains("p-stuck") && !told.contains("exists:"),
+            "{told}"
+        );
+        std::fs::remove_file(dir.join("extra"))?;
+        Ok(())
+    }
+}

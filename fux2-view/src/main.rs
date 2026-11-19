@@ -330,7 +330,7 @@ impl Pane {
         let answer = answer.accepted()?;
         match (self.phase, answer) {
             (Phase::Greeting, answer @ Answer::Hello(_)) => {
-                self.hello = check_hello(answer, self.expected)?;
+                self.hello = check_hello(answer, self.expected, &self.name)?;
                 self.read_screen()?;
                 Ok(false)
             }

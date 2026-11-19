@@ -9,6 +9,7 @@
 pub mod client;
 pub mod conn;
 pub mod dir;
+pub mod history;
 pub mod model;
 pub mod pane;
 pub mod sys;

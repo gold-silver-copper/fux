@@ -29,4 +29,4 @@
 ;; when the pager ends.
 (bind-key "C-b ["
   (lambda! ()
-    (focus (start-here "history" (fux2-program) "page" (focused)))))
+    (focus (start-here "history" (fux2-program) "page" (focused) "--close-pane"))))

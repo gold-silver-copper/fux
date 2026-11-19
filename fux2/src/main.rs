@@ -5,7 +5,7 @@ use fux2::model::{apply, checked_size};
 use fux2::pane::{self, DEFAULT_HISTORY, MAX_HISTORY, MAX_INPUT, Spec};
 use fux2::wire::{
     Answer, Change, Code, Failure, MAX_HISTORY_ROWS, MAX_PARTS, MAX_REQUEST, MAX_WAIT_MS, Meta,
-    PaneId, Part, Request, Row, State, Token,
+    PaneId, Part, Request, Row, State, Token, screen_text,
 };
 use std::ffi::OsString;
 use std::io::{BufRead, Read, Write};
@@ -21,7 +21,7 @@ fux2: a terminal multiplexer with no server
   fux2 read NAME [--json] [--since TOKEN [--wait MS] [--settle MS] [--until TEXT] [--until-line TEXT] [--text]]
   fux2 read NAME --history EPOCH FIRST COUNT
   fux2 read NAME --history-text
-  fux2 page NAME
+  fux2 page NAME [--close-pane]
   fux2 wait NAME --after TOKEN [--ms MS]
   fux2 resize NAME COLS ROWS [--if TOKEN]
   fux2 signal NAME SIGNAL [--if TOKEN]
@@ -39,8 +39,6 @@ const START_WAIT: Duration = Duration::from_secs(if cfg!(windows) { 120 } else {
 const DEFAULT_SETTLE_MS: u32 = 100;
 /// How long `read --since` waits when no `--wait` is given.
 const NO_WAIT: u32 = 0;
-/// The most text `read --history-text` gathers.
-const MAX_HISTORY_TEXT: usize = 256 << 20;
 /// How often a history read that lost its place starts again.
 const HISTORY_TRIES: u32 = 3;
 
@@ -172,7 +170,8 @@ fn start(mut args: Args) -> Outcome {
     dir::check_labels(&labels)?;
     checked_size(cols, rows)?;
     if history > MAX_HISTORY {
-        return Err(usage(format!("--history {history}: at most {MAX_HISTORY}")));
+        let why = format!("--history {history}: at most {MAX_HISTORY}");
+        return Err(Failure::new(Code::Limit, why));
     }
     if argv.is_empty() {
         argv.push(default_program());
@@ -189,7 +188,12 @@ fn start(mut args: Args) -> Outcome {
         labels,
         argv,
     };
-    let launch = fux2::sys::launch(&session.root, &spec.to_args())?;
+    // Under the session's lock, so that two first starts on Windows do not
+    // clean away each other's copy of this program.
+    let lock = session.lock()?;
+    let launch = fux2::sys::launch(&session.root, &spec.to_args());
+    drop(lock);
+    let launch = launch?;
     let mut go = launch.go;
     // Said before the program starts, and kept with the pane's screen.
     let word: &[u8] = match launch.bound {
@@ -460,18 +464,6 @@ fn whole_rows(client: &mut Client) -> Result<(Token, Meta, Vec<Row>), Failure> {
     Ok((token, meta, rows))
 }
 
-fn screen_text(rows: &[Row]) -> String {
-    let mut lines: Vec<String> = rows.iter().map(Row::text).collect();
-    while lines.last().is_some_and(String::is_empty) {
-        lines.pop();
-    }
-    let mut text = lines.join("\n");
-    if !lines.is_empty() {
-        text.push('\n');
-    }
-    text
-}
-
 /// What `read --since` waits for and how it answers.
 #[derive(Default)]
 struct Follow {
@@ -540,12 +532,16 @@ fn next_change(
 }
 
 fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
+    // A token of another life of the name, or of the future, is refused
+    // here, whatever else was asked.
+    screen(client, Some(since))?;
     let bound = Duration::from_millis(plan.wait_ms.unwrap_or(NO_WAIT).into());
     let until = Instant::now()
         .checked_add(bound)
         .unwrap_or_else(Instant::now);
     let settle = plan.settle_ms.unwrap_or(DEFAULT_SETTLE_MS);
     let mut seen = since;
+    let mut matched_rows = None;
     if plan.wait_ms.is_some() {
         loop {
             let Some(token) = next_change(client, seen, until, settle)? else {
@@ -557,8 +553,11 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
                 plan.until_line.as_ref().is_none_or(|want| *want == line)
                     && plan.until.as_ref().is_none_or(|want| line.contains(want))
             });
-            let waiting_for_text = plan.until.is_some() || plan.until_line.is_some();
-            if matched || !waiting_for_text {
+            if matched {
+                matched_rows = Some(rows);
+                break;
+            }
+            if plan.until.is_none() && plan.until_line.is_none() {
                 break;
             }
             if meta.state != State::Running {
@@ -577,7 +576,11 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
         }
     }
     if plan.text {
-        let (_, _, rows) = whole_rows(client)?;
+        // The screen that matched, not a later one.
+        let rows = match matched_rows {
+            Some(rows) => rows,
+            None => whole_rows(client)?.2,
+        };
         return say(&screen_text(&rows));
     }
     let (token, meta, change) = screen(client, Some(since))?;
@@ -600,48 +603,31 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
     say(&out)
 }
 
-/// One pass over a pane's primary screen, history first, by row number:
-/// a row keeps its number as it scrolls, so what is read is each row once.
+/// One pass over a pane's primary screen, history first, by row number.
+/// History rows keep their numbers; the screen comes in one answer.
 fn collect_history(client: &mut Client) -> Result<String, Failure> {
     let (_, meta, _) = screen(client, None)?;
-    let mut text = String::new();
-    let mut next = meta.history_start;
-    let mut last = None;
+    let mut read = fux2::history::Gathered::new(meta.history_start);
     loop {
         let request = Request::History {
             epoch: meta.epoch,
-            first: next,
+            first: read.next(),
             count: MAX_HISTORY_ROWS,
         };
         let Answer::History {
-            screen_end, rows, ..
+            end,
+            screen_end,
+            rows,
+            ..
         } = client.ask(&request, ANSWER_WAIT)?
         else {
             return Err(odd());
         };
-        // What arrives after the first answer is left for the next read.
-        let last = *last.get_or_insert(screen_end);
-        for item in rows.iter().take_while(|item| item.number < last) {
-            if item.wrapped_at > 0 {
-                text.push_str(&item.row.text_to(item.wrapped_at));
-            } else {
-                text.push_str(&item.row.text());
-                text.push('\n');
-            }
-            next = item.number.saturating_add(1);
-            if text.len() > MAX_HISTORY_TEXT {
-                let why = format!("more than {MAX_HISTORY_TEXT} bytes of text");
-                return Err(Failure::new(Code::Limit, why));
-            }
-        }
-        if next >= last || rows.is_empty() {
+        if read.take(end, screen_end, &rows)? {
             break;
         }
     }
-    let mut text = text.trim_end_matches(['\n', ' ']).to_owned();
-    if !text.is_empty() {
-        text.push('\n');
-    }
+    let mut text = read.finish();
     if meta.alternate {
         let (_, _, rows) = whole_rows(client)?;
         text.push_str(&screen_text(&rows));
@@ -665,12 +651,16 @@ fn history_text_of(client: &mut Client) -> Result<String, Failure> {
     }
 }
 
-/// Shows a pane's history in a pager, then, run inside a pane of its own,
-/// removes that pane.
+/// Shows a pane's history in a pager. With `--close-pane`, run as the
+/// program of a pane made for it, it then removes that pane.
 fn page(mut args: Args) -> Outcome {
     let pane = args.pane()?;
-    if let Some(extra) = args.next()? {
-        return Err(unknown(&extra));
+    let mut close_pane = false;
+    while let Some(arg) = args.next()? {
+        match arg.as_str() {
+            "--close-pane" => close_pane = true,
+            other => return Err(unknown(other)),
+        }
     }
     let text = history_text_of(&mut pane.connect()?)?;
     let chosen = std::env::var("PAGER").ok().filter(|p| !p.trim().is_empty());
@@ -710,7 +700,10 @@ fn page(mut args: Args) -> Outcome {
     child
         .wait()
         .map_err(|e| Failure::new(Code::Io, format!("the pager: {e}")))?;
-    if let Ok(own) = std::env::var("FUX2_PANE")
+    // Only a pane started to show this one asks to go; any other caller's
+    // pane is left alone.
+    if close_pane
+        && let Ok(own) = std::env::var("FUX2_PANE")
         && let Ok(mut client) = Client::connect(&Session::open()?, &own)
     {
         // The answer may never come: this process is what it ends.

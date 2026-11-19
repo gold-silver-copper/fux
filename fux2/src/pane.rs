@@ -50,6 +50,8 @@ const DRAIN_MOST: Duration = Duration::from_secs(1);
 const HANGUP_GRACE: Duration = Duration::from_millis(200);
 /// How long a kill waits for its program to be gone.
 const KILL_WAIT: Duration = Duration::from_secs(2);
+/// How long a listener that failed to accept is left alone.
+const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 /// How long a kill reads on for the terminal's close to finish.
 const CLOSE_WAIT: Duration = Duration::from_millis(500);
 /// How long a kill rests between looks.
@@ -234,6 +236,9 @@ struct Peer {
     closing: bool,
     broken: bool,
     idle_since: Instant,
+    /// When the frame now arriving must be whole: set as it begins and
+    /// never moved, so a trickle of bytes cannot hold a slot.
+    frame_due: Option<Instant>,
 }
 
 /// What a request comes to.
@@ -295,6 +300,8 @@ struct Pane {
     /// the connection being served.
     parked: usize,
     stored: usize,
+    /// While accepting failed: when to try again.
+    accept_after: Option<Instant>,
     buffer: Vec<u8>,
 }
 
@@ -312,9 +319,7 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     };
     match Spec::parse(args).and_then(|spec| prepare(spec, bound)) {
         Ok(pane) => {
-            // Never dropped: closing a terminal can wait on what runs on it,
-            // and a pane that has answered its kill has nothing left to do.
-            let mut pane = std::mem::ManuallyDrop::new(pane);
+            let mut pane = pane;
             let token = pane.model.token();
             let said = writeln!(stdout, "ok {token}").and_then(|()| stdout.flush());
             // The starter is gone or going: nothing may be written to, or
@@ -324,6 +329,9 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
                 pane.note("its standard streams could not be detached".to_owned());
             }
             pane.serve();
+            // Closing a terminal can wait on what runs on it; a pane that
+            // answered its kill has nothing left to do.
+            fuxix::process::end_now(0);
             ExitCode::SUCCESS
         }
         Err(failure) => {
@@ -365,7 +373,7 @@ fn prepare(spec: Spec, bound: bool) -> Result<Pane, Failure> {
     let listener = match bound {
         Ok(listener) => listener,
         Err(failure) => {
-            dir::remove_pane(&dir, claim);
+            let _ = dir::remove_pane(&lock, &dir, claim);
             return Err(failure);
         }
     };
@@ -400,6 +408,7 @@ fn prepare(spec: Spec, bound: bool) -> Result<Pane, Failure> {
         peers: Vec::new(),
         parked: 0,
         stored: 0,
+        accept_after: None,
         buffer: vec![0; READ],
     })
 }
@@ -435,9 +444,9 @@ fn start_program(spec: &Spec, size: fux_vt::Size) -> Result<(Master, Job), Failu
 /// out of reach the leftovers are the next start's to clear: the claim goes
 /// with this process.
 fn withdraw(session: &Session, dir: &std::path::Path, claim: std::fs::File) {
-    let lock = session.lock();
-    dir::remove_pane(dir, claim);
-    drop(lock);
+    if let Ok(lock) = session.lock() {
+        let _ = dir::remove_pane(&lock, dir, claim);
+    }
 }
 
 impl Pane {
@@ -482,7 +491,10 @@ impl Pane {
             if self.service(&peers, now) {
                 return;
             }
-            if listener {
+            if self.accept_after.is_some_and(|at| now >= at) {
+                self.accept_after = None;
+            }
+            if listener && self.accept_after.is_none() {
                 self.accept(now);
             }
             if self.model.version() != before {
@@ -506,9 +518,11 @@ impl Pane {
             .map(|exit| exit.settled_at.max(now).min(exit.latest));
         let peers = self.peers.iter().flat_map(|peer| {
             let wait = peer.wait.map(|(_, at)| at);
-            [peer.due, peer.latest, wait].into_iter().flatten()
+            [peer.due, peer.latest, peer.frame_due, wait]
+                .into_iter()
+                .flatten()
         });
-        let next = peers.chain(settle).min()?;
+        let next = peers.chain(settle).chain(self.accept_after).min()?;
         // A pane still settling looks again soon: output may come unasked.
         let wait = next.saturating_duration_since(now);
         Some(match self.exit.is_some() && self.model.running() {
@@ -534,7 +548,12 @@ impl Pane {
         }
         let mut fds = poll.list();
         let children = fds.push(PollFd::new(self.children.reader(), Events::IN));
-        let listener = fds.push(PollFd::new(&self.listener, Events::IN));
+        let listening = if self.accept_after.is_none() {
+            Events::IN
+        } else {
+            Events::NONE
+        };
+        let listener = fds.push(PollFd::new(&self.listener, listening));
         let master = (reading || writing).then(|| fds.push(PollFd::new(&self.master, interest)));
         let peers: Vec<_> = (self.peers.iter())
             .map(|peer| fds.push(PollFd::new(&peer.conn.stream, peer.conn.events())))
@@ -553,13 +572,18 @@ impl Pane {
     }
 
     fn notice_exit(&mut self, now: Instant) {
-        if !std::mem::take(&mut self.check_exit) || self.exit.is_some() {
+        if !std::mem::take(&mut self.check_exit) {
             return;
         }
+        // What the program left behind is reaped for as long as the pane
+        // lives, its program's end or not.
         #[cfg(unix)]
         {
             let leader = self.job.as_ref().map(Job::leader);
             fuxix::process::reap_orphans(|pid| Some(pid) == leader);
+        }
+        if self.exit.is_some() {
+            return;
         }
         // Read without reaping: the job stays whole, so a later kill can
         // still reach what the program left behind.
@@ -650,8 +674,11 @@ impl Pane {
             let stream = match sys::accept(&mut self.listener) {
                 Ok(Some(stream)) => stream,
                 Ok(None) => return,
+                // Out of descriptors, say: the listener stays ready, so it
+                // is left alone a moment rather than polled in a spin.
                 Err(failure) => {
                     self.note(failure.message);
+                    self.accept_after = Some(after(now, ACCEPT_PAUSE));
                     return;
                 }
             };
@@ -669,6 +696,7 @@ impl Pane {
                 closing: false,
                 broken: false,
                 idle_since: now,
+                frame_due: None,
             });
         }
     }
@@ -677,12 +705,20 @@ impl Pane {
     /// nothing, and a client reconnects.
     fn evict_idle(&mut self) -> bool {
         let oldest = (self.peers.iter().enumerate())
-            .filter(|(_, p)| p.wait.is_none() && p.conn.pending() == 0 && !p.conn.mid_frame())
+            .filter(|(_, p)| {
+                p.wait.is_none()
+                    && p.conn.pending() == 0
+                    && fuxix::io::written(&p.conn.stream)
+                    && !p.conn.mid_frame()
+            })
             .min_by_key(|(_, p)| p.idle_since)
             .map(|(index, _)| index);
         let Some(oldest) = oldest else {
             return false;
         };
+        if let Some(peer) = self.peers.get(oldest) {
+            sys::abandon(&peer.conn.stream);
+        }
         let mut index = 0usize;
         self.peers.retain(|_| {
             let keep = index != oldest;
@@ -707,9 +743,14 @@ impl Pane {
             };
             match self.turn(peer, now) {
                 Ok(done) => finishing = done,
+                // What it sent is no frame: it is told why, then closed.
+                Err(Broken::Frame(failure)) => {
+                    self.respond(peer, &Answer::Refused(failure).encode(), now);
+                    peer.closing = true;
+                }
                 // Broken: nothing more can reach it, so nothing is kept
                 // for it, and a poll would only report it again.
-                Err(_) => {
+                Err(Broken::Closed | Broken::Io(_)) => {
                     sys::abandon(&peer.conn.stream);
                     peer.broken = true;
                 }
@@ -739,17 +780,28 @@ impl Pane {
         }
         let Some(body) = peer.conn.receive()? else {
             if peer.conn.mid_frame() {
-                peer.due = Some(after(now, STALL));
+                peer.frame_due.get_or_insert(after(now, STALL));
             }
             return Ok(false);
         };
+        peer.frame_due = None;
         peer.idle_since = now;
         if peer.wait.is_some() {
             // One request at a time: this one came on top of a wait.
+            peer.wait = None;
             let refusal = Failure::new(Code::Protocol, "a request during a wait");
             return Err(Broken::Frame(refusal));
         }
         let reply = match Request::decode(&body) {
+            // Only a read's answer is large; anything that acts is answered
+            // in a few bytes, so it is never refused for room after acting.
+            Ok(Request::Screen { .. } | Request::History { .. }) if self.stored >= MAX_STORED => {
+                let why = format!(
+                    "{} bytes of answers wait, at most {MAX_STORED}",
+                    self.stored
+                );
+                Reply::Answer(Answer::Refused(Failure::new(Code::Busy, why)).encode())
+            }
             Ok(request) => self.answer(request, peer, now),
             Err(failure) => Reply::Close(Answer::Refused(failure).encode()),
         };
@@ -761,16 +813,6 @@ impl Pane {
                 peer.wait = Some((version, at));
                 return Ok(false);
             }
-        };
-        let bytes = match !finish && self.stored.saturating_add(bytes.len()) > MAX_STORED {
-            true => {
-                let why = format!(
-                    "{} bytes of answers wait, at most {MAX_STORED}",
-                    self.stored
-                );
-                Answer::Refused(Failure::new(Code::Busy, why)).encode()
-            }
-            false => bytes,
         };
         self.respond(peer, &bytes, now);
         peer.closing = peer.closing || close;
@@ -900,7 +942,10 @@ impl Pane {
             }
         }
         peers.retain(|peer| {
-            let overdue = peer.due.is_some_and(|due| now >= due);
+            let overdue = [peer.due, peer.frame_due]
+                .into_iter()
+                .flatten()
+                .any(|due| now >= due);
             if overdue {
                 // A reader that stopped reading leaves nothing behind.
                 sys::abandon(&peer.conn.stream);
@@ -1098,6 +1143,12 @@ impl Pane {
                 Scan::Failed(errno) => missed.push(format!("listing processes: {errno}")),
             }
         }
+        // On Linux everything the program started is this process's: its
+        // descendants, and the orphans it adopted, a session left or not.
+        #[cfg(target_os = "linux")]
+        for pid in fuxix::process::tree().pids {
+            let _ = fuxix::process::kill(pid, Signal::Kill);
+        }
         if !self.gone_by(&mut poll, after(Instant::now(), KILL_WAIT)) {
             missed.push("the program did not end in time".to_owned());
         }
@@ -1133,6 +1184,11 @@ impl Pane {
                 let leader = job.leader();
                 fuxix::process::reap_orphans(|pid| pid == leader);
             }
+            #[cfg(target_os = "linux")]
+            let alive = (fuxix::process::tree().pids.into_iter())
+                .filter(|pid| *pid != job.leader())
+                .count();
+            #[cfg(not(target_os = "linux"))]
             let alive = job.members().pids.len();
             if alive == 0 {
                 return None;

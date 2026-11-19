@@ -497,6 +497,16 @@ impl Job {
     }
 }
 
+/// Ends this process at once with `code`: no destructor, no library's
+/// detach, nothing that could wait.
+pub fn end_now(code: i32) {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+    // SAFETY: it takes nothing; the pseudo-handle needs no closing.
+    let this = unsafe { GetCurrentProcess() };
+    // SAFETY: the pseudo-handle is this process; it takes numbers.
+    unsafe { TerminateProcess(this, code.cast_unsigned()) };
+}
+
 /// Windows has no sessions: no process has one to name.
 pub fn session(_pid: Pid) -> Option<Pid> {
     None
