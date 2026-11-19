@@ -473,14 +473,21 @@ fn a_paste_file_outlives_other_writers_commands() -> Tested {
 fn an_edit_from_outside_is_shown_and_fitted_by_a_running_viewer() -> Tested {
     let lab = Lab::new("outside", "")?;
     lab.start("a")?;
-    lab.start("b")?;
     lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "$")?;
+    // The workspace's first edit: a pane it gives a tile to had none.
+    let out = lab.run(&lab.view, &["--do", "split a right"])?;
+    assert!(out.status.success(), "{out:?}");
     lab.shows("v", "\u{2502}")?;
+    until("both fitted to their tiles", || {
+        lab.size("a") == "49 30" && lab.size("shell-1") == "50 30"
+    })
+    .map_err(|e| format!("{e}: a {}, shell-1 {}", lab.size("a"), lab.size("shell-1")))?;
     let out = lab.run(&lab.view, &["--do", "zoom a"])?;
     assert!(out.status.success(), "{out:?}");
     lab.shows("v", "[zoom]")?;
     until("a fitted to its tile", || lab.size("a") == "100 30")?;
-    assert_eq!(lab.size("b"), "80 24", "b's tile did not change");
+    assert_eq!(lab.size("shell-1"), "50 30", "its tile did not change");
     let out = lab.run(&lab.view, &["--do", "zoom nosuch"])?;
     assert!(!out.status.success(), "{out:?}");
     let said = String::from_utf8_lossy(&out.stderr);

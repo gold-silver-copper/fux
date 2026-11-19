@@ -785,6 +785,20 @@ pub fn changed(before: &Layout, after: &Layout, area: Rect) -> Vec<PaneRef> {
         .collect()
 }
 
+/// The panes whose tile differs between the layout files `old` and `new`,
+/// shown in `area` with `live`. A pane only `new` gives a tile to had none
+/// (it was routed, which fits nothing), wherever it showed.
+pub fn changed_file(old: &Layout, new: &Layout, live: &[Live], area: Rect) -> Vec<PaneRef> {
+    let has = |layout: &Layout, l: &Live| {
+        let its = |p: &PaneRef| p.id == l.pane.id || *p == l.pane.bare();
+        layout.placed().iter().any(its)
+    };
+    let before: Vec<Live> = (live.iter().filter(|l| has(old, l) || !has(new, l)))
+        .cloned()
+        .collect();
+    changed(&old.shown(&before), &new.shown(live), area)
+}
+
 // ---- The file's text ----
 
 fn quoted(text: &str, out: &mut String) {
@@ -1097,20 +1111,15 @@ fn check(layout: &Layout) -> Result<(), String> {
 
 // ---- The file ----
 
-/// The layout's lock, while held.
-pub struct LayoutLock {
-    _file: File,
-}
-
 /// Takes the layout's lock in `view` (a workspace's `.view`, held open),
 /// waiting a bounded time: a stalled layout write holds up only other
-/// layout writes.
-pub fn lock(view: &File) -> Result<LayoutLock, Failure> {
+/// layout writes. The file given back is the lock, while it is held.
+pub fn lock(view: &File) -> Result<File, Failure> {
     let file = at::open(view, LOCK, at::READ_WRITE | at::CREATE).map_err(|e| fux3::io(LOCK, e))?;
     let start = Instant::now();
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(LayoutLock { _file: file }),
+            Ok(()) => return Ok(file),
             Err(std::fs::TryLockError::WouldBlock) => {}
             Err(std::fs::TryLockError::Error(e)) => return Err(fux3::io(LOCK, e)),
         }
@@ -1436,23 +1445,15 @@ fn store_tab(layout: &mut Layout, shown: &Layout, id: u32) -> Result<u32, Failur
     Ok(id)
 }
 
-/// The pane `op` gives a tile to: while the edit reads the layout, it is
-/// not routed anywhere, so a pane just started moves no other tile.
-fn placing(op: &Op) -> Option<&Target> {
-    if let Op::Split(_, new, _) | Op::Move(new, Whither::Tab(_)) = op {
-        return Some(new);
-    }
-    None
-}
-
-/// `live` as routing sees it during `op`.
+/// `live` as routing sees it during `op`: the pane `op` gives a tile to is
+/// routed nowhere while the edit reads the layout, so a pane just started
+/// moves no other tile.
 fn routing(op: &Op, live: &[Live]) -> Vec<Live> {
-    let placed = placing(op);
-    let named = |l: &&Live| {
-        placed.is_some_and(|t| {
-            t.name == l.pane.name && t.id.as_ref().is_none_or(|id| *id == l.pane.id)
-        })
+    let (Op::Split(_, new, _) | Op::Move(new, Whither::Tab(_))) = op else {
+        return live.to_vec();
     };
+    let named =
+        |l: &&Live| new.name == l.pane.name && new.id.as_ref().is_none_or(|id| *id == l.pane.id);
     live.iter().filter(|l| !named(l)).cloned().collect()
 }
 
