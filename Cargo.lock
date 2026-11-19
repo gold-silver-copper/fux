@@ -77,6 +77,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fux3"
+version = "0.1.0"
+dependencies = [
+ "fux-vt",
+ "fuxix",
+]
+
+[[package]]
 name = "fuxix"
 version = "0.10.0"
 dependencies = [
