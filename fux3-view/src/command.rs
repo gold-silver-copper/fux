@@ -6,6 +6,8 @@ use crate::layout::{self, Edited, Live, Op, PaneRef, Rect, Target};
 use crate::panes::read_status;
 use fux3::Failure;
 use fux3::session::Workspace;
+use fuxix::file::at;
+use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,20 +23,16 @@ const MAX_OUTPUT: u64 = 64 << 10;
 /// How many numbers a new pane's name is tried with.
 const MAX_NEW_NAMES: u32 = 128;
 
-/// The workspace's `.view`, made private, with the default layout, if
-/// missing.
-pub fn view_dir(workspace: &Workspace) -> Result<PathBuf, Failure> {
-    let dir = workspace.dir.join(VIEW);
-    let made = match fuxix::file::private_dir(&dir) {
-        Ok(()) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-        Err(e) => return Err(fux3::io(dir.display(), e)),
-    };
-    fux3::session::check_private(&dir)?;
-    if made {
+/// The workspace's `.view`, held open: made private, with the default
+/// layout, if missing. Refused once the workspace was removed.
+pub fn view_dir(workspace: &Workspace) -> Result<File, Failure> {
+    workspace.check()?;
+    let held = workspace.held();
+    fux3::session::private_dir(held, VIEW, false).or_else(|_| {
+        let dir = fux3::session::private_dir(held, VIEW, true)?;
         layout::write_first(&dir)?;
-    }
-    Ok(dir)
+        Ok(dir)
+    })
 }
 
 /// The `fux3` program beside this one.
@@ -49,7 +47,7 @@ pub fn live_panes(workspace: &Workspace) -> Vec<Live> {
     let names = workspace.names().unwrap_or_default();
     (names.iter())
         .filter_map(|name| {
-            let mut pane = crate::panes::Pane::new(name, workspace.pane_dir(name));
+            let mut pane = crate::panes::Pane::new(name, workspace.pane(name).ok()?);
             pane.status = read_status(&pane.dir).ok()?;
             pane.live()
         })
@@ -58,8 +56,9 @@ pub fn live_panes(workspace: &Workspace) -> Vec<Live> {
 
 /// Starts pane `name` in `workspace` running `program` (the user's shell
 /// if none), with the `fux3` beside this program: the pane as this one
-/// life of it. Running out of time, or `cancel`, ends the `fux3` that
-/// starts it.
+/// life of it, in the directory `workspace` holds and no other of its
+/// name (`--workspace-id`). Running out of time, or `cancel`, ends the
+/// `fux3` that starts it.
 pub fn start(
     fux3: &Path,
     workspace: &Workspace,
@@ -70,6 +69,7 @@ pub fn start(
     let mut command = Command::new(fux3);
     command
         .args(["start", &format!("{}/{name}", workspace.name)])
+        .args(["--workspace-id", &workspace.id()])
         .env("FUX3_DIR", &workspace.session.root);
     // Named even for the shell, so a reused name never runs a recipe.
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
@@ -110,7 +110,7 @@ pub fn start(
         return Err(Failure::new(said.trim().trim_start_matches("fux3: ")));
     }
     // `fux3 start` writes the pane's `status` before it says it started.
-    let status = read_status(&workspace.pane_dir(name))
+    let status = (workspace.pane(name).and_then(|dir| read_status(&dir)))
         .map_err(|failure| Failure::new(format!("pane {name} started, but: {failure}")))?;
     let id = fux3::files::status_value(&status, "id").filter(|id| layout::is_id(id));
     let id =
@@ -192,23 +192,45 @@ pub fn run_line(
     }
 }
 
+/// Removes everything in `dir`, through its handle: files and links
+/// themselves, directories emptied first, `depth` levels down at most.
+fn empty(dir: &File, depth: u8) -> Result<(), Failure> {
+    for (name, _) in at::names(dir, 1 << 16).map_err(|e| fux3::io("listing", e))? {
+        let shown = name.to_string_lossy().into_owned();
+        if at::remove_file(dir, &name).is_ok() {
+            continue;
+        }
+        let inner = at::open_dir(dir, &name).map_err(|e| fux3::io(&shown, e))?;
+        match depth.checked_sub(1) {
+            Some(depth) => empty(&inner, depth)?,
+            None => return Err(Failure::new(format!("{shown} is too deep to remove"))),
+        }
+        at::remove_dir(dir, &name).map_err(|e| fux3::io(&shown, e))?;
+    }
+    Ok(())
+}
+
 /// Closes `workspace`: ends each of its panes, waits for them to go (a
 /// bounded time), and then, under the session's lock so that no pane can
-/// start in it meanwhile, removes its directory, layout and all. A pane
-/// that will not end is refused out loud and the workspace stays.
+/// start in it meanwhile, removes the directory it holds, layout and all,
+/// and never another that has its name. A pane that will not end is
+/// refused out loud and the workspace stays.
 pub fn close_workspace(workspace: &Workspace, cancel: &AtomicBool) -> Result<(), Failure> {
     let begun = Instant::now();
+    workspace.check()?;
     for name in workspace.live()? {
         // One that ended meanwhile has no reader: it is gone already.
-        let _ = crate::panes::ctl_line(&workspace.pane_dir(&name), "kill");
+        let _ = (workspace.pane(&name)).and_then(|dir| crate::panes::ctl_line(&dir, "kill"));
     }
     loop {
         let lock = workspace.session.lock()?;
         let live = workspace.clear_dead(&lock)?;
         if live.is_empty() {
-            let dir = &workspace.dir;
-            return std::fs::remove_dir_all(dir)
-                .map_err(|e| fux3::io(format!("removing {}", dir.display()), e));
+            empty(workspace.held(), 4)?;
+            let removed = || Failure::new(format!("workspace {} was removed", workspace.name));
+            let (session, name) = fux3::session::place(workspace.held()).ok_or_else(removed)?;
+            return at::remove_dir(&session, &name)
+                .map_err(|e| fux3::io(format!("removing workspace {name}"), e));
         }
         drop(lock);
         if begun.elapsed() >= COMMAND_TIME || cancel.load(Ordering::Relaxed) {

@@ -29,8 +29,8 @@ use panes::Pane;
 use render::{Frame, Tile};
 use script::{Context, Job, Run, Script, ToViewer, Verb};
 use std::collections::{BTreeMap, VecDeque};
+use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -166,7 +166,7 @@ struct View {
     session: Session,
     /// The workspace shown, and its `.view`: the layout and its lock.
     workspace: Workspace,
-    view: PathBuf,
+    view: File,
     /// The last good layout read, and the text it came from.
     stored: Layout,
     layout_text: Option<String>,
@@ -203,7 +203,7 @@ struct View {
     /// Pastes handed over, to name their files, and the files kept, each
     /// with when it was made.
     pasted: u64,
-    pastes: Vec<(PathBuf, Instant)>,
+    pastes: Vec<(File, String, Instant)>,
     script: Option<Script>,
     from_script: Receiver<ToViewer>,
     running: Option<Running>,
@@ -231,7 +231,7 @@ struct View {
 /// it does to panes and panels is for that workspace alone), and how many
 /// chords led to it.
 struct Origin {
-    workspace: String,
+    workspace: Workspace,
     hops: u8,
 }
 
@@ -417,11 +417,14 @@ impl View {
     /// fits nothing: the panes whose tiles it changed are fitted here.
     fn rescan(&mut self, now: Instant, fit: bool) {
         self.next_scan = after(now, RESCAN);
-        let gone = std::fs::symlink_metadata(&self.workspace.dir);
-        if matches!(gone, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+        if self.workspace.check().is_err() {
+            // Another directory may have its name now: that one is shown.
             let left = self.session.workspaces().unwrap_or_default();
-            let next = left.first().map_or(DEFAULT_WORKSPACE, String::as_str);
-            self.workspace.name.clear();
+            let name = std::mem::take(&mut self.workspace.name);
+            let next = match left.contains(&name) {
+                true => &name,
+                false => left.first().map_or(DEFAULT_WORKSPACE, String::as_str),
+            };
             return self.show_workspace(next, now);
         }
         let old = (fit && self.layout_seen).then(|| self.stored.clone());
@@ -430,12 +433,17 @@ impl View {
             Ok(names) => names,
             Err(failure) => return self.say(failure.to_string()),
         };
+        // A name is only where a pane is listed now: each is kept while
+        // its name still lists the directory held for it.
         self.panes.retain(|name, _| names.contains(name));
         for name in names {
-            let dir = self.workspace.pane_dir(&name);
-            self.panes
-                .entry(name.clone())
-                .or_insert_with(|| Pane::new(&name, dir));
+            let Ok(dir) = self.workspace.pane(&name) else {
+                self.panes.remove(&name);
+                continue;
+            };
+            if !self.panes.get(&name).is_some_and(|pane| pane.is(&dir)) {
+                self.panes.insert(name.clone(), Pane::new(&name, dir));
+            }
         }
         let visible = self.visible();
         let names: Vec<String> = self.panes.keys().cloned().collect();
@@ -553,21 +561,28 @@ impl View {
             return self.say(format!("paste dropped: {MAX_PASTES} are waiting"));
         }
         self.pasted = self.pasted.saturating_add(1);
-        let (view, number) = (self.view.clone(), self.pasted);
-        let pasted =
-            (self.focused_pane()).and_then(|pane| pane.paste(&view, text, number).map_err(|f| f.0));
+        let (shown, number) = (self.workspace.dir.join(command::VIEW), self.pasted);
+        let pasted = self
+            .view
+            .try_clone()
+            .map_err(|e| e.to_string())
+            .and_then(|view| {
+                let name =
+                    (self.focused_pane()?.paste((&view, &shown), text, number)).map_err(|f| f.0)?;
+                Ok((view, name, Instant::now()))
+            });
         match pasted {
-            Ok(path) => self.pastes.push((path, Instant::now())),
+            Ok(paste) => self.pastes.push(paste),
             Err(why) => self.say(why),
         }
     }
 
     /// Removes the paste files kept their whole wait.
     fn settle_pastes(&mut self, now: Instant) {
-        self.pastes.retain(|(path, made)| {
+        self.pastes.retain(|(view, name, made)| {
             let done = now >= after(*made, PASTE_WAIT);
             if done {
-                let _ = std::fs::remove_file(path);
+                let _ = fuxix::file::at::remove_file(view, name);
             }
             !done
         });
@@ -637,16 +652,15 @@ impl View {
         if rect.w == 0 || rect.h == 0 {
             return self.say(format!("{} has no room on the screen", pane.name));
         }
-        if self.live_pane(pane).is_none() {
+        let Some(live) = self.live_pane(pane) else {
             return;
-        }
+        };
         let tile = tile_of(rect);
         let cols = tile.w.clamp(1, fux3::files::MAX_COLS);
         let rows = tile.h.clamp(1, fux3::files::MAX_ROWS);
-        let dir = self.workspace.pane_dir(&pane.name);
-        // A pane gone meanwhile (a pager that ended itself) needs no fit.
-        if let Err(failure) = panes::ctl_line(&dir, &format!("resize {cols} {rows}"))
-            && dir.join(fux3::files::CTL).exists()
+        // A pane going meanwhile (a kill takes its name first) needs no fit.
+        if let Err(failure) = panes::ctl_line(&live.dir, &format!("resize {cols} {rows}"))
+            && (self.workspace.pane(&pane.name)).is_ok_and(|now| live.is(&now))
         {
             self.say(format!("fit: {failure}"));
         }
@@ -660,7 +674,7 @@ impl View {
         Context {
             focus: (self.focus.as_ref()).map(|p| format!("{}@{}", p.name, p.id)),
             tab: self.shown_tab().map(|tab| tab.id),
-            workspace: self.workspace.name.clone(),
+            workspace: self.workspace.clone(),
             area: self.area(),
             layout: Arc::clone(&self.arranged),
             keys: Arc::new(keys),
@@ -795,8 +809,8 @@ impl View {
     /// longer the one shown: what it does to panes and panels is refused.
     fn left_behind(&self) -> Option<String> {
         (self.in_flight.as_ref())
-            .filter(|run| run.workspace != self.workspace.name)
-            .map(|run| run.workspace.clone())
+            .filter(|run| run.workspace.id() != self.workspace.id())
+            .map(|run| run.workspace.name.clone())
     }
 
     fn on_script(&mut self, message: ToViewer, now: Instant) {
@@ -1098,14 +1112,15 @@ impl View {
             let bottom = if bar { rows.saturating_sub(1) } else { rows };
             for (pane, rect) in &tiles {
                 let (tile, live) = (tile_of(*rect), self.live_pane(pane));
-                let Some((screen, dir)) = live.and_then(|p| Some((p.screen.as_ref()?, &p.dir)))
-                else {
+                let Some(screen) = live.and_then(|p| p.screen.as_ref()) else {
                     continue;
                 };
                 let first = render::first_row(screen, tile);
                 let shown = screen.pictures.iter();
                 drawn.extend(
-                    shown.filter_map(|placed| pictures::place(tile, first, bottom, dir, placed)),
+                    shown.filter_map(|placed| {
+                        pictures::place(tile, first, bottom, &pane.id, placed)
+                    }),
                 );
             }
         }
@@ -1116,7 +1131,11 @@ impl View {
         let mut bytes = b"\x1b[?2026h\x1b[?25l".to_vec();
         bytes.extend(frame.diff(&self.drawn));
         if fresh {
-            pictures::draw(&drawn, &mut bytes);
+            let dirs = drawn.iter().filter_map(|d| {
+                let pane = self.panes.values().find(|p| p.id() == Some(&d.pane))?;
+                Some((d, &pane.dir))
+            });
+            pictures::draw(dirs, &mut bytes);
         }
         bytes.extend_from_slice(b"\x1b[0m");
         if let Some((x, y)) = cursor {
@@ -1241,7 +1260,7 @@ impl View {
         if !self.tiles().is_empty() {
             consider(self.next_look);
         }
-        if let Some((_, made)) = self.pastes.first() {
+        if let Some((_, _, made)) = self.pastes.first() {
             consider(after(*made, PASTE_WAIT));
         }
         if self.panes.values().any(Pane::has_queued) {
@@ -1355,7 +1374,7 @@ fn run() -> Result<(), Failure> {
     let script = script::start(
         config,
         command::fux3_program()?,
-        session.clone(),
+        workspace.clone(),
         to_viewer,
         script_poke,
     )
@@ -1421,13 +1440,13 @@ impl View {
     /// Leaving: a paste just made gets the rest of `PASTE_LEAVE_WAIT` to
     /// be taken, then every paste file goes.
     fn leave_pastes(&mut self) {
-        if let Some((_, newest)) = self.pastes.last() {
+        if let Some((_, _, newest)) = self.pastes.last() {
             std::thread::sleep(
                 after(*newest, PASTE_LEAVE_WAIT).saturating_duration_since(Instant::now()),
             );
         }
-        for (path, _) in std::mem::take(&mut self.pastes) {
-            let _ = std::fs::remove_file(path);
+        for (view, name, _) in std::mem::take(&mut self.pastes) {
+            let _ = fuxix::file::at::remove_file(&view, &name);
         }
     }
 }
