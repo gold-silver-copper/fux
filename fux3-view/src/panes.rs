@@ -8,10 +8,10 @@ use crate::render::Cell;
 use fux3::Failure;
 use fux3::files::{self, Head, Placed};
 use fuxix::Errno;
+use fuxix::file::at;
 use std::collections::VecDeque;
 use std::fs::File;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
 /// The most bytes of keys waiting for a pane's `in`.
 const MAX_QUEUED: usize = 64 << 10;
@@ -22,8 +22,10 @@ const MAX_STATUS: usize = 64 << 10;
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Stamp(u64, u64, i64, i64);
 
-fn stamp(path: &Path) -> Option<Stamp> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
+fn stamp(dir: &File, name: &str) -> Option<Stamp> {
+    let meta = (at::open(dir, name, at::READ | fuxix::file::NONBLOCK).ok()?)
+        .metadata()
+        .ok()?;
     Some(Stamp(
         meta.ino(),
         meta.len(),
@@ -39,9 +41,10 @@ pub struct Screen {
     pub pictures: Vec<Placed>,
 }
 
+/// A pane: its directory, held open, and what it is called now.
 pub struct Pane {
     pub name: String,
-    pub dir: PathBuf,
+    pub dir: File,
     pub status: Vec<(String, String)>,
     pub screen: Option<Screen>,
     stamps: (Option<Stamp>, Option<Stamp>),
@@ -50,24 +53,20 @@ pub struct Pane {
     queued: VecDeque<u8>,
 }
 
-/// Opens a FIFO of `dir` to write, without waiting: refused if it is no
-/// FIFO or nobody reads it (the holder is gone).
-fn open_fifo(path: &Path) -> Result<File, Failure> {
-    let file = File::options()
-        .write(true)
-        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK | fuxix::file::NOCTTY)
-        .open(path)
-        .map_err(|e| fux3::io(path.display(), e))?;
-    let fifo = file.metadata().is_ok_and(|m| m.file_type().is_fifo());
-    match fifo {
+/// Opens the FIFO `name` of the pane in `dir` to write, without waiting:
+/// refused if it is no FIFO or nobody reads it (the holder is gone).
+fn open_fifo(dir: &File, name: &str) -> Result<File, Failure> {
+    let flags = at::WRITE | fuxix::file::NONBLOCK | fuxix::file::NOCTTY;
+    let file = at::open(dir, name, flags).map_err(|e| fux3::io(name, e))?;
+    match file.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
         true => Ok(file),
-        false => Err(Failure::new(format!("{} is not a FIFO", path.display()))),
+        false => Err(Failure::new(format!("{name} is not a FIFO"))),
     }
 }
 
 /// Writes one command line to the `ctl` of the pane in `dir`, whole or not
 /// at all.
-pub fn ctl_line(dir: &Path, line: &str) -> Result<(), Failure> {
+pub fn ctl_line(dir: &File, line: &str) -> Result<(), Failure> {
     let mut bytes = line.trim_end_matches('\n').as_bytes().to_vec();
     bytes.push(b'\n');
     if bytes.len() > files::PIPE_BUF || line.trim_end_matches('\n').contains('\n') {
@@ -76,26 +75,22 @@ pub fn ctl_line(dir: &Path, line: &str) -> Result<(), Failure> {
             files::PIPE_BUF
         )));
     }
-    let path = dir.join(files::CTL);
-    let file = open_fifo(&path)?;
+    let file = open_fifo(dir, files::CTL)?;
     match fuxix::io::write(&file, &bytes) {
         Ok(n) if n == bytes.len() => Ok(()),
-        Ok(_) | Err(Errno::AGAIN) => Err(Failure::new(format!(
-            "{} is full: the holder is not reading it",
-            path.display()
-        ))),
-        Err(errno) => Err(fux3::io(path.display(), errno)),
+        Ok(_) | Err(Errno::AGAIN) => Err(Failure::new("ctl is full: the holder is not reading it")),
+        Err(errno) => Err(fux3::io(files::CTL, errno)),
     }
 }
 
 /// `status` read now, past any look's.
-pub fn read_status(dir: &Path) -> Result<Vec<(String, String)>, Failure> {
-    let bytes = files::read_small(&dir.join(files::STATUS), MAX_STATUS)?;
+pub fn read_status(dir: &File) -> Result<Vec<(String, String)>, Failure> {
+    let bytes = files::read_at(dir, files::STATUS, MAX_STATUS)?;
     Ok(files::parse_status(&String::from_utf8_lossy(&bytes)))
 }
 
 impl Pane {
-    pub fn new(name: &str, dir: PathBuf) -> Pane {
+    pub fn new(name: &str, dir: File) -> Pane {
         Pane {
             name: name.to_owned(),
             dir,
@@ -106,6 +101,12 @@ impl Pane {
             input: None,
             queued: VecDeque::new(),
         }
+    }
+
+    /// Whether `dir` is this pane's directory.
+    pub fn is(&self, dir: &File) -> bool {
+        let place = |dir: &File| dir.metadata().ok().map(|m| (m.dev(), m.ino()));
+        place(&self.dir).is_some_and(|here| Some(here) == place(dir))
     }
 
     pub fn value(&self, key: &str) -> Option<&str> {
@@ -145,7 +146,7 @@ impl Pane {
     /// each again only if it was replaced: true if either was.
     pub fn look(&mut self, shown: bool) -> Result<bool, Failure> {
         let mut changed = false;
-        let status_stamp = stamp(&self.dir.join(files::STATUS));
+        let status_stamp = stamp(&self.dir, files::STATUS);
         if status_stamp != self.stamps.1 {
             self.stamps.1 = status_stamp;
             let was = self.id().map(str::to_owned);
@@ -161,11 +162,10 @@ impl Pane {
         if !shown {
             return Ok(changed);
         }
-        let path = self.dir.join(files::STYLED);
-        let screen_stamp = stamp(&path);
+        let screen_stamp = stamp(&self.dir, files::STYLED);
         if screen_stamp != self.stamps.0 {
             self.stamps.0 = screen_stamp;
-            let bytes = files::read_small(&path, files::MAX_SCREEN_FILE)?;
+            let bytes = files::read_at(&self.dir, files::STYLED, files::MAX_SCREEN_FILE)?;
             let published = files::parse_screen(&String::from_utf8_lossy(&bytes))?;
             self.screen = Some(self.cells(published)?);
             changed = true;
@@ -239,7 +239,7 @@ impl Pane {
     pub fn flush(&mut self) -> Result<(), Failure> {
         while !self.queued.is_empty() {
             if self.input.is_none() {
-                match open_fifo(&self.dir.join(files::IN)) {
+                match open_fifo(&self.dir, files::IN) {
                     Ok(file) => self.input = Some(file),
                     Err(failure) => {
                         let lost = self.queued.len();
@@ -280,16 +280,22 @@ impl Pane {
     }
 
     /// Hands `text` to the program as one paste: written to a private file
-    /// in `view`, whose path is given back, and named to `ctl`'s `paste`.
-    pub fn paste(&self, view: &Path, text: &str, number: u64) -> Result<PathBuf, Failure> {
+    /// in `view` (whose path is `shown`), named to `ctl`'s `paste`; gives
+    /// the file's name.
+    pub fn paste(
+        &self,
+        (view, shown): (&File, &std::path::Path),
+        text: &str,
+        number: u64,
+    ) -> Result<String, Failure> {
         let name = format!("paste-{}-{number}", std::process::id());
         crate::layout::replace(view, &name, &format!(".{name}.new"), text)?;
-        let path = view.join(&name);
-        if let Err(failure) = ctl_line(&self.dir, &format!("paste {}", path.display())) {
-            let _ = std::fs::remove_file(&path);
+        let line = format!("paste {}", shown.join(&name).display());
+        if let Err(failure) = ctl_line(&self.dir, &line) {
+            let _ = at::remove_file(view, &name);
             return Err(failure);
         }
-        Ok(path)
+        Ok(name)
     }
 
     /// The key mode the program asked for, as `status` says.

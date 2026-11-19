@@ -91,6 +91,14 @@ impl Lab {
         private_dir(&harness)?;
         std::fs::create_dir_all(base.join("config/fux3")).map_err(|e| e.to_string())?;
         std::fs::write(base.join("config/fux3/view.grift"), config).map_err(|e| e.to_string())?;
+        // The viewers' $EDITOR: it keeps a copy of the file it is given.
+        let editor = "#!/bin/sh\ncp \"$1\" \"$0.tmp\" && mv \"$0.tmp\" \"$0.copied\"\n";
+        std::fs::write(base.join("editor"), editor).map_err(|e| e.to_string())?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(base.join("editor"), std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| e.to_string())?;
+        }
         Ok(Lab {
             base,
             view,
@@ -100,9 +108,9 @@ impl Lab {
     }
 
     fn run(&self, session: &Path, args: &[&str]) -> Result<Output, String> {
-        let program = match args.first() {
-            Some(&"--do") => viewer(),
-            _ => self.fux3.clone(),
+        let program = match args.contains(&"--do") {
+            true => viewer(),
+            false => self.fux3.clone(),
         };
         (Command::new(program)
             .args(args)
@@ -128,6 +136,7 @@ impl Lab {
         let env = [
             format!("FUX3_DIR={}", self.view.display()),
             format!("XDG_CONFIG_HOME={}", config.display()),
+            format!("EDITOR={}", self.base.join("editor").display()),
         ];
         let mut args = vec!["start", name, "--size", size, "--", "env"];
         args.extend(env.iter().map(String::as_str));
@@ -386,12 +395,12 @@ fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
     Ok(())
 }
 
-/// A layout command written to one workspace's `.view/ctl` changes that
-/// workspace's layout and not another's, with a viewer on each at once;
-/// and a binding that switches workspace can't send to a pane of the same
-/// name in the one it switched to, not even through a chord it runs.
+/// A layout command for one workspace changes that workspace's layout and
+/// not another's, with a viewer on each at once; and a binding that switches
+/// workspace can't send to a pane of the same name in the one it switched
+/// to, not even through a chord it runs.
 #[test]
-fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
+fn a_layout_command_changes_only_the_layout_of_its_workspace() -> Tested {
     let config = "(bind-key \"F6\" \"over\" \"Mine\" \
         (lambda! () (show-workspace \"two\") (send \"a\" \"echo cro''ssed\\r\")))\n\
         (bind-key \"F7\" \"back\" \"Mine\" \
@@ -404,11 +413,9 @@ fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
     lab.viewer("v1", "100x30", &["one"])?;
     lab.viewer("v2", "100x30", &["two"])?;
     let space = |name: &str| lab.view.join(name).join(".view");
-    for (name, line) in [("one", "tab new mine\n"), ("two", "tab new theirs\n")] {
-        let ctl = space(name).join("ctl");
-        until(&format!("{name}'s viewer serves its ctl"), || {
-            fifo(&ctl, line.as_bytes()).is_ok()
-        })?;
+    for (name, line) in [("one", "tab new mine"), ("two", "tab new theirs")] {
+        let out = lab.run(&lab.view, &[name, "--do", line])?;
+        assert!(out.status.success(), "{out:?}");
     }
     let layout =
         |name: &str| std::fs::read_to_string(space(name).join("layout")).unwrap_or_default();
@@ -458,32 +465,96 @@ fn a_paste_file_outlives_other_writers_commands() -> Tested {
     Ok(())
 }
 
-/// Two viewers of one workspace split no `.view/ctl` line between them:
-/// one reads it at a time, so a line that crosses a read's end still runs
-/// whole.
+/// A layout command from outside (`--do`) is an edit of the layout file: a
+/// running viewer shows it and fits the panes whose tiles it changed, its
+/// refusal is its own stderr and exit code, and the viewer keeps no
+/// `.view/ctl` or `.view/errors`.
 #[test]
-fn two_viewers_of_a_workspace_split_no_ctl_line() -> Tested {
-    let lab = Lab::new("twoctl", "")?;
+fn an_edit_from_outside_is_shown_and_fitted_by_a_running_viewer() -> Tested {
+    let lab = Lab::new("outside", "")?;
+    lab.start("a")?;
+    lab.start("b")?;
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "\u{2502}")?;
+    let out = lab.run(&lab.view, &["--do", "zoom a"])?;
+    assert!(out.status.success(), "{out:?}");
+    lab.shows("v", "[zoom]")?;
+    until("a fitted to its tile", || lab.size("a") == "100 30")?;
+    assert_eq!(lab.size("b"), "80 24", "b's tile did not change");
+    let out = lab.run(&lab.view, &["--do", "zoom nosuch"])?;
+    assert!(!out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("no tile for pane nosuch"), "{said}");
+    let mut kept: Vec<String> = std::fs::read_dir(lab.view.join("main/.view"))
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    kept.sort();
+    assert_eq!(kept, ["layout", "layout.lock"]);
+    Ok(())
+}
+
+/// `C-b c` gives the editor one text, the pane's history and then its
+/// screen: it ends with the screen's last row that is not blank.
+#[test]
+fn the_history_key_opens_the_history_and_then_the_screen() -> Tested {
+    let lab = Lab::new("copy", "")?;
     lab.start("only")?;
-    lab.viewer("v1", "100x30", &[])?;
-    lab.viewer("v2", "100x30", &[])?;
-    let view = lab.view.join("main/.view");
-    let ctl = view.join("ctl");
-    until("a viewer serves ctl", || fifo(&ctl, b"\n").is_ok())?;
-    // Each a line just past a 4096-byte read: a second reader would take
-    // its end alone.
-    for n in 0..8 {
-        let mut bytes = vec![b'\n'; 4094];
-        bytes.extend(format!("tab new kept{n}\n").as_bytes());
-        fifo(&ctl, &bytes)?;
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let layout = || std::fs::read_to_string(view.join("layout")).unwrap_or_default();
-    until("every line ran", || {
-        (0..8).all(|n| layout().contains(&format!("\"kept{n}\"")))
-    })
-    .map_err(|e| format!("{e}\n{}", layout()))?;
-    let errors = std::fs::read_to_string(view.join("errors")).unwrap_or_default();
-    assert!(errors.is_empty(), "lines were refused:\n{errors}");
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "$")?;
+    lab.keys("v", b"echo mar''ker\r")?;
+    until("the line ran", || {
+        lab.read(&lab.view, "only", "screen").contains("marker")
+    })?;
+    let screen = lab.read(&lab.view, "only", "screen");
+    let last = (screen.lines().skip(1))
+        .filter(|row| !row.trim().is_empty())
+        .last()
+        .ok_or("a blank screen")?;
+    lab.keys("v", b"\x02c")?;
+    let copied = lab.base.join("editor.copied");
+    until("the editor was given the text", || copied.exists())?;
+    let text = std::fs::read_to_string(&copied).map_err(|e| e.to_string())?;
+    assert!(text.contains("\nmarker\n"), "{text:?}");
+    assert_eq!(text.lines().last(), Some(last), "{text:?}");
+    Ok(())
+}
+
+/// A pane is its directory and its id, and a name only where it is listed:
+/// a live pane renamed with `mv` keeps its tile, the focus and its keys,
+/// and the next edit stores its new name; moved to another workspace it
+/// leaves this one's layout as a pane that went, and has a tile in the other.
+#[test]
+fn a_moved_pane_keeps_its_tile_by_its_id() -> Tested {
+    let lab = Lab::new("moved", "")?;
+    lab.start("a")?;
+    lab.start("b")?;
+    let out = lab.run(&lab.view, &["--do", "split a right b"])?;
+    assert!(out.status.success(), "{out:?}");
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "\u{2502}")?;
+    let main = lab.view.join("main");
+    std::fs::rename(main.join("a"), main.join("c")).map_err(|e| e.to_string())?;
+    lab.keys("v", b"echo mo''ved\r")?;
+    until("keys reach the renamed pane", || {
+        lab.read(&lab.view, "c", "screen").contains("moved")
+    })?;
+    lab.shows("v", "moved")?;
+    std::thread::sleep(Duration::from_millis(1500));
+    let screen = lab.read(&lab.harness, "v", "screen");
+    assert!(!screen.contains("gone"), "a tile was lost:\n{screen}");
+    let out = lab.run(&lab.view, &["--do", "tab new spare"])?;
+    assert!(out.status.success(), "{out:?}");
+    let layout = std::fs::read_to_string(main.join(".view/layout")).map_err(|e| e.to_string())?;
+    assert!(
+        layout.contains("pane c@") && !layout.contains("pane a@"),
+        "{layout}"
+    );
+    private_dir(&lab.view.join("two"))?;
+    std::fs::rename(main.join("c"), lab.view.join("two/c")).map_err(|e| e.to_string())?;
+    lab.shows("v", "c gone")?;
+    let out = lab.run(&lab.view, &["two", "--do", "zoom c"])?;
+    assert!(out.status.success(), "{out:?}");
     Ok(())
 }

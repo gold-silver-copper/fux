@@ -11,10 +11,9 @@
 //! tile of its own, put in the first tab whose filter it passes ("routed").
 use fux3::Failure;
 use fux3::session::check_name;
+use fuxix::file::at;
 use std::fmt;
 use std::fs::File;
-use std::io::Write;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub const FILE: &str = "layout";
@@ -690,9 +689,17 @@ impl Layout {
         }
     }
 
-    /// Binds each bare tile to the live pane of its name, unless that pane
-    /// has a tile of its own; gives the panes bound.
+    /// Gives each tile of a live pane's id the name the pane has now (a
+    /// pane is its id; `mv` renames it), then binds each bare tile to the
+    /// live pane of its name, unless that pane has a tile of its own;
+    /// gives the panes bound.
     fn bind(&mut self, live: &[Live]) -> Vec<PaneRef> {
+        for pane in live.iter().map(|l| &l.pane) {
+            let old = (self.placed().into_iter()).find(|p| p.id == pane.id && p.name != pane.name);
+            if let Some(old) = old {
+                self.rename(&old, pane);
+            }
+        }
         let placed = self.placed();
         let bound: Vec<PaneRef> = (live.iter().map(|l| &l.pane))
             .filter(|pane| !placed.contains(pane) && placed.contains(&pane.bare()))
@@ -746,6 +753,17 @@ impl Layout {
                     (Some(root), Some(more)) => Some(root.attach(more)),
                     (root, more) => root.or(more),
                 };
+            }
+        }
+        // A bare zoom is whichever pane of that name its tab holds now
+        // that every pane has its tile, a routed one too.
+        for tab in &mut shown.tabs {
+            let bare = (tab.zoom.as_ref()).filter(|zoom| zoom.id.is_empty() && !tab.holds(zoom));
+            let found = bare.and_then(|zoom| {
+                (live.iter()).find(|l| l.pane.name == zoom.name && tab.holds(&l.pane))
+            });
+            if let Some(found) = found {
+                tab.zoom = Some(found.pane.clone());
             }
         }
         shown
@@ -1084,26 +1102,20 @@ pub struct LayoutLock {
     _file: File,
 }
 
-/// Takes the layout's lock in `view` (a workspace's `.view`), waiting a
-/// bounded time: a stalled layout write holds up only other layout writes.
-pub fn lock(view: &Path) -> Result<LayoutLock, Failure> {
-    let path = view.join(LOCK);
-    let mut options = File::options();
-    options.read(true).write(true).create(true).truncate(false);
-    let file = (fuxix::file::private_file(&mut options).open(&path))
-        .map_err(|e| fux3::io(path.display(), e))?;
+/// Takes the layout's lock in `view` (a workspace's `.view`, held open),
+/// waiting a bounded time: a stalled layout write holds up only other
+/// layout writes.
+pub fn lock(view: &File) -> Result<LayoutLock, Failure> {
+    let file = at::open(view, LOCK, at::READ_WRITE | at::CREATE).map_err(|e| fux3::io(LOCK, e))?;
     let start = Instant::now();
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(LayoutLock { _file: file }),
             Err(std::fs::TryLockError::WouldBlock) => {}
-            Err(std::fs::TryLockError::Error(e)) => return Err(fux3::io(path.display(), e)),
+            Err(std::fs::TryLockError::Error(e)) => return Err(fux3::io(LOCK, e)),
         }
         if start.elapsed() >= LOCK_WAIT {
-            return Err(bad(format!(
-                "{} was held for over {LOCK_WAIT:?}",
-                path.display()
-            )));
+            return Err(bad(format!("{LOCK} was held for over {LOCK_WAIT:?}")));
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -1111,67 +1123,49 @@ pub fn lock(view: &Path) -> Result<LayoutLock, Failure> {
 
 /// The layout file's text, or `None` if there is none; a file that is not
 /// a regular file, is too large or is not UTF-8 is refused.
-pub fn read_text(view: &Path) -> Result<Option<String>, Failure> {
-    let path = view.join(FILE);
-    match fux3::files::read_small(&path, MAX_BYTES) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|_| bad(format!("{} is not UTF-8", path.display()))),
-        Err(_) if matches!(std::fs::symlink_metadata(&path), Err(e) if e.kind() == std::io::ErrorKind::NotFound) => {
-            Ok(None)
-        }
-        Err(failure) => Err(failure),
+pub fn read_text(view: &File) -> Result<Option<String>, Failure> {
+    match at::open(view, FILE, at::READ | fuxix::file::NONBLOCK) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        _ => {}
     }
+    let bytes = fux3::files::read_at(view, FILE, MAX_BYTES)?;
+    (String::from_utf8(bytes).map(Some)).map_err(|_| bad(format!("{FILE} is not UTF-8")))
 }
 
 /// The workspace's layout. A file that cannot be read or is wrong is
 /// refused, saying why; so is a missing one, as `.view` is made with its
 /// layout (`write_first`): one gone was removed, and only `reset` writes
 /// over that.
-pub fn read(view: &Path) -> Result<Layout, Failure> {
+pub fn read(view: &File) -> Result<Layout, Failure> {
     match read_text(view)? {
-        Some(text) => {
-            parse(&text).map_err(|why| bad(format!("{}: {why}", view.join(FILE).display())))
-        }
-        None => Err(bad(format!(
-            "{} is gone; `reset` writes a new one",
-            view.join(FILE).display()
-        ))),
+        Some(text) => parse(&text).map_err(|why| bad(format!("{FILE}: {why}"))),
+        None => Err(bad(format!("{FILE} is gone; `reset` writes a new one"))),
     }
 }
 
-/// The first layout of a `.view` just made: the default, so that a layout
-/// file missing later is known to have been removed.
-pub fn write_first(view: &Path) -> Result<(), Failure> {
+/// The first layout of a `.view`, if it has none: the default, so that a
+/// layout file missing later is known to have been removed.
+pub fn write_first(view: &File) -> Result<(), Failure> {
     let _lock = lock(view)?;
     // Another viewer may have made it first, and edited it since.
-    if view.join(FILE).symlink_metadata().is_ok() {
-        return Ok(());
+    match read_text(view) {
+        Ok(None) => replace(view, FILE, TEMP, &Layout::default().to_string()),
+        _ => Ok(()),
     }
-    replace(view, FILE, TEMP, &Layout::default().to_string())
 }
 
 /// Replaces `name` in `dir` with `text`, whole: written beside it, then
 /// renamed over it. The file beside it is made new (a stale one, or
 /// whatever was planted there, a FIFO or a link, is removed first, never
 /// opened), so the write can neither wait nor land outside `dir`.
-pub fn replace(dir: &Path, name: &str, temp: &str, text: &str) -> Result<(), Failure> {
-    let (temp, path) = (dir.join(temp), dir.join(name));
-    match std::fs::remove_file(&temp) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            return Err(fux3::io(temp.display(), e));
-        }
+pub fn replace(dir: &File, name: &str, temp: &str, text: &str) -> Result<(), Failure> {
+    match at::remove_file(dir, temp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(fux3::io(temp, e)),
         _ => {}
     }
-    let mut options = File::options();
     // Exclusive: made here or refused, never a file already there opened.
-    options.write(true).create_new(true);
-    let mut file = (fuxix::file::private_file(&mut options).open(&temp))
-        .map_err(|e| fux3::io(temp.display(), e))?;
-    file.write_all(text.as_bytes())
-        .map_err(|e| fux3::io(temp.display(), e))?;
-    drop(file);
-    std::fs::rename(&temp, &path).map_err(|e| fux3::io(path.display(), e))
+    fux3::files::write_new(dir, temp, text.as_bytes())?;
+    at::rename(dir, temp, dir, name).map_err(|e| fux3::io(name, e))
 }
 
 /// What an edit did: the version now, any tab it made, any
@@ -1201,7 +1195,7 @@ impl fmt::Display for Edited {
 
 /// Applies `op` to the layout as it is now, under the lock, and writes it.
 /// `live` is what exists.
-pub fn edit(view: &Path, live: &[Live], area: Rect, op: &Op) -> Result<Edited, Failure> {
+pub fn edit(view: &File, live: &[Live], area: Rect, op: &Op) -> Result<Edited, Failure> {
     let lock = lock(view)?;
     // A reset is the one way past a file that cannot be read.
     let reset = matches!(op, Op::Reset);
@@ -1384,11 +1378,9 @@ fn resolve(shown: &Layout, live: &[Live], target: &Target) -> Result<PaneRef, Fa
     let tiles = shown.placed();
     let missing = || bad(format!("no tile for pane {target}"));
     if let Some(id) = &target.id {
-        let pane = PaneRef {
-            name: target.name.clone(),
-            id: id.clone(),
-        };
-        return tiles.contains(&pane).then_some(pane).ok_or_else(missing);
+        // By its id, whatever it is called now; a bare tile by its name.
+        let named = |p: &&PaneRef| p.id == *id && (!id.is_empty() || p.name == target.name);
+        return tiles.iter().find(named).cloned().ok_or_else(missing);
     }
     if let Some(live) = live.iter().find(|l| l.pane.name == target.name)
         && tiles.contains(&live.pane)
@@ -1613,13 +1605,11 @@ fn apply_bound(
         }
         Op::Zoom(pane) => {
             let pane = resolve(&shown, live, pane)?;
-            let id = shown.tab_of(&pane).map_or(OTHER, |tab| tab.id);
-            let id = store_tab(layout, &shown, id)?;
-            let tab = layout.tab_mut(id).ok_or_else(went)?;
-            tab.zoom = match tab.zoom.take() {
-                Some(zoomed) if zoomed == pane => None,
-                _ => Some(pane),
-            };
+            let tab = shown.tab_of(&pane).ok_or_else(went)?;
+            // As shown: a bare zoom on this pane is restored too.
+            let restore = tab.zoomed() == Some(&pane);
+            let id = store_tab(layout, &shown, tab.id)?;
+            layout.tab_mut(id).ok_or_else(went)?.zoom = (!restore).then_some(pane);
             Ok(None)
         }
         Op::NewTab(title, after, tests) => {
@@ -1862,12 +1852,13 @@ mod tests {
     #[test]
     fn an_edit_never_writes_a_layout_the_reader_refuses() -> Result<(), Failure> {
         let scratch = fuxix::file::scratch().map_err(|e| bad(e.to_string()))?;
-        let view = scratch.join(format!("f3v-deep-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&view);
-        std::fs::create_dir_all(&view).map_err(|e| bad(e.to_string()))?;
+        let path = scratch.join(format!("f3v-deep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).map_err(|e| bad(e.to_string()))?;
+        let view = File::open(&path).map_err(|e| bad(e.to_string()))?;
         write_first(&view)?;
         // A FIFO planted where the new file is written holds no edit up.
-        fuxix::file::private_fifo(&view.join(TEMP)).map_err(|e| bad(e.to_string()))?;
+        fuxix::file::private_fifo(&path.join(TEMP)).map_err(|e| bad(e.to_string()))?;
         let names: Vec<String> = (0..12).map(|n| format!("p{n}")).collect();
         let panes: Vec<Live> = (names.iter()).map(|name| live(name, 'a', &[])).collect();
         let mut refused = 0;
@@ -1881,7 +1872,7 @@ mod tests {
         let edited = read(&view)?;
         write_first(&view)?;
         let kept = read(&view)?;
-        let _ = std::fs::remove_dir_all(&view);
+        let _ = std::fs::remove_dir_all(&path);
         assert!(refused > 0, "no split was too deep");
         assert!(edited != Layout::default() && kept == edited);
         Ok(())
@@ -1958,6 +1949,52 @@ mod tests {
             .flat_map(|t| t.leaves().into_iter().map(|p| (t.id, p.to_string())))
             .collect();
         assert_eq!(tiles, [(2, b.to_string())]);
+        Ok(())
+    }
+
+    /// A bare zoom names whichever pane has the name once every pane has its
+    /// tile, a routed one too; edits leave it bare, and `zoom` restores it.
+    #[test]
+    fn a_bare_zoom_takes_a_routed_pane_and_stays_bare() -> Result<(), Failure> {
+        let text = format!("{HEADER}\nversion 1\nnext 2\ntab t1 \"all\"\n  zoom a\n");
+        let mut layout = parse(&text).map_err(bad)?;
+        let lives = [live("a", '1', &[]), live("b", '1', &[])];
+        let zoomed = |layout: &Layout| {
+            let shown = layout.shown(&lives);
+            shown.tabs.first().and_then(Tab::zoomed).cloned()
+        };
+        assert_eq!(zoomed(&layout), Some(pane("a", '1')));
+        run(&mut layout, &lives, "tab new spare")?;
+        assert!(layout.to_string().contains("  zoom a\n"), "{layout}");
+        run(&mut layout, &lives, "zoom a")?;
+        assert_eq!(zoomed(&layout), None, "{layout}");
+        Ok(())
+    }
+
+    /// A tile is its pane's id: a pane renamed keeps its tile, commands
+    /// find it by the old name's `NAME@ID` too, and the next edit stores
+    /// the new name.
+    #[test]
+    fn a_renamed_pane_keeps_its_tile() -> Result<(), Failure> {
+        let mut layout = Layout::default();
+        let before = [live("a", '1', &[]), live("b", '2', &[])];
+        run(&mut layout, &before, "split a down b")?;
+        let after = [live("c", '1', &[]), live("b", '2', &[])];
+        let shown = layout.shown(&after);
+        let leaves: Vec<String> = (shown.tabs.iter())
+            .flat_map(|t| t.leaves().into_iter().map(PaneRef::to_string))
+            .collect();
+        assert_eq!(
+            leaves,
+            [pane("c", '1').to_string(), pane("b", '2').to_string()]
+        );
+        run(&mut layout, &after, &format!("zoom {}", pane("a", '1')))?;
+        let text = layout.to_string();
+        assert!(
+            text.contains(&format!("zoom {}\n", pane("c", '1'))),
+            "{text}"
+        );
+        assert!(!text.contains("pane a@"), "{text}");
         Ok(())
     }
 }

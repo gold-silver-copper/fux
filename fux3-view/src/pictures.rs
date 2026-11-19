@@ -4,22 +4,25 @@
 //! the top of what shows is left blank, as its cells are.
 use crate::render::Tile;
 use fux3::files::Placed;
-use std::path::{Path, PathBuf};
+use fuxix::file::at;
+use std::fs::File;
 
 /// The largest picture file drawn.
 const MAX_FILE: usize = 16 << 20;
 
-/// A picture as drawn: the cell of its top left, and its file.
+/// A picture as drawn: the cell of its top left, its pane's id and its
+/// file there.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Drawn {
     pub at: (u16, u16),
-    pub path: PathBuf,
+    pub pane: String,
+    pub file: String,
 }
 
-/// Where `placed`, a picture of the pane in `dir`, shows whole in `tile`,
+/// Where `placed`, a picture of the pane `pane`, shows whole in `tile`,
 /// the pane's rows from `first` on shown and nothing drawn at or past row
 /// `bottom` (the bar's).
-pub fn place(tile: Tile, first: u16, bottom: u16, dir: &Path, placed: &Placed) -> Option<Drawn> {
+pub fn place(tile: Tile, first: u16, bottom: u16, pane: &str, placed: &Placed) -> Option<Drawn> {
     let shown = tile.h.min(bottom.saturating_sub(tile.y));
     let top = u16::try_from(placed.row).ok()?.checked_sub(first)?;
     let whole = placed.cropped == 0
@@ -33,7 +36,8 @@ pub fn place(tile: Tile, first: u16, bottom: u16, dir: &Path, placed: &Placed) -
             tile.x.saturating_add(placed.col),
             tile.y.saturating_add(top),
         ),
-        path: dir.join(fux3::files::IMAGES).join(&placed.file),
+        pane: pane.to_owned(),
+        file: placed.file.clone(),
     })
 }
 
@@ -47,11 +51,14 @@ fn one_sixel(bytes: &[u8]) -> bool {
     body.is_some_and(|body| !body.contains(&0x1b))
 }
 
-/// The bytes that draw `drawn`, the cursor kept where it was; a file that
-/// cannot be read, or is not one sixel alone, is left out.
-pub fn draw(drawn: &[Drawn], out: &mut Vec<u8>) {
-    for one in drawn {
-        let Ok(sixel) = fux3::files::read_small(&one.path, MAX_FILE) else {
+/// The bytes that draw `drawn`, each with its pane's directory, the cursor
+/// kept where it was; a file that cannot be read, or is not one sixel
+/// alone, is left out.
+pub fn draw<'a>(drawn: impl Iterator<Item = (&'a Drawn, &'a File)>, out: &mut Vec<u8>) {
+    for (one, dir) in drawn {
+        let images = at::open_dir(dir, fux3::files::IMAGES).map_err(|e| fux3::io("images", e));
+        let read = images.and_then(|images| fux3::files::read_at(&images, &one.file, MAX_FILE));
+        let Ok(sixel) = read else {
             continue;
         };
         if !one_sixel(&sixel) {
