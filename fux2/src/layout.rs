@@ -1577,16 +1577,7 @@ fn materialize(layout: &mut Layout, shown: &Layout, id: u32) -> Result<u32, Fail
         return Err(Failure::new(Code::Missing, format!("no tab t{id}")));
     };
     let root = tab.root.clone().map(Node::bounded);
-    if id == OTHER {
-        let mut made = Tab::new(layout.take_id()?, &tab.title);
-        made.root = root;
-        let space = layout
-            .workspaces
-            .first_mut()
-            .ok_or_else(|| invalid("no workspace"))?;
-        space.tabs.push(made.clone());
-        return Ok(made.id);
-    }
+    let id = store_tab(layout, shown, id)?;
     if let Some(stored) = layout.tab_mut(id) {
         stored.root = root;
     }
@@ -2004,16 +1995,7 @@ pub fn apply(
             }
             layout.workspaces.retain(|space| !space.tabs.is_empty());
             if layout.workspaces.is_empty() {
-                let next = layout.next;
-                *layout = Layout::default();
-                layout.next = next;
-                let (space, tab) = (layout.take_id()?, layout.take_id()?);
-                if let Some(first) = layout.workspaces.first_mut() {
-                    first.id = space;
-                    if let Some(only) = first.tabs.first_mut() {
-                        only.id = tab;
-                    }
-                }
+                fresh(layout)?;
             }
             Ok(None)
         }
@@ -2067,20 +2049,28 @@ pub fn apply(
             Ok(None)
         }
         Op::Reset => {
-            let (version, next) = (layout.version, layout.next.max(3));
-            *layout = Layout::default();
-            layout.version = version;
-            layout.next = next;
-            let (space, tab) = (layout.take_id()?, layout.take_id()?);
-            if let Some(first) = layout.workspaces.first_mut() {
-                first.id = space;
-                if let Some(only) = first.tabs.first_mut() {
-                    only.id = tab;
-                }
-            }
+            fresh(layout)?;
             Ok(None)
         }
     }
+}
+
+/// The default layout in place of `layout`, its version kept and its ids
+/// new, so no old id names any of it.
+fn fresh(layout: &mut Layout) -> Result<(), Failure> {
+    let (version, next) = (layout.version, layout.next.max(Layout::default().next));
+    *layout = Layout {
+        version,
+        next,
+        workspaces: Vec::new(),
+    };
+    let (space, tab) = (layout.take_id()?, layout.take_id()?);
+    layout.workspaces.push(Workspace {
+        id: space,
+        title: "main".to_owned(),
+        tabs: vec![Tab::new(tab, "all")],
+    });
+    Ok(())
 }
 
 /// Exchanges the tiles of `a` and `b`, titles going with their panes.
