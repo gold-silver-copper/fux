@@ -145,10 +145,29 @@ fn rename_held(
     if at::open_dir(to_parent, to).is_ok_and(|there| same(&there, dir)) {
         return Ok(());
     }
-    let _ = at::rename_new(to_parent, to, parent, from);
-    Err(Failure::new(format!(
-        "{from} was moved meanwhile; nothing was changed"
-    )))
+    // Its name back, unless yet another took that meanwhile.
+    Err(Failure::new(
+        match at::rename_new(to_parent, to, parent, from) {
+            Ok(()) => format!("{from} was moved meanwhile; nothing was changed"),
+            Err(_) => format!("{from} was moved meanwhile; what took its name is now {to}"),
+        },
+    ))
+}
+
+/// Renames the pane held as `dir`, id `id`, listed as `name` in `parent`,
+/// out of its name: to `.gone-ID`, or with a number after it where a copy
+/// of the pane already has that. The name it has now.
+fn lose_name(dir: &File, parent: &File, name: &str, id: &str) -> Result<String, Failure> {
+    let free = |gone: &String| at::open(parent, gone, at::READ | fuxix::file::NONBLOCK).is_err();
+    let gone = (0..8)
+        .map(|n| match n {
+            0 => format!("{GONE}{id}"),
+            n => format!("{GONE}{id}-{n}"),
+        })
+        .find(free)
+        .ok_or_else(|| Failure::new(format!("{GONE}{id} is taken, eight times over")))?;
+    rename_held(dir, parent, name, parent, &gone)?;
+    Ok(gone)
 }
 
 /// The session directory when `FUX3_DIR` does not name one: in memory on
@@ -376,18 +395,17 @@ impl Workspace {
                     // A pane loses its name before it is taken apart, as
                     // in its own kill: no reader finds a name half empty,
                     // and a clearing that dies leaves what the next takes.
-                    let gone = marker(&dir).map(|id| format!("{GONE}{id}"));
-                    let name = match gone {
-                        Some(gone) if named => {
-                            match rename_held(&dir, &self.held, &name, &self.held, &gone) {
-                                Ok(()) => gone,
-                                Err(_) => continue,
-                            }
-                        }
+                    let name = match marker(&dir) {
+                        Some(id) if named => match lose_name(&dir, &self.held, &name, &id) {
+                            Ok(gone) => gone,
+                            Err(_) => continue,
+                        },
                         _ => name,
                     };
-                    // Still the one locked, and empty now: it goes.
-                    let emptied = clear_pane(&dir, true);
+                    // Still the one locked, and empty now: it goes. A
+                    // directory with a pane's name and no marker is not
+                    // ours, empty or not.
+                    let emptied = clear_pane(&dir, !check_name(&name).is_ok());
                     if emptied && at::open_dir(&self.held, &name).is_ok_and(|d| same(&d, &dir)) {
                         let _ = at::remove_dir(&self.held, &name);
                     }
@@ -480,10 +498,10 @@ pub fn unname(
     let Some((parent, name)) = place(dir) else {
         return Ok(None);
     };
-    let gone = format!("{GONE}{id}");
-    if name != gone {
-        rename_held(dir, &parent, &name, &parent, &gone)?;
-    }
+    let gone = match name.starts_with(GONE) {
+        true => name,
+        false => lose_name(dir, &parent, &name, id)?,
+    };
     Ok(Some((parent, gone)))
 }
 
@@ -523,7 +541,7 @@ pub fn clear_pane(dir: &File, unnamed: bool) -> bool {
             let aside = name.strip_prefix('.').and_then(|n| n.strip_suffix(".new"));
             let made = files::MADE.contains(&&*name)
                 || aside.is_some_and(|n| {
-                    files::MADE.contains(&n) || n.strip_prefix("images-").is_some_and(sixel)
+                    files::REPLACED.contains(&n) || n.strip_prefix("images-").is_some_and(sixel)
                 });
             known &= made && at::remove_file(dir, &*name).is_ok();
         }

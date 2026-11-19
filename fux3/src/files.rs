@@ -37,6 +37,9 @@ pub const MADE: [&str; 9] = [
     EXIT,
 ];
 
+/// Those of them replaced whole, each written first as `.NAME.new`.
+pub const REPLACED: [&str; 5] = [SCREEN, STYLED, STATUS, ERRORS, EXIT];
+
 /// The most columns and rows a pane may have.
 pub const MAX_COLS: u16 = 500;
 pub const MAX_ROWS: u16 = 200;

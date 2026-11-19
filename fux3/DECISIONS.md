@@ -256,3 +256,23 @@ two real-use testers, each with the sequence that showed it:
   cannot be written; the plain `echo kill > ctl` loop in the moment after an
   inner holder had to be killed outright (the README gives `1<>`). All are
   in DESIGN.md, "Left open".
+
+Decided in review round 2 (the last round; the same six seats, on the fixes):
+
+- **D62. Corrections to round 1's fixes.** The sweep removes an empty
+  directory only if it is `.new-*` or `.gone-*`: D54 had it remove any empty
+  directory with a pane's name (`mkdir "$D/main/notes"; fux3 ls`). No record
+  is longer than its limit: D57's piece for a line ending with the mark's
+  text counts toward it, and the start of a line whose rest never comes is
+  written as pieces, not as text followed by a mark. A kill clears dead
+  panes at its end if it ended a process **outside the program's session**,
+  at either scan: D59 counted an ordinary child that ignored the hangup, and
+  missed a pane started after the first scan. A pane loses its name to
+  `.gone-ID-N` when a copy of it already has `.gone-ID`. `put` asks `status`
+  for the program's end, not `exit`, which D58 can hold back. Only the files
+  written whole have a `.NAME.new` that is cleared. D52's "cannot hang" is
+  about the open: a write waits while the FIFO is full.
+- **D63. Round 2 was the last round.** What it found is fixed with tests
+  and was not read again by a panel; what was not fixed is D61's list and:
+  a `mv` of a workspace out of the session between a start's check and its
+  rename; a paste queued for a paused holder across a workspace rename.

@@ -519,13 +519,11 @@ fn put(mut args: impl Iterator<Item = OsString>) -> Outcome {
             "pane {shown} has no holder: it is dead"
         )));
     }
-    if let Ok(exit) = files::read_at(&pane, files::EXIT, 256) {
-        let state = String::from_utf8_lossy(&exit);
-        let state = state
-            .trim()
-            .strip_prefix("state ")
-            .unwrap_or("ended")
-            .to_owned();
+    // `status` says so before `exit` is there, and when it cannot be written.
+    let status = files::read_at(&pane, files::STATUS, 64 << 10).unwrap_or_default();
+    let status = files::parse_status(&String::from_utf8_lossy(&status));
+    let state = files::status_value(&status, "state").unwrap_or_default();
+    if state.starts_with("exited ") || state.starts_with("signalled ") {
         return Err(Failure::new(format!(
             "pane {shown}'s program has ended ({state}): nothing was written"
         )));

@@ -169,7 +169,8 @@ stdin and stdout at `/dev/null`.
 **Clearing dead panes.** Under the session's lock, in every workspace, every
 directory named as a pane, or `.new-*`, or `.gone-*`, whose lock can be
 taken is dead: a holder killed outright left it, at whichever step. One with
-a pane's name first loses it, renamed `.gone-ID` as in its own kill, so no
+a pane's name first loses it, renamed `.gone-ID` (`.gone-ID-N` where that
+is taken) as in its own kill, so no
 reader finds a name half empty and a clearing that dies leaves what the next
 one takes. Then it is
 cleared through its handle (`clear_pane`): only with the marker (`id`
@@ -177,7 +178,9 @@ holding 16 hex digits and a newline, as a holder writes it: a file that is
 only called `id` makes no directory a pane's; or, a
 `.new-*`/`.gone-*` with nothing in it), and only the files a holder makes,
 by name (`in`, `ctl`, the screens, `status`, `history`, `history.1`,
-`errors`, `exit`, their `.NAME.new`, `images/N.sixel`, and last `id`). No
+`errors`, `exit`, the `.NAME.new` of those written whole (the screens,
+`status`, `errors`, `exit`, `.images-N.sixel.new`), `images/N.sixel`, and
+last `id`). No
 directory but `images/` is entered, so a pane moved into another's
 directory, its lock held or not, is never touched. With anything else in it,
 that and the marker stay, in `.gone-ID` (a later clearing tries again);
@@ -231,8 +234,8 @@ and `kill` may be sent again. Complete:
 2. the publisher writes what waits and stops;
 3. the directory is cleared through its handle, as a dead pane's is, and
    removed if that emptied it;
-4. if the kill asked anything outside the program's session to end, dead
-   panes are cleared once more, for what it ended outright (an inner
+4. if the kill ended anything outside the program's session (found at the
+   SIGTERM or the SIGKILL scan), dead panes are cleared once more, for what it ended outright (an inner
    holder that did not end itself); and the holder exits.
 
 A pane listed nowhere, or whose listing cannot be asked (its parent

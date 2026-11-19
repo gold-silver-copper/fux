@@ -874,11 +874,19 @@ fn a_name_is_given_whole_and_only_a_panes_files_are_cleared() -> Result {
     // pane's holding what no holder made.
     dead("notes", &["in", "ctl", "todo"])?;
     dead("ledger", &["ID", "history"])?;
+    dead("empty", &[])?;
     dead(".new-dddd", &["todo"])?;
     assert_eq!(s.fux3(&["ls"])?, "");
     dead(
         "mixed",
-        &["id", "in", "screen", "todo", ".images-draft.new"],
+        &[
+            "id",
+            "in",
+            "screen",
+            "todo",
+            ".images-draft.new",
+            ".ctl.new",
+        ],
     )?;
     std::fs::create_dir(main.join("mixed/inner")).map_err(|e| e.to_string())?;
     std::fs::write(main.join("mixed/inner/id"), "00000000000000bb\n").map_err(|e| e.to_string())?;
@@ -893,11 +901,11 @@ fn a_name_is_given_whole_and_only_a_panes_files_are_cleared() -> Result {
     // The pane holding other things lost its name (to `.gone-ID`), its own
     // files and nothing else; nothing inside a directory in it was touched.
     let kept = ".gone-00000000000000aa";
-    assert_eq!(left, [kept, ".new-dddd", "ledger", "notes"]);
+    assert_eq!(left, [kept, ".new-dddd", "empty", "ledger", "notes"]);
     assert!(main.join("notes/todo").exists() && main.join("notes/in").exists());
     assert!(main.join("ledger/history").exists() && main.join("ledger/id").exists());
     let kept = main.join(kept);
-    for stays in ["todo", "inner/id", ".images-draft.new", "id"] {
+    for stays in ["todo", "inner/id", ".images-draft.new", ".ctl.new", "id"] {
         assert!(kept.join(stays).exists(), "{stays} was removed");
     }
     assert!(!kept.join("in").exists() && !kept.join("screen").exists());

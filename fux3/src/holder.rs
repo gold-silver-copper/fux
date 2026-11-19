@@ -293,8 +293,8 @@ struct Holder {
     cell: (u16, u16),
     pictures: bool,
     history_end: u64,
-    /// A kill asked processes outside the program's session to end: dead
-    /// panes are cleared once it is done.
+    /// A kill ended processes outside the program's session (panes
+    /// started inside it, maybe): dead panes are cleared once it is done.
     asked_others: bool,
     /// The history line being gathered, not yet a whole record.
     history_line: String,
@@ -854,7 +854,7 @@ impl Holder {
         if !self.history_line.is_empty() {
             let limit = (self.history_cap / 2).min(MAX_RECORD);
             let (line, out) = (&mut self.history_line, &mut self.history);
-            publish::record(line, out, publish::CONTINUED, true, limit);
+            publish::record(line, out, "", publish::End::Piece, limit);
         }
         self.advance();
         self.reap_if_alone();
@@ -1068,25 +1068,18 @@ impl Holder {
         if numbers.start > self.history_end {
             let lost = numbers.start.saturating_sub(self.history_end);
             let line = format!("[fux3: {lost} lines scrolled off faster than they were kept]");
-            publish::record(&mut self.history_line, &mut self.history, "", true, limit);
-            publish::record(
-                &mut self.history_line,
-                &mut self.history,
-                &line,
-                true,
-                limit,
-            );
+            let (pending, out) = (&mut self.history_line, &mut self.history);
+            publish::record(pending, out, "", publish::End::Piece, limit);
+            publish::record(pending, out, &line, publish::End::Line, limit);
             self.history_end = numbers.start;
         }
         let skip = usize::try_from(self.history_end.saturating_sub(numbers.start)).unwrap_or(0);
         let count = usize::try_from(numbers.end.saturating_sub(self.history_end)).unwrap_or(0);
         for row in screen.main_rows().skip(skip).take(count) {
             let text = row.text();
-            let end = !row.continues();
-            let text = if end {
-                text.trim_end_matches(' ')
-            } else {
-                &text
+            let (text, end) = match row.continues() {
+                true => (text.as_str(), publish::End::No),
+                false => (text.trim_end_matches(' '), publish::End::Line),
             };
             publish::record(&mut self.history_line, &mut self.history, text, end, limit);
         }
@@ -1314,10 +1307,10 @@ impl Holder {
                     .into_iter()
                     .filter(move |pid| *pid != leader)
             };
+            self.asked_others |= self.outside(&others().collect::<Vec<_>>());
             let asked = others()
                 .filter(|pid| fuxix::process::kill(*pid, Signal::Term).is_ok())
                 .count();
-            self.asked_others |= asked > 0;
             let until = after(Instant::now(), TERM_GRACE);
             while asked > 0 && Instant::now() < until && others().next().is_some() {
                 fuxix::process::reap_orphans(|pid| pid == leader);
@@ -1350,6 +1343,8 @@ impl Holder {
                     tree.scan
                 ));
             }
+            // One that came since (a pane started inside a moment ago).
+            self.asked_others |= self.outside(&tree.pids);
             for pid in tree.pids {
                 let _ = fuxix::process::kill(pid, Signal::Kill);
             }
@@ -1385,6 +1380,17 @@ impl Holder {
         let why = self.state.clone();
         self.refuse(&format!("{} kill", self.commands), why);
         false
+    }
+
+    /// Whether any of `pids` has left the program's session: a pane
+    /// started inside this one is such a process, an ordinary child none.
+    #[cfg(target_os = "linux")]
+    fn outside(&self, pids: &[fuxix::process::Pid]) -> bool {
+        let Some(job) = &self.job else {
+            return false;
+        };
+        let (leader, inside) = (job.leader(), job.members().pids);
+        (pids.iter()).any(|pid| *pid != leader && !inside.contains(pid))
     }
 
     /// Takes the pane apart. Under the session's lock only its name goes,

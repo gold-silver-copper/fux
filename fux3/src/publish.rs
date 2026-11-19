@@ -479,14 +479,22 @@ pub const CONTINUED: &str = " [fux3: continued]";
 /// moves every finished record to `out`. A record is a line, its newline
 /// included, of at most `limit` bytes; a line longer than that becomes
 /// pieces, each ending with [`CONTINUED`] before its newline, so taking
-/// that mark and the newline after it out gives the line back. `end`
-/// says the line ends with this fragment.
-pub fn record(line: &mut String, out: &mut Vec<u8>, fragment: &str, end: bool, limit: usize) {
+/// that mark and the newline after it out gives the line back. No record
+/// is longer than `limit`, whatever the line holds.
+pub fn record(line: &mut String, out: &mut Vec<u8>, fragment: &str, end: End, limit: usize) {
     line.push_str(fragment);
     let most = limit
         .saturating_sub(CONTINUED.len().saturating_add(1))
         .max(4);
-    while line.len() >= limit {
+    // All of it as pieces: when asked, and for a line that itself ends
+    // with the mark's text, which is then a piece with an empty end, so
+    // that taking marks out gives it back too.
+    let pieces = match end {
+        End::No => false,
+        End::Line => line.ends_with(CONTINUED),
+        End::Piece => true,
+    };
+    while line.len() >= limit || (pieces && !line.is_empty()) {
         let cut = line.floor_char_boundary(most);
         let (piece, tail) = line.split_at_checked(cut).unwrap_or((line, ""));
         out.extend_from_slice(piece.as_bytes());
@@ -494,18 +502,20 @@ pub fn record(line: &mut String, out: &mut Vec<u8>, fragment: &str, end: bool, l
         out.push(b'\n');
         *line = tail.to_owned();
     }
-    if end {
+    if matches!(end, End::Line) {
         out.extend_from_slice(line.as_bytes());
-        // A line that itself ends with the mark's text is written as a
-        // piece with nothing after it, so that taking marks out gives it
-        // back too.
-        if line.ends_with(CONTINUED) {
-            out.extend_from_slice(CONTINUED.as_bytes());
-            out.push(b'\n');
-        }
         out.push(b'\n');
         line.clear();
     }
+}
+
+/// What a fragment given to [`record`] ends: nothing yet, its line, or
+/// what there is of a line whose rest will not come (written as pieces).
+#[derive(Clone, Copy, Debug)]
+pub enum End {
+    No,
+    Line,
+    Piece,
 }
 
 /// `text` from the first line that starts at or after `at`.
@@ -552,13 +562,18 @@ mod tests {
         let long: String = std::iter::repeat_n("é", 300).collect();
         let literal = format!("alpha{CONTINUED}");
         let (mut line, mut out) = (String::new(), Vec::new());
-        for text in [long.as_str(), literal.as_str(), "", "beta"] {
-            record(&mut line, &mut out, text, true, 64);
+        // One that ends with the mark's text and is as long as a record may be.
+        let pad: String = std::iter::repeat_n('x', 63 - CONTINUED.len()).collect();
+        let full = format!("{pad}{CONTINUED}");
+        for text in [long.as_str(), literal.as_str(), "", full.as_str(), "beta"] {
+            record(&mut line, &mut out, text, End::Line, 64);
         }
+        // The start of a line whose rest never comes: pieces, and no end.
+        record(&mut line, &mut out, "gamma", End::Piece, 64);
         let text = String::from_utf8_lossy(&out).into_owned();
         assert!(text.lines().all(|record| record.len() < 64), "{text}");
         let back = text.replace(&format!("{CONTINUED}\n"), "");
-        assert_eq!(back, format!("{long}\n{literal}\n\nbeta\n"));
+        assert_eq!(back, format!("{long}\n{literal}\n\n{full}\nbeta\ngamma"));
     }
 
     /// Whatever a program prints, the styled screen holds no control but

@@ -234,13 +234,21 @@ pub mod at {
     /// Makes the directory `name` in `dir`, its user's alone (mode 0700,
     /// the umask not asked). One there already fails.
     pub fn make_dir(dir: &File, name: impl AsRef<Path>) -> Result<()> {
-        let name = c(name.as_ref())?;
+        use std::os::unix::fs::PermissionsExt;
+        let path = name.as_ref();
+        let name = c(path)?;
         // SAFETY: as in `open`.
         done(unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o700) })?;
-        // By name, not through an open: a umask that took the owner's bits
-        // leaves a directory that cannot be opened to be repaired.
-        // SAFETY: as in `open`.
-        done(unsafe { libc::fchmodat(dir.as_raw_fd(), name.as_ptr(), 0o700, 0) })
+        match open_dir(dir, path) {
+            Ok(made) => made.set_permissions(std::fs::Permissions::from_mode(0o700)),
+            // A umask that took the owner's bits left one that cannot be
+            // opened: only then is it repaired by its name.
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                // SAFETY: as in `open`.
+                done(unsafe { libc::fchmodat(dir.as_raw_fd(), name.as_ptr(), 0o700, 0) })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Makes the FIFO `name` in `dir`, its user's alone (mode 0600, the

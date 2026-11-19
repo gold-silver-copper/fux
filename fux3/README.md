@@ -374,7 +374,8 @@ the same as `kill` written to `ctl`.
 Once the processes are gone (which takes up to a second when a pane
 started inside does not end at once: until then the pane keeps its name and
 its `state`), the kill takes the pane's name away, by one rename (to
-`.gone-ID` in its workspace), and only then stops writing and removes the
+`.gone-ID` in its workspace; `.gone-ID-N` if a copy of the pane has that),
+and only then stops writing and removes the
 files: the name is free for a new pane from that rename on, however slow
 the disk, and a holder that dies in between leaves a nameless directory the
 next `fux3` command clears.
@@ -418,7 +419,7 @@ the write still hangs the writer. Two ways are safe:
 
 ```sh
 printf 'echo hi\n' | fux3 put main/build              # in: whole, or refused
-echo kill 1<>"$D/main/build/ctl"                       # ctl: never waits; a dead pane takes nothing
+echo kill 1<>"$D/main/build/ctl"                       # ctl: the open never waits; a dead pane takes nothing
 for c in "$D"/*/*/ctl; do echo kill 1<>"$c"; done      # kill every pane; waits on no dead one
 ```
 
@@ -734,7 +735,8 @@ line; any other editor is given the file alone). Search and copy with the
 editor's own keys. The text is a copy, in a private file under the session
 directory (`.history-PANEID/`, removed when the editor ends): editing it
 changes nothing in the pane, and opening it resizes nothing (the pane copied
-keeps its size; its tile clips it while the editor is open). The pane is
+keeps its size; its tile clips it while the editor is open; a second viewer
+of the workspace, seeing the layout change, does fit it). The pane is
 found by its id, and its screen is read once, when the key is pressed,
 before its history: no line is missing between them, and a line that
 scrolled off between the two reads can appear twice. When the editor ends,
