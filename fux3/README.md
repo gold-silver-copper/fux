@@ -93,7 +93,7 @@ mv "$D/main/server" "$D/rig/"               # moved to workspace rig
 ```
 
 A workspace is renamed the same way (`mv "$D/rig" "$D/rig2"`): its panes run
-on and its recipes go with it.
+on, its recipes go with it, and a viewer showing it follows.
 
 A moved pane is the same pane: the same id, the same program, every file kept current
 where it is now, `in` and `ctl` still read, and `fux3 ls` lists it under its
@@ -533,7 +533,8 @@ fux3 view main --do "split build right"         # every viewer of main shows it 
 `fux3 start` does). The workspace keys go over the session's workspaces, the
 directories of `$D`, by name: next, previous, a list, new (a name at a prompt:
 the directory is made and a shell started in it) and close (asks, then ends
-each pane, waits for them to go, and removes the directory, `.view` and all).
+each pane, waits for them to go, and removes the directory, `.view` and all;
+it refuses, removing nothing, if a pane is still starting or ending).
 A viewer whose workspace's directory goes shows the first one left, else a new
 `main`. Each viewer remembers, for each workspace it has shown, the tab and
 focus it left there. Workspaces have no order but their names'.
@@ -732,8 +733,10 @@ one text, at its end, in a pane below: `$EDITOR` if set, else `$PAGER`, else
 line; any other editor is given the file alone). Search and copy with the
 editor's own keys. The text is a copy, in a private file under the session
 directory (`.history-PANEID/`, removed when the editor ends): editing it
-changes nothing in the pane. The screen is read once, when the key is
-pressed, after the history: nothing is missing between them, and a line that
+changes nothing in the pane, and opening it resizes nothing (the pane copied
+keeps its size; its tile clips it while the editor is open). The pane is
+found by its id, and its screen is read once, when the key is pressed,
+before its history: no line is missing between them, and a line that
 scrolled off between the two reads can appear twice. When the editor ends,
 the pane ends itself and the viewer that opened it closes its tile; if that
 viewer was detached meanwhile, the tile stays, marked gone, until you close
@@ -767,7 +770,7 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 | `(send PANE TEXT)` | to the pane's `in`, after keys typed before |
 | `(ctl PANE LINE)` | one line to the pane's `ctl` (`kill`, `signal INT`, …). A pane that is gone (its directory went, or another life has its name) raises `pane-gone`, any other failure `fux3-error`: closing a pane or a tab ignores only the first, and keeps the tile otherwise |
 | `(pick TITLE ROWS FUNCTION [KEYS])`, `(read-line PROMPT INITIAL FUNCTION)` | a list or a line to type; what is chosen goes to FUNCTION |
-| `(focus PANE)`, `(say TEXT)`, `(workspace-dir)`, `(quote TEXT)` | `workspace-dir`: the shown workspace's directory |
+| `(focus PANE)`, `(say TEXT)`, `(workspace-dir)`, `(quote TEXT)` | `workspace-dir`: the shown workspace's directory, as it is called now |
 | `(when-gone PANE FUNCTION)` | calls FUNCTION, once, when PANE (`NAME`, or one life `NAME@ID`) is gone from the workspace shown; at most 64 at a time |
 
 ```lisp
