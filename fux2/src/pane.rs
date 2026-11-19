@@ -380,7 +380,7 @@ fn prepare(spec: Spec, bound: bool) -> Result<Pane, Failure> {
         }
     };
     drop(lock);
-    let started = start_program(&spec, size);
+    let started = start_program(&spec, size, id);
     let (master, job) = match started {
         Ok(started) => started,
         Err(failure) => {
@@ -415,7 +415,7 @@ fn prepare(spec: Spec, bound: bool) -> Result<Pane, Failure> {
     })
 }
 
-fn start_program(spec: &Spec, size: fux_vt::Size) -> Result<(Master, Job), Failure> {
+fn start_program(spec: &Spec, size: fux_vt::Size, id: PaneId) -> Result<(Master, Job), Failure> {
     let (master, slave) = fuxix::pty::open(size.nonzero().into())
         .map_err(|e| Failure::new(Code::Io, format!("opening a terminal: {e}")))?;
     let program = spec
@@ -428,7 +428,8 @@ fn start_program(spec: &Spec, size: fux_vt::Size) -> Result<(Master, Job), Failu
             .env("TERM", "xterm-256color")
             .env("TERM_PROGRAM", "fux2")
             .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))
-            .env("FUX2_PANE", &spec.name);
+            .env("FUX2_PANE", &spec.name)
+            .env("FUX2_PANE_ID", id.to_string());
     })
     .map_err(|e| {
         let unusable = matches!(
@@ -585,6 +586,10 @@ impl Pane {
             fuxix::process::reap_orphans(|pid| Some(pid) == leader);
         }
         if self.exit.is_some() {
+            // Its last descendant may just have gone.
+            if !self.model.running() {
+                self.reap_if_alone();
+            }
             return;
         }
         // Read without reaping: the job stays whole, so a later kill can
@@ -623,6 +628,11 @@ impl Pane {
     /// Gives waiting output to the terminal, a slice at a time, as long as
     /// the replies it may cause have room.
     fn parse(&mut self) {
+        if !self.model.running() {
+            self.unparsed = Vec::new();
+            self.parsed = 0;
+            return;
+        }
         let mut any = false;
         loop {
             let rest = self.unparsed.get(self.parsed..).unwrap_or_default();
@@ -783,8 +793,13 @@ impl Pane {
                 }
             }
         }
-        peers
-            .retain(|peer| !peer.broken && (!peer.closing || peer.conn.pending() > 0 || finishing));
+        peers.retain(|peer| {
+            let keep = !peer.broken && (!peer.closing || peer.conn.pending() > 0 || finishing);
+            if !keep {
+                sys::abandon(&peer.conn.stream);
+            }
+            keep
+        });
         self.peers = peers;
         if finishing {
             self.finish();
@@ -811,7 +826,9 @@ impl Pane {
             }
             return Ok(false);
         };
-        peer.frame_due = None;
+        if peer.frame_due.take().is_some_and(|due| now >= due) {
+            return Err(Broken::Closed);
+        }
         peer.idle_since = now;
         if peer.wait.is_some() {
             // One request at a time: this one came on top of a wait.
@@ -819,7 +836,12 @@ impl Pane {
             let refusal = Failure::new(Code::Protocol, "a request during a wait");
             return Err(Broken::Frame(refusal));
         }
-        let reply = match Request::decode(&body) {
+        let decoded = Request::decode(&body);
+        let is_read = matches!(
+            decoded,
+            Ok(Request::Screen { .. } | Request::History { .. })
+        );
+        let reply = match decoded {
             // Only a read's answer is large; anything that acts is answered
             // in a few bytes, so it is never refused for room after acting.
             Ok(Request::Screen { .. } | Request::History { .. }) if self.stored >= MAX_STORED => {
@@ -831,6 +853,22 @@ impl Pane {
             }
             Ok(request) => self.answer(request, peer, now),
             Err(failure) => Reply::Close(Answer::Refused(failure).encode()),
+        };
+        // A read's answer is counted with what already waits: one that
+        // would pass the cap is refused instead. Reads change nothing.
+        let reply = match reply {
+            Reply::Answer(bytes)
+                if is_read && self.stored.saturating_add(bytes.len()) > MAX_STORED =>
+            {
+                let why = format!(
+                    "{} bytes of answers wait, at most {MAX_STORED}",
+                    self.stored
+                );
+                Reply::Answer(Answer::Refused(Failure::new(Code::Busy, why)).encode())
+            }
+            other @ (Reply::Answer(_) | Reply::Close(_) | Reply::Finish(_) | Reply::Park(..)) => {
+                other
+            }
         };
         let (bytes, close, finish) = match reply {
             Reply::Answer(bytes) => (bytes, false, false),
@@ -1173,8 +1211,17 @@ impl Pane {
         // On Linux everything the program started is this process's: its
         // descendants, and the orphans it adopted, a session left or not.
         #[cfg(target_os = "linux")]
-        for pid in fuxix::process::tree().pids {
-            let _ = fuxix::process::kill(pid, Signal::Kill);
+        {
+            let tree = fuxix::process::tree();
+            if tree.scan != Scan::Complete {
+                missed.push(format!(
+                    "the list of its processes was incomplete: {:?}",
+                    tree.scan
+                ));
+            }
+            for pid in tree.pids {
+                let _ = fuxix::process::kill(pid, Signal::Kill);
+            }
         }
         if !self.gone_by(&mut poll, after(Instant::now(), KILL_WAIT)) {
             missed.push("the program did not end in time".to_owned());
@@ -1211,10 +1258,18 @@ impl Pane {
                 let leader = job.leader();
                 fuxix::process::reap_orphans(|pid| pid == leader);
             }
+            // What is still there is killed again: it may have been forked
+            // after the first pass.
             #[cfg(target_os = "linux")]
-            let alive = (fuxix::process::tree().pids.into_iter())
-                .filter(|pid| *pid != job.leader())
-                .count();
+            let alive = {
+                let left: Vec<_> = (fuxix::process::tree().pids.into_iter())
+                    .filter(|pid| *pid != job.leader())
+                    .collect();
+                for pid in &left {
+                    let _ = fuxix::process::kill(*pid, Signal::Kill);
+                }
+                left.len()
+            };
             #[cfg(not(target_os = "linux"))]
             let alive = job.members().pids.len();
             if alive == 0 {

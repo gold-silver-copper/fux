@@ -93,17 +93,21 @@ fn default_root() -> Result<(PathBuf, PathBuf), Failure> {
     };
     #[cfg(windows)]
     let base = PathBuf::from(set("LOCALAPPDATA").ok_or_else(|| missing("LOCALAPPDATA"))?);
+    // An elevated and a normal process own their files differently, so
+    // each has its own private folder from the first one down.
+    #[cfg(windows)]
+    let own = {
+        let user = fuxix::socket::User::current().map_err(|e| io("this user", e))?;
+        base.join(if user.elevated() {
+            "fux2-elevated"
+        } else {
+            "fux2"
+        })
+    };
+    #[cfg(unix)]
     let own = base.join("fux2");
     #[cfg(windows)]
-    let session = {
-        let user = fuxix::socket::User::current().map_err(|e| io("this user", e))?;
-        let name = if user.elevated() {
-            "default-elevated"
-        } else {
-            "default"
-        };
-        own.join("run").join(name)
-    };
+    let session = own.join("run").join("default");
     #[cfg(unix)]
     let session = own.join("default");
     std::fs::create_dir_all(&base).map_err(|e| io(base.display(), e))?;
@@ -213,8 +217,8 @@ impl Session {
             let dir = self.pane_dir(&name);
             match sys::try_claim(&dir) {
                 Ok(Some(claim)) => drop(remove_pane(lock, &dir, claim)),
-                Ok(None) => live = live.saturating_add(1),
-                Err(_) => {}
+                // One that can't be looked at may be live: it counts.
+                Ok(None) | Err(_) => live = live.saturating_add(1),
             }
         }
         Ok(live)

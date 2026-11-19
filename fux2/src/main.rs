@@ -40,7 +40,7 @@ const DEFAULT_SETTLE_MS: u32 = 100;
 /// How long `read --since` waits when no `--wait` is given.
 const NO_WAIT: u32 = 0;
 /// How often a matching read waits for two reads to see one screen.
-const PAIR_TRIES: u32 = 20;
+const PAIR_TRIES: u32 = 3;
 /// How often a history read that lost its place starts again.
 const HISTORY_TRIES: u32 = 3;
 
@@ -543,6 +543,9 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
         .unwrap_or_else(Instant::now);
     let settle = plan.settle_ms.unwrap_or(DEFAULT_SETTLE_MS);
     let mut seen = since;
+    // What changed is asked of the last screen this wait looked at, so the
+    // pane still remembers it; a screen it has forgotten is no evidence.
+    let mut base = since;
     let mut matched_rows = None;
     if plan.wait_ms.is_some() {
         loop {
@@ -552,7 +555,16 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
             };
             // Only rows that changed since the token count: a line already on
             // the screen, from an earlier command, is no answer to this one.
-            let (now, meta, rows, changed) = rows_and_changes(client, since)?;
+            // Output between the two reads of a pair is no match yet.
+            let Some((now, meta, rows, changed)) = rows_and_changes(client, base)? else {
+                seen = token;
+                if Instant::now() >= until {
+                    let why = format!("the text did not come within {bound:?}");
+                    return Err(Failure::new(Code::Timeout, why));
+                }
+                continue;
+            };
+            base = now;
             let matched = changed.iter().map(Row::text).any(|line| {
                 plan.until_line.as_ref().is_none_or(|want| *want == line)
                     && plan.until.as_ref().is_none_or(|want| line.contains(want))
@@ -609,10 +621,9 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
 
 /// The screen, and the rows of it that changed since `since`, from one
 /// observation: tried again until no output came between the two reads.
-fn rows_and_changes(
-    client: &mut Client,
-    since: Token,
-) -> Result<(Token, Meta, Vec<Row>, Vec<Row>), Failure> {
+type Changes = Option<(Token, Meta, Vec<Row>, Vec<Row>)>;
+
+fn rows_and_changes(client: &mut Client, since: Token) -> Result<Changes, Failure> {
     for _ in 0..PAIR_TRIES {
         let (whole, meta, rows) = whole_rows(client)?;
         let (token, _, change) = screen(client, Some(since))?;
@@ -620,14 +631,13 @@ fn rows_and_changes(
             continue;
         }
         let changed = match change {
-            Change::Unchanged => Vec::new(),
-            Change::Whole(rows) => rows,
+            // Forgotten, or a resize: nothing can be told apart as new.
+            Change::Unchanged | Change::Whole(_) => Vec::new(),
             Change::Patch { rows, .. } => rows.into_iter().map(|(_, row)| row).collect(),
         };
-        return Ok((whole, meta, rows, changed));
+        return Ok(Some((whole, meta, rows, changed)));
     }
-    let why = "the pane changes faster than its screen can be read twice";
-    Err(Failure::new(Code::Busy, why))
+    Ok(None)
 }
 
 /// One pass over a pane's primary screen, history first, by row number.
@@ -698,10 +708,15 @@ fn page(mut args: Args) -> Outcome {
     if let Err(failure) = &shown {
         let mut err = std::io::stderr();
         let _ = writeln!(err, "fux2: {failure}\n\npress Enter to close");
-        let _ = std::io::stdin().lock().read_line(&mut String::new());
+        let _ = std::io::stdin().take(1024).read(&mut [0; 1024]);
     }
-    if let Ok(own) = std::env::var("FUX2_PANE")
-        && let Ok(mut client) = Client::connect(&Session::open()?, &own)
+    // This one life of the pane, never a later one of the same name.
+    let own = std::env::var("FUX2_PANE").ok();
+    let id = std::env::var("FUX2_PANE_ID")
+        .ok()
+        .and_then(|id| PaneId::parse(&id));
+    if let (Some(name), Some(id)) = (own, id)
+        && let Ok(mut client) = (Target { name, id: Some(id) }).connect()
     {
         // The answer may never come: this process is what it ends.
         let _ = client.call(&Request::Kill { expected: None }, ANSWER_WAIT);
@@ -746,10 +761,13 @@ fn show_pager(pane: &Target) -> Outcome {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes());
     }
-    child
+    let status = child
         .wait()
         .map_err(|e| Failure::new(Code::Io, format!("the pager: {e}")))?;
-    Ok(())
+    match status.success() {
+        true => Ok(()),
+        false => Err(Failure::new(Code::Io, format!("the pager ended: {status}"))),
+    }
 }
 
 fn read(mut args: Args) -> Outcome {
@@ -782,7 +800,7 @@ fn read(mut args: Args) -> Outcome {
         || plan.text;
     if following && plan.since.is_none() {
         return Err(usage(
-            "--wait, --settle, --until and --text go with --since",
+            "--wait, --settle, --until, --until-line and --text go with --since",
         ));
     }
     if (plan.until.is_some() || plan.until_line.is_some()) && plan.wait_ms.is_none() {

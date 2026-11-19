@@ -461,7 +461,7 @@ fn the_history_pane_goes_away_and_gives_the_focus_back() -> Tested {
         viewer.pump(Duration::from_millis(20))?;
         let listed = lab.fux2(&["ls"])?;
         let gone = String::from_utf8_lossy(&listed.stdout).trim() == "work";
-        if gone && !viewer.text().contains("history-1") {
+        if gone && !viewer.text().contains("history-1") && viewer.text().contains(" work ") {
             break;
         }
         assert!(

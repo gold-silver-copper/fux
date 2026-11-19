@@ -174,9 +174,20 @@ impl Painter {
             }
         };
         wait_idle(LEAVE_WAIT);
-        if self.send(bytes) {
-            wait_idle(LEAVE_WAIT);
+        // Queued as soon as there is room; its own time starts then.
+        let until = after(Instant::now(), LEAVE_WAIT);
+        let mut bytes = Some(bytes);
+        while let Some(next) = bytes.take() {
+            match self.frames.try_send(next) {
+                Ok(()) => self.sent.set(self.sent.get().saturating_add(1)),
+                Err(TrySendError::Full(back)) if Instant::now() < until => {
+                    bytes = Some(back);
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => return,
+            }
         }
+        wait_idle(LEAVE_WAIT);
     }
 }
 
@@ -223,9 +234,11 @@ struct View {
     waiting_runs: VecDeque<Run>,
     /// The configuration is still being read: keys it might bind wait.
     loading: bool,
-    /// The layout file's last reading was refused.
-    layout_failed: bool,
+    /// What the layout file's last refused reading said.
+    layout_failed: Option<String>,
     held: Vec<Input>,
+    /// The last key typed while loading was `C-b`.
+    loading_prefix: bool,
     /// A run was handed to the language and has not finished.
     run_sent: bool,
     painter: Painter,
@@ -576,7 +589,9 @@ impl View {
         match layout::parse(&text) {
             Ok(workspaces) => {
                 // The file is good again: what it said wrong is no longer so.
-                if std::mem::take(&mut self.layout_failed) {
+                if let Some(said) = self.layout_failed.take()
+                    && self.message.as_ref().is_some_and(|(text, _)| *text == said)
+                {
                     self.message = None;
                 }
                 self.places.resize(workspaces.len(), Place::default());
@@ -593,9 +608,10 @@ impl View {
             }
             // The last good layout stays on the screen.
             Err(why) => {
-                self.layout_failed = true;
                 let file = path.file_name().unwrap_or(path.as_os_str());
-                self.say(format!("{}: {why}", file.to_string_lossy()));
+                let said = format!("{}: {why}", file.to_string_lossy());
+                self.layout_failed = Some(said.clone());
+                self.say(said);
             }
         }
         self.layout_text = Some(text);
@@ -624,7 +640,7 @@ impl View {
         let full = (pane.inlet.as_ref()).is_some_and(|inlet| inlet.parts.len() >= MAX_QUEUED_PARTS);
         if full {
             let name = pane.name.clone();
-            return self.say(format!("{name} is not taking keys: they are dropped"));
+            return self.say(format!("keys dropped: {name} is not taking them"));
         }
         let advanced = pane.inlet.as_mut().map_or(Ok(()), |inlet| {
             inlet.parts.extend(parts);
@@ -893,8 +909,19 @@ impl View {
             // waits, in order, the load's own time at most. The way out
             // does not wait.
             if self.loading {
-                let named = |input: Option<&Input>, name: &str| matches!(input, Some(Input::Key(k)) if k.press.to_string() == name);
-                if named(Some(&input), "d") && named(self.held.last(), "C-b") {
+                // The way out is watched for whether or not keys are held.
+                let key = match &input {
+                    Input::Key(k) => Some(k.press.to_string()),
+                    Input::Paste(_)
+                    | Input::PasteTooLong
+                    | Input::FocusIn
+                    | Input::FocusOut
+                    | Input::Mouse(_)
+                    | Input::Reply(_) => None,
+                };
+                let prefixed =
+                    std::mem::replace(&mut self.loading_prefix, key.as_deref() == Some("C-b"));
+                if prefixed && key.as_deref() == Some("d") {
                     self.quit = true;
                 } else if self.held.len() < MAX_HELD_KEYS {
                     self.held.push(input);
@@ -1188,7 +1215,13 @@ fn run() -> Result<(), Failure> {
         Signal::Quit,
     ];
     #[cfg(windows)]
-    let stops = [Signal::Winch, Signal::Term, Signal::Hup, Signal::Int];
+    let stops = [
+        Signal::Winch,
+        Signal::Term,
+        Signal::Hup,
+        Signal::Int,
+        Signal::Quit,
+    ];
     let signals = fuxix::signal::Pipe::new(&stops).map_err(|e| io_failure("signals", e))?;
     let (paint_wake, paint_poke) = waker().map_err(|e| io_failure("a waker", e))?;
     let (script_wake, script_poke) = waker().map_err(|e| io_failure("a waker", e))?;
@@ -1228,8 +1261,9 @@ fn run() -> Result<(), Failure> {
         running: None,
         waiting_runs: VecDeque::new(),
         loading: true,
-        layout_failed: false,
+        layout_failed: None,
         held: Vec::new(),
+        loading_prefix: false,
         run_sent: false,
         painter,
         shown: Frame::default(),

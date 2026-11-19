@@ -77,11 +77,16 @@ left its session (`setsid`), since every such process stays the pane's. On macOS
 a process that left the session can't be found, and is not killed. `kill` exits
 1 and names what it could not end; exit 0 means nothing it found is left.
 `kill --label K=V` kills every pane that matches, and exits 0 when none does.
+On Linux a list of processes that could not be read whole makes `kill` exit 1.
+An ended program is reaped as soon as nothing it started is left.
 
 **`read`** alone is a snapshot, so right after a `send` it may not show the
 result yet. To wait in one command, give it the token `send` printed. Only rows
-that changed after that token count for `--until` and `--until-line`, so a line
-an earlier command left on the screen is never taken for this one's.
+seen to change after that token count for `--until` and `--until-line`, so a line
+an earlier command left on the screen is never taken for this one's. A pane
+remembers its last 64 readings; a change it can no longer compare (after a resize,
+say) counts as nothing new, so such a wait can time out rather than match old
+output.
 `--wait`, `--settle`, `--until`, `--until-line` and `--text` need `--since`, and
 `--until` and `--until-line` need `--wait`:
 
@@ -155,15 +160,16 @@ In the viewer, `C-b [` opens the focused pane's history in a new pane (in the
 shown tab, so not in a tab that matches `name=`; the stored layout of the next
 release lifts that) running
 `$PAGER`, else `less`, else `more` (`more.com` on Windows). Search and scroll
-there, and select with your terminal to copy. The new pane is 80x24 like any other;
+there, and select with your terminal to copy. If the pager can't run or fails,
+the pane shows why and waits for Enter. The new pane is 80x24 like any other;
 `C-b f` fits it to its tile. When the pager ends, the pane removes itself and the
 focus returns.
 
 ### Layout file
 
 `fux2 view --layout FILE` reads a small file in a subset of TOML, and rereads it
-every second. A bad edit keeps the last good layout and shows the error, until
-the file is good again. A tab is a filter on labels, and a workspace is a named
+every second. A bad edit keeps the last good layout and shows the error for five
+seconds, or until the file is good again. A tab is a filter on labels, and a workspace is a named
 list of tabs. A pane that no tab matches is not shown. The subset: the sections
 `[[tab]]`, `[[workspace]]` and `[[workspace.tab]]`, the keys `name`, `title`,
 `match` and `axis`, double-quoted strings, one-line lists and `#` comments. A key

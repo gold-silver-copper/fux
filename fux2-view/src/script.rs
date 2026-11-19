@@ -303,8 +303,15 @@ const WORDS: &[(&str, Word)] = &[
         let [key, function] = *g.exactly(args)?;
         let text = string_arg(g, host, key)?;
         let name = chord(&text).map_err(|why| failed(g, &why))?;
-        let generation = host.rebind(&name).map_err(|why| failed(g, &why))?;
+        // Kept first: a binding that can't be made leaves the old one whole.
         let kept = g.keep(function)?;
+        let generation = match host.rebind(&name) {
+            Ok(generation) => generation,
+            Err(why) => {
+                let _ = g.release(kept);
+                return Err(failed(g, &why));
+            }
+        };
         host.verbs.remove(&name);
         if let Some(old) = host.kept.insert(name.clone(), kept) {
             let _ = g.release(old);
@@ -630,8 +637,15 @@ pub fn read_small_file(path: &std::path::Path, most: u64) -> std::io::Result<Str
         options.custom_flags(fuxix::file::NONBLOCK);
     }
     let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
+    let meta = file.metadata()?;
+    if !meta.is_file() {
         return Err(std::io::Error::other("not a regular file"));
+    }
+    if meta.len() > most {
+        return Err(std::io::Error::other(format!(
+            "{} bytes, at most {most}",
+            meta.len()
+        )));
     }
     let mut text = String::new();
     file.take(most.saturating_add(1))

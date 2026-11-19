@@ -117,3 +117,17 @@ Six reviewers and two testers. What changed in the design, in short:
   leave no zombie; otherwise it stays unreaped for `kill`.
 - A connection gives up its slot to a newcomer only after a second of asking
   nothing, so one just greeted is not evicted before its request.
+
+## D-18: review round 2 (2026-11-18)
+
+- A wait for a line compares each look with the last screen it looked at, not
+  with the token it was given. A look whose screen the pane has forgotten, or
+  whose two reads saw different screens, matches nothing and the wait goes on:
+  a timeout (exit 5) is the cost, a false match never is.
+- D-12 is corrected: a control request gets a slot within 5 s when the others
+  are waits or slow requests. When some are slow readers of large answers, it is
+  30 s, the most an answer may take to drain. No slot is reserved.
+- The history pane removes itself by `NAME@ID` (from `FUX2_PANE_ID`), so it can
+  never remove a later pane of its name.
+- An ended program is reaped when its last descendant goes, at that child's
+  signal, not only when the screen freezes.

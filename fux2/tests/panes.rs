@@ -414,8 +414,8 @@ fn an_ended_pane_leaves_no_zombies() -> Tested {
             })
         })
         .count();
-    // The program itself stays unreaped until the pane is killed.
-    assert!(zombies <= 1, "{zombies} zombies among {children}");
+    // Once the last thing it started is gone, the program is reaped too.
+    assert_eq!(zombies, 0, "zombies among {children}");
     Ok(())
 }
 
@@ -537,7 +537,28 @@ fn page_removes_only_a_pane_made_for_it() -> Tested {
         lab.client("caller").is_ok(),
         "page killed the pane it ran in"
     );
-    assert!(run(&["--close-pane"])?.status.success());
+    let id = lab.client("caller")?.hello.id.to_string();
+    let close = |pager: &str| {
+        Command::new(env!("CARGO_BIN_EXE_fux2"))
+            .args(["page", "shown", "--close-pane"])
+            .env("FUX2_DIR", &lab.session.root)
+            .env("FUX2_PANE", "caller")
+            .env("FUX2_PANE_ID", &id)
+            .env("PAGER", pager)
+            .stdin(std::process::Stdio::null())
+            .output()
+    };
+    // G9: a pager that fails is said, not hidden, and the pane still goes.
+    let failed = close(if cfg!(windows) {
+        "cmd /c exit 1"
+    } else {
+        "false"
+    })?;
+    assert!(!failed.status.success(), "{failed:?}");
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("pager"),
+        "{failed:?}"
+    );
     assert!(lab.client("caller").is_err(), "--close-pane left its pane");
     Ok(())
 }
@@ -596,4 +617,57 @@ mod directory {
         std::fs::remove_file(dir.join("extra"))?;
         Ok(())
     }
+}
+
+/// G1 and G2: a wait for a line counts only what it saw appear, however many
+/// times the screen was redrawn meanwhile, and a pane that never stops
+/// printing ends it as a timeout, not as busy.
+#[cfg(unix)]
+#[test]
+fn a_wait_ignores_old_lines_through_many_redraws() -> Tested {
+    let lab = Lab::new()?;
+    lab.start("bar", &program("exec sh", ""))?;
+    let t = lab.fux2(&["send", "bar", "echo done\\n"])?;
+    let t = String::from_utf8_lossy(&t.stdout).trim().to_owned();
+    let out = lab.fux2(&[
+        "read",
+        "bar",
+        "--since",
+        &t,
+        "--wait",
+        "5000",
+        "--until-line",
+        "done",
+    ])?;
+    assert!(out.status.success(), "{out:?}");
+    let redraws = "i=0; while [ $i -lt 400 ]; do printf '\\r%d' $i; i=$((i+1)); done; sleep 1; echo; echo finished\\n";
+    let t = lab.fux2(&["send", "bar", redraws])?;
+    let t = String::from_utf8_lossy(&t.stdout).trim().to_owned();
+    let out = lab.fux2(&[
+        "read",
+        "bar",
+        "--since",
+        &t,
+        "--wait",
+        "3000",
+        "--until-line",
+        "done",
+        "--text",
+    ])?;
+    assert_eq!(out.status.code(), Some(5), "{out:?}");
+    lab.start("flood", &program("yes flood", ""))?;
+    let t = lab.client("flood")?.hello.id;
+    let token = format!("{t}@1");
+    let out = lab.fux2(&[
+        "read",
+        "flood",
+        "--since",
+        &token,
+        "--wait",
+        "1500",
+        "--until-line",
+        "never",
+    ])?;
+    assert_eq!(out.status.code(), Some(5), "{out:?}");
+    Ok(())
 }
