@@ -326,8 +326,11 @@ impl View {
             Ok(opened) => opened,
             Err(failure) => return self.say(format!("workspace {name}: {failure}")),
         };
+        // One whose directory went (its name emptied) is not remembered.
         let left = (self.tab, self.focus.take());
-        self.places.insert(self.workspace.name.clone(), left);
+        if !self.workspace.name.is_empty() {
+            self.places.insert(self.workspace.name.clone(), left);
+        }
         let (tab, focus) = self.places.remove(name).unwrap_or_default();
         self.panes.values_mut().for_each(Pane::drop_pastes);
         (self.workspace, self.view, self.ctl) = (workspace, view, Some(ctl));
@@ -406,11 +409,11 @@ impl View {
     /// else to a new `main`.
     fn rescan(&mut self, now: Instant) {
         self.next_scan = after(now, RESCAN);
-        if fux3::session::check_private(&self.workspace.dir).is_err() {
+        let gone = std::fs::symlink_metadata(&self.workspace.dir);
+        if matches!(gone, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
             let left = self.session.workspaces().unwrap_or_default();
             let next = left.first().map_or(DEFAULT_WORKSPACE, String::as_str);
-            let gone = std::mem::take(&mut self.workspace.name);
-            self.places.remove(&gone);
+            self.workspace.name.clear();
             return self.show_workspace(next, now);
         }
         let changed = self.reread_layout();
@@ -1245,15 +1248,15 @@ fn parse_args() -> Result<Asked, Failure> {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (space, rest) = match words.split_first() {
-        Some((first, rest)) if !first.starts_with('-') && *first != "help" => (*first, rest),
-        _ => (DEFAULT_WORKSPACE, words.as_slice()),
+    let (space, rest) = match words.as_slice() {
+        ["--help" | "-h" | "help"] => return Ok(Asked::Help),
+        [first, rest @ ..] if !first.starts_with('-') => (*first, rest),
+        rest => (DEFAULT_WORKSPACE, rest),
     };
     fux3::session::check_name(space)?;
     match rest {
         [] => Ok(Asked::View(space.to_owned())),
         ["--do", line] => Ok(Asked::Do(space.to_owned(), (*line).to_owned())),
-        ["--help" | "-h" | "help"] => Ok(Asked::Help),
         _ => Err(Failure::new(format!(
             "unexpected arguments {args:?}; try fux3-view --help"
         ))),
