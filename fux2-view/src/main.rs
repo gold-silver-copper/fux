@@ -51,6 +51,8 @@ const LEAVE_WAIT: Duration = Duration::from_millis(500);
 const MAX_QUEUED_PARTS: usize = 1024;
 /// Bindings waiting behind the one running.
 const MAX_WAITING_RUNS: usize = 16;
+/// How long held input waits for a pane to take it once the keys load.
+const HOLD_FOR_FOCUS: Duration = Duration::from_secs(2);
 /// How long leaving waits for a binding to be stopped.
 const END_RUN_WAIT: Duration = Duration::from_secs(1);
 /// How long a focus asked for waits for its pane.
@@ -242,6 +244,8 @@ struct View {
     held: Vec<Input>,
     /// The last key typed while loading was `C-b`.
     loading_prefix: bool,
+    /// The keys have loaded; held input waits for a focused pane until then.
+    keys_loaded: Option<Instant>,
     /// A run was handed to the language and has not finished.
     run_sent: bool,
     painter: Painter,
@@ -847,9 +851,10 @@ impl View {
                 if let Some(why) = why {
                     self.say(why);
                 }
-                if std::mem::take(&mut self.loading) {
-                    let held = std::mem::take(&mut self.held);
-                    self.on_inputs(held);
+                // Held keys go once a pane can take them: the panes may not
+                // have greeted yet.
+                if self.loading && self.keys_loaded.is_none() {
+                    self.keys_loaded = Some(after(now, HOLD_FOR_FOCUS));
                 }
                 if let Some(run) = self.waiting_runs.pop_front() {
                     self.start_run(run);
@@ -881,6 +886,20 @@ impl View {
                 }
                 Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
+        }
+    }
+
+    /// Lets held input go once the keys have loaded and a pane has the focus,
+    /// or the wait for one is over.
+    fn release_held(&mut self, now: Instant) {
+        let Some(until) = self.keys_loaded else {
+            return;
+        };
+        if self.focus.is_some() || now >= until {
+            self.keys_loaded = None;
+            self.loading = false;
+            let held = std::mem::take(&mut self.held);
+            self.on_inputs(held);
         }
     }
 
@@ -1129,6 +1148,9 @@ impl View {
     fn timeout(&self, now: Instant, decoder: &Decoder) -> Duration {
         let mut at = self.next_scan;
         let mut consider = |other: Instant| at = at.min(other);
+        if let Some(until) = self.keys_loaded {
+            consider(until);
+        }
         if self.dirty && self.painter.is_idle() {
             consider(self.next_paint);
         }
@@ -1253,6 +1275,7 @@ fn run() -> Result<(), Failure> {
         layout_failed: None,
         held: Vec::new(),
         loading_prefix: false,
+        keys_loaded: None,
         run_sent: false,
         painter,
         shown: Frame::default(),
@@ -1340,6 +1363,7 @@ fn serve(
             view.rescan(now);
         }
         view.retry_rested(now);
+        view.release_held(now);
         view.police_run(now);
         if view
             .message
