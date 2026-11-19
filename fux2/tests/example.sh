@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# The README's example, run for real: what CI does on every system. Run from
+# The README's example, run for real: what CI does on Linux and macOS. Run from
 # the repository's root, after building fux2 and fux2-view.
 set -euo pipefail
 PATH="${FUX2_BIN:-$PWD/target/debug}:$PATH"
 export FUX2_DIR
 FUX2_DIR=$(mktemp -d)
-# A native path: Windows' programs do not read an MSYS one.
-if command -v cygpath >/dev/null; then FUX2_DIR=$(cygpath -m "$FUX2_DIR"); fi
 chmod 700 "$FUX2_DIR"
 cleanup() {
     for pane in $(fux2 ls 2>/dev/null | cut -f1); do fux2 kill "$pane" || true; done

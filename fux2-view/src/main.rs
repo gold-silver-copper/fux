@@ -1,6 +1,9 @@
 //! The fux2 viewer: shows a session's panes, split, in this terminal, and
 //! sends keys to the focused one. It owns nothing: end it however you like
 //! and every pane goes on.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("fux2-view runs on Linux and macOS only");
+
 mod layout;
 mod render;
 mod script;
@@ -1154,23 +1157,18 @@ fn terminal_size() -> (u16, u16) {
 /// Raises the limit on open files far enough for a full session, or says
 /// how far it got: panes past that are refused with the numbers.
 fn file_limit() -> Result<Option<u64>, Failure> {
-    #[cfg(unix)]
-    {
-        let panes = u64::try_from(dir::MAX_PANES).unwrap_or(u64::MAX);
-        let need = panes
-            .saturating_mul(FILES_PER_PANE)
-            .saturating_add(BASE_FILES);
-        fuxix::io::raise_open_files(need)
-            .map(Some)
-            .map_err(|e| io_failure("the limit on open files", e))
-    }
-    #[cfg(windows)]
-    Ok(None)
+    let panes = u64::try_from(dir::MAX_PANES).unwrap_or(u64::MAX);
+    let need = panes
+        .saturating_mul(FILES_PER_PANE)
+        .saturating_add(BASE_FILES);
+    fuxix::io::raise_open_files(need)
+        .map(Some)
+        .map_err(|e| io_failure("the limit on open files", e))
 }
 
 fn fux2_program() -> Result<PathBuf, Failure> {
     let exe = std::env::current_exe().map_err(|e| io_failure("finding this program", e))?;
-    Ok(exe.with_file_name(format!("fux2{}", std::env::consts::EXE_SUFFIX)))
+    Ok(exe.with_file_name("fux2"))
 }
 
 fn parse_args() -> Result<Option<PathBuf>, Failure> {
@@ -1206,15 +1204,6 @@ fn run() -> Result<(), Failure> {
                 .map_err(|why| Failure::new(Code::Invalid, format!("{}: {why}", path.display())))?
         }
     };
-    #[cfg(unix)]
-    let stops = [
-        Signal::Winch,
-        Signal::Term,
-        Signal::Hup,
-        Signal::Int,
-        Signal::Quit,
-    ];
-    #[cfg(windows)]
     let stops = [
         Signal::Winch,
         Signal::Term,

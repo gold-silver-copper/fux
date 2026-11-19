@@ -28,8 +28,6 @@ const READ: usize = 64 << 10;
 pub const MAX_INPUT: usize = 64 << 10;
 /// Room kept apart for the terminal's replies to the program.
 const REPLY_ROOM: usize = 64 << 10;
-/// Room for what must not wait behind typed input: Windows' Ctrl-C.
-const URGENT_ROOM: usize = 64;
 /// How many connections are served at once.
 const MAX_PEERS: usize = 16;
 /// How many of them may be parked in a wait, so that some slot can always
@@ -142,7 +140,6 @@ struct Input {
     head_sent: usize,
     typed: usize,
     replies: usize,
-    urgent: Vec<u8>,
     lost_replies: u64,
 }
 
@@ -168,7 +165,7 @@ impl Input {
     }
 
     fn has_output(&self) -> bool {
-        !self.urgent.is_empty() || !self.queue.is_empty()
+        !self.queue.is_empty()
     }
 
     fn unwritten(&self) -> u64 {
@@ -176,18 +173,8 @@ impl Input {
         u64::try_from(queued.saturating_sub(self.head_sent)).unwrap_or(u64::MAX)
     }
 
-    /// Writes what the terminal takes now, what is urgent first.
+    /// Writes what the terminal takes now.
     fn write(&mut self, master: &Master) -> Result<(), Errno> {
-        while !self.urgent.is_empty() {
-            match fuxix::io::write(master, &self.urgent) {
-                Ok(0) | Err(Errno::AGAIN) => return Ok(()),
-                Err(Errno::INTR) => {}
-                Ok(n) => {
-                    self.urgent = self.urgent.get(n..).unwrap_or_default().to_vec();
-                }
-                Err(errno) => return Err(errno),
-            }
-        }
         while let Some((typed, bytes)) = self.queue.front() {
             let typed = *typed;
             let rest = bytes.get(self.head_sent..).unwrap_or_default();
@@ -314,12 +301,10 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     if std::io::stdin().lock().read_line(&mut go).is_err() {
         return ExitCode::FAILURE;
     }
-    let bound = match go.trim() {
-        "go" => false,
-        "go bound" => true,
-        _ => return ExitCode::FAILURE,
-    };
-    match Spec::parse(args).and_then(|spec| prepare(spec, bound)) {
+    if go.trim() != "go" {
+        return ExitCode::FAILURE;
+    }
+    match Spec::parse(args).and_then(prepare) {
         Ok(pane) => {
             let mut pane = pane;
             let token = pane.model.token();
@@ -347,21 +332,14 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
 
 /// Claims the name, opens the terminal and starts the program. Whatever
 /// fails gives the name back.
-fn prepare(spec: Spec, bound: bool) -> Result<Pane, Failure> {
+fn prepare(spec: Spec) -> Result<Pane, Failure> {
     dir::check_name(&spec.name)?;
     let session = Session {
         root: spec.root.clone(),
     };
     let size = checked_size(spec.cols, spec.rows)?;
-    let note = sys::prepare_terminal(&spec.root);
     let id = PaneId::random();
-    let mut model = Model::new(id, size, spec.history.min(MAX_HISTORY))?;
-    if let Some(note) = note {
-        model.limitation(note);
-    }
-    if bound {
-        model.limitation("this pane ends when the job that started it does".to_owned());
-    }
+    let model = Model::new(id, size, spec.history.min(MAX_HISTORY))?;
     let io = |what: &str, e: &dyn std::fmt::Display| Failure::new(Code::Io, format!("{what}: {e}"));
     // Before anything could start: what a program leaves behind stays this
     // process's to find and kill.
@@ -719,7 +697,6 @@ impl Pane {
             };
             if self.peers.len() >= MAX_PEERS && !self.evict_idle(now) {
                 // Every slot is mid-request, each bounded by its deadline.
-                sys::abandon(&stream);
                 continue;
             }
             self.peers.push(Peer {
@@ -745,7 +722,6 @@ impl Pane {
                 now.saturating_duration_since(p.idle_since) >= EVICT_IDLE
                     && p.wait.is_none()
                     && p.conn.pending() == 0
-                    && fuxix::io::written(&p.conn.stream)
                     && !p.conn.mid_frame()
             })
             .min_by_key(|(_, p)| p.idle_since)
@@ -753,9 +729,6 @@ impl Pane {
         let Some(oldest) = oldest else {
             return false;
         };
-        if let Some(peer) = self.peers.get(oldest) {
-            sys::abandon(&peer.conn.stream);
-        }
         let mut index = 0usize;
         self.peers.retain(|_| {
             let keep = index != oldest;
@@ -788,18 +761,12 @@ impl Pane {
                 // Broken: nothing more can reach it, so nothing is kept
                 // for it, and a poll would only report it again.
                 Err(Broken::Closed | Broken::Io(_)) => {
-                    sys::abandon(&peer.conn.stream);
                     peer.broken = true;
                 }
             }
         }
-        peers.retain(|peer| {
-            let keep = !peer.broken && (!peer.closing || peer.conn.pending() > 0 || finishing);
-            if !keep {
-                sys::abandon(&peer.conn.stream);
-            }
-            keep
-        });
+        peers
+            .retain(|peer| !peer.broken && (!peer.closing || peer.conn.pending() > 0 || finishing));
         self.peers = peers;
         if finishing {
             self.finish();
@@ -1013,7 +980,6 @@ impl Pane {
                 .any(|due| now >= due);
             if overdue {
                 // A reader that stopped reading leaves nothing behind.
-                sys::abandon(&peer.conn.stream);
             }
             !overdue
         });
@@ -1107,24 +1073,12 @@ impl Pane {
                     .map_err(io)?
                     .or_else(|| self.job.as_ref().map(Job::leader))
                     .ok_or_else(unsupported)?;
-                #[cfg(unix)]
                 fuxix::process::kill_group(group, signal).map_err(io)?;
-                #[cfg(windows)]
-                let _ = group;
                 Ok("foreground-group")
             }
-            // Ahead of anything typed: a full queue must not hold back
-            // the way to stop what is not reading it.
-            Delivery::Keys(keys) => {
-                let total = self.input.urgent.len().saturating_add(keys.len());
-                if total > URGENT_ROOM {
-                    let why = format!("{total} urgent bytes, at most {URGENT_ROOM}");
-                    return Err(Failure::new(Code::Busy, why));
-                }
-                self.input.urgent.extend_from_slice(keys);
-                Ok("console-input")
+            Delivery::Keys(_) | Delivery::Attached | Delivery::Job | Delivery::Unsupported => {
+                Err(unsupported())
             }
-            Delivery::Attached | Delivery::Job | Delivery::Unsupported => Err(unsupported()),
         }
     }
 
@@ -1144,9 +1098,7 @@ impl Pane {
         }
     }
 
-    /// Waits a moment for the terminal. On Windows it is the poll that
-    /// moves a read along, and a closing console waits for its output to
-    /// be read: a plain sleep here could leave it, and this process, stuck.
+    /// Waits a moment for the terminal, or for its next output.
     fn pause(&self, poll: &mut Poll) {
         if !self.open {
             return std::thread::sleep(KILL_STEP);

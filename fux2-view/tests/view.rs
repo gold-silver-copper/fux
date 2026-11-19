@@ -22,19 +22,11 @@ fn beside_tests(name: &str) -> Result<PathBuf, std::io::Error> {
     let exe = std::env::current_exe()?;
     let deps = exe.parent().and_then(Path::parent).map(Path::to_path_buf);
     let dir = deps.ok_or_else(|| std::io::Error::other("no target directory"))?;
-    Ok(dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
-}
-
-/// An elevated viewer on Windows must not run the user's file.
-fn config_runs() -> Result<bool, fuxix::Errno> {
-    #[cfg(windows)]
-    return Ok(!fuxix::socket::User::current()?.elevated());
-    #[cfg(unix)]
-    Ok(true)
+    Ok(dir.join(name))
 }
 
 fn shell() -> &'static str {
-    if cfg!(windows) { "cmd.exe" } else { "sh" }
+    "sh"
 }
 
 struct Lab {
@@ -115,11 +107,7 @@ impl Drop for Lab {
                 .fux2(&["kill", &name])
                 .is_ok_and(|out| out.status.success());
             if !killed && let Some(pid) = pid {
-                let _ = if cfg!(windows) {
-                    Command::new("taskkill").args(["/F", "/PID", &pid]).output()
-                } else {
-                    Command::new("kill").args(["-9", &pid]).output()
-                };
+                let _ = Command::new("kill").args(["-9", &pid]).output();
             }
         }
         let listed = self.fux2(&["ls"]).map(|out| out.stdout).unwrap_or_default();
@@ -158,7 +146,6 @@ impl Viewer {
         args: &[std::ffi::OsString],
         env: &[(&str, &str)],
     ) -> Result<Viewer, Box<dyn std::error::Error>> {
-        let _ = fux2::sys::prepare_terminal(&lab.root);
         let size = Size::new(30, 100)?;
         let (master, slave) = fuxix::pty::open(size.nonzero().into())?;
         let viewer = beside_tests("fux2-view")?;
@@ -286,29 +273,22 @@ fn the_viewer_steers_panes_and_they_outlive_it() -> Tested {
     lab.pane_shows("left", "typed-left")?;
     viewer.shows("typed-left")?;
 
-    let configured = config_runs()?;
-    if configured {
-        viewer.keys(b"\x1b[18~")?;
-        lab.pane_shows("left", "from-binding")?;
-    } else {
-        viewer.shows("view.grift is not run")?;
-    }
+    viewer.keys(b"\x1b[18~")?;
+    lab.pane_shows("left", "from-binding")?;
 
     viewer.keys(b"\x02o")?;
     viewer.keys(b"echo typed-right\r")?;
     lab.pane_shows("right", "typed-right")?;
     assert!(!lab.screen("left")?.contains("typed-right"));
 
-    if configured {
-        // The loop holds only the language's thread: keys still go through.
-        viewer.keys(b"\x1b[19~")?;
-        viewer.keys(b"echo while-looping\r")?;
-        lab.pane_shows("right", "while-looping")?;
+    // The loop holds only the language's thread: keys still go through.
+    viewer.keys(b"\x1b[19~")?;
+    viewer.keys(b"echo while-looping\r")?;
+    lab.pane_shows("right", "while-looping")?;
 
-        // The configuration took C-b n away: it is refused out loud.
-        viewer.keys(b"\x02n")?;
-        viewer.shows("no binding for C-b n")?;
-    }
+    // The configuration took C-b n away: it is refused out loud.
+    viewer.keys(b"\x02n")?;
+    viewer.shows("no binding for C-b n")?;
 
     let job = viewer.job.as_ref().ok_or("no job")?;
     let _ = job.kill(Reach::Session);
@@ -329,10 +309,8 @@ fn detach_works_while_a_binding_runs() -> Tested {
     lab.start("only")?;
     let mut viewer = Viewer::start(&lab)?;
     viewer.shows(" only ")?;
-    if config_runs()? {
-        viewer.keys(b"\x1b[19~")?;
-        viewer.shows("a binding is running")?;
-    }
+    viewer.keys(b"\x1b[19~")?;
+    viewer.shows("a binding is running")?;
     viewer.keys(b"\x02d")?;
     assert!(viewer.ended()?, "the viewer did not leave");
     let listed = lab.fux2(&["ls"])?;
@@ -388,9 +366,6 @@ fn a_layout_makes_tabs_and_only_fit_resizes() -> Tested {
 
 /// A pager that shows what it is given and stays until a key is pressed.
 fn pager(lab: &Lab) -> Result<String, std::io::Error> {
-    if cfg!(windows) {
-        return Ok("cmd /d /c findstr . & set /p line=<CON & exit 0".to_owned());
-    }
     let script = lab.config.join("pager.sh");
     std::fs::write(&script, "cat\nread line < /dev/tty\n")?;
     Ok(format!("sh {}", script.display()))

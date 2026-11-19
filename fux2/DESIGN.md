@@ -9,9 +9,9 @@ tokens; no I/O), `pane` (the daemon), `sys` (what differs between systems).
 
 ## A pane
 
-`fux2 start` launches this program as `__pane`, in a session of its own with a
-pipe on stdin and one on stdout. It tells the daemon `go`, or `go bound` when
-Windows refused to let it leave a job. The daemon claims the name, opens the
+fux2 runs on Linux and macOS. `fux2 start` launches this program as `__pane`,
+in a session of its own with a pipe on stdin and one on stdout, and tells the
+daemon `go`. The daemon claims the name, opens the
 endpoint and the terminal, starts the program, answers `ok <token>` or
 `err <code> <message>`, and then points its standard streams at the null device.
 No answer within the bound means `indeterminate`.
@@ -22,8 +22,7 @@ an ended program, write input, serve each ready connection once, accept, wake
 waits, expire deadlines.
 
 - **Input** is one FIFO with separate limits: 64 KiB typed, 64 KiB of terminal
-  replies. A send is admitted whole or refused whole. Windows' Ctrl-C and
-  Ctrl-Break go in a small urgent buffer written ahead of the FIFO.
+  replies. A send is admitted whole or refused whole.
 - **Output** goes to the parser 512 bytes at a time and only while 32 KiB of reply
   room is free, which covers a reply of 64 bytes for every byte. Without room the
   pane stops reading, so a program that will not read its input is slowed, not
@@ -39,8 +38,7 @@ waits, expire deadlines.
 - **Connections** have a five-second stall limit, and an answer has 30 seconds in
   all. At most 12 may be parked in a wait, and a newcomer at the limit displaces
   a connection idle for over a second, so a read or kill gets a slot within 5 s,
-  or within 30 s when the others are slow readers of large answers (D-18). A connection
-  given up on has its Windows write cancelled, so no thread stays behind.
+  or within 30 s when the others are slow readers of large answers (D-18).
 
 ## Versions and reads
 
@@ -62,13 +60,10 @@ only then installs the copy and advances the version. A refusal changes nothing.
 
 ## The session directory
 
-Each pane has a directory `p-NAME` holding its endpoint: a socket on Unix, a
-marker file naming a random pipe on Windows. The claim is an OS lock held for the
-daemon's life, on the directory itself on Unix and on a `claim` file on Windows. A
-separate `lock` file serializes changes to the directory only. Under it, a claim
-that can be taken belongs to nobody, and its leftovers are removed. On Windows the
-daemon runs from a copy in `bin/`, named for its contents, so the installed
-program can be replaced while panes run.
+Each pane has a directory `p-NAME` holding its socket. The claim is an OS lock on
+that directory, held for the daemon's life. A separate `lock` file serializes
+changes to the directory only. Under it, a claim that can be taken belongs to
+nobody, and its leftovers are removed.
 
 ## The viewer
 

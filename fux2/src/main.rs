@@ -32,9 +32,8 @@ fux2: a terminal multiplexer with no server
 TEXT understands \\n (the Enter key), \\r, \\\\ and \\xHH. See the README for the rest.
 ";
 
-/// How long `start` waits to hear from its pane. Windows may first fetch
-/// its ConPTY.
-const START_WAIT: Duration = Duration::from_secs(if cfg!(windows) { 120 } else { 10 });
+/// How long `start` waits to hear from its pane.
+const START_WAIT: Duration = Duration::from_secs(10);
 /// How long output may rest before `read --wait` calls it settled.
 const DEFAULT_SETTLE_MS: u32 = 100;
 /// How long `read --since` waits when no `--wait` is given.
@@ -142,11 +141,9 @@ fn odd() -> Failure {
 }
 
 fn default_program() -> OsString {
-    let shell = if cfg!(windows) { "COMSPEC" } else { "SHELL" };
-    let fallback = if cfg!(windows) { "cmd.exe" } else { "sh" };
-    std::env::var_os(shell)
+    std::env::var_os("SHELL")
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| fallback.into())
+        .unwrap_or_else(|| "sh".into())
 }
 
 fn start(mut args: Args) -> Outcome {
@@ -190,22 +187,9 @@ fn start(mut args: Args) -> Outcome {
         labels,
         argv,
     };
-    // Under the session's lock, so that two first starts on Windows do not
-    // clean away each other's copy of this program.
-    let lock = session.lock()?;
-    let launch = fux2::sys::launch(&session.root, &spec.to_args());
-    drop(lock);
-    let launch = launch?;
+    let launch = fux2::sys::launch(&session.root, &spec.to_args())?;
     let mut go = launch.go;
-    // Said before the program starts, and kept with the pane's screen.
-    let word: &[u8] = match launch.bound {
-        Some(why) => {
-            let _ = writeln!(std::io::stderr(), "fux2: {name}: {why}");
-            b"go bound\n"
-        }
-        None => b"go\n",
-    };
-    let told = go.write_all(word).and_then(|()| go.flush());
+    let told = go.write_all(b"go\n").and_then(|()| go.flush());
     // The line comes on a thread of its own, so that a daemon that says
     // nothing cannot hold this command past its bound.
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -728,11 +712,7 @@ fn page(mut args: Args) -> Outcome {
 fn show_pager(pane: &Target) -> Outcome {
     let text = history_text_of(&mut pane.connect()?)?;
     let chosen = std::env::var("PAGER").ok().filter(|p| !p.trim().is_empty());
-    let fallbacks: &[&str] = if cfg!(windows) {
-        &["more.com"]
-    } else {
-        &["less", "more"]
-    };
+    let fallbacks: &[&str] = &["less", "more"];
     let pagers: Vec<String> = match chosen {
         Some(pager) => vec![pager],
         None => fallbacks.iter().map(|p| (*p).to_owned()).collect(),
@@ -973,7 +953,7 @@ fn kill(mut args: Args) -> Outcome {
 /// Runs the viewer installed beside this program.
 fn view(args: Args) -> Outcome {
     let exe = std::env::current_exe().map_err(|e| Failure::new(Code::Io, format!("{e}")))?;
-    let viewer = exe.with_file_name(format!("fux2-view{}", std::env::consts::EXE_SUFFIX));
+    let viewer = exe.with_file_name("fux2-view");
     if !viewer.exists() {
         let why = format!("the viewer is not installed: no {}", viewer.display());
         return Err(Failure::new(Code::Missing, why));
@@ -981,22 +961,8 @@ fn view(args: Args) -> Outcome {
     let mut command = std::process::Command::new(&viewer);
     command.args(args.0);
     let failed = |e: std::io::Error| Failure::new(Code::Io, format!("{}: {e}", viewer.display()));
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        Err(failed(command.exec()))
-    }
-    #[cfg(windows)]
-    {
-        let status = command.status().map_err(failed)?;
-        match status.success() {
-            true => Ok(()),
-            false => Err(Failure::new(
-                Code::Io,
-                format!("the viewer ended: {status}"),
-            )),
-        }
-    }
+    use std::os::unix::process::CommandExt;
+    Err(failed(command.exec()))
 }
 
 fn run(mut args: Args) -> Outcome {

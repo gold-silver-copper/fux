@@ -20,17 +20,12 @@ struct Lab {
     session: Session,
 }
 
-fn program(script_unix: &str, script_windows: &str) -> Vec<String> {
-    let words: &[&str] = if cfg!(windows) {
-        &["cmd.exe", "/d", "/c", script_windows]
-    } else {
-        &["sh", "-c", script_unix]
-    };
-    words.iter().map(|word| (*word).to_owned()).collect()
+fn program(script: &str) -> Vec<String> {
+    ["sh", "-c", script].map(str::to_owned).to_vec()
 }
 
 fn idle() -> Vec<String> {
-    program("sleep 300", "ping -n 300 127.0.0.1 > NUL")
+    program("sleep 300")
 }
 
 impl Lab {
@@ -96,11 +91,7 @@ impl Drop for Lab {
 
 fn kill_process(pid: u32) {
     let pid = pid.to_string();
-    let _ = if cfg!(windows) {
-        Command::new("taskkill").args(["/F", "/PID", &pid]).output()
-    } else {
-        Command::new("kill").args(["-9", &pid]).output()
-    };
+    let _ = Command::new("kill").args(["-9", &pid]).output();
 }
 
 /// A wait wakes for one change followed by silence, whether the change
@@ -108,7 +99,7 @@ fn kill_process(pid: u32) {
 #[test]
 fn a_wait_wakes_for_a_single_change() -> Tested {
     let lab = Lab::new()?;
-    let quiet = program("exec cat", "findstr x");
+    let quiet = program("exec cat");
     lab.start("quiet", &quiet)?;
     let mut waiter = lab.client("quiet")?;
     let mut typist = lab.client("quiet")?;
@@ -157,10 +148,7 @@ fn a_wait_wakes_for_a_single_change() -> Tested {
 #[test]
 fn a_stalled_reader_holds_up_nobody() -> Tested {
     let lab = Lab::new()?;
-    let noisy = program(
-        "yes 0123456789012345678901234567890123456789012345678901234567890123",
-        "for /L %i in (1,0,2) do @echo 0123456789012345678901234567890123456789",
-    );
+    let noisy = program("yes 0123456789012345678901234567890123456789012345678901234567890123");
     lab.start("noisy", &noisy)?;
     // Never read from: its answers pile up until the pane gives up on it.
     let (stream, _) = fux2::sys::connect(&lab.session.pane_dir("noisy"))?;
@@ -216,13 +204,7 @@ fn an_old_token_never_reaches_the_replacement() -> Tested {
     let lab = Lab::new()?;
     let old = lab.start("job", &idle())?;
     let pid = lab.client("job")?.hello.pid.to_string();
-    let killed = if cfg!(windows) {
-        Command::new("taskkill")
-            .args(["/F", "/PID", &pid])
-            .output()?
-    } else {
-        Command::new("kill").args(["-9", &pid]).output()?
-    };
+    let killed = Command::new("kill").args(["-9", &pid]).output()?;
     assert!(killed.status.success(), "{killed:?}");
     let until = soon(Duration::from_secs(5));
     while lab.client("job").is_ok() && Instant::now() < until {
@@ -264,14 +246,13 @@ fn an_old_token_never_reaches_the_replacement() -> Tested {
 
 /// Kill reaches what the program left behind, after the program has ended
 /// and its status has been read.
-#[cfg(unix)]
 #[test]
 fn kill_ends_what_an_ended_program_left_behind() -> Tested {
     let lab = Lab::new()?;
     // Ignored before the child exists, so the hang-up the terminal's end
     // sends cannot reach it first: it stays behind, as a daemon would.
     let script = "trap '' HUP; sleep 300 & echo left=$!; exit 0";
-    lab.start("orphan", &program(script, ""))?;
+    lab.start("orphan", &program(script))?;
     let until = soon(Duration::from_secs(10));
     let pid = loop {
         let out = lab.fux2(&["read", "orphan"])?;
@@ -298,10 +279,9 @@ fn kill_ends_what_an_ended_program_left_behind() -> Tested {
 fn history_text_holds_every_line_once_in_order() -> Tested {
     let lab = Lab::new()?;
     let long: String = std::iter::repeat_n('w', 200).collect();
-    let script_unix =
+    let script =
         format!("i=1; while [ $i -le 500 ]; do echo line-$i; i=$((i+1)); done; echo {long}");
-    let windows = format!("(for /L %i in (1,1,500) do @echo line-%i) & echo {long}");
-    lab.start("many", &program(&script_unix, &windows))?;
+    lab.start("many", &program(&script))?;
     let until = soon(Duration::from_secs(30));
     loop {
         let listed = lab.fux2(&["ls", "--long"])?;
@@ -382,7 +362,7 @@ fn printed_pid(lab: &Lab, pane: &str) -> Result<String, Box<dyn std::error::Erro
 fn kill_reaches_a_process_that_left_the_session() -> Tested {
     let lab = Lab::new()?;
     let script = "setsid sleep 300 & echo left=$!; exec sleep 300";
-    lab.start("escaper", &program(script, ""))?;
+    lab.start("escaper", &program(script))?;
     let pid = printed_pid(&lab, "escaper")?;
     assert!(process_alive(&pid)?, "it should be running");
     let killed = lab.fux2(&["kill", "escaper"])?;
@@ -400,7 +380,7 @@ fn kill_reaches_a_process_that_left_the_session() -> Tested {
 fn an_ended_pane_leaves_no_zombies() -> Tested {
     let lab = Lab::new()?;
     let script = "trap '' HUP; (i=0; while [ $i -lt 8 ]; do (sleep 0 &); i=$((i+1)); sleep 0.05; done) & exit 0";
-    lab.start("litter", &program(script, ""))?;
+    lab.start("litter", &program(script))?;
     let pid = lab.client("litter")?.hello.pid;
     std::thread::sleep(Duration::from_millis(1200));
     let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))?;
@@ -475,7 +455,7 @@ fn a_timed_out_client_does_not_read_an_old_answer() -> Tested {
     let lab = Lab::new()?;
     // A program that prints nothing, so that the wait below cannot be
     // answered at once.
-    lab.start("late", &program("exec sleep 300", "pause >NUL"))?;
+    lab.start("late", &program("exec sleep 300"))?;
     std::thread::sleep(Duration::from_millis(500));
     let mut client = lab.client("late")?;
     let Answer::Screen { token, .. } = client.ask(&Request::Screen { since: None }, ANSWER_WAIT)?
@@ -523,7 +503,7 @@ fn page_removes_only_a_pane_made_for_it() -> Tested {
     lab.start("shown", &idle())?;
     lab.start("caller", &idle())?;
     // It succeeds, as a pager quitting normally does.
-    let cat = if cfg!(windows) { "cmd /d /c findstr . & exit 0" } else { "cat" };
+    let cat = "cat";
     let run = |extra: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_fux2"))
             .args(["page", "shown"])
@@ -550,11 +530,7 @@ fn page_removes_only_a_pane_made_for_it() -> Tested {
             .output()
     };
     // G9: a pager that fails is said, not hidden, and the pane still goes.
-    let failed = close(if cfg!(windows) {
-        "cmd /c exit 1"
-    } else {
-        "false"
-    })?;
+    let failed = close("false")?;
     assert!(!failed.status.success(), "{failed:?}");
     assert!(
         String::from_utf8_lossy(&failed.stderr).contains("pager"),
@@ -565,7 +541,6 @@ fn page_removes_only_a_pane_made_for_it() -> Tested {
 }
 
 /// C1, C3 and C4: what is in the directory decides nothing by its name alone.
-#[cfg(unix)]
 mod directory {
     use super::*;
 
@@ -623,11 +598,10 @@ mod directory {
 /// G1 and G2: a wait for a line counts only what it saw appear, however many
 /// times the screen was redrawn meanwhile, and a pane that never stops
 /// printing ends it as a timeout, not as busy.
-#[cfg(unix)]
 #[test]
 fn a_wait_ignores_old_lines_through_many_redraws() -> Tested {
     let lab = Lab::new()?;
-    lab.start("bar", &program("exec sh", ""))?;
+    lab.start("bar", &program("exec sh"))?;
     let t = lab.fux2(&["send", "bar", "echo done\\n"])?;
     let t = String::from_utf8_lossy(&t.stdout).trim().to_owned();
     let out = lab.fux2(&[
@@ -656,7 +630,7 @@ fn a_wait_ignores_old_lines_through_many_redraws() -> Tested {
         "--text",
     ])?;
     assert_eq!(out.status.code(), Some(5), "{out:?}");
-    lab.start("flood", &program("yes flood", ""))?;
+    lab.start("flood", &program("yes flood"))?;
     let t = lab.client("flood")?.hello.id;
     let token = format!("{t}@1");
     let out = lab.fux2(&[

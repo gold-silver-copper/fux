@@ -131,3 +131,13 @@ Six reviewers and two testers. What changed in the design, in short:
   never remove a later pane of its name.
 - An ended program is reaped when its last descendant goes, at that child's
   signal, not only when the screen freezes.
+
+## D-19: Linux and macOS only (the owner, 2026-11-18)
+
+The owner: "Feel like we should get rid of windows supports cause it keeps causing
+issues". This supersedes D-1's "window linux mac": fux2 runs on Linux and macOS.
+Its Windows code is deleted (named pipes and marker files, the kept copy of the
+program, the elevated session folder and config rule, console signal delivery,
+the job-breakaway report of D-9), and building it for Windows stops at one
+`compile_error!`. The neutral `fuxix` additions stay, since fuxix still serves fux
+on Windows. fux's own Windows CI is as it is on master; fux2 is not built there.

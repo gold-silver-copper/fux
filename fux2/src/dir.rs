@@ -91,24 +91,7 @@ fn default_root() -> Result<(PathBuf, PathBuf), Failure> {
         Some(run) => PathBuf::from(run),
         None => PathBuf::from(set("HOME").ok_or_else(|| missing("HOME"))?).join(".cache"),
     };
-    #[cfg(windows)]
-    let base = PathBuf::from(set("LOCALAPPDATA").ok_or_else(|| missing("LOCALAPPDATA"))?);
-    // An elevated and a normal process own their files differently, so
-    // each has its own private folder from the first one down.
-    #[cfg(windows)]
-    let own = {
-        let user = fuxix::socket::User::current().map_err(|e| io("this user", e))?;
-        base.join(if user.elevated() {
-            "fux2-elevated"
-        } else {
-            "fux2"
-        })
-    };
-    #[cfg(unix)]
     let own = base.join("fux2");
-    #[cfg(windows)]
-    let session = own.join("run").join("default");
-    #[cfg(unix)]
     let session = own.join("default");
     std::fs::create_dir_all(&base).map_err(|e| io(base.display(), e))?;
     Ok((own, session))
@@ -140,8 +123,6 @@ impl Session {
         }
         let (own, root) = default_root()?;
         private(&own)?;
-        #[cfg(windows)]
-        private(&own.join("run"))?;
         private(&root)?;
         Ok(Session { root })
     }
@@ -265,8 +246,7 @@ impl Session {
     }
 }
 
-/// Removes a pane's directory, its claim given up first, as Windows needs
-/// and every system allows. Nothing is removed unless the directory there
+/// Removes a pane's directory, its claim given up first. Nothing is removed unless the directory there
 /// is still the one claimed: one moved aside and replaced is another pane's.
 pub fn remove_pane(_lock: &SessionLock, dir: &Path, claim: File) -> Result<(), Failure> {
     if !sys::still_claimed(dir, &claim) {

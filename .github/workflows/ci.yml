@@ -88,7 +88,7 @@ jobs:
           cargo clippy -p fux-pane --features testing,in-process --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
 
       # fux2's README example with a real shell and no server, as a person
-      # would run it.
+      # would run it. fux2 runs on Linux and macOS only.
       - name: fux2 example
         timeout-minutes: 5
         run: |
@@ -344,7 +344,7 @@ jobs:
         run: |
           set -euo pipefail
           packages=(-p fux-vt -p fux-vt-peak -p fuxix -p fux-wire)
-          cargo clippy "${packages[@]}" -p fux-pane -p fux-server -p fux -p fux2 -p fux2-view --all-targets --locked -- -D warnings
+          cargo clippy "${packages[@]}" -p fux-pane -p fux-server -p fux --all-targets --locked -- -D warnings
           cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings
           cargo test "${packages[@]}" --locked -- --skip another_user_is_refused
 
@@ -368,17 +368,6 @@ jobs:
           cargo test -p fux --test windows --locked -- --nocapture --test-threads 1
           tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe|ping" || true
 
-      # fux2's tests, then its README example with a real shell. One test
-      # at a time: Windows has one polling thread per process.
-      - name: fux2
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        run: |
-          set -euo pipefail
-          cargo test -p fux2 -p fux2-view --locked -- --test-threads 1
-          cargo build -p fux2 -p fux2-view --locked
-          fux2/tests/example.sh
-
       # fux's client (WINDOWS.md, PR 8), real `fux` attached in a console a
       # test hosts (tests/console.rs), through cmd.exe as in a terminal.
       - name: fux client
@@ -396,7 +385,7 @@ jobs:
       # user is made here, with a masked password only this step sees.
       - name: fux client, as a standard user
         if: ${{ !cancelled() }}
-        timeout-minutes: 6
+        timeout-minutes: 4
         shell: pwsh
         run: |
           $pw = 'Fx!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
@@ -420,30 +409,6 @@ jobs:
             "exit $($run.ExitCode)"
             $failed += [int]($run.ExitCode -ne 0)
           }
-          # fux2's viewer runs the user's key bindings only when not elevated.
-          # It gets a temporary folder of its own, which only it may change.
-          $own = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\fuxclient-temp"
-          icacls $own.FullName /grant 'fuxclient:(OI)(CI)M' /Q | Out-Null
-          $saved = $env:TEMP, $env:TMP
-          $env:TEMP = $env:TMP = $own.FullName
-          $view = Get-ChildItem target\debug\deps\view-*.exe | Sort-Object LastWriteTime | Select-Object -Last 1
-          "=== $($view.Name)"
-          $log = "$env:RUNNER_TEMP\view.txt"
-          # Not -Wait, which also waits for every process the test left.
-          $run = Start-Process -FilePath $view.FullName -ArgumentList '--test-threads', '1' -Credential $user -WorkingDirectory "$PWD\fux2-view" `
-            -RedirectStandardError "$log.err" -RedirectStandardOutput $log -PassThru
-          $null = $run.Handle
-          $finished = $run.WaitForExit(180000)
-          if (-not $finished) { Stop-Process -Id $run.Id -Force; "the viewer tests timed out" }
-          $env:TEMP, $env:TMP = $saved
-          Get-Content $log, "$log.err"
-          "exit $(if ($finished) { $run.ExitCode } else { 'timeout' })"
-          # Every pane was killed: none may still be running.
-          Start-Sleep -Seconds 3
-          $left = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'fux2%'")
-          $left | ForEach-Object { "left running: $($_.ProcessId) $($_.CommandLine)" }
-          $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-          $failed += [int](-not $finished -or $run.ExitCode -ne 0) + [int]($left.Count -gt 0)
           exit $failed
 
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured

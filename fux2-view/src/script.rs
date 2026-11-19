@@ -631,7 +631,6 @@ fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
 pub fn read_small_file(path: &std::path::Path, most: u64) -> std::io::Result<String> {
     let mut options = std::fs::File::options();
     options.read(true);
-    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(fuxix::file::NONBLOCK);
@@ -659,15 +658,6 @@ pub fn read_small_file(path: &std::path::Path, most: u64) -> std::io::Result<Str
 /// Reads the user's configuration, if there is one to run: `Err` says why
 /// it is not used.
 pub fn load_config() -> Result<Option<String>, String> {
-    #[cfg(windows)]
-    {
-        // A normal process can write the user's files; an elevated viewer
-        // must not run what they say.
-        let user = fuxix::socket::User::current().map_err(|e| e.to_string())?;
-        if user.elevated() {
-            return Err("elevated: view.grift is not run, built-in keys only".to_owned());
-        }
-    }
     let Some(dir) = fuxix::file::config_dir() else {
         return Ok(None);
     };

@@ -3,7 +3,7 @@
 A terminal multiplexer with no server. Each pane is one small process that
 owns a terminal, keeps its screen and answers whoever connects. A directory of
 those panes is the whole session. The viewer is an ordinary client: start it,
-kill it, start two, and the panes do not notice.
+kill it, start two, and the panes do not notice. It runs on Linux and macOS.
 
 ## Install and try
 
@@ -39,12 +39,12 @@ the pane has moved on.
 | `read` | `fux2 read build` | the screen as text |
 | `wait` | `fux2 wait build --after "$t" --ms 5000` | `<token> <state>` |
 | `resize` | `fux2 resize build 100 30` | `100 30` |
-| `signal` | `fux2 signal build INT` | `foreground-group`, or `console-input` on Windows |
+| `signal` | `fux2 signal build INT` | `foreground-group` |
 | `kill` | `fux2 kill build`, or a group: `fux2 kill --label project=x` | nothing, when everything it started is gone (see below) |
 | `page` | `fux2 page build` | shows the pane's scrollback in a pager (`--close-pane`: then removes the pane it runs in; the viewer's `C-b [` uses this) |
 | `view` | `fux2 view --layout tabs.toml` | the viewer |
 
-With no program after `--`, `start` runs `$SHELL` (`%COMSPEC%` on Windows). The
+With no program after `--`, `start` runs `$SHELL` (else `sh`). The
 program gets the caller's directory and environment, plus `TERM=xterm-256color`,
 `TERM_PROGRAM=fux2` and `FUX2_PANE=<name>`. Panes are 80x24 unless told; a size
 outside 1–256 columns and 1–128 rows is a usage error (exit 2). `--history BYTES`
@@ -68,10 +68,10 @@ refused whole (`busy`, at most 64 KiB waiting):
 - `--stdin`: standard input, byte for byte
 
 **`signal`** names are `HUP INT TERM KILL STOP TSTP CONT WINCH QUIT USR1 USR2`
-and the other POSIX names (`ABRT`, `ALRM`, ...). On Windows only `INT` and
-`QUIT` are delivered (as Ctrl-C and Ctrl-Break); the rest are `unsupported`.
+and the other POSIX names (`ABRT`, `ALRM`, ...), sent to the program's
+foreground process group.
 
-**`kill`** hangs the program up, then kills its session (Windows: its job) and
+**`kill`** hangs the program up, then kills its session and
 waits for all of it. On Linux it also kills anything the program started that
 left its session (`setsid`), since every such process stays the pane's. On macOS
 a process that left the session can't be found, and is not killed. `kill` exits
@@ -147,7 +147,7 @@ you already have:
 
 ```sh
 fux2 read build --history-text | less
-fux2 read build --history-text | wl-copy     # or pbcopy, or clip on Windows
+fux2 read build --history-text | wl-copy     # or pbcopy on macOS
 ```
 
 That prints everything the pane still retains, then its screen, each line once
@@ -159,7 +159,7 @@ Above 256 MiB of text it refuses (`limit`).
 In the viewer, `C-b [` opens the focused pane's history in a new pane (in the
 shown tab, so not in a tab that matches `name=`; the stored layout of the next
 release lifts that) running
-`$PAGER`, else `less`, else `more` (`more.com` on Windows). Search and scroll
+`$PAGER`, else `less`, else `more`. Search and scroll
 there, and select with your terminal to copy. If the pager can't run or fails,
 the pane shows why and waits for Enter. The new pane is 80x24 like any other;
 `C-b f` fits it to its tile. When the pager ends, the pane removes itself and the
@@ -211,7 +211,7 @@ a whole group: `fux2 kill --label project=x`.
 ### Keys and commands: `view.grift`
 
 The viewer loads `fux2/view.grift` from your config directory
-(`$XDG_CONFIG_HOME` or `~/.config`, `%APPDATA%` on Windows), at most 64 KiB, in
+(`$XDG_CONFIG_HOME` or `~/.config`), at most 64 KiB, in
 the [grift](https://crates.io/crates/grift) language:
 
 ```lisp
@@ -258,23 +258,18 @@ the source (built into the viewer), and any of them can be unbound or replaced.
 
 Loading gets 2 seconds and each binding 5, on a thread of their own: the viewer
 keeps drawing and taking keys, and `C-b d` works, while one runs. One that
-overruns is stopped and the status line says so. An elevated viewer on Windows
-does not run this file, since a normal process could have written it; the default
-keys still work.
+overruns is stopped and the status line says so.
 
 ## Where panes live, and who may connect
 
 The session directory is `$XDG_RUNTIME_DIR/fux2/default` on Linux (else
-`~/.cache/fux2/default`), `~/Library/Caches/fux2/default` on macOS and
-`%LOCALAPPDATA%\fux2\run\default` on Windows (`fux2-elevated` instead of
-`fux2` for an elevated process), or the absolute private directory
+`~/.cache/fux2/default`) and `~/Library/Caches/fux2/default` on macOS, or the
+absolute private directory
 `FUX2_DIR` names. A session holds at most 128 panes. It is refused unless it is a
 real directory, yours and closed to others.
 
 **Any process running as your user can connect, and a process that connects can
-read every pane's screen, type into it and kill it.** On Windows the same holds
-for processes of your user at the same elevation; an elevated and a normal
-process have separate sessions. Other users are refused. Tokens and pane ids
+read every pane's screen, type into it and kill it.** Other users are refused. Tokens and pane ids
 prevent mistakes such as typing into a replaced pane. They are not passwords.
 
 ## What it leaves out
@@ -292,6 +287,4 @@ pane's labels are fixed when it starts. If a pane's daemon itself is killed its 
 its program normally gets a hang-up; a program that ignores that keeps running
 with nothing attached.
 
-On Windows, signals other than `INT` and `QUIT` are `unsupported`. If `fux2 start`
-runs inside a job that forbids leaving it (some CI runners and sandboxes), it says
-so on stderr before the program starts, and that pane ends with the job.
+fux2 does not run on Windows; building it there fails with a message saying so.
