@@ -18,6 +18,9 @@ pub enum Command {
     Paste(PathBuf),
     /// `cell WIDTH HEIGHT`: a cell's size in pixels, for pictures.
     Cell { width: u16, height: u16 },
+    /// `signal NAME`: a signal (`INT`, `TERM`, `HUP`, …) to the program's
+    /// foreground process group.
+    Signal(String),
     /// `kill`: end the program and all it started.
     Kill,
 }
@@ -53,13 +56,14 @@ pub fn parse(line: &str) -> Result<Command, Failure> {
             width: number(width, 1000, "width")?,
             height: number(height, 1000, "height")?,
         },
+        ("signal", [name]) => Command::Signal(name.trim_start_matches("SIG").to_owned()),
         ("kill", []) => Command::Kill,
-        ("resize" | "cell" | "kill", _) => {
+        ("resize" | "cell" | "signal" | "kill", _) => {
             return Err(Failure::new("wrong arguments; see the README"));
         }
         _ => {
             return Err(Failure::new(
-                "no such command: resize, send, paste, cell and kill are",
+                "no such command: resize, send, paste, cell, signal and kill are",
             ));
         }
     };

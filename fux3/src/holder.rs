@@ -898,6 +898,10 @@ impl Holder {
                 fux_vt::keys::encode::paste(&text, bracketed, &mut out);
                 self.input.admit(out)?;
             }
+            Command::Signal(name) => {
+                self.must_run()?;
+                self.signal(&name)?;
+            }
             Command::Cell { width, height } => {
                 let graphics = graphics((width, height), self.pictures)?;
                 self.parser.set_host_graphics(graphics);
@@ -906,6 +910,18 @@ impl Holder {
             }
         }
         Ok(false)
+    }
+
+    /// Signals the terminal's foreground process group, else the program's.
+    fn signal(&self, name: &str) -> Result<(), Failure> {
+        let signal = (Signal::ALL.iter().copied())
+            .find(|signal| signal.name() == name)
+            .ok_or_else(|| Failure::new(format!("no signal {name:?}")))?;
+        let group = fuxix::terminal::foreground_group(&self.master)
+            .map_err(|e| io("finding the foreground group", e))?
+            .or_else(|| self.job.as_ref().map(Job::leader))
+            .ok_or_else(|| Failure::new("no process to signal"))?;
+        fuxix::process::kill_group(group, signal).map_err(|e| io("signalling", e))
     }
 
     fn must_run(&self) -> Result<(), Failure> {

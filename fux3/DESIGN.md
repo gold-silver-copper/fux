@@ -64,6 +64,7 @@ for the program), and, when the last publish failed, `publish failed: WHY`.
 | `send PATH` | `queued` grows by the file's size, then drains | `N send PATH: WHY` (not absolute, a link, not a regular file, not the user's, over 16 MiB, the queue full, the program ended): nothing was queued |
 | `paste PATH` | as `send`, the file's UTF-8 text as one paste: bracketed if `bracketed-paste on`, its own end markers taken out | as `send`, or not UTF-8 |
 | `cell W H` | `cell` changes; pictures drawn after it are laid out in it | `N cell W H: WHY` (smaller than 2x6, over 1000) |
+| `signal NAME` | nothing (the program decides); any of fuxix's names (`INT`, `TERM`, `HUP`, `QUIT`, `KILL`, `TSTP`, `CONT`, `USR1`, …); a leading `SIG` is dropped. Sent to the terminal's foreground process group | `N signal NAME: WHY` (no such signal, the program ended) |
 | `kill` | the directory goes (complete) or `state kill-incomplete WHAT` (incomplete; send `kill` again) | `N kill: kill-incomplete WHAT` |
 | anything else | `commands` and `refused` count it | `N LINE: no such command…` |
 
