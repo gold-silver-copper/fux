@@ -22,18 +22,19 @@ there.
 
 ```sh
 D=$(fux3 dir)                               # the session directory
-fux3 start build -- sh                      # prints the pane's directory, $D/build
-printf 'echo hi\n' > "$D/build/in"          # type into it
-cat "$D/build/screen"                       # line 1: the pane's id and version; then the screen
-cat "$D/build/screen.styled"                # the same screen in colour
-less "$D/build/history"                     # what scrolled off, as plain text
-cat "$D/build/status"                       # size, state and exit code, pids, modes, labels
-echo "resize 100 30" > "$D/build/ctl"       # a command; a refusal appears in errors
-echo "send $HOME/paste.txt" > "$D/build/ctl" # a send of any size up to 16 MiB, whole or refused
-ls "$D"                                     # the panes
-fux3 view                                   # the panes as fux shows them (see "The viewer"); C-b d detaches
-echo "split build right" > "$D/.view/ctl"   # the layout, driven with a plain file too
-echo kill > "$D/build/ctl"                  # ends the program and all it started; the directory goes
+fux3 start build -- sh                      # prints the pane's directory, $D/main/build
+printf 'echo hi\n' > "$D/main/build/in"     # type into it
+cat "$D/main/build/screen"                  # line 1: the pane's id and version; then the screen
+cat "$D/main/build/screen.styled"           # the same screen in colour
+less "$D/main/build/history"                # what scrolled off, as plain text
+cat "$D/main/build/status"                  # size, state and exit code, pids, modes, labels
+echo "resize 100 30" > "$D/main/build/ctl"  # a command; a refusal appears in errors
+echo "send $HOME/paste.txt" > "$D/main/build/ctl" # a send of any size up to 16 MiB, whole or refused
+ls "$D"                                     # the workspaces: main
+ls "$D/main"                                # its panes: build
+fux3 view                                   # workspace main as fux shows it (see "The viewer"); C-b d detaches
+echo "split build right" > "$D/main/.view/ctl" # the layout, driven with a plain file too
+echo kill > "$D/main/build/ctl"             # ends the program and all it started; the directory goes
 ```
 
 ## The commands
@@ -41,13 +42,36 @@ echo kill > "$D/build/ctl"                  # ends the program and all it starte
 | Command | What |
 |---|---|
 | `fux3 dir` | prints the session directory, making it if missing |
-| `fux3 start NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane; prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, 4096 bytes to 256 MiB), `--label KEY=VALUE` (up to 16) |
-| `fux3 ls` | lists the live panes |
-| `fux3 wait NAME [--ms N]` | waits until NAME's screen changes (default 10000 ms), prints its new line 1; exit 1 if nothing changed in time |
-| `fux3 view [--do LINE]` | the viewer (below); with `--do`, one layout command applied with no viewer running |
+| `fux3 start [WORKSPACE/]NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane in WORKSPACE (default `main`, made if missing); prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, 4096 bytes to 256 MiB), `--label KEY=VALUE` (up to 16) |
+| `fux3 ls` | lists the live panes, as `WORKSPACE/NAME` |
+| `fux3 wait [WORKSPACE/]NAME [--ms N]` | waits until the pane's screen changes (default 10000 ms), prints its new line 1; exit 1 if nothing changed in time |
+| `fux3 view [WORKSPACE] [--do LINE]` | the viewer of a workspace (below); with `--do`, one layout command applied with no viewer running |
 
-Every `fux3` command first clears the leftovers of panes whose holder is gone.
-Names are 1 to 32 of `a-z 0-9 _ -`, starting with a letter or digit.
+Every `fux3` command first clears the leftovers of panes whose holder is gone,
+in every workspace. Pane and workspace names are 1 to 32 of `a-z 0-9 _ -`,
+starting with a letter or digit; a pane's name is unique in its workspace.
+
+## Workspaces
+
+A workspace is a directory of the session, and a pane a directory of its
+workspace: `$D/rig/build/`. `ls "$D"` lists the workspaces, `ls "$D/rig"` a
+workspace's panes. A workspace is made when its first pane starts (or by
+`mkdir -m 700 "$D/rig"`) and has no file, process or state of its own but the
+viewer's `.view/` (its layout). An empty workspace stays until you remove it
+(`rmdir "$D/rig"`, after removing its `.view` if a viewer made one). A pane's
+workspace is fixed when it starts.
+
+Ending a workspace is ending each pane in it:
+
+```sh
+fux3 ls >/dev/null; for p in "$D/rig"/*/; do echo kill > "${p}ctl"; done
+```
+
+(`fux3 ls` first clears dead panes, whose `ctl` would block the writer.)
+
+A program in a pane finds itself in its environment: `FUX3_DIR` (the
+session), `FUX3_WORKSPACE`, `FUX3_PANE` (its name) and `FUX3_PANE_DIR` (its
+directory).
 
 The session directory is `$FUX3_DIR` if set (an absolute path), else
 `$XDG_RUNTIME_DIR/fux3` on Linux and `~/Library/Caches/fux3` on macOS. It and
@@ -94,6 +118,7 @@ Writing text over any cell of a picture removes the whole picture.
 ```
 id 3f9a04c2b18e7d65
 version 42
+workspace main
 name build
 size 80 24
 cell 10 20
@@ -156,7 +181,7 @@ program's echo cannot resize or kill a pane.
 ## Waiting for a change
 
 `fux3 wait build` returns when `screen` changes. On Linux,
-`inotifywait -e moved_to "$D/build"` does the same with no fux3. Or poll line 1.
+`inotifywait -e moved_to "$D/main/build"` does the same with no fux3. Or poll line 1.
 
 The screens are published at once on the first change after a rest, at most
 every 40 ms while output goes on, and once more within 40 ms when it rests.
@@ -175,7 +200,7 @@ so a shell's `> in` never makes a regular file there.
 
 ## Kill
 
-`echo kill > "$D/NAME/ctl"` hangs up the program, then kills its session; on
+`echo kill > "$D/WORKSPACE/NAME/ctl"` hangs up the program, then kills its session; on
 Linux the holder is the subreaper of everything the program started, so a
 `setsid` child or a double-forked daemon is found and killed too.
 
@@ -186,7 +211,7 @@ the inner one too (its directory goes at the next `fux3` command). A viewer
 run inside a pane starts its shells inside that pane, so killing that pane
 ends them. On macOS the inner pane's holder left the outer pane's session and
 cannot be found, so it outlives the outer pane: end it with
-`echo kill > "$D/NAME/ctl"`. When
+`echo kill > "$D/WORKSPACE/NAME/ctl"`. When
 everything is gone the directory is removed and the holder exits. When
 something could not be killed, the directory stays, `state` says
 `kill-incomplete` and what is left, and you may send `kill` again. On macOS a
@@ -196,14 +221,14 @@ found, and is not reported.
 ## Two hazards of plain files
 
 **A holder killed outright** (`kill -9`, a crash) leaves its directory until
-the next `fux3` command clears it. Until then `ls "$D"` shows it, its `status`
+the next `fux3` command clears it. Until then `ls "$D/main"` shows it, its `status`
 still says `running`, and **`printf … > in` blocks for ever**: a FIFO with no
 reader blocks its writer in `open`. `fux3 ls` tells live panes from dead ones
 (and clears the dead). Guard a write you can't afford to hang:
 
 ```sh
-timeout 2 sh -c 'printf "echo hi\n" > "$1"' sh "$D/build/in"        # Linux
-perl -e 'alarm 2; exec @ARGV' sh -c 'printf "echo hi\n" > "$1"' sh "$D/build/in"   # macOS
+timeout 2 sh -c 'printf "echo hi\n" > "$1"' sh "$D/main/build/in"        # Linux
+perl -e 'alarm 2; exec @ARGV' sh -c 'printf "echo hi\n" > "$1"' sh "$D/main/build/in"   # macOS
 ```
 
 **A write over 512 bytes to `in`** may arrive in pieces, mixed with another
@@ -237,7 +262,7 @@ mkdir -m 700 /Volumes/fux3/s && export FUX3_DIR=/Volumes/fux3/s
 
 ## Limits
 
-At most 128 panes a session, 500x200 cells a pane, 16 MiB a `send`, 16 MiB
+At most 128 panes a workspace, 500x200 cells a pane, 16 MiB a `send`, 16 MiB
 waiting for a program, 512 bytes a `ctl` line, 64 KiB of the terminal's
 replies waiting (more are dropped, noted in `errors`), 32 lines of `errors`,
 8 MiB a screen file, 64 pictures and 16 MiB of their pixels. Everything past

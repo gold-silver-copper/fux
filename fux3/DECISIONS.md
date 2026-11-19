@@ -105,3 +105,12 @@ overruled it, both are recorded.
   preserve this behavior?" — one kill ends a task and all the panes it
   started, with no special case. Kept, stated by a test; on macOS an inner
   pane's holder left the session and outlives the outer pane (README).
+- **D29. A workspace is a directory, and a pane a directory of its
+  workspace** (`$D/rig/build/`). Owner, 2026-11-19: "what if we represent
+  workspaces as folders... so that pane files are stored in folders", then
+  "I do like this". `fux3 start [WORKSPACE/]NAME` (default `main`); `ls "$D"`
+  lists workspaces; the viewer keeps one layout per workspace, in its
+  `.view/`, and shows one workspace; workspaces are listed by name, so they
+  have no order to change, and a pane does not move between them. An empty
+  workspace directory is left alone: it is how `mkdir` makes one. Programs
+  get `FUX3_WORKSPACE`, `FUX3_PANE` and `FUX3_PANE_DIR`.

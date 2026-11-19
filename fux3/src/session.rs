@@ -1,5 +1,5 @@
 //! The session directory: one private directory holding a directory per
-//! pane. A pane's holder locks its directory for as long as it lives, and
+//! workspace, each holding a directory per pane. A pane's holder locks its directory for as long as it lives, and
 //! that lock is the only proof a pane is alive: a directory whose lock can
 //! be taken is a dead pane's leftovers. The session's own lock (`.lock`)
 //! serializes making and clearing pane directories; reads never take it.
@@ -9,7 +9,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The most panes a session holds.
+/// The most panes a workspace holds.
 pub const MAX_PANES: usize = 128;
 /// The most entries a listing reads before it refuses.
 const MAX_ENTRIES: usize = 1024;
@@ -109,15 +109,59 @@ fn default_root() -> Result<PathBuf, Failure> {
     Ok(base.join("fux3"))
 }
 
-/// A session: its private directory.
+/// A session: its private directory, holding one directory per workspace.
 #[derive(Clone, Debug)]
 pub struct Session {
     pub root: PathBuf,
 }
 
+/// A workspace: a directory of the session's holding one per pane, and
+/// nothing of its own but the viewer's `.view`.
+#[derive(Clone, Debug)]
+pub struct Workspace {
+    pub session: Session,
+    pub name: String,
+    pub dir: PathBuf,
+}
+
+/// The workspace a pane named without one is in.
+pub const DEFAULT_WORKSPACE: &str = "main";
+
 /// The session's lock, while held.
 pub struct SessionLock {
     _file: File,
+}
+
+/// The directories in `dir` whose names a pane or workspace may have,
+/// sorted. Links and anything that is not a directory are none of them.
+/// Nothing is opened.
+fn dirs_in(dir: &Path) -> Result<Vec<String>, Failure> {
+    let entries = std::fs::read_dir(dir).map_err(|e| io(dir.display(), e))?;
+    let mut names = Vec::new();
+    for (seen, entry) in entries.flatten().enumerate() {
+        if seen >= MAX_ENTRIES {
+            let why = format!("more than {MAX_ENTRIES} entries in {}", dir.display());
+            return Err(Failure::new(why));
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let real = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        if real && check_name(&name).is_ok() {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Splits `[WORKSPACE/]NAME`, the workspace `main` if none is given; both
+/// names checked.
+pub fn split_pane(text: &str) -> Result<(String, String), Failure> {
+    let (workspace, name) = text.split_once('/').unwrap_or((DEFAULT_WORKSPACE, text));
+    check_name(workspace)?;
+    check_name(name)?;
+    Ok((workspace.to_owned(), name.to_owned()))
 }
 
 impl Session {
@@ -136,9 +180,26 @@ impl Session {
         Ok(Session { root })
     }
 
-    /// The directory of the pane called `name`.
-    pub fn pane_dir(&self, name: &str) -> PathBuf {
-        self.root.join(name)
+    /// The workspace `name`, made if `make` and missing, refused unless it
+    /// is a private directory.
+    pub fn workspace(&self, name: &str, make: bool) -> Result<Workspace, Failure> {
+        check_name(name)?;
+        let dir = self.root.join(name);
+        match make {
+            true => private(&dir)?,
+            false => check_private(&dir)?,
+        }
+        Ok(Workspace {
+            session: self.clone(),
+            name: name.to_owned(),
+            dir,
+        })
+    }
+
+    /// The workspaces, by name: every directory here a workspace may be
+    /// named, empty or not.
+    pub fn workspaces(&self) -> Result<Vec<String>, Failure> {
+        dirs_in(&self.root)
     }
 
     /// Takes the session's lock, waiting a bounded time.
@@ -164,26 +225,32 @@ impl Session {
         }
     }
 
-    /// The names with a pane directory here, live or not, sorted. Links
-    /// and anything that is not a directory are no pane. Nothing is opened.
-    pub fn names(&self) -> Result<Vec<String>, Failure> {
-        let entries = std::fs::read_dir(&self.root).map_err(|e| io(self.root.display(), e))?;
-        let mut names = Vec::new();
-        for (seen, entry) in entries.flatten().enumerate() {
-            if seen >= MAX_ENTRIES {
-                let why = format!("more than {MAX_ENTRIES} entries in {}", self.root.display());
-                return Err(Failure::new(why));
-            }
-            let Ok(name) = entry.file_name().into_string() else {
+    /// Every live pane as `WORKSPACE/NAME`, after clearing every dead
+    /// one's leftovers in every workspace. Workspaces, empty ones too, stay.
+    pub fn live(&self) -> Result<Vec<String>, Failure> {
+        let lock = self.lock()?;
+        let mut live = Vec::new();
+        for name in self.workspaces()? {
+            let Ok(workspace) = self.workspace(&name, false) else {
                 continue;
             };
-            let real = entry.file_type().is_ok_and(|kind| kind.is_dir());
-            if real && check_name(&name).is_ok() {
-                names.push(name);
+            for pane in workspace.clear_dead(&lock)? {
+                live.push(format!("{name}/{pane}"));
             }
         }
-        names.sort();
-        Ok(names)
+        Ok(live)
+    }
+}
+
+impl Workspace {
+    /// The directory of the pane called `name`.
+    pub fn pane_dir(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+
+    /// The names with a pane directory here, live or not, sorted.
+    pub fn names(&self) -> Result<Vec<String>, Failure> {
+        dirs_in(&self.dir)
     }
 
     /// Whether `name`'s holder lives: its directory's lock is held. One
@@ -193,14 +260,14 @@ impl Session {
         !matches!(try_lock_dir(&self.pane_dir(name)), Ok(Some(_)))
     }
 
-    /// The live panes, after clearing every dead one's leftovers.
+    /// The live panes here, after clearing every dead one's leftovers.
     pub fn live(&self) -> Result<Vec<String>, Failure> {
-        let lock = self.lock()?;
+        let lock = self.session.lock()?;
         self.clear_dead(&lock)
     }
 
-    /// Removes the directory of every pane whose lock nobody holds, and
-    /// gives the names of those that remain.
+    /// Removes the directory of every pane here whose lock nobody holds,
+    /// and gives the names of those that remain.
     pub fn clear_dead(&self, _lock: &SessionLock) -> Result<Vec<String>, Failure> {
         let mut live = Vec::new();
         for name in self.names()? {
@@ -217,15 +284,16 @@ impl Session {
         Ok(live)
     }
 
-    /// Takes `name`, under the session's lock: its directory made and its
-    /// lock held. A live pane's name, a full session, or leftovers that
-    /// cannot be removed are refused, saying why.
+    /// Takes `name` here, under the session's lock: its directory made and
+    /// its lock held. A live pane's name, a full workspace, or leftovers
+    /// that cannot be removed are refused, saying why.
     pub fn claim(&self, name: &str) -> Result<(PathBuf, File), Failure> {
         check_name(name)?;
-        let lock = self.lock()?;
+        let lock = self.session.lock()?;
         let live = self.clear_dead(&lock)?;
+        let shown = format!("{}/{name}", self.name);
         if live.iter().any(|n| n == name) {
-            return Err(Failure::new(format!("pane {name} exists")));
+            return Err(Failure::new(format!("pane {shown} exists")));
         }
         let dir = self.pane_dir(name);
         if std::fs::symlink_metadata(&dir).is_ok() {
@@ -236,14 +304,15 @@ impl Session {
         }
         if live.len() >= MAX_PANES {
             return Err(Failure::new(format!(
-                "{} panes, at most {MAX_PANES}",
-                live.len()
+                "{} panes in workspace {}, at most {MAX_PANES}",
+                live.len(),
+                self.name
             )));
         }
         fuxix::file::private_dir(&dir).map_err(|e| io(dir.display(), e))?;
         match try_lock_dir(&dir)? {
             Some(held) => Ok((dir, held)),
-            None => Err(Failure::new(format!("pane {name} exists"))),
+            None => Err(Failure::new(format!("pane {shown} exists"))),
         }
     }
 }

@@ -84,6 +84,7 @@ fn after(now: Instant, wait: Duration) -> Instant {
 #[derive(Debug, Clone)]
 pub struct Spec {
     pub root: PathBuf,
+    pub workspace: String,
     pub name: String,
     pub cols: u16,
     pub rows: u16,
@@ -134,6 +135,7 @@ impl Spec {
         let mut args: Vec<OsString> = vec![
             "__hold".into(),
             self.root.clone().into(),
+            self.workspace.clone().into(),
             self.name.clone().into(),
             format!("{}x{}", self.cols, self.rows).into(),
             format!("{}x{}", self.cell.0, self.cell.1).into(),
@@ -161,6 +163,7 @@ impl Spec {
             ))
         };
         let root = PathBuf::from(next("root")?);
+        let workspace = text(next("workspace")?, "workspace")?;
         let name = text(next("name")?, "name")?;
         let (cols, rows) = pair(text(next("size")?, "size")?, "size")?;
         let cell = pair(text(next("cell")?, "cell")?, "cell")?;
@@ -182,6 +185,7 @@ impl Spec {
         }
         Ok(Spec {
             root,
+            workspace,
             name,
             cols,
             rows,
@@ -309,6 +313,7 @@ struct Holder {
     session: Session,
     dir: PathBuf,
     held: Option<File>,
+    workspace: String,
     name: String,
     labels: Vec<(String, String)>,
     id: String,
@@ -451,6 +456,7 @@ fn graphics(cell: (u16, u16), pictures: bool) -> Result<Graphics, Failure> {
 /// Claims the name, makes the files, opens the terminal and starts the
 /// program. Whatever fails gives the name back.
 fn prepare(spec: Spec) -> Result<Holder, Failure> {
+    session::check_name(&spec.workspace)?;
     session::check_name(&spec.name)?;
     let size = checked_size(spec.cols, spec.rows)?;
     if !(MIN_HISTORY..=MAX_HISTORY).contains(&spec.history) {
@@ -470,7 +476,9 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         root: spec.root.clone(),
     };
     session::check_private(&session.root)?;
-    let (dir, held) = session.claim(&spec.name)?;
+    let (dir, held) = session
+        .workspace(&spec.workspace, true)?
+        .claim(&spec.name)?;
     let made = (|| {
         let in_fifo = fifo(&dir, files::IN)?;
         let ctl_fifo = fifo(&dir, files::CTL)?;
@@ -500,6 +508,7 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         session,
         dir,
         held: Some(held),
+        workspace: spec.workspace,
         name: spec.name,
         labels: spec.labels,
         id,
@@ -555,7 +564,12 @@ fn start_program(spec: &Spec, size: Size, id: &str) -> Result<(Master, Job), Fai
                     .env("TERM_PROGRAM", "fux3")
                     .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))
                     .env("FUX3_DIR", &spec.root)
+                    .env("FUX3_WORKSPACE", &spec.workspace)
                     .env("FUX3_PANE", &spec.name)
+                    .env(
+                        "FUX3_PANE_DIR",
+                        spec.root.join(&spec.workspace).join(&spec.name),
+                    )
                     .env("FUX3_PANE_ID", id);
             },
             fuxix::process::Dispositions::Default,
@@ -1095,6 +1109,7 @@ impl Holder {
         };
         line(format!("id {}", self.id));
         line(format!("version {}", self.version));
+        line(format!("workspace {}", self.workspace));
         line(format!("name {}", self.name));
         line(format!("size {} {}", size.cols(), size.rows()));
         line(format!("cell {} {}", self.cell.0, self.cell.1));

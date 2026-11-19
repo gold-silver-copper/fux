@@ -16,11 +16,19 @@ is a directory of this user's with no group or other bits.
 
 | Entry | What |
 |---|---|
-| `NAME/` | a pane (`NAME` matches `[a-z0-9][a-z0-9_-]{0,31}`, so never a dot-name) |
+| `WORKSPACE/` | a workspace: a directory, 0700, holding its panes; nothing of its own but `.view/` |
+| `WORKSPACE/NAME/` | a pane (both names match `[a-z0-9][a-z0-9_-]{0,31}`, so never a dot-name) |
+| `WORKSPACE/.view/` | the viewer's: the workspace's layout and its own `ctl` and `errors` (see the README) |
 | `.lock` | the session's lock: held briefly to claim a name or clear leftovers |
-| `.view/` | the viewer's: the layout and its own `ctl` and `errors` (see fux3-view) |
 
-## The pane directory
+A workspace is made (0700) when its first pane starts, or by `mkdir`; an empty
+one is left alone. Every `fux3` command clears dead panes in every workspace.
+A pane's workspace is fixed at start: the holder writes its files by the
+directory's path, so `mv rig/build harmony/` would leave the holder writing
+into a directory that is gone (its publishes fail and `status` cannot say so),
+while its lock and FIFOs moved: don't. The pane limit, 128, is per workspace.
+
+## The pane directory (`WORKSPACE/NAME/`)
 
 | Entry | Format and bound | Written by |
 |---|---|---|
@@ -46,7 +54,7 @@ hex digits, new at every start, so a new pane under an old name is told apart.
 A reader skips fields it does not know.
 
 **`status`**, one line each: `id`, `version` (of the screen this status was
-published with), `name`, `size COLS ROWS`, `cell W H` (pixels), `pictures
+published with), `workspace`, `name`, `size COLS ROWS`, `cell W H` (pixels), `pictures
 on|off`, `state` (`running`, `exited CODE`, `signalled NAME`, or
 `kill-incomplete WHAT`), `pid` (the program's, `none` once reaped), `holder`
 (its own pid), `keys` (how the program asked for keys: `legacy cursor=…
@@ -101,8 +109,8 @@ started. The holder then points its stdin and stdout at `/dev/null`.
 **The claim.** Under the session lock (`.lock`, flock, waited for at most
 5 s): every pane directory whose lock can be taken is a dead holder's and is
 removed (`remove_dir_all`, which removes links and never follows them, and
-only if the directory is still the one that was locked); then `NAME/` is made
-0700 and locked (flock on the directory itself, `O_NOFOLLOW|O_DIRECTORY`).
+only if the directory is still the one that was locked); then `WORKSPACE/NAME/` is
+made 0700 and locked (flock on the directory itself, `O_NOFOLLOW|O_DIRECTORY`).
 That lock, held for the holder's life, is the only proof a pane is alive.
 Every `fux3` command clears dead panes this way. A plain `ls "$D"` can show a
 directory whose holder was killed outright until the next `fux3` command; its
@@ -169,7 +177,7 @@ number of bytes written, and no picture file outlives its pane.
 
 ## `fux3 wait`
 
-`fux3 wait NAME [--ms N]` reads line 1 of `screen` every 10 ms until its id or
+`fux3 wait [WORKSPACE/]NAME [--ms N]` reads line 1 of `screen` every 10 ms until its id or
 version differs from the first look, then prints the new line 1; after `N` ms
-(default 10000) it exits 1. On Linux `inotifywait -e moved_to "$D/NAME"` does
+(default 10000) it exits 1. On Linux `inotifywait -e moved_to "$D/WORKSPACE/NAME"` does
 the same with no fux3.

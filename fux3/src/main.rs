@@ -5,7 +5,7 @@ compile_error!("fux3 runs on Linux and macOS only");
 
 use fux3::files::{self, Head};
 use fux3::holder::{self, DEFAULT_CELL, DEFAULT_HISTORY, MAX_HISTORY, Spec};
-use fux3::session::{self, Session};
+use fux3::session::{self, Session, Workspace};
 use fux3::{Failure, io};
 use std::ffi::OsString;
 use std::io::{BufRead, Read, Write};
@@ -16,17 +16,20 @@ const USAGE: &str = "\
 fux3: a terminal multiplexer where a pane is a directory of files
 
   fux3 dir                     print the session directory
-  fux3 start NAME [OPTIONS] [-- PROGRAM ARGS...]
-                               start a pane (default program: $SHELL)
+  fux3 start [WORKSPACE/]NAME [OPTIONS] [-- PROGRAM ARGS...]
+                               start a pane in a workspace (default: main;
+                               default program: $SHELL)
       --size COLSxROWS         its size (default: this terminal's, else 80x24)
       --cell WxH               a cell's size in pixels, for pictures
                                (default: this terminal's, else 10x20)
       --no-pictures            take no sixel pictures
       --history BYTES          the history file's cap (default 4 MiB, 4096 to 256 MiB)
       --label KEY=VALUE        a label, shown in status (repeatable)
-  fux3 ls                      list live panes
-  fux3 wait NAME [--ms N]      wait until NAME's screen changes (default 10000 ms)
-  fux3 view [--do LINE]        show the session's panes, as fux does; with --do,
+  fux3 ls                      list live panes, as WORKSPACE/NAME
+  fux3 wait [WORKSPACE/]NAME [--ms N]
+                               wait until the screen changes (default 10000 ms)
+  fux3 view [WORKSPACE] [--do LINE]
+                               show a workspace's panes, as fux does; with --do,
                                apply one layout command with no viewer running
 
 Every command first clears the leftovers of panes whose holder is gone.
@@ -123,11 +126,11 @@ fn pair(text: &str, what: &str) -> Result<(u16, u16), Failure> {
 }
 
 fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
-    let name = text(
+    let pane = text(
         args.next()
             .ok_or_else(|| Failure::new("start needs a NAME"))?,
     )?;
-    session::check_name(&name)?;
+    let (workspace, name) = session::split_pane(&pane)?;
     let here = fuxix::terminal::stdin_size();
     let (mut cols, mut rows) =
         here.map_or((80, 24), |(size, _)| (size.cols.get(), size.rows.get()));
@@ -187,7 +190,8 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
     let cwd = std::env::current_dir().map_err(|e| io("the current directory", e))?;
     let spec = Spec {
         root: session.root.clone(),
-        name: name.clone(),
+        workspace,
+        name,
         cols,
         rows,
         cell,
@@ -224,8 +228,8 @@ fn launch(spec: &Spec) -> Result<String, Failure> {
     drop(command);
     let unknown = |why: String| {
         Failure::new(format!(
-            "pane {} may or may not have started: {why}",
-            spec.name
+            "pane {}/{} may or may not have started: {why}",
+            spec.workspace, spec.name
         ))
     };
     go.write_all(b"go\n")
@@ -254,19 +258,20 @@ fn launch(spec: &Spec) -> Result<String, Failure> {
 }
 
 /// Line 1 of `name`'s screen, or why not.
-fn head(session: &Session, name: &str) -> Result<Head, Failure> {
-    let path = session.pane_dir(name).join(files::SCREEN);
+fn head(workspace: &Workspace, name: &str) -> Result<Head, Failure> {
+    let path = workspace.pane_dir(name).join(files::SCREEN);
     let bytes = files::read_small(&path, files::MAX_SCREEN_FILE)?;
     let text = String::from_utf8_lossy(&bytes);
     Head::parse(text.lines().next().unwrap_or_default())
 }
 
 fn wait(mut args: impl Iterator<Item = OsString>) -> Outcome {
-    let name = text(
+    let pane = text(
         args.next()
             .ok_or_else(|| Failure::new("wait needs a NAME"))?,
     )?;
-    session::check_name(&name)?;
+    let (space, name) = session::split_pane(&pane)?;
+    let pane = format!("{space}/{name}");
     let mut ms = 10_000u64;
     while let Some(arg) = args.next() {
         match arg.to_str().unwrap_or_default() {
@@ -282,21 +287,22 @@ fn wait(mut args: impl Iterator<Item = OsString>) -> Outcome {
         }
     }
     let (session, live) = session()?;
-    if !live.contains(&name) {
-        return Err(Failure::new(format!("no live pane {name}")));
+    if !live.contains(&pane) {
+        return Err(Failure::new(format!("no live pane {pane}")));
     }
-    let first = head(&session, &name)?;
+    let workspace = session.workspace(&space, false)?;
+    let first = head(&workspace, &name)?;
     let until = Instant::now()
         .checked_add(Duration::from_millis(ms))
         .unwrap_or_else(Instant::now);
     loop {
-        match head(&session, &name) {
+        match head(&workspace, &name) {
             Ok(now) if now.version != first.version || now.id != first.id => {
                 return Ok(say(&format!("{}\n", now.line())));
             }
             Ok(_) => {}
-            Err(failure) if !session.is_live(&name) => {
-                return Err(Failure::new(format!("pane {name} is gone: {failure}")));
+            Err(failure) if !workspace.is_live(&name) => {
+                return Err(Failure::new(format!("pane {pane} is gone: {failure}")));
             }
             Err(_) => {}
         }

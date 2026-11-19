@@ -42,8 +42,12 @@ impl Session {
         self.fux3(&args).map(drop)
     }
 
+    /// A pane's directory: `WORKSPACE/NAME`, or `NAME` in `main`.
     fn pane(&self, name: &str) -> PathBuf {
-        self.root.join(name)
+        match name.contains('/') {
+            true => self.root.join(name),
+            false => self.root.join("main").join(name),
+        }
     }
 
     fn read(&self, name: &str, file: &str) -> String {
@@ -301,7 +305,7 @@ fn a_pane_started_inside_a_pane_is_part_of_it() -> Result {
     })?;
     #[cfg(target_os = "macos")]
     {
-        assert_eq!(s.fux3(&["ls"])?, "inner\n");
+        assert_eq!(s.fux3(&["ls"])?, "main/inner\n");
         s.write("inner", "ctl", b"kill\n")?;
         until("the inner pane gone", || !s.pane("inner").exists())?;
     }
@@ -323,5 +327,37 @@ fn start_returns_once_the_files_are_there() -> Result {
         }
         s.write(&name, "ctl", b"kill\n")?;
     }
+    Ok(())
+}
+
+/// Workspaces are directories: the same pane name lives in two of them,
+/// `ls` lists both, and a dead pane's leftovers are cleared in any of them
+/// while an empty workspace stays.
+#[test]
+fn workspaces_are_directories() -> Result {
+    let s = Session::new("spaces")?;
+    s.start("rig/build", &["sh"])?;
+    s.start("harmony/build", &["sh"])?;
+    s.start("harmony/gone", &["sh"])?;
+    std::fs::create_dir(s.root.join("empty")).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(s.root.join("empty"), std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())?;
+    s.write("rig/build", "in", b"echo in-rig\n")?;
+    until("the rig pane", || screen_has(&s, "rig/build", "in-rig"))?;
+    assert!(!screen_has(&s, "harmony/build", "in-rig"));
+    let holder = s.holder("harmony/gone").ok_or("no holder pid")?;
+    Command::new("kill")
+        .args(["-9", &holder.to_string()])
+        .status()
+        .map_err(|e| e.to_string())?;
+    until("the dead pane cleared", || {
+        s.fux3(&["ls"])
+            .is_ok_and(|l| l == "harmony/build\nrig/build\n")
+    })?;
+    assert!(!s.pane("harmony/gone").exists());
+    assert!(
+        s.root.join("empty").is_dir(),
+        "an empty workspace was removed"
+    );
     Ok(())
 }
