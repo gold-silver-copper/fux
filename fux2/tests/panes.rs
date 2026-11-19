@@ -3,7 +3,6 @@
 use fux2::client::{ANSWER_WAIT, Client};
 use fux2::conn::Conn;
 use fux2::dir::Session;
-use fux2::pane::MAX_INPUT;
 use fux2::wire::{Answer, Code, Failure, MAX_ANSWER, Part, REVISION, Request, Token};
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -78,13 +77,6 @@ impl Drop for Lab {
     }
 }
 
-fn send_bytes(len: usize) -> Request {
-    Request::Send {
-        parts: vec![Part::Bytes(vec![b'x'; len])],
-        expected: None,
-    }
-}
-
 /// Output racing a wait's registration never leaves the wait asleep.
 #[test]
 fn a_wait_always_wakes_for_output_that_races_it() -> Tested {
@@ -112,10 +104,9 @@ fn a_wait_always_wakes_for_output_that_races_it() -> Tested {
     Ok(())
 }
 
-/// A client that stops reading costs others nothing, and a send that does
-/// not fit whole adds nothing at all.
+/// A client that stops reading costs the others nothing.
 #[test]
-fn a_stalled_reader_holds_up_nobody_and_a_refused_send_adds_nothing() -> Tested {
+fn a_stalled_reader_holds_up_nobody() -> Tested {
     let lab = Lab::new()?;
     let noisy = program(
         "yes 0123456789012345678901234567890123456789012345678901234567890123",
@@ -141,29 +132,6 @@ fn a_stalled_reader_holds_up_nobody_and_a_refused_send_adds_nothing() -> Tested 
         );
     }
 
-    lab.start("idle", &idle())?;
-    let mut client = lab.client("idle")?;
-    let chunk = MAX_INPUT / 3;
-    let waiting = |failure: &Failure| -> Option<usize> {
-        let tail = failure.message.split("would make ").nth(1)?;
-        tail.split(' ').next()?.parse().ok()
-    };
-    let mut seen = Vec::new();
-    for _ in 0..200 {
-        match client.ask(&send_bytes(chunk), ANSWER_WAIT) {
-            Ok(_) => seen.clear(),
-            Err(failure) => {
-                assert_eq!(failure.code, Code::Busy, "{failure}");
-                seen.push(waiting(&failure).ok_or("no count in the refusal")?);
-                if seen.len() == 3 {
-                    break;
-                }
-            }
-        }
-    }
-    assert_eq!(seen.len(), 3, "the queue never filled");
-    let (first, last) = (seen.first().copied(), seen.last().copied());
-    assert!(last <= first, "refused sends grew the queue: {seen:?}");
     Ok(())
 }
 
@@ -245,7 +213,8 @@ fn an_old_token_never_reaches_the_replacement() -> Tested {
 #[test]
 fn kill_ends_what_an_ended_program_left_behind() -> Tested {
     let lab = Lab::new()?;
-    let script = "sleep 300 & echo left=$!; exit 0";
+    // It ignores the hang-up its terminal's end sends, as a daemon would.
+    let script = "(trap '' HUP; exec sleep 300) & echo left=$!; exit 0";
     lab.start("orphan", &program(script, ""))?;
     let until = soon(Duration::from_secs(10));
     let pid = loop {

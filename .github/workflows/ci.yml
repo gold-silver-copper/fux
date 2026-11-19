@@ -368,6 +368,17 @@ jobs:
           cargo test -p fux --test windows --locked -- --nocapture --test-threads 1
           tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe|ping" || true
 
+      # fux2's tests, then its README example with a real shell. One test
+      # at a time: Windows has one polling thread per process.
+      - name: fux2
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          cargo test -p fux2 -p fux2-view --locked -- --test-threads 1
+          cargo build -p fux2 -p fux2-view --locked
+          fux2/tests/example.sh
+
       # fux's client (WINDOWS.md, PR 8), real `fux` attached in a console a
       # test hosts (tests/console.rs), through cmd.exe as in a terminal.
       - name: fux client
@@ -385,7 +396,7 @@ jobs:
       # user is made here, with a masked password only this step sees.
       - name: fux client, as a standard user
         if: ${{ !cancelled() }}
-        timeout-minutes: 4
+        timeout-minutes: 6
         shell: pwsh
         run: |
           $pw = 'Fx!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
@@ -409,18 +420,16 @@ jobs:
             "exit $($run.ExitCode)"
             $failed += [int]($run.ExitCode -ne 0)
           }
+          # fux2's viewer runs the user's key bindings only when not elevated.
+          $view = Get-ChildItem target\debug\deps\view-*.exe | Sort-Object LastWriteTime | Select-Object -Last 1
+          "=== $($view.Name)"
+          $log = "$env:RUNNER_TEMP\view.txt"
+          $run = Start-Process -FilePath $view.FullName -ArgumentList '--test-threads', '1' -Credential $user -WorkingDirectory "$PWD\fux2-view" `
+            -RedirectStandardError "$log.err" -RedirectStandardOutput $log -PassThru -Wait
+          Get-Content $log, "$log.err"
+          "exit $($run.ExitCode)"
+          $failed += [int]($run.ExitCode -ne 0)
           exit $failed
-
-      # fux2's tests, then its README example with a real shell. One test
-      # at a time: Windows has one polling thread per process.
-      - name: fux2
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        run: |
-          set -euo pipefail
-          cargo test -p fux2 -p fux2-view --locked -- --test-threads 1
-          cargo build -p fux2 -p fux2-view --locked
-          fux2/tests/example.sh
 
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured
       # in the log: a flood both ways with signals, no lost wake-up, an idle

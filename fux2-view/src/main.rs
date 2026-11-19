@@ -393,9 +393,9 @@ impl View {
                 .map(|p| (p.hello.id, p.name.clone()));
             (next.as_ref().map(|n| n.0), next.map(|n| n.1))
         };
+        self.dirty |= focus != self.focus;
         self.focus = focus;
         self.focus_name = name.or_else(|| self.focus_name.take());
-        self.dirty = true;
     }
 
     fn focused_name(&self) -> Option<String> {
@@ -484,7 +484,10 @@ impl View {
                 self.dirty = true;
             }
             // The last good layout stays on the screen.
-            Err(why) => self.say(format!("{}: {why}", path.display())),
+            Err(why) => {
+                let file = path.file_name().unwrap_or(path.as_os_str());
+                self.say(format!("{}: {why}", file.to_string_lossy()));
+            }
         }
         self.layout_text = Some(text);
     }
@@ -774,9 +777,7 @@ impl View {
         }
         self.dirty |= changed;
         // A pane that just said who it is may be the one to focus.
-        if changed {
-            self.settle_focus();
-        }
+        self.settle_focus();
         if let Some(text) = said {
             self.say(text);
         }

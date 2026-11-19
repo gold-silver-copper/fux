@@ -25,6 +25,14 @@ fn beside_tests(name: &str) -> Result<PathBuf, std::io::Error> {
     Ok(dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
 }
 
+/// An elevated viewer on Windows must not run the user's file.
+fn config_runs() -> Result<bool, fuxix::Errno> {
+    #[cfg(windows)]
+    return Ok(!fuxix::socket::User::current()?.elevated());
+    #[cfg(unix)]
+    Ok(true)
+}
+
 fn shell() -> &'static str {
     if cfg!(windows) { "cmd.exe" } else { "sh" }
 }
@@ -240,22 +248,29 @@ fn the_viewer_steers_panes_and_they_outlive_it() -> Tested {
     lab.pane_shows("left", "typed-left")?;
     viewer.shows("typed-left")?;
 
-    viewer.keys(b"\x1b[18~")?;
-    lab.pane_shows("left", "from-binding")?;
+    let configured = config_runs()?;
+    if configured {
+        viewer.keys(b"\x1b[18~")?;
+        lab.pane_shows("left", "from-binding")?;
+    } else {
+        viewer.shows("view.grift is not run")?;
+    }
 
     viewer.keys(b"\x02o")?;
     viewer.keys(b"echo typed-right\r")?;
     lab.pane_shows("right", "typed-right")?;
     assert!(!lab.screen("left")?.contains("typed-right"));
 
-    // The loop holds only the language's thread: keys still go through.
-    viewer.keys(b"\x1b[19~")?;
-    viewer.keys(b"echo while-looping\r")?;
-    lab.pane_shows("right", "while-looping")?;
+    if configured {
+        // The loop holds only the language's thread: keys still go through.
+        viewer.keys(b"\x1b[19~")?;
+        viewer.keys(b"echo while-looping\r")?;
+        lab.pane_shows("right", "while-looping")?;
 
-    // The configuration took C-b n away: it is refused out loud.
-    viewer.keys(b"\x02n")?;
-    viewer.shows("no binding for C-b n")?;
+        // The configuration took C-b n away: it is refused out loud.
+        viewer.keys(b"\x02n")?;
+        viewer.shows("no binding for C-b n")?;
+    }
 
     let job = viewer.job.as_ref().ok_or("no job")?;
     let _ = job.kill(Reach::Session);
@@ -276,8 +291,10 @@ fn detach_works_while_a_binding_runs() -> Tested {
     lab.start("only")?;
     let mut viewer = Viewer::start(&lab)?;
     viewer.shows(" only ")?;
-    viewer.keys(b"\x1b[19~")?;
-    viewer.shows("a binding is running")?;
+    if config_runs()? {
+        viewer.keys(b"\x1b[19~")?;
+        viewer.shows("a binding is running")?;
+    }
     viewer.keys(b"\x02d")?;
     assert!(viewer.ended()?, "the viewer did not leave");
     let listed = lab.fux2(&["ls"])?;

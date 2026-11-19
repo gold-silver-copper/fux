@@ -1128,3 +1128,22 @@ impl Pane {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A send that does not fit is refused whole: what waits is what
+    /// waited, and everything that still fits is taken.
+    #[test]
+    fn a_refused_send_adds_nothing() -> Result<(), Failure> {
+        let mut input = Input::default();
+        input.admit(vec![b'x'; MAX_INPUT.saturating_sub(10)])?;
+        let refused = input.admit(vec![b'y'; 11]).err().map(|f| f.code);
+        assert_eq!(refused, Some(Code::Busy));
+        assert_eq!(input.queue.len(), 1);
+        input.admit(vec![b'z'; 10])?;
+        assert_eq!(input.typed, MAX_INPUT);
+        Ok(())
+    }
+}
