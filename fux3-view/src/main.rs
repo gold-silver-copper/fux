@@ -64,6 +64,10 @@ const LEAVE_WAIT: Duration = Duration::from_millis(500);
 const MAX_WAITING_RUNS: usize = 16;
 /// How long leaving waits for a binding to be stopped.
 const END_RUN_WAIT: Duration = Duration::from_secs(1);
+/// How many chords may lead one to the next (a chord bound to `chord`, or
+/// a binding that runs one): past it the next is refused, so a chord bound
+/// to itself ends.
+const MAX_CHORD_HOPS: u8 = 8;
 /// How many messages from the language are taken in one turn.
 const SCRIPT_TURN: usize = 64;
 /// The longest paste passed on.
@@ -206,9 +210,8 @@ struct View {
     /// line not yet whole.
     ctl: Option<File>,
     ctl_part: Vec<u8>,
-    /// What the run in flight was started for: a `.view/ctl` line's
-    /// refusal goes to `.view/errors`.
-    run_label: String,
+    /// The run in flight, where it came from.
+    in_flight: Option<Origin>,
     /// Pastes handed over, to name their files, and the files kept, each
     /// with when it was made.
     pasted: u64,
@@ -216,12 +219,13 @@ struct View {
     script: Option<Script>,
     from_script: Receiver<ToViewer>,
     running: Option<Running>,
-    waiting_runs: VecDeque<Run>,
+    waiting_runs: VecDeque<(Run, u8)>,
     /// The keys are still loading (each part in its time): keys typed
     /// wait in the terminal until then, so none goes to a pane it was not
     /// meant for.
     loading: bool,
-    /// A run was handed to the language and has not finished.
+    /// A run was handed to the language and has not finished; the
+    /// configuration's load counts as one.
     run_sent: bool,
     painter: Painter,
     drawn: Frame,
@@ -233,6 +237,16 @@ struct View {
     next_scan: Instant,
     next_look: Instant,
     quit: bool,
+}
+
+/// Where a run came from: what it was started for (a `.view/ctl` line's
+/// refusal goes to `.view/errors`), the workspace shown when it was asked
+/// for (what it does to panes and panels is for that workspace alone), and
+/// how many chords led to it.
+struct Origin {
+    label: String,
+    workspace: String,
+    hops: u8,
 }
 
 /// `index` moved by one through `len` places, wrapping.
@@ -342,6 +356,12 @@ impl View {
             self.places.insert(self.workspace.name.clone(), left);
         }
         let (tab, focus) = self.places.remove(name).unwrap_or_default();
+        // A list or prompt was about the workspace left: its answer must not
+        // act on this one.
+        self.column = None;
+        if let Some(panel) = self.panel.take() {
+            self.dispatch_job(String::new(), Job::Drop(panel.id()), 0);
+        }
         release_ctl(&self.view, self.ctl.take());
         (self.workspace, self.view, self.ctl) = (workspace, view, Some(ctl));
         (self.tab, self.focus, self.last_focus) = (tab, focus, None);
@@ -556,7 +576,7 @@ impl View {
         });
     }
 
-    fn apply_verb(&mut self, verb: Verb, now: Instant) {
+    fn apply_verb(&mut self, verb: Verb, now: Instant, hops: u8) {
         let tabs: Vec<u32> = self.arranged.tabs.iter().map(|t| t.id).collect();
         let tab_at = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
         match verb {
@@ -593,7 +613,7 @@ impl View {
                 Some(pane) => self.fit(&pane),
                 None => self.say("no pane has the focus"),
             },
-            Verb::Chord(chord) => self.perform_chord(chord),
+            Verb::Chord(chord) => self.perform_chord(chord, hops.saturating_add(1)),
         }
     }
 
@@ -664,14 +684,14 @@ impl View {
                 Outcome::Stay => return,
                 Outcome::Cancel => {
                     self.panel = None;
-                    return self.dispatch_job(String::new(), Job::Drop(id));
+                    return self.dispatch_job(String::new(), Job::Drop(id), 0);
                 }
                 Outcome::Chosen(value) => (value, None),
                 Outcome::Action(n, value) => (value, Some(n)),
             };
             self.panel = None;
             let job = Job::Answer { id, value, action };
-            return self.dispatch_job(String::new(), job);
+            return self.dispatch_job(String::new(), job, 0);
         }
         if let Some(mut column) = self.column.take() {
             self.dirty = true;
@@ -690,7 +710,7 @@ impl View {
                 _ => format!("{} {name}", column.keys),
             };
             if self.keys.bindings.contains_key(&chord) || self.keys.opens(&chord) {
-                return self.perform_chord(chord);
+                return self.perform_chord(chord, 0);
             }
             // The prefix again, where its map does not bind it, goes to the pane.
             let first = column.keys.split(' ').next().unwrap_or_default();
@@ -701,18 +721,23 @@ impl View {
             return self.say(format!("{chord} is not bound"));
         }
         if self.keys.bindings.contains_key(&name) || self.keys.opens(&name) {
-            return self.perform_chord(name);
+            return self.perform_chord(name, 0);
         }
         self.type_key(stroke);
     }
 
-    /// Does what `chord` is bound to; a chord that holds keys opens their
-    /// menu.
-    fn perform_chord(&mut self, chord: String) {
+    /// Does what `chord` is bound to, `hops` chords after the key that
+    /// led to it; a chord that holds keys opens their menu.
+    fn perform_chord(&mut self, chord: String, hops: u8) {
         self.dirty = true;
+        if hops > MAX_CHORD_HOPS {
+            return self.say(format!(
+                "{chord}: refused, it came after {MAX_CHORD_HOPS} chords in a row"
+            ));
+        }
         if let Some(binding) = self.keys.bindings.get(&chord).cloned() {
             self.column = None;
-            return self.perform(chord, binding.action);
+            return self.perform(chord, binding.action, hops);
         }
         if self.keys.opens(&chord) {
             self.column = Some(Column {
@@ -724,38 +749,43 @@ impl View {
         self.say(format!("{chord} is not bound"));
     }
 
-    fn perform(&mut self, chord: String, action: Action) {
+    fn perform(&mut self, chord: String, action: Action, hops: u8) {
         match action {
-            Action::Verb(verb) => self.apply_verb(verb, Instant::now()),
+            Action::Verb(verb) => self.apply_verb(verb, Instant::now(), hops),
             Action::Script(generation) => {
                 let job = Job::Binding {
                     chord: chord.clone(),
                     generation,
                 };
-                self.dispatch_job(chord, job);
+                self.dispatch_job(chord, job, hops);
             }
         }
     }
 
-    /// Runs `job` with what this viewer shows now.
-    fn dispatch_job(&mut self, label: String, job: Job) {
+    /// Runs `job` with what this viewer shows now, `hops` chords after the
+    /// key that led to it.
+    fn dispatch_job(&mut self, label: String, job: Job, hops: u8) {
         let run = Run {
             label,
             job,
             context: self.context(),
         };
         if !self.run_sent && self.waiting_runs.is_empty() {
-            self.start_run(run);
+            self.start_run(run, hops);
         } else if self.waiting_runs.len() < MAX_WAITING_RUNS {
-            self.waiting_runs.push_back(run);
+            self.waiting_runs.push_back((run, hops));
         } else {
             self.say(format!("too many bindings waiting: {} dropped", run.label));
         }
     }
 
-    fn start_run(&mut self, run: Run) {
+    fn start_run(&mut self, run: Run, hops: u8) {
         self.run_sent = true;
-        self.run_label.clone_from(&run.label);
+        self.in_flight = Some(Origin {
+            label: run.label.clone(),
+            workspace: run.context.workspace.clone(),
+            hops,
+        });
         let sent = self
             .script
             .as_ref()
@@ -765,8 +795,41 @@ impl View {
         }
     }
 
+    /// The workspace the run in flight was asked for in, if it is no
+    /// longer the one shown: what it does to panes and panels is refused.
+    fn left_behind(&self) -> Option<String> {
+        (self.in_flight.as_ref())
+            .filter(|run| run.workspace != self.workspace.name)
+            .map(|run| run.workspace.clone())
+    }
+
     fn on_script(&mut self, message: ToViewer, now: Instant) {
         self.dirty = true;
+        if let Some(space) = self.left_behind() {
+            let refused = match &message {
+                ToViewer::Focus(pane) => Some(format!("focus {pane}")),
+                ToViewer::Fit(_) => Some("fit".to_owned()),
+                ToViewer::Type(pane, _) => Some(format!("send to {pane}")),
+                ToViewer::Panel(panel) => {
+                    self.dispatch_job(String::new(), Job::Drop(panel.id()), 0);
+                    Some("a list or prompt".to_owned())
+                }
+                ToViewer::Bind(..)
+                | ToViewer::Group(..)
+                | ToViewer::Unbind(_)
+                | ToViewer::Verb(_)
+                | ToViewer::Reread
+                | ToViewer::Say(_)
+                | ToViewer::Started(..)
+                | ToViewer::Done(_)
+                | ToViewer::Loaded(_) => None,
+            };
+            if let Some(what) = refused {
+                return self.say(format!(
+                    "{what}: refused, it was for workspace {space}, no longer shown"
+                ));
+            }
+        }
         match message {
             ToViewer::Bind(chord, binding) => {
                 self.keys.groups.remove(&chord);
@@ -794,7 +857,10 @@ impl View {
                     None => self.say(format!("no pane {pane} to focus")),
                 }
             }
-            ToViewer::Verb(verb) => self.apply_verb(verb, now),
+            ToViewer::Verb(verb) => {
+                let hops = self.in_flight.as_ref().map_or(0, |run| run.hops);
+                self.apply_verb(verb, now, hops);
+            }
             ToViewer::Panel(panel) => {
                 (self.column, self.notice) = (None, None);
                 self.panel = Some(panel);
@@ -815,22 +881,33 @@ impl View {
                     forced: false,
                 });
             }
-            ToViewer::Done(why) => {
-                self.running = None;
-                self.run_sent = false;
+            ToViewer::Loaded(why) => {
+                // The keys have loaded: they are read from now on.
+                self.loading = false;
                 if let Some(why) = why {
-                    let label = std::mem::take(&mut self.run_label);
-                    match label.strip_prefix("ctl: ") {
-                        Some(line) => self.refuse_line(line, &why),
+                    self.say(why);
+                }
+                self.next_run();
+            }
+            ToViewer::Done(why) => {
+                let run = self.in_flight.take();
+                if let Some((why, run)) = why.zip(run) {
+                    match run.label.strip_prefix("ctl: ") {
+                        Some(line) => self.refuse_line(&run.workspace, line, &why),
                         None => self.say(why),
                     }
                 }
-                // The keys have loaded: they are read from now on.
-                self.loading = false;
-                if let Some(run) = self.waiting_runs.pop_front() {
-                    self.start_run(run);
-                }
+                self.next_run();
             }
+        }
+    }
+
+    /// The run in flight is over: the next one waiting starts.
+    fn next_run(&mut self) {
+        self.running = None;
+        self.run_sent = false;
+        if let Some((run, hops)) = self.waiting_runs.pop_front() {
+            self.start_run(run, hops);
         }
     }
 
@@ -854,20 +931,26 @@ impl View {
         }
     }
 
-    /// Says a `.view/ctl` line was refused, here and in `.view/errors`
-    /// (its last lines, replaced whole under the layout's lock).
-    fn refuse_line(&mut self, line: &str, why: &str) {
+    /// Says a `.view/ctl` line of workspace `space` was refused, here and
+    /// in its `.view/errors` (the last lines, replaced whole under the
+    /// layout's lock).
+    fn refuse_line(&mut self, space: &str, line: &str, why: &str) {
         let said = format!("{line}: {why}").replace('\n', " ");
         self.say(said.clone());
-        let written = layout::lock(&self.view).and_then(|_lock| {
-            let path = self.view.join("errors");
+        let view = match space == self.workspace.name {
+            true => Ok(self.view.clone()),
+            false => (self.session.workspace(space, false)).and_then(|w| command::view_dir(&w)),
+        };
+        let written = view.and_then(|view| {
+            let _lock = layout::lock(&view)?;
+            let path = view.join("errors");
             let old = fux3::files::read_small(&path, 64 << 10).unwrap_or_default();
             let old = String::from_utf8_lossy(&old);
             let mut lines: Vec<&str> = old.lines().collect();
             lines.push(&said);
             let keep = lines.len().saturating_sub(MAX_ERRORS);
             let text: String = lines.iter().skip(keep).flat_map(|l| [*l, "\n"]).collect();
-            layout::replace(&self.view, "errors", ".errors.new", &text)
+            layout::replace(&view, "errors", ".errors.new", &text)
         });
         if let Err(failure) = written {
             self.say(format!("{said} (and .view/errors: {failure})"));
@@ -909,21 +992,24 @@ impl View {
             }
             if bytes.len() > MAX_CTL_LINE {
                 let start: String = line.chars().take(40).collect();
+                let space = self.workspace.name.clone();
                 self.refuse_line(
+                    &space,
                     &format!("{start}…"),
                     &format!("a line is at most {MAX_CTL_LINE} bytes"),
                 );
                 continue;
             }
             if self.waiting_runs.len() >= MAX_WAITING_RUNS {
-                self.refuse_line(&line, "too many commands waiting; dropped");
+                let space = self.workspace.name.clone();
+                self.refuse_line(&space, &line, "too many commands waiting; dropped");
                 continue;
             }
             let job = Job::Call {
                 name: "layout-command".to_owned(),
                 args: vec![line.clone()],
             };
-            self.dispatch_job(format!("ctl: {line}"), job);
+            self.dispatch_job(format!("ctl: {line}"), job, 0);
         }
     }
 
@@ -942,7 +1028,8 @@ impl View {
         let until = after(Instant::now(), END_RUN_WAIT);
         while Instant::now() < until {
             match self.from_script.recv_timeout(Duration::from_millis(20)) {
-                Ok(ToViewer::Done(_)) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Ok(ToViewer::Done(_) | ToViewer::Loaded(_))
+                | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     return;
                 }
                 Ok(ToViewer::Started(stop, _)) => {
@@ -1437,7 +1524,7 @@ fn run() -> Result<(), Failure> {
         notice: None,
         ctl: Some(ctl),
         ctl_part: Vec::new(),
-        run_label: String::new(),
+        in_flight: None,
         pasted: 0,
         pastes: Vec::new(),
         script: Some(script),
@@ -1445,7 +1532,7 @@ fn run() -> Result<(), Failure> {
         running: None,
         waiting_runs: VecDeque::new(),
         loading: true,
-        run_sent: false,
+        run_sent: true,
         painter,
         drawn: Frame::default(),
         sixel: false,

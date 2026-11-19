@@ -308,15 +308,23 @@ fn viewing_focusing_and_resizing_the_viewer_resize_no_pane() -> Tested {
     Ok(())
 }
 
-/// A binding that loops forever is stopped, and detach works while it
-/// runs; the panes outlive the viewer.
+/// A binding that loops forever is stopped, a chord that leads to itself
+/// (bound to it, or run by its own binding) is refused, and detach works
+/// while a binding runs; the panes outlive the viewer.
 #[test]
 fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
-    let config = "(define! spin (lambda! () (spin)))\n(bind-key \"F8\" \"spin\" \"Mine\" spin)\n";
+    let config = "(define! spin (lambda! () (spin)))\n\
+        (bind-key \"F8\" \"spin\" \"Mine\" spin)\n\
+        (bind-verb \"F9\" \"itself\" \"Mine\" \"chord\" \"F9\")\n\
+        (bind-key \"F7\" \"again\" \"Mine\" (lambda! () (act \"chord\" \"F7\")))\n";
     let lab = Lab::new("loop", config)?;
     lab.start("only")?;
     lab.viewer("v", "100x30", &[])?;
     lab.shows("v", "$")?;
+    lab.keys("v", b"\x1b[20~")?;
+    lab.shows("v", "F9: refused")?;
+    lab.keys("v", b"\x1b[18~")?;
+    lab.shows("v", "F7: refused")?;
     lab.keys("v", b"\x1b[19~")?;
     lab.shows("v", "F8: interrupted")?;
     lab.keys("v", b"\x1b[19~")?;
@@ -336,12 +344,17 @@ fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
 }
 
 /// A layout command written to one workspace's `.view/ctl` changes that
-/// workspace's layout and not another's, with a viewer on each at once.
+/// workspace's layout and not another's, with a viewer on each at once;
+/// and a binding that switches workspace can't send to a pane of the same
+/// name in the one it switched to.
 #[test]
 fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
-    let lab = Lab::new("spaces", "")?;
+    let config = "(bind-key \"F6\" \"over\" \"Mine\" \
+        (lambda! () (show-workspace \"two\") (send \"a\" \"echo cro''ssed\\r\")))\n";
+    let lab = Lab::new("spaces", config)?;
     lab.start("one/a")?;
     lab.start("two/b")?;
+    lab.start("two/a")?;
     lab.viewer("v1", "100x30", &["one"])?;
     lab.viewer("v2", "100x30", &["two"])?;
     let space = |name: &str| lab.view.join(name).join(".view");
@@ -358,6 +371,13 @@ fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
     })?;
     assert!(!layout("one").contains("theirs"), "{}", layout("one"));
     assert!(!layout("two").contains("mine"), "{}", layout("two"));
+    lab.keys("v1", b"\x1b[17~")?;
+    lab.shows("v1", "workspace one, no longer shown")?;
+    let screen = |space: &str| {
+        std::fs::read_to_string(lab.view.join(space).join("a/screen")).unwrap_or_default()
+    };
+    assert!(!screen("two").contains("crossed"), "{}", screen("two"));
+    assert!(!screen("one").contains("crossed"), "{}", screen("one"));
     Ok(())
 }
 

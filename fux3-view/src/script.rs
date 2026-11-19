@@ -82,6 +82,9 @@ pub enum ToViewer {
     Started(Interrupter, Duration),
     /// The run ended: what went wrong, if anything.
     Done(Option<String>),
+    /// The configuration loaded (it is no run): what went wrong, if
+    /// anything.
+    Loaded(Option<String>),
 }
 
 /// What the viewer shows, as a run sees it.
@@ -814,10 +817,10 @@ fn function_of(
 fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
     let mut g = match prepare() {
         Ok(g) => g,
-        Err(why) => return host.tell(ToViewer::Done(Some(why))),
+        Err(why) => return host.tell(ToViewer::Loaded(Some(why))),
     };
     let why = load(&mut g, &mut host, config);
-    host.tell(ToViewer::Done(why));
+    host.tell(ToViewer::Loaded(why));
     while let Ok(run) = runs.recv() {
         host.cancel.store(false, Ordering::Relaxed);
         host.context = run.context;
