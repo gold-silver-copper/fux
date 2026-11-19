@@ -225,4 +225,3 @@ a version every write advances, and every edit takes `--if VERSION`.
   not make.
 - **`fux2 page --close-pane` removes its tile** before ending its pane: the
   pane was made for the pager, so its tile has nothing to keep.
-
