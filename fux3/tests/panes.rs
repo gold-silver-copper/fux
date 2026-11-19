@@ -663,7 +663,14 @@ fn put_writes_or_refuses_but_never_waits() -> Result {
     s.start("over", &["sh", "-c", "exit 3"])?;
     until("the end", || s.pane("over").join("exit").exists())?;
     let said = refused(&["put", "over", "x"])?;
-    assert!(said.contains("ended (exited 3)"), "{said}");
+    assert!(said.contains("not running (exited 3)"), "{said}");
+    // Nor to a pane whose `status` cannot be read: what it says is unknown.
+    let status = s.pane("p").join("status");
+    let mode = |mode| std::fs::set_permissions(&status, std::fs::Permissions::from_mode(mode));
+    mode(0o000).map_err(|e| e.to_string())?;
+    let said = refused(&["put", "p", "x"]);
+    mode(0o600).map_err(|e| e.to_string())?;
+    assert!(said?.contains("nothing was written"));
     Ok(())
 }
 
@@ -888,6 +895,9 @@ fn a_name_is_given_whole_and_only_a_panes_files_are_cleared() -> Result {
             ".ctl.new",
         ],
     )?;
+    // The name it would lose its name to is taken, by a link to nothing.
+    std::os::unix::fs::symlink("nowhere", main.join(".gone-00000000000000aa"))
+        .map_err(|e| e.to_string())?;
     std::fs::create_dir(main.join("mixed/inner")).map_err(|e| e.to_string())?;
     std::fs::write(main.join("mixed/inner/id"), "00000000000000bb\n").map_err(|e| e.to_string())?;
     assert_eq!(s.fux3(&["ls"])?, "");
@@ -900,8 +910,8 @@ fn a_name_is_given_whole_and_only_a_panes_files_are_cleared() -> Result {
     left.sort();
     // The pane holding other things lost its name (to `.gone-ID`), its own
     // files and nothing else; nothing inside a directory in it was touched.
-    let kept = ".gone-00000000000000aa";
-    assert_eq!(left, [kept, ".new-dddd", "empty", "ledger", "notes"]);
+    let (link, kept) = (".gone-00000000000000aa", ".gone-00000000000000aa-1");
+    assert_eq!(left, [link, kept, ".new-dddd", "empty", "ledger", "notes"]);
     assert!(main.join("notes/todo").exists() && main.join("notes/in").exists());
     assert!(main.join("ledger/history").exists() && main.join("ledger/id").exists());
     let kept = main.join(kept);

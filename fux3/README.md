@@ -54,10 +54,10 @@ layout command is an edit of the layout file, not a message to a process.
 | Command | What |
 |---|---|
 | `fux3 dir` | prints the session directory, making it if missing |
-| `fux3 start [WORKSPACE/]NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane in WORKSPACE (default `main`, made if missing); prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, 4096 bytes to 256 MiB), `--label KEY=VALUE` (up to 16), `--env NAME=VALUE` (a variable for the program, kept in its recipe), `--workspace-id DEV:INO` (refused with "workspace W was removed" unless the workspace's directory is that one, as `stat` numbers it: for a caller that named the workspace earlier, as the viewer does). With no program, the workspace's recipe of that name runs if there is one (see "Recipes"), else `$SHELL` |
+| `fux3 start [WORKSPACE/]NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane in WORKSPACE (default `main`, made if missing); prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, 4096 bytes to 256 MiB), `--label KEY=VALUE` (up to 16), `--env NAME=VALUE` (a variable for the program, kept in its recipe), `--no-recipe` (write none), `--workspace-id DEV:INO` (refused with "workspace W was removed" unless the workspace's directory is that one, as `stat` numbers it: for a caller that named the workspace earlier, as the viewer does). With no program, the workspace's recipe of that name runs if there is one (see "Recipes"), else `$SHELL` |
 | `fux3 ls` | lists the live panes, as `WORKSPACE/NAME` |
 | `fux3 wait [WORKSPACE/]NAME [--ms N]` | waits until the pane's screen changes (default 10000 ms), prints its new line 1; exit 1 if nothing changed in time |
-| `fux3 put [WORKSPACE/]NAME [TEXT]` | writes TEXT (else stdin; at most 512 bytes) to the pane's `in`: whole, or refused saying why (no pane, a dead holder, a program that has ended, input full), never waiting |
+| `fux3 put [WORKSPACE/]NAME [TEXT]` | writes TEXT (else stdin; at most 512 bytes) to the pane's `in`: whole, or refused saying why (no pane, a dead holder, a program that is not running or a `status` that cannot be read, input full), never waiting |
 | `fux3 view [WORKSPACE] [--do LINE]` | the viewer of a workspace (below); with `--do`, one layout command's edit of the layout file, with or without a viewer running |
 
 Every `fux3` command but `put` first clears the leftovers of panes whose holder is gone,
@@ -409,7 +409,8 @@ ignores the hangup it gets when its terminal goes, and **a plain write to its
 the write still hangs the writer. Two ways are safe:
 
 - **`fux3 put`** for `in`: it opens without waiting and refuses at once,
-  saying why (no pane, a dead holder, a program that has ended, input full).
+  saying why (no pane, a dead holder, a program that is not running, input
+  full).
   It opens the pane once and asks everything of that directory, so a new
   pane that takes the name meanwhile is never typed into.
 - **Any `fux3` command first** (`fux3 ls`): it clears the dead, so their

@@ -27,6 +27,7 @@ fux3: a terminal multiplexer where a pane is a directory of files
       --label KEY=VALUE        a label, shown in status (repeatable)
       --env NAME=VALUE         a variable for the program, kept in its recipe
                                (repeatable)
+      --no-recipe              write no recipe (a pane nobody starts again)
       --workspace-id ID        refuse unless the workspace's directory is the
                                one ID names: a workspace removed and made
                                again is another (the viewer's starts use it)
@@ -225,7 +226,7 @@ fn spec(
             .ok_or_else(|| Failure::new("start needs a NAME"))?,
     )?;
     let (workspace, name) = session::split_pane(&pane)?;
-    let (mut size, mut workspace_id) = (None, None);
+    let (mut size, mut workspace_id, mut no_recipe) = (None, None, false);
     let mut cell = here_cell.unwrap_or(DEFAULT_CELL);
     let (mut pictures, mut history, mut labels) = (true, DEFAULT_HISTORY, Vec::new());
     let (mut env, mut argv) = (Vec::new(), Vec::new());
@@ -240,6 +241,7 @@ fn spec(
             "--workspace-id" => workspace_id = Some(value("--workspace-id")?),
             "--cell" => cell = pair(&value("--cell")?, "--cell")?,
             "--no-pictures" => pictures = false,
+            "--no-recipe" => no_recipe = true,
             "--history" => {
                 let text = value("--history")?;
                 history = text
@@ -331,6 +333,7 @@ fn spec(
     // not run; written once the pane runs.
     let recipe = match recipe {
         Some(_) => None,
+        None if no_recipe => None,
         None => {
             let kept = fux3::recipe::Kept {
                 size: Some((cols, rows)),
@@ -519,15 +522,6 @@ fn put(mut args: impl Iterator<Item = OsString>) -> Outcome {
             "pane {shown} has no holder: it is dead"
         )));
     }
-    // `status` says so before `exit` is there, and when it cannot be written.
-    let status = files::read_at(&pane, files::STATUS, 64 << 10).unwrap_or_default();
-    let status = files::parse_status(&String::from_utf8_lossy(&status));
-    let state = files::status_value(&status, "state").unwrap_or_default();
-    if state.starts_with("exited ") || state.starts_with("signalled ") {
-        return Err(Failure::new(format!(
-            "pane {shown}'s program has ended ({state}): nothing was written"
-        )));
-    }
     let file = at::open(&pane, files::IN, at::WRITE | fuxix::file::NONBLOCK).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             Failure::new(format!("no pane {shown}"))
@@ -539,6 +533,17 @@ fn put(mut args: impl Iterator<Item = OsString>) -> Outcome {
     })?;
     if !file.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
         return Err(Failure::new(format!("{shown}/in is not a FIFO")));
+    }
+    // Only to a program `status` says is running: a write to `in` only
+    // queues, and the holder drops what no program will read.
+    let status = files::read_at(&pane, files::STATUS, 64 << 10)
+        .map_err(|f| Failure::new(format!("pane {shown}: {f}: nothing was written")))?;
+    let status = files::parse_status(&String::from_utf8_lossy(&status));
+    let state = files::status_value(&status, "state").unwrap_or("unknown");
+    if state != "running" {
+        return Err(Failure::new(format!(
+            "pane {shown}'s program is not running ({state}): nothing was written"
+        )));
     }
     match (&file).write(&bytes) {
         Ok(n) if n == bytes.len() => Ok(ExitCode::SUCCESS),

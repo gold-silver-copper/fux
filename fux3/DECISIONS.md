@@ -276,3 +276,23 @@ Decided in review round 2 (the last round; the same six seats, on the fixes):
   and was not read again by a panel; what was not fixed is D61's list and:
   a `mv` of a workspace out of the session between a start's check and its
   rename; a paste queued for a paused holder across a workspace rename.
+
+Decided after round 3 (eight seats: 2 Fable, 2 Opus, 2 gpt-6.2-sol, 2 gpt-6.2-astra; six said merge
+after must-fixes; `notes/projects/fux/fux3-2026-11-18/round3-result.md`):
+
+- **D64. `fux3 put` writes only to a pane whose `status` it could read and
+  that says `running`.** It asked for the program's end (D62), and so wrote
+  to a `kill-incomplete` pane and to one whose `status` it could not read;
+  the holder dropped the bytes and `put` had said yes.
+- **D65. A pane's name is lost by trying the rename that replaces nothing
+  and moving on when the name is taken.** Asking first whether `.gone-ID`
+  was free took a link to nothing for free, and every kill then failed.
+- **D66. `fuxix::file::at::make_dir` makes and does nothing more.** It
+  opened what it had made by name to set its mode, and could open another
+  object that had taken the name. The mode it asks for (0700) can only lose
+  bits to the umask, so nothing made is open to anyone else; a directory the
+  maker itself cannot open (a umask that took the owner's bits) is refused
+  by whoever opens it next, and a pane's staging directory is removed again.
+- **D67. `fux3 start --no-recipe`.** The viewer's copy pane (`C-b c`) is
+  nobody's to start again: it wrote a recipe `history-N` over whatever was
+  saved under that name and removed it afterwards by name.

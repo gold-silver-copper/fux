@@ -131,22 +131,23 @@ pub fn place(dir: &File) -> Option<(File, String)> {
 }
 
 /// Renames the directory held as `dir` from `from` in `parent` to `to` in
-/// `to_parent`, onto nothing. `from` was looked up a moment ago and a
-/// `mv` may have put another directory there since: if what got the new
-/// name is not `dir`, it is given its name back and the rename refused.
+/// `to_parent`, onto nothing: `AlreadyExists` if anything has that name.
+/// `from` was looked up a moment ago and a `mv` may have put another
+/// directory there since: if what got the new name is not `dir`, it is
+/// given its name back and the rename refused.
 fn rename_held(
     dir: &File,
     parent: &File,
     from: &str,
     to_parent: &File,
     to: &str,
-) -> Result<(), Failure> {
-    at::rename_new(parent, from, to_parent, to).map_err(|e| io(format!("renaming {from}"), e))?;
+) -> std::io::Result<()> {
+    at::rename_new(parent, from, to_parent, to)?;
     if at::open_dir(to_parent, to).is_ok_and(|there| same(&there, dir)) {
         return Ok(());
     }
     // Its name back, unless yet another took that meanwhile.
-    Err(Failure::new(
+    Err(std::io::Error::other(
         match at::rename_new(to_parent, to, parent, from) {
             Ok(()) => format!("{from} was moved meanwhile; nothing was changed"),
             Err(_) => format!("{from} was moved meanwhile; what took its name is now {to}"),
@@ -155,19 +156,23 @@ fn rename_held(
 }
 
 /// Renames the pane held as `dir`, id `id`, listed as `name` in `parent`,
-/// out of its name: to `.gone-ID`, or with a number after it where a copy
-/// of the pane already has that. The name it has now.
+/// out of its name: to `.gone-ID`, or with a number after it where that is
+/// taken, by whatever (the rename itself says so). The name it has now.
 fn lose_name(dir: &File, parent: &File, name: &str, id: &str) -> Result<String, Failure> {
-    let free = |gone: &String| at::open(parent, gone, at::READ | fuxix::file::NONBLOCK).is_err();
-    let gone = (0..8)
-        .map(|n| match n {
+    for n in 0..8 {
+        let gone = match n {
             0 => format!("{GONE}{id}"),
             n => format!("{GONE}{id}-{n}"),
-        })
-        .find(free)
-        .ok_or_else(|| Failure::new(format!("{GONE}{id} is taken, eight times over")))?;
-    rename_held(dir, parent, name, parent, &gone)?;
-    Ok(gone)
+        };
+        match rename_held(dir, parent, name, parent, &gone) {
+            Ok(()) => return Ok(gone),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io(format!("renaming {name}"), e)),
+        }
+    }
+    Err(Failure::new(format!(
+        "{GONE}{id} is taken, eight times over"
+    )))
 }
 
 /// The session directory when `FUX3_DIR` does not name one: in memory on
@@ -428,7 +433,12 @@ impl Workspace {
             Ok(()) => io(format!("making a pane in workspace {}", self.name), e),
             Err(removed) => removed,
         })?;
-        let dir = at::open_dir(&self.held, &staged).map_err(|e| io(&staged, e))?;
+        // One it cannot open (a umask that took the owner's bits) is no
+        // pane to be: it goes again.
+        let dir = at::open_dir(&self.held, &staged).map_err(|e| {
+            let _ = at::remove_dir(&self.held, &staged);
+            io(&staged, e)
+        })?;
         if !try_lock(&dir)? {
             return Err(Failure::new(format!("{staged} is locked by another")));
         }
@@ -458,15 +468,16 @@ impl Workspace {
             )));
         }
         self.check()?;
-        if at::open(&self.held, name, at::READ | fuxix::file::NONBLOCK).is_ok() {
-            let there = self.dir.join(name);
-            let why = "is there and holds what no pane made: it was left alone";
-            return Err(Failure::new(format!("{} {why}", there.display())));
-        }
         let (parent, staged) =
             place(dir).ok_or_else(|| Failure::new("the pane's directory went"))?;
-        rename_held(dir, &parent, &staged, &self.held, name)
-            .map_err(|f| Failure::new(format!("naming pane {shown}: {f}")))
+        rename_held(dir, &parent, &staged, &self.held, name).map_err(|e| {
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                return io(format!("naming pane {shown}"), e);
+            }
+            let there = self.dir.join(name);
+            let why = "is there and holds what no pane made: it was left alone";
+            Failure::new(format!("{} {why}", there.display()))
+        })
     }
 }
 

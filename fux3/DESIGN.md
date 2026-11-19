@@ -170,7 +170,8 @@ stdin and stdout at `/dev/null`.
 directory named as a pane, or `.new-*`, or `.gone-*`, whose lock can be
 taken is dead: a holder killed outright left it, at whichever step. One with
 a pane's name first loses it, renamed `.gone-ID` (`.gone-ID-N` where that
-is taken) as in its own kill, so no
+is taken, by whatever: the rename that replaces nothing says so) as in its
+own kill, so no
 reader finds a name half empty and a clearing that dies leaves what the next
 one takes. Then it is
 cleared through its handle (`clear_pane`): only with the marker (`id`
@@ -308,8 +309,10 @@ With no program, `start` runs a recipe only if it is a plain file of at most
 `fux3 put` takes no lock and clears nothing. It opens the workspace and then
 the pane's directory, once, and asks everything of that handle: the marker
 (else "no pane"), the lock (taken: a dead holder; an error asking: a
-refusal, never success), `exit` (there: the program has ended, and the bytes
-would be dropped), then `in`, opened relative to the handle with
+refusal, never success), `status` (it must be readable and say `state
+running`: a write to `in` only queues, and the holder drops what no program
+will read, so an ended program, a `kill-incomplete` and a `status` that
+cannot be read are all refused), then `in`, opened relative to the handle with
 `O_WRONLY|O_NONBLOCK|O_NOFOLLOW` and no create: no file is "no pane",
 `ENXIO` (nobody reads) is "a dead holder". So a new pane that took the name
 after the lookup is never typed into. It writes at most `PIPE_BUF` (512)
