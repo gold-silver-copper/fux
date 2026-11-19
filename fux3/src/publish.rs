@@ -496,8 +496,8 @@ pub fn record(line: &mut String, out: &mut Vec<u8>, fragment: &str, end: bool, l
 
 /// `text` from the first line that starts at or after `at`.
 fn from_a_line(text: &[u8], at: usize) -> &[u8] {
-    if at == 0 {
-        return text;
+    if at == 0 || text.get(at.saturating_sub(1)) == Some(&b'\n') {
+        return text.get(at..).unwrap_or_default();
     }
     let start = (text
         .get(at..)

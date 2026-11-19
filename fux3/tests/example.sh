@@ -17,6 +17,19 @@ cleanup() {
     rm -rf "$FUX3_DIR" "$W" "$V"
 }
 trap cleanup EXIT
+# Says where it stopped, and what was there: CI shows nothing else.
+failed() {
+    echo "example.sh: failed at line $1" >&2
+    for d in "$FUX3_DIR" "$V"; do
+        ls -la "$d" "$d"/* >&2 || true
+        for f in "$d"/*/*/status "$d"/*/*/errors "$d"/*/.view/layout; do
+            [ -e "$f" ] && { echo "== $f" >&2; cat "$f" >&2; }
+        done
+    done
+    [ -e "$V/main/viewer/screen" ] && cat "$V/main/viewer/screen" >&2
+    true
+}
+trap 'failed $LINENO' ERR
 # Waits up to five seconds for a command to succeed; until_long, twenty
 # (the viewer loads its grift first; a debug build on a slow runner).
 until_ok() {

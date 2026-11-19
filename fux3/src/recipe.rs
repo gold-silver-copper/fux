@@ -88,8 +88,13 @@ pub fn render(
         out.extend_from_slice(&quote(value.as_bytes()));
         let _ = writeln!(out, "; export {name}");
     }
-    // `--`: a program whose name starts with `-` is no option of exec's.
-    out.extend_from_slice(b"exec --");
+    // A program whose name starts with `-` would be read as an option of
+    // `exec`'s by bash, and `exec --` is not every `sh`'s (dash runs `--`):
+    // `env --` runs it, in both.
+    out.extend_from_slice(b"exec");
+    if argv.first().is_some_and(|p| p.as_bytes().starts_with(b"-")) {
+        out.extend_from_slice(b" env --");
+    }
     for word in argv {
         out.push(b' ');
         out.extend_from_slice(&quote(word.as_bytes()));

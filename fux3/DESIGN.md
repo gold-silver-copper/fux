@@ -271,7 +271,8 @@ that fails writes none, so the last good one stays; and no older start can
 overwrite a newer one's): an
 executable `sh` script (`#!/bin/sh`, `# fux3 size COLSxROWS`, one `# fux3
 label KEY=VALUE` per label, `cd -- 'DIR' || exit 126`, one
-`NAME='VALUE'; export NAME` per `--env`, `exec -- 'PROGRAM' 'ARG'…`), every word
+`NAME='VALUE'; export NAME` per `--env`, `exec 'PROGRAM' 'ARG'…`, or `exec env -- 'PROGRAM' …` for a program
+whose name starts with `-`), every word
 single-quoted with `'` written `'\''`, so any byte but NUL comes back as it
 was. Rendered before the start, refused past 64 KiB; written aside and
 renamed, 0700, in a 0700 `.recipes/`. Only the variables named by `--env` go

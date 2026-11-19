@@ -39,6 +39,10 @@ printf 'echo hi\n' > "$D/rig/server/in" && cat "$D/rig/server/screen"
 echo kill > "$D/rig/server/ctl"             # ends the program and all it started; the directory goes
 ```
 
+(Typed by hand, each `cat` shows what the line before did. A script is faster
+than the program: the screen follows a write to `in` by a few milliseconds,
+so wait for it with `fux3 wait` or a short poll.)
+
 **The rule.** A pane is its directory and its id; a workspace is its
 directory; a name is only where one is listed right now. Whoever acts on one
 opens it once and stays on that object. A pane gets its name by one rename
@@ -112,7 +116,7 @@ follows from "a name is only where it is listed":
   does with any directory. `a` lives on, unlisted; `mv "$D/main/b/a"
   "$D/main/a"` brings it back. A kill of `b` removes only what `b`'s holder
   made, never `a`: `b`'s directory then stays, without its name
-  (`.gone-ID`), until `a` is moved out or ended.
+  (`.gone-ID`), until `a` is moved out or ended and a `fux3` command runs.
 - **`mv` to another filesystem is a copy and a delete.** The copy is dead
   files: nothing reads its `in`, and `fux3 put` refuses it. The delete
   removes the live pane's directory while its holder and program run on,
@@ -133,8 +137,9 @@ a session directory anyone else can open (what is in it, a workspace made
 with `mkdir` among it, is behind that directory whatever its own mode). Keep it under directories only you
 can change (as `$XDG_RUNTIME_DIR` and your home are): fux3 checks the
 directory itself, not its parents, and not ACLs on macOS. A holder's command
-line (`ps`) shows the session's path, the pane's name and labels, and its
-program, as any program's arguments are shown; `--env` values are not on it.
+line (`ps`) is `start`'s own: the pane's name, its options (labels among
+them) and its program, as any program's arguments are shown; `--env` values
+are not on it.
 
 ## The pane directory
 
@@ -316,13 +321,14 @@ the first start inherited `start`'s:
 # fux3 label role=tests
 cd -- '/home/me/src' || exit 126
 RUST_LOG='debug'; export RUST_LOG
-exec -- 'cargo' 'watch' '-x' 'test'
+exec 'cargo' 'watch' '-x' 'test'
 ```
 
 The two comment lines keep the start's size and labels: a start from the
 recipe has them again unless `--size` or `--label` say otherwise, so a
-template's tab that matches on a label finds the pane it started. `exec --`
-runs a program whose name starts with `-`. A name `sh` keeps for itself
+template's tab that matches on a label finds the pane it started. A program
+whose name starts with `-` is run through `env` (`exec env -- '-x'`), as
+`exec` would read it as an option. A name `sh` keeps for itself
 (`PPID`, `UID`, `EUID`, `BASHOPTS`, `SHELLOPTS`, `BASH_VERSINFO`) is refused
 by `--env`, as its recipe could not run. The recipe is written last, once the
 pane runs: a start that fails leaves the recipe of the last good one.
@@ -364,10 +370,13 @@ so it outlives the outer pane: end it with its own `ctl`.
 `kill HOLDER` (SIGTERM to the holder, whose pid is `holder` in `status`) is
 the same as `kill` written to `ctl`.
 
-The kill takes the pane's name away first, by one rename (to `.gone-ID` in
-its workspace), and only then stops writing and removes the files: the name
-is free for a new pane at once, however slow the disk, and a holder that
-dies in between leaves a nameless directory the next `fux3` command clears.
+Once the processes are gone (which takes up to a second when a pane
+started inside does not end at once: until then the pane keeps its name and
+its `state`), the kill takes the pane's name away, by one rename (to
+`.gone-ID` in its workspace), and only then stops writing and removes the
+files: the name is free for a new pane from that rename on, however slow
+the disk, and a holder that dies in between leaves a nameless directory the
+next `fux3` command clears.
 Only the files a holder makes are removed: anything else you put in a
 pane's directory stays, in that nameless directory. When something could not
 be killed, the directory keeps its name, `state` says `kill-incomplete` and
@@ -386,7 +395,8 @@ for c in "$D"/*/*/ctl; do echo kill 1<>"$c"; done
 **A holder killed outright from outside** (`kill -9`, the kernel out of
 memory) can clean nothing up: its directory stays, with its name, until the
 next `fux3` command clears it. Until then `ls "$D/main"` shows it, its
-`status` still says `running`, it has no `exit`, and **a plain write to its
+`status` still says `running`, it has no `exit`, its program runs on if it
+ignores the hangup it gets when its terminal goes, and **a plain write to its
 `in` or `ctl` blocks for ever**: a FIFO with no reader blocks its writer in
 `open`. Checking first is no guard: a holder killed between the check and
 the write still hangs the writer. Two ways are safe:

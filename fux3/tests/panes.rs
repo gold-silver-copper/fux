@@ -893,8 +893,9 @@ fn history_is_whole_records() -> Result {
         "--",
         "sh",
     ])?;
-    // One line of 9,000 bytes: longer than a whole file (4,096).
-    let line = "awk 'BEGIN { for (i = 0; i < 1000; i++) printf \"%08d,\", i; print \"\" }'";
+    // One line of 45,000 bytes, printed at once: longer than a whole file
+    // (4,096), and more than both files hold.
+    let line = "awk 'BEGIN { for (i = 0; i < 5000; i++) printf \"%08d,\", i; print \"\" }'";
     s.write(
         "p",
         "in",
@@ -903,7 +904,7 @@ fn history_is_whole_records() -> Result {
     until("the end of output", || screen_has(&s, "p", "done-2"))?;
     let read = |file: &str| s.read("p", file);
     until("the line's end in history", || {
-        read("history").contains("00000999,")
+        read("history").contains("00004999,")
     })?;
     let (older, newer) = (read("history.1"), read("history"));
     for file in [&older, &newer] {
@@ -911,11 +912,13 @@ fn history_is_whole_records() -> Result {
         assert!(file.is_empty() || file.ends_with('\n'), "a record was cut");
         assert!(file.lines().all(|l| l.len() < 4096));
     }
-    assert!(!older.is_empty(), "no rotation happened");
+    // Both files are in use: what is kept is the cap's worth, not half.
+    let (old, new) = (older.len(), newer.len());
+    assert!(old > 2048 && new > 9, "{old} and {new} bytes kept");
     let joined = format!("{older}{newer}").replace(" [fux3: continued]\n", "");
     let whole = joined
         .lines()
-        .find(|l| l.ends_with("00000999,"))
+        .find(|l| l.ends_with("00004999,"))
         .ok_or("no end")?;
     // The newest part of the line, in order, nothing missing or doubled.
     let numbers: Vec<u32> = whole.split(',').filter_map(|n| n.parse().ok()).collect();
