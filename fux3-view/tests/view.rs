@@ -240,21 +240,32 @@ fn a_wrong_layout_is_refused_and_the_last_good_one_kept() -> Tested {
     lab.start("right")?;
     let out = lab.run(&lab.view, &["--do", "tab new spare"])?;
     assert!(out.status.success(), "{out:?}");
-    lab.viewer("v", "100x30", &[])?;
+    lab.viewer("v", "250x30", &[])?;
     lab.shows("v", "\u{2502}")?;
     let file = lab.view.join("main/.view/layout");
-    for wrong in [
-        "fux3-layout 1\nversion x\n".to_owned(),
-        std::iter::repeat_n('x', 70 << 10).collect(),
+    // A layout good but for its size: 64 tabs, each with a long filter.
+    let test: String = std::iter::repeat_n('x', 60).collect();
+    let tests: String = std::iter::repeat_n(format!(" \"k={test}\""), 16).collect();
+    let filter = format!("  match{tests}\n");
+    let big: String = (1..=64)
+        .map(|n| format!("tab t{n} \"tab {n}\"\n{filter}"))
+        .collect();
+    let big = format!("fux3-layout 2\nversion 1\nnext 65\n{big}");
+    assert!(big.len() > 64 << 10);
+    for (wrong, why) in [
+        ("fux3-layout 1\nversion x\n".to_owned(), "line 1: expected"),
+        (big, "over 65536 bytes"),
     ] {
         std::fs::write(&file, &wrong).map_err(|e| e.to_string())?;
         let out = lab.run(&lab.view, &["--do", "zoom left"])?;
         assert!(!out.status.success(), "a change was made over a wrong file");
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(said.contains(why), "--do said {said:?}, not {why:?}");
         assert_eq!(
             std::fs::read_to_string(&file).map_err(|e| e.to_string())?,
             wrong
         );
-        lab.shows("v", "layout refused")?;
+        lab.shows("v", why)?;
         // The last good layout still shows both panes, side by side.
         assert!(lab.read(&lab.harness, "v", "screen").contains('\u{2502}'));
     }
@@ -309,11 +320,16 @@ fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
     lab.keys("v", b"\x1b[19~")?;
     lab.shows("v", "F8: interrupted")?;
     lab.keys("v", b"\x1b[19~")?;
-    lab.keys("v", b"\x02d")?;
+    // Detach comes at once, not once the binding is stopped (its limit is
+    // 5 s, and 1 s more before it is forced).
+    let asked = Instant::now();
+    fifo(&lab.harness.join("main/v/in"), b"\x02d")?;
     until("the viewer left", || {
         lab.read(&lab.harness, "v", "status")
             .contains("state exited 0")
     })?;
+    let took = asked.elapsed();
+    assert!(took < Duration::from_secs(2), "detach took {took:?}");
     let listed = lab.run(&lab.view, &["ls"])?;
     assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "main/only");
     Ok(())
