@@ -244,6 +244,8 @@ struct View {
     held: Vec<Input>,
     /// The last key typed while loading was `C-b`.
     loading_prefix: bool,
+    /// The focus was moved by a key or a binding, not only settled.
+    focus_moved: bool,
     /// The keys have loaded; held input waits for a focused pane until then.
     keys_loaded: Option<Instant>,
     /// A run was handed to the language and has not finished.
@@ -488,13 +490,20 @@ impl View {
                 .and_then(|(name, id, _)| {
                     named(name).filter(|pane| id.is_none_or(|id| pane.hello.id == id))
                 });
-            if wanted.is_none() && self.focus.and_then(by_id).is_some() {
+            // Until the focus is moved by hand, it is the first pane by name,
+            // whichever pane happened to greet first.
+            let first = visible.first().map(|p| p.hello.id);
+            let settled = self.focus_moved || self.focus == first;
+            if wanted.is_none() && settled && self.focus.and_then(by_id).is_some() {
                 return;
             }
             let returning = (self.back.as_ref())
                 .filter(|(name, _)| self.focus_name.as_deref() == Some(name.as_str()))
                 .and_then(|(_, id)| by_id(*id));
-            let last = self.focus_name.as_deref().unwrap_or("");
+            let last = match self.focus_moved {
+                true => self.focus_name.as_deref().unwrap_or(""),
+                false => "",
+            };
             wanted
                 .or(returning)
                 .or_else(|| visible.iter().find(|p| p.name.as_str() > last))
@@ -713,6 +722,7 @@ impl View {
         };
         self.focus = focus;
         self.focus_name = name;
+        self.focus_moved = true;
         self.back = None;
         self.dirty = true;
     }
@@ -829,6 +839,7 @@ impl View {
                     self.back = Some((name.clone(), id));
                 }
                 self.wanted = Some((name, id, after(now, FOCUS_WAIT)));
+                self.focus_moved = true;
                 // It has just been started: look now, not at the next scan.
                 self.next_scan = now;
             }
@@ -1275,6 +1286,7 @@ fn run() -> Result<(), Failure> {
         layout_failed: None,
         held: Vec::new(),
         loading_prefix: false,
+        focus_moved: false,
         keys_loaded: None,
         run_sent: false,
         painter,

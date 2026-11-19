@@ -135,7 +135,8 @@ so); a larger one leaves blank room. Viewing never resizes a pane.
 | `C-b d` | detach |
 | `C-b C-b` | type a literal `C-b` |
 
-The focused pane's title bar is drawn in reverse video; the others are dim. The
+The viewer starts with the first pane by name focused, and keeps that until you
+move the focus. The focused pane's title bar is drawn in reverse video; the others are dim. The
 status line says which workspace and tab are shown and how many there are, such
 as `compiler 1/2 | logs 2/3`. Each viewer keeps its own place. The mouse is not
 forwarded.
