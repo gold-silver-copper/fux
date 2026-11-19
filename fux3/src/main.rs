@@ -301,7 +301,8 @@ fn wait(mut args: impl Iterator<Item = OsString>) -> Outcome {
                 return Ok(say(&format!("{}\n", now.line())));
             }
             Ok(_) => {}
-            Err(failure) if !workspace.is_live(&name) => {
+            // Gone: its directory removed by a kill, or its holder dead.
+            Err(failure) if !workspace.pane_dir(&name).exists() || !workspace.is_live(&name) => {
                 return Err(Failure::new(format!("pane {pane} is gone: {failure}")));
             }
             Err(_) => {}

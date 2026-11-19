@@ -398,3 +398,31 @@ fn history_rotates_without_repeating_a_line() -> Result {
     );
     Ok(())
 }
+
+/// `fux3 wait` on a pane that is killed while it waits says the pane is
+/// gone, at once, rather than waiting out its time.
+#[test]
+fn wait_ends_when_its_pane_goes() -> Result {
+    let s = Session::new("waitgone")?;
+    s.start("p", &["sh"])?;
+    until("the prompt", || screen_has(&s, "p", "$"))?;
+    let waiter = Command::new(env!("CARGO_BIN_EXE_fux3"))
+        .args(["wait", "p", "--ms", "20000"])
+        .env("FUX3_DIR", &s.root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    std::thread::sleep(Duration::from_millis(200));
+    let start = Instant::now();
+    // A screen change would end the wait too: the kill comes first.
+    s.write("p", "ctl", b"kill\n")?;
+    let out = waiter.wait_with_output().map_err(|e| e.to_string())?;
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "wait outlived its pane"
+    );
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(said.contains("gone") || out.status.success(), "{said}");
+    Ok(())
+}
