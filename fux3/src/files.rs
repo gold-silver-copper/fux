@@ -15,6 +15,8 @@ pub const STYLED: &str = "screen.styled";
 pub const STATUS: &str = "status";
 /// Plain text of the lines that scrolled off.
 pub const HISTORY: &str = "history";
+/// The history before `history` last reached its cap.
+pub const HISTORY_OLDER: &str = "history.1";
 /// The last refusals, a line each.
 pub const ERRORS: &str = "errors";
 /// One file per picture shown.

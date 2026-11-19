@@ -114,3 +114,9 @@ overruled it, both are recorded.
   have no order to change, and a pane does not move between them. An empty
   workspace directory is left alone: it is how `mkdir` makes one. Programs
   get `FUX3_WORKSPACE`, `FUX3_PANE` and `FUX3_PANE_DIR`.
+- **D30. `history` is capped by rotation, not by rewriting.** First the file
+  was replaced by its newer half at the cap; a separate panel's spike found
+  that `tail -F` then prints the kept half again. Now each of `history` and
+  `history.1` holds at most half the cap: past it `history` is renamed
+  `history.1` and a new one starts, so a follower by name sees each line
+  once, and the two together stay under the cap with no gap (tested).

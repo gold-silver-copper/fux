@@ -361,3 +361,40 @@ fn workspaces_are_directories() -> Result {
     );
     Ok(())
 }
+
+/// `history` at its cap becomes `history.1` and starts anew, so a reader
+/// following it (as `tail -F` does) sees every line once, and the two files
+/// together hold the newest lines, in order, under the cap.
+#[test]
+fn history_rotates_without_repeating_a_line() -> Result {
+    let s = Session::new("rotate")?;
+    let mut args = vec!["start", "p", "--size", "80x24", "--history", "20000", "--"];
+    args.extend_from_slice(&["sh"]);
+    s.fux3(&args)?;
+    s.write("p", "in", b"stty -echo; seq 1 20000; echo done-$((1+1))\n")?;
+    until("the end of output", || screen_has(&s, "p", "done-2"))?;
+    let both = || format!("{}{}", s.read("p", "history.1"), s.read("p", "history"));
+    until("history settled", || both().contains("\n19970\n"))?;
+    let older = s.read("p", "history.1");
+    let newer = s.read("p", "history");
+    assert!(!older.is_empty(), "no rotation happened");
+    assert!(older.len().saturating_add(newer.len()) <= 20000);
+    let lines: Vec<u64> = older
+        .lines()
+        .chain(newer.lines())
+        .filter_map(|l| l.parse().ok())
+        .collect();
+    let next = lines.iter().skip(1);
+    assert!(
+        lines
+            .iter()
+            .zip(next)
+            .all(|(a, b)| a.saturating_add(1) == *b)
+    );
+    assert!(
+        lines.last().is_some_and(|n| *n >= 19970),
+        "{:?}",
+        lines.last()
+    );
+    Ok(())
+}

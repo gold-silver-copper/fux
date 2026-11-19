@@ -87,7 +87,8 @@ directory anyone else can open.
 | `screen` | line 1, then the screen as plain text, a line per row |
 | `screen.styled` | the same line 1, then the screen with colours and attributes, then one `picture …` line per picture |
 | `status` | one fact a line: `KEY VALUE` |
-| `history` | plain text of the lines that scrolled off the screen, appended; at its cap, cut to its newer half |
+| `history` | plain text of the lines that scrolled off the screen, appended |
+| `history.1` | the history before `history` last reached half its cap (there once it has) |
 | `errors` | the last 32 refusals, a line each |
 | `images/N.sixel` | one picture the program drew, as sixel: `cat` shows it in a sixel terminal |
 
@@ -149,7 +150,7 @@ files stay.
 **`history`** is plain text, never the program's raw bytes: raw bytes shown in
 a terminal replay escape codes, make that terminal answer the program's
 queries into your shell, and let a pane's program attack whoever tails it. A
-soft-wrapped line is one line. `less +G` or `tail -F` reads it. It is appended to, not replaced, so a read while output pours in may end in the middle of a line; the next read has the rest.
+soft-wrapped line is one line. `less +G` or `tail -F` reads it. It is appended to, so a read while output pours in may end in the middle of a line; the next read has the rest. Each file holds at most half the cap (`--history`, default 4 MiB): past it, `history` is renamed `history.1` (the older `history.1` goes) and a new `history` starts. `tail -F history` follows the new file and sees every line once; `tail -f` stops at the old one. `cat history.1 history` is everything kept, in order, under the cap; what neither holds is gone.
 
 ## `ctl`
 
@@ -207,7 +208,7 @@ Linux the holder is the subreaper of everything the program started, so a
 **Panes started inside a pane are part of it.** One kill ends a task and
 everything it started, panes included: on Linux, a `fux3 start` run inside a
 pane makes a holder that pane's holder adopts, so killing the outer pane ends
-the inner one too (its directory goes at the next `fux3` command). A viewer
+the inner one too. Its holder is killed outright, so its folder stays, with `status` still saying `running`, until the next `fux3` command clears it (as with any holder killed outright, below). A viewer
 run inside a pane starts its shells inside that pane, so killing that pane
 ends them. On macOS the inner pane's holder left the outer pane's session and
 cannot be found, so it outlives the outer pane: end it with

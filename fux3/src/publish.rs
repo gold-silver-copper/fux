@@ -319,58 +319,76 @@ impl Writer<'_> {
         }
     }
 
-    /// Appends to `history`; past `cap` it is replaced by its newer half,
-    /// starting at a line.
+    /// Appends to `history`. Each file holds at most half of `cap`: past
+    /// it, `history` becomes `history.1` (the older one goes) and a new one
+    /// starts, so a reader following `history` by name (`tail -F`) sees
+    /// every line once, and the two files together stay under `cap`.
     fn append_history(&mut self, text: &[u8], len: usize, cap: usize) -> usize {
-        let path = self.dir.join(files::HISTORY);
-        if len.saturating_add(text.len()) > cap {
-            // Only the newer half is read: the file's tail, then the text.
-            let keep = cap / 2;
-            let from_file = keep.saturating_sub(text.len());
-            let mut all = tail(&path, from_file);
-            all.extend_from_slice(text);
-            let cut = all.len().saturating_sub(keep);
-            let start = all
-                .get(cut..)
-                .and_then(|rest| rest.iter().position(|b| *b == b'\n'))
-                .map_or(cut, |at| cut.saturating_add(at).saturating_add(1));
-            let kept = all.get(start..).unwrap_or_default();
-            return match self.replace(files::HISTORY, kept) {
-                true => kept.len(),
-                false => len,
+        let half = cap / 2;
+        // What both files can't hold goes first, from a line on.
+        let mut rest = from_a_line(text, text.len().saturating_sub(cap));
+        let mut len = len;
+        while !rest.is_empty() {
+            let room = half.saturating_sub(len);
+            // The most that fits, to a line's end; a line longer than a
+            // whole file is cut.
+            let fits = rest.get(..room.min(rest.len())).unwrap_or_default();
+            let piece = match fits.len() == rest.len() {
+                true => fits,
+                false => match fits.iter().rposition(|b| *b == b'\n') {
+                    Some(at) => fits.get(..=at).unwrap_or(fits),
+                    None if len == 0 => fits,
+                    None => &[],
+                },
             };
+            if piece.is_empty() {
+                match std::fs::rename(
+                    self.dir.join(files::HISTORY),
+                    self.dir.join(files::HISTORY_OLDER),
+                ) {
+                    Ok(()) => len = 0,
+                    Err(e) => {
+                        self.note("rotating history", e);
+                        return len;
+                    }
+                }
+                continue;
+            }
+            if !self.append(piece) {
+                return len;
+            }
+            len = len.saturating_add(piece.len());
+            rest = rest.get(piece.len()..).unwrap_or_default();
         }
+        len
+    }
+
+    fn append(&mut self, text: &[u8]) -> bool {
         let mut options = std::fs::File::options();
         options.append(true).create(true);
         let appended = fuxix::file::private_file(&mut options)
-            .open(&path)
+            .open(self.dir.join(files::HISTORY))
             .and_then(|mut file| file.write_all(text));
         match appended {
-            Ok(()) => len.saturating_add(text.len()),
+            Ok(()) => true,
             Err(e) => {
                 self.note("appending to history", e);
-                len
+                false
             }
         }
     }
 }
 
-/// The last `most` bytes of the file at `path`; none if it can't be read.
-fn tail(path: &Path, most: usize) -> Vec<u8> {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    let len = file.metadata().map_or(0, |m| m.len());
-    let most = u64::try_from(most).unwrap_or(u64::MAX);
-    let mut bytes = Vec::new();
-    let read = file
-        .seek(SeekFrom::Start(len.saturating_sub(most)))
-        .and_then(|_| file.take(most).read_to_end(&mut bytes));
-    match read {
-        Ok(_) => bytes,
-        Err(_) => Vec::new(),
+/// `text` from the first line that starts at or after `at`.
+fn from_a_line(text: &[u8], at: usize) -> &[u8] {
+    if at == 0 {
+        return text;
     }
+    let start = (text
+        .get(at..)
+        .and_then(|rest| rest.iter().position(|b| *b == b'\n')))
+    .map_or(text.len(), |n| at.saturating_add(n).saturating_add(1));
+    text.get(start..).unwrap_or_default()
 }
 
 #[cfg(test)]

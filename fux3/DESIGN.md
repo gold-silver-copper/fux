@@ -37,7 +37,8 @@ while its lock and FIFOs moved: don't. The pane limit, 128, is per workspace.
 | `screen` | line 1 (below); then exactly ROWS lines, each a row's text with trailing blanks dropped | holder, atomic replace |
 | `screen.styled` | the same line 1; then exactly ROWS lines, each the row's cells with the SGR changes between them, ending with the pen back at the default; then one line per picture shown (`picture N.sixel at=ROW,COL cells=CxR cropped=K cell=WxH`). Built only from the emulator's cells: the only control sequences in it are SGR | holder, atomic replace |
 | `status` | one fact a line, `KEY VALUE` (below) | holder, atomic replace |
-| `history` | plain text of the lines that scrolled off the main screen, appended; a soft-wrapped line is one line. At its cap (`--history`, default 4 MiB, at most 256 MiB) it is replaced by its newer half, starting at a line, so `tail -F` follows it | holder |
+| `history` | plain text of the lines that scrolled off the main screen, appended; a soft-wrapped line is one line. Each file holds at most half the cap (`--history`, default 4 MiB, at most 256 MiB), filled to a line's end: then `history` is renamed `history.1` (replacing it) and a new `history` starts, so `tail -F` follows it and repeats nothing | holder |
+| `history.1` | the generation before | holder, by rename |
 | `errors` | the last 32 refusals, a line each, `WHAT: WHY` (below) | holder, atomic replace |
 | `images/N.sixel` | one picture shown, re-encoded as sixel from the emulator's pixels; written once, removed once no published screen shows it | holder |
 
