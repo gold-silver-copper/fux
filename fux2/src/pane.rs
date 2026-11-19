@@ -50,6 +50,12 @@ const DRAIN_MOST: Duration = Duration::from_secs(1);
 const HANGUP_GRACE: Duration = Duration::from_millis(200);
 /// How long a kill waits for its program to be gone.
 const KILL_WAIT: Duration = Duration::from_secs(2);
+/// How long a kill reads on for the terminal's close to finish.
+const CLOSE_WAIT: Duration = Duration::from_millis(500);
+/// How long a kill rests between looks.
+const KILL_STEP: Duration = Duration::from_millis(5);
+/// How many reads one look at a dying terminal makes.
+const DISCARD_READS: usize = 64;
 /// The history a pane keeps unless told otherwise.
 pub const DEFAULT_HISTORY: usize = 1 << 20;
 /// The most history a pane may keep.
@@ -1015,16 +1021,34 @@ impl Pane {
     /// Reads and drops what the terminal holds, for a program that may be
     /// waiting to write as it dies.
     fn discard_output(&mut self) {
-        while self.open {
+        for _ in 0..DISCARD_READS {
+            if !self.open {
+                return;
+            }
             match fuxix::io::read(&self.master, &mut self.buffer) {
                 Ok(0) | Err(Errno::IO) => self.open = false,
                 Ok(_) | Err(Errno::INTR) => {}
+                Err(errno) if errno.is_peer_gone() => self.open = false,
                 Err(_) => return,
             }
         }
     }
 
-    fn gone_by(&mut self, deadline: Instant) -> bool {
+    /// Waits a moment for the terminal. On Windows it is the poll that
+    /// moves a read along, and a closing console waits for its output to
+    /// be read: a plain sleep here could leave it, and this process, stuck.
+    fn pause(&self, poll: &mut Poll) {
+        if !self.open {
+            return std::thread::sleep(KILL_STEP);
+        }
+        let mut fds = poll.list();
+        fds.push(PollFd::new(&self.master, Events::IN));
+        if fds.poll(Some(KILL_STEP)).is_err() {
+            std::thread::sleep(KILL_STEP);
+        }
+    }
+
+    fn gone_by(&mut self, poll: &mut Poll, deadline: Instant) -> bool {
         loop {
             self.discard_output();
             if matches!(self.job.as_ref().map(Job::ended), Some(Ok(Some(_))) | None) {
@@ -1033,19 +1057,29 @@ impl Pane {
             if Instant::now() >= deadline {
                 return false;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            self.pause(poll);
+        }
+    }
+
+    /// Reads the terminal to its end, a bounded time, so that closing it
+    /// has finished before this process goes.
+    fn drain_to_close(&mut self, poll: &mut Poll, deadline: Instant) {
+        while self.open && Instant::now() < deadline {
+            self.discard_output();
+            self.pause(poll);
         }
     }
 
     /// Ends the program and everything it left, gives the name back, and
     /// says how complete that was.
     fn kill(&mut self) -> Vec<u8> {
+        let mut poll = Poll::default();
         let mut missed = Vec::new();
         if let Some(job) = &self.job {
             let hung = fuxix::pty::hang_up(&self.master, job);
             drop(hung);
             let now = Instant::now();
-            self.gone_by(after(now, HANGUP_GRACE));
+            self.gone_by(&mut poll, after(now, HANGUP_GRACE));
         }
         if let Some(job) = &self.job {
             let sent = job.kill(Reach::Session);
@@ -1064,7 +1098,7 @@ impl Pane {
                 Scan::Failed(errno) => missed.push(format!("listing processes: {errno}")),
             }
         }
-        if !self.gone_by(after(Instant::now(), KILL_WAIT)) {
+        if !self.gone_by(&mut poll, after(Instant::now(), KILL_WAIT)) {
             missed.push("the program did not end in time".to_owned());
         }
         if let Some(alive) = self.members_left(after(Instant::now(), KILL_WAIT)) {
@@ -1078,6 +1112,7 @@ impl Pane {
         }
         #[cfg(unix)]
         fuxix::process::reap_orphans(|_| false);
+        self.drain_to_close(&mut poll, after(Instant::now(), CLOSE_WAIT));
         if let Some(claim) = self.claim.take() {
             withdraw(&self.session, &self.dir, claim);
         }
