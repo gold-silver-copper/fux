@@ -1,8 +1,14 @@
 //! The configuration language's thread. Grift runs here, never on the
 //! viewer's own: a binding that loops or waits holds only this thread, the
 //! viewer stops it when its time is up, and it can detach at any moment.
-//! What a binding does to a pane it does through the `fux2` command, so
-//! there is one way to reach a pane and it can be cancelled.
+//! What a binding does to a pane or the layout it does through the `fux2`
+//! command, so there is one way to reach either and it can be cancelled.
+//!
+//! The words here are the primitives. The commands (split, move, zoom,
+//! pickers, prompts) are grift in `library.grift`, and the keys are grift in
+//! `defaults.grift`; the user's `view.grift`, loaded last, extends or
+//! replaces any of them.
+use fux2::layout::{Layout, Rect};
 use fuxix::poll::Poke;
 use grift::{Answer, Error, Grift, HostCall, HostFunction, Interrupter, Kept, Value};
 use std::collections::HashMap;
@@ -18,7 +24,7 @@ use std::time::{Duration, Instant};
 pub const MAX_CONFIG: u64 = 64 << 10;
 pub const MAX_BINDINGS: usize = 256;
 const MAX_HEAP: usize = 16 << 20;
-/// How long the configuration may take to load.
+/// How long each part of the configuration may take to load.
 pub const CONFIG_TIME: Duration = Duration::from_secs(2);
 /// How long a binding may run.
 pub const BINDING_TIME: Duration = Duration::from_secs(5);
@@ -30,12 +36,18 @@ const MAX_OUTPUT: u64 = 8 << 20;
 const MAX_COPIED: usize = 16 << 20;
 /// How many numbers a new pane's name is tried with.
 const MAX_NEW_NAMES: u32 = 128;
+/// The most panels whose answers can be waiting at once.
+const MAX_PANELS: usize = 8;
+/// The most keys in one chord.
+const MAX_CHORD_KEYS: usize = 4;
 
-/// A viewer action a binding asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A viewer action, done on the viewer's own thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verb {
     NextPane,
     PreviousPane,
+    LastPane,
+    Focus(fux2::layout::Dir),
     NextTab,
     PreviousTab,
     LastTab,
@@ -44,26 +56,75 @@ pub enum Verb {
     NextWorkspace,
     PreviousWorkspace,
     LastWorkspace,
+    /// Show the tab or workspace with this id.
+    ShowTab(u32),
+    ShowWorkspace(u32),
     Fit,
     Detach,
     /// Types the binding's first key itself: a prefix sent through.
     Literal,
+    /// Does what this chord is bound to.
+    Chord(String),
 }
 
-/// The keys every viewer starts with. They are ordinary bindings: a
-/// configuration may unbind or replace any of them.
+/// The commands every viewer starts with, then its keys. Both are ordinary
+/// grift: a configuration may redefine, unbind or replace any of them.
+const LIBRARY: &str = include_str!("library.grift");
 const DEFAULTS: &str = include_str!("defaults.grift");
 
 pub enum ToViewer {
     /// The chord runs its function on this thread, under this number.
-    Bind(String, u64),
+    Bind {
+        chord: String,
+        caption: String,
+        heading: String,
+        generation: u64,
+    },
     /// The chord does this at once on the viewer's own thread, so it works
     /// while a binding runs.
-    BindVerb(String, Verb),
+    BindVerb {
+        chord: String,
+        caption: String,
+        heading: String,
+        generation: u64,
+        verb: Verb,
+    },
+    /// The chord holds other keys.
+    Group {
+        chord: String,
+        caption: String,
+        heading: String,
+        repeat: bool,
+        generation: u64,
+    },
     Unbind(String),
     Verb(Verb),
     /// Focus this pane once it is there, and come back when it goes.
     Focus(String),
+    /// Show a list: rows of value, label and whether it is where you are
+    /// now (`*`) or only selected at first, and keys besides choosing with
+    /// their captions. What is chosen goes to callback `id`.
+    Pick {
+        id: u64,
+        title: String,
+        rows: Vec<(String, String, Start)>,
+        actions: Vec<(String, String)>,
+    },
+    /// Ask for a line; it goes to callback `id`.
+    Ask {
+        id: u64,
+        prompt: String,
+        initial: String,
+    },
+    /// The layout changed: read it now.
+    Reread,
+    /// Resize these panes to their tiles once the layout is at `version`.
+    Fit {
+        version: u64,
+        panes: Vec<String>,
+    },
+    /// A line for the status line.
+    Say(String),
     /// A run begins; `stop` ends it, `limit` is its time.
     Started {
         stop: Interrupter,
@@ -73,15 +134,52 @@ pub enum ToViewer {
     Done(Option<String>),
 }
 
-pub struct Run {
-    pub chord: String,
-    /// The binding's number when its key was pressed.
-    pub generation: u64,
-    /// The pane focused when the key was pressed, as `name@id`.
+/// How a row of a list starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Start {
+    Plain,
+    /// Marked `*` and selected: where you are now.
+    Current,
+    /// Selected, not marked.
+    Selected,
+}
+
+/// What the viewer shows, as a run sees it.
+#[derive(Clone, Default)]
+pub struct Context {
+    /// The pane focused, as `NAME@ID`.
     pub focus: Option<String>,
-    /// The labels a new pane needs to appear in the shown tab, or why no
-    /// labels can put it there.
-    pub labels: Result<Vec<(String, String)>, String>,
+    pub tab: Option<u32>,
+    pub workspace: Option<u32>,
+    /// The room tiles share, as `COLSxROWS`.
+    pub area: Rect,
+    pub layout: Arc<Layout>,
+    /// Every binding: chord, caption, heading.
+    pub keys: Arc<Vec<(String, String, String)>>,
+}
+
+/// What to run.
+pub enum Job {
+    /// The binding of `chord`, if it is still number `generation`.
+    Binding { chord: String, generation: u64 },
+    /// Callback `id` with what a panel gave: chosen, or one of its keys
+    /// pressed on it, by number.
+    Answer {
+        id: u64,
+        value: String,
+        action: Option<usize>,
+    },
+    /// Callback `id` is no longer wanted.
+    Drop(u64),
+    /// The function the configuration names `name`, with string arguments.
+    Call { name: String, args: Vec<String> },
+}
+
+pub struct Run {
+    /// What its errors are said to come from; empty for none.
+    pub label: String,
+    pub job: Job,
+    pub context: Context,
 }
 
 /// What the viewer holds of this thread.
@@ -94,31 +192,70 @@ struct Host {
     out: SyncSender<ToViewer>,
     poke: Poke,
     kept: HashMap<String, Kept>,
-    focus: Option<String>,
-    labels: Result<Vec<(String, String)>, String>,
+    context: Context,
     cancel: Arc<AtomicBool>,
     fux2: PathBuf,
     /// Bytes copied out of the language in this run.
     copied: usize,
-    /// Chords bound to viewer actions, which count toward the limit too.
+    /// Chords bound to viewer actions, and chords that are groups: they
+    /// count toward the limit too.
     verbs: std::collections::HashSet<String>,
+    groups: std::collections::HashSet<String>,
     /// Each chord's binding, numbered: a run queued for an older one is
     /// refused out loud, never run with whatever replaced it.
     generations: HashMap<String, u64>,
     next_generation: u64,
+    /// Each panel's callbacks, by number, until its answer runs or it is
+    /// let go of: what choosing calls, then what each of its keys calls.
+    /// The oldest go past [`MAX_PANELS`].
+    callbacks: std::collections::VecDeque<(u64, Vec<Kept>)>,
+    next_callback: u64,
 }
 
 impl Host {
     /// Room for a binding on `chord`, and the number its new binding gets.
     fn rebind(&mut self, chord: &str) -> Result<u64, String> {
-        let known = self.kept.contains_key(chord) || self.verbs.contains(chord);
-        if !known && self.kept.len().saturating_add(self.verbs.len()) >= MAX_BINDINGS {
+        let known = self.kept.contains_key(chord)
+            || self.verbs.contains(chord)
+            || self.groups.contains(chord);
+        let count = (self.kept.len())
+            .saturating_add(self.verbs.len())
+            .saturating_add(self.groups.len());
+        if !known && count >= MAX_BINDINGS {
             return Err(format!("more than {MAX_BINDINGS} bindings"));
         }
         self.next_generation = self.next_generation.saturating_add(1);
         self.generations
             .insert(chord.to_owned(), self.next_generation);
         Ok(self.next_generation)
+    }
+
+    /// Why `chord` cannot be bound as a command (`leaf`) or a group: a key
+    /// is one or the other, never both, so every entry of the menu can be
+    /// reached by its keys.
+    fn conflict(&self, chord: &str, leaf: bool) -> Option<String> {
+        let is_leaf = |c: &str| self.kept.contains_key(c) || self.verbs.contains(c);
+        let below = format!("{chord} ");
+        let holds = (self.kept.keys())
+            .chain(self.verbs.iter())
+            .chain(self.groups.iter())
+            .any(|c| c.starts_with(&below));
+        if leaf && (holds || self.groups.contains(chord)) {
+            return Some(format!("{chord} holds other keys: unbind them first"));
+        }
+        if !leaf && is_leaf(chord) {
+            return Some(format!("{chord} is bound to a command: unbind it first"));
+        }
+        let mut prefix = chord;
+        while let Some((shorter, _)) = prefix.rsplit_once(' ') {
+            if is_leaf(shorter) {
+                return Some(format!(
+                    "{shorter} is bound to a command, so it holds no keys"
+                ));
+            }
+            prefix = shorter;
+        }
+        None
     }
 
     fn tell(&self, message: ToViewer) {
@@ -129,13 +266,11 @@ impl Host {
 
 type Word = HostFunction<Host>;
 
-/// A key or `prefix key` in its one spelling, or why it is none.
+/// A key, or keys after a prefix, in their one spelling, or why it is none.
 pub fn chord(text: &str) -> Result<String, String> {
     let keys: Vec<&str> = text.split_whitespace().collect();
-    if keys.is_empty() || keys.len() > 2 {
-        return Err(format!(
-            "{text:?}: a binding is one key, or a prefix and a key"
-        ));
+    if keys.is_empty() || keys.len() > MAX_CHORD_KEYS {
+        return Err(format!("{text:?}: a chord is 1 to {MAX_CHORD_KEYS} keys"));
     }
     let names: Result<Vec<String>, String> = keys
         .iter()
@@ -185,9 +320,22 @@ fn read_all(pipe: Option<impl Read>) -> Option<String> {
     fits.then(|| String::from_utf8_lossy(&text).into_owned())
 }
 
+/// Why a command failed, and whether it said what it named is gone (exit
+/// 3: missing, replaced or gone).
+struct Failed {
+    why: String,
+    gone: bool,
+}
+
+impl From<String> for Failed {
+    fn from(why: String) -> Failed {
+        Failed { why, gone: false }
+    }
+}
+
 /// Runs `fux2` with `args`, `input` on its stdin: its output. The viewer's
 /// stop ends it, and so does running out of time.
-fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<String, String> {
+fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<String, Failed> {
     let mut child = Command::new(&host.fux2)
         .args(args)
         .stdin(if input.is_some() {
@@ -198,7 +346,7 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("{}: {e}", host.fux2.display()))?;
+        .map_err(|e| Failed::from(format!("{}: {e}", host.fux2.display())))?;
     let stdin = child.stdin.take();
     let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
     let helpers = (|| -> std::io::Result<_> {
@@ -217,7 +365,7 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
         Err(e) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("a thread: {e}"));
+            return Err(format!("a thread: {e}").into());
         }
     };
     let start = Instant::now();
@@ -225,13 +373,15 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(e.to_string().into()),
         }
         let late = start.elapsed() >= COMMAND_TIME;
         if late || host.cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(if late { "it took too long" } else { "stopped" }.to_owned());
+            return Err(if late { "it took too long" } else { "stopped" }
+                .to_owned()
+                .into());
         }
         std::thread::sleep(Duration::from_millis(2));
     };
@@ -239,8 +389,11 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
     let err = err.join().ok().flatten().unwrap_or_default();
     match (status.success(), out) {
         (true, Some(out)) => Ok(out),
-        (true, None) => Err(format!("its output passed {MAX_OUTPUT} bytes")),
-        (false, _) => Err(err.trim().to_owned()),
+        (true, None) => Err(format!("its output passed {MAX_OUTPUT} bytes").into()),
+        (false, _) => Err(Failed {
+            why: err.trim().to_owned(),
+            gone: status.code() == Some(3),
+        }),
     }
 }
 
@@ -254,11 +407,17 @@ fn run_word(
     match command(host, &args, input) {
         Ok(out) => Ok(out),
         Err(_) if host.cancel.load(Ordering::Relaxed) => Err(g.limit("interrupted", &[])),
-        Err(why) => Err(failed(g, &why)),
+        // What it named is gone: its own kind, so a caller can pass over
+        // exactly that and nothing else.
+        Err(Failed { why, gone: true }) => Err(match g.string(&why) {
+            Ok(text) => g.error("fux2-gone", &[text]),
+            Err(error) => error,
+        }),
+        Err(Failed { why, gone: false }) => Err(failed(g, &why)),
     }
 }
 
-fn tab_number(g: &mut HostCall<'_, Host>, value: Value) -> Result<usize, Error> {
+fn positive(g: &mut HostCall<'_, Host>, value: Value) -> Result<usize, Error> {
     if let Value::Integer(n) = value
         && let Ok(n) = usize::try_from(n)
         && n > 0
@@ -269,9 +428,15 @@ fn tab_number(g: &mut HostCall<'_, Host>, value: Value) -> Result<usize, Error> 
 }
 
 fn named_verb(word: &str) -> Option<Verb> {
+    use fux2::layout::Dir;
     Some(match word {
         "next-pane" => Verb::NextPane,
         "previous-pane" => Verb::PreviousPane,
+        "last-pane" => Verb::LastPane,
+        "focus-left" => Verb::Focus(Dir::Left),
+        "focus-right" => Verb::Focus(Dir::Right),
+        "focus-up" => Verb::Focus(Dir::Up),
+        "focus-down" => Verb::Focus(Dir::Down),
         "next-tab" => Verb::NextTab,
         "previous-tab" => Verb::PreviousTab,
         "last-tab" => Verb::LastTab,
@@ -285,6 +450,37 @@ fn named_verb(word: &str) -> Option<Verb> {
     })
 }
 
+/// A verb from its word and its argument, if it takes one.
+fn verb_of(g: &mut HostCall<'_, Host>, host: &mut Host, args: &[Value]) -> Result<Verb, Error> {
+    let (word, number) = match args {
+        [word] => (*word, None),
+        [word, number] => (*word, Some(*number)),
+        _ => return Err(g.arity_error(args)),
+    };
+    let word = string_arg(g, host, word)?;
+    let id = |g: &mut HostCall<'_, Host>, host: &mut Host, value: Value, prefix: char| {
+        let text = string_arg(g, host, value)?;
+        match text
+            .strip_prefix(prefix)
+            .and_then(|d| d.parse::<u32>().ok())
+        {
+            Some(id) => Ok(id),
+            None => Err(failed(g, &format!("{text:?} is not an id {prefix}N"))),
+        }
+    };
+    match (word.as_str(), number) {
+        ("go-to-tab", Some(number)) => Ok(Verb::GoToTab(positive(g, number)?)),
+        ("show-tab", Some(tab)) => Ok(Verb::ShowTab(id(g, host, tab, 't')?)),
+        ("show-workspace", Some(space)) => Ok(Verb::ShowWorkspace(id(g, host, space, 'w')?)),
+        ("chord", Some(text)) => {
+            let text = string_arg(g, host, text)?;
+            Ok(Verb::Chord(chord(&text).map_err(|why| failed(g, &why))?))
+        }
+        (word, None) => named_verb(word).ok_or_else(|| failed(g, &format!("no verb {word}"))),
+        (_, Some(_)) => Err(g.arity_error(args)),
+    }
+}
+
 fn inert() -> Result<Answer, Error> {
     Ok(Answer::Now(Value::Inert))
 }
@@ -293,119 +489,367 @@ fn text_answer(g: &mut HostCall<'_, Host>, text: &str) -> Result<Answer, Error> 
     g.string(text.trim_end()).map(Answer::Now)
 }
 
-fn verb(host: &Host, verb: Verb) -> Result<Answer, Error> {
-    host.tell(ToViewer::Verb(verb));
-    inert()
+/// A list of strings.
+fn strings(g: &mut HostCall<'_, Host>, items: &[String]) -> Result<Value, Error> {
+    let mut values = Vec::with_capacity(items.len());
+    for item in items {
+        values.push(g.string(item)?);
+    }
+    g.list(&values)
+}
+
+/// A list of lists of strings.
+fn rows(g: &mut HostCall<'_, Host>, items: &[Vec<String>]) -> Result<Answer, Error> {
+    let mut values = Vec::with_capacity(items.len());
+    for item in items {
+        values.push(strings(g, item)?);
+    }
+    g.list(&values).map(Answer::Now)
+}
+
+/// Caption and heading, each a non-empty string.
+fn captions(
+    g: &mut HostCall<'_, Host>,
+    host: &mut Host,
+    caption: Value,
+    heading: Value,
+) -> Result<(String, String), Error> {
+    let caption = string_arg(g, host, caption)?;
+    let heading = string_arg(g, host, heading)?;
+    if caption.trim().is_empty() || heading.trim().is_empty() {
+        return Err(failed(g, "a binding needs a caption and a heading"));
+    }
+    Ok((caption, heading))
+}
+
+/// Keeps `functions` as a new panel's callbacks; past [`MAX_PANELS`] the
+/// oldest panel's go, and an answer that comes for it is refused out loud.
+fn keep_callbacks(
+    g: &mut HostCall<'_, Host>,
+    host: &mut Host,
+    functions: &[Value],
+) -> Result<u64, Error> {
+    let mut kept = Vec::with_capacity(functions.len());
+    for function in functions {
+        match g.keep(*function) {
+            Ok(one) => kept.push(one),
+            Err(error) => {
+                for one in kept {
+                    let _ = g.release(one);
+                }
+                return Err(error);
+            }
+        }
+    }
+    while host.callbacks.len() >= MAX_PANELS {
+        if let Some((_, old)) = host.callbacks.pop_front() {
+            for one in old {
+                let _ = g.release(one);
+            }
+        }
+    }
+    host.next_callback = host.next_callback.saturating_add(1);
+    host.callbacks.push_back((host.next_callback, kept));
+    Ok(host.next_callback)
 }
 
 const WORDS: &[(&str, Word)] = &[
     ("bind-key", |g, host, args| {
-        let [key, function] = *g.exactly(args)?;
+        let [key, caption, heading, function] = *g.exactly(args)?;
         let text = string_arg(g, host, key)?;
-        let name = chord(&text).map_err(|why| failed(g, &why))?;
+        let chord = chord(&text).map_err(|why| failed(g, &why))?;
+        let (caption, heading) = captions(g, host, caption, heading)?;
+        if let Some(why) = host.conflict(&chord, true) {
+            return Err(failed(g, &why));
+        }
         // Kept first: a binding that can't be made leaves the old one whole.
         let kept = g.keep(function)?;
-        let generation = match host.rebind(&name) {
+        let generation = match host.rebind(&chord) {
             Ok(generation) => generation,
             Err(why) => {
                 let _ = g.release(kept);
                 return Err(failed(g, &why));
             }
         };
-        host.verbs.remove(&name);
-        if let Some(old) = host.kept.insert(name.clone(), kept) {
+        host.verbs.remove(&chord);
+        if let Some(old) = host.kept.insert(chord.clone(), kept) {
             let _ = g.release(old);
         }
-        host.tell(ToViewer::Bind(name, generation));
+        host.tell(ToViewer::Bind {
+            chord,
+            caption,
+            heading,
+            generation,
+        });
+        inert()
+    }),
+    ("bind-verb", |g, host, args| {
+        let Some(([key, caption, heading], rest)) = args.split_first_chunk::<3>() else {
+            return Err(g.arity_error(args));
+        };
+        let text = string_arg(g, host, *key)?;
+        let chord = chord(&text).map_err(|why| failed(g, &why))?;
+        let (caption, heading) = captions(g, host, *caption, *heading)?;
+        let verb = verb_of(g, host, rest)?;
+        if let Some(why) = host.conflict(&chord, true) {
+            return Err(failed(g, &why));
+        }
+        if verb == Verb::Chord(chord.clone()) {
+            return Err(failed(g, &format!("{chord} cannot do what {chord} does")));
+        }
+        let generation = host.rebind(&chord).map_err(|why| failed(g, &why))?;
+        if let Some(old) = host.kept.remove(&chord) {
+            let _ = g.release(old);
+        }
+        host.verbs.insert(chord.clone());
+        host.tell(ToViewer::BindVerb {
+            chord,
+            caption,
+            heading,
+            generation,
+            verb,
+        });
+        inert()
+    }),
+    ("bind-group", |g, host, args| {
+        let (key, caption, heading, repeat) = match args {
+            [key, caption, heading] => (*key, *caption, *heading, false),
+            [key, caption, heading, repeat] => (
+                *key,
+                *caption,
+                *heading,
+                matches!(repeat, Value::Boolean(true)),
+            ),
+            _ => return Err(g.arity_error(args)),
+        };
+        let text = string_arg(g, host, key)?;
+        let chord = chord(&text).map_err(|why| failed(g, &why))?;
+        let (caption, heading) = captions(g, host, caption, heading)?;
+        if let Some(why) = host.conflict(&chord, false) {
+            return Err(failed(g, &why));
+        }
+        let generation = host.rebind(&chord).map_err(|why| failed(g, &why))?;
+        host.groups.insert(chord.clone());
+        host.tell(ToViewer::Group {
+            chord,
+            caption,
+            heading,
+            repeat,
+            generation,
+        });
         inert()
     }),
     ("unbind-key", |g, host, args| {
         let [key] = *g.exactly(args)?;
         let text = string_arg(g, host, key)?;
-        let name = chord(&text).map_err(|why| failed(g, &why))?;
-        if let Some(old) = host.kept.remove(&name) {
+        let chord = chord(&text).map_err(|why| failed(g, &why))?;
+        if let Some(old) = host.kept.remove(&chord) {
             let _ = g.release(old);
         }
-        host.verbs.remove(&name);
-        host.generations.remove(&name);
-        host.tell(ToViewer::Unbind(name));
+        host.verbs.remove(&chord);
+        host.groups.remove(&chord);
+        host.generations.remove(&chord);
+        host.tell(ToViewer::Unbind(chord));
+        inert()
+    }),
+    ("act", |g, host, args| {
+        let verb = verb_of(g, host, args)?;
+        host.tell(ToViewer::Verb(verb));
         inert()
     }),
     ("focused", |g, host, args| {
         let [] = *g.exactly(args)?;
-        match host.focus.clone() {
+        match host.context.focus.clone() {
             Some(pane) => g.string(&pane).map(Answer::Now),
             None => Err(failed(g, "no pane is focused")),
         }
     }),
-    ("next-pane", |g, host, args| {
+    ("shown-tab", |g, host, args| {
         let [] = *g.exactly(args)?;
-        verb(host, Verb::NextPane)
+        match host.context.tab {
+            Some(id) => g.string(&format!("t{id}")).map(Answer::Now),
+            None => Err(failed(g, "no tab is shown")),
+        }
     }),
-    ("previous-pane", |g, host, args| {
+    ("shown-workspace", |g, host, args| {
         let [] = *g.exactly(args)?;
-        verb(host, Verb::PreviousPane)
+        match host.context.workspace {
+            Some(id) => g.string(&format!("w{id}")).map(Answer::Now),
+            None => Err(failed(g, "no workspace is shown")),
+        }
     }),
-    ("next-tab", |g, host, args| {
+    ("area", |g, host, args| {
         let [] = *g.exactly(args)?;
-        verb(host, Verb::NextTab)
+        let area = host.context.area;
+        g.string(&format!("{}x{}", area.w.max(1), area.h.max(1)))
+            .map(Answer::Now)
     }),
-    ("previous-tab", |g, host, args| {
+    ("workspaces", |g, host, args| {
         let [] = *g.exactly(args)?;
-        verb(host, Verb::PreviousTab)
+        let layout = Arc::clone(&host.context.layout);
+        let items: Vec<Vec<String>> = (layout.workspaces.iter())
+            .map(|space| vec![format!("w{}", space.id), space.title.clone()])
+            .collect();
+        rows(g, &items)
     }),
-    ("last-tab", |g, host, args| {
+    ("tabs", |g, host, args| {
         let [] = *g.exactly(args)?;
-        verb(host, Verb::LastTab)
+        let layout = Arc::clone(&host.context.layout);
+        let items: Vec<Vec<String>> = (layout.workspaces.iter())
+            .flat_map(|space| {
+                space.tabs.iter().map(|tab| {
+                    vec![
+                        format!("t{}", tab.id),
+                        tab.title.clone(),
+                        format!("w{}", space.id),
+                    ]
+                })
+            })
+            .collect();
+        rows(g, &items)
     }),
-    ("next-workspace", |g, host, args| {
+    ("panes", |g, host, args| {
         let [] = *g.exactly(args)?;
-        verb(host, Verb::NextWorkspace)
+        let layout = Arc::clone(&host.context.layout);
+        let items: Vec<Vec<String>> = layout
+            .tabs()
+            .flat_map(|tab| {
+                tab.leaves().into_iter().map(|leaf| {
+                    vec![
+                        leaf.pane.to_string(),
+                        format!("t{}", tab.id),
+                        leaf.title.clone(),
+                    ]
+                })
+            })
+            .collect();
+        rows(g, &items)
     }),
-    ("previous-workspace", |g, host, args| {
+    ("key-bindings", |g, host, args| {
         let [] = *g.exactly(args)?;
-        verb(host, Verb::PreviousWorkspace)
+        let keys = Arc::clone(&host.context.keys);
+        let items: Vec<Vec<String>> = (keys.iter())
+            .map(|(chord, caption, heading)| vec![chord.clone(), caption.clone(), heading.clone()])
+            .collect();
+        rows(g, &items)
     }),
-    ("last-workspace", |g, host, args| {
-        let [] = *g.exactly(args)?;
-        verb(host, Verb::LastWorkspace)
-    }),
-    ("fit", |g, host, args| {
-        let [] = *g.exactly(args)?;
-        verb(host, Verb::Fit)
-    }),
-    ("detach", |g, host, args| {
-        let [] = *g.exactly(args)?;
-        verb(host, Verb::Detach)
-    }),
-    ("go-to-tab", |g, host, args| {
-        let [number] = *g.exactly(args)?;
-        let number = tab_number(g, number)?;
-        verb(host, Verb::GoToTab(number))
-    }),
-    ("bind-verb", |g, host, args| {
-        let (key, word, number) = match args {
-            [key, word] => (*key, *word, None),
-            [key, word, number] => (*key, *word, Some(*number)),
+    ("pick", |g, host, args| {
+        let (title, items, function, actions) = match args {
+            [title, items, function] => (*title, *items, *function, None),
+            [title, items, function, actions] => (*title, *items, *function, Some(*actions)),
             _ => return Err(g.arity_error(args)),
         };
-        let chord_text = string_arg(g, host, key)?;
-        let name = chord(&chord_text).map_err(|why| failed(g, &why))?;
-        let word = string_arg(g, host, word)?;
-        let verb = match (word.as_str(), number) {
-            ("go-to-tab", Some(number)) => Verb::GoToTab(tab_number(g, number)?),
-            (word, None) => match named_verb(word) {
-                Some(verb) => verb,
-                None => return Err(failed(g, &format!("no verb {word}"))),
-            },
-            (_, Some(_)) => return Err(g.arity_error(args)),
-        };
-        host.rebind(&name).map_err(|why| failed(g, &why))?;
-        if let Some(old) = host.kept.remove(&name) {
-            let _ = g.release(old);
+        let title = string_arg(g, host, title)?;
+        let mut rows = Vec::new();
+        for item in g.list_items(&items)? {
+            let parts = g.list_items(&item)?;
+            let (Some(value), Some(label)) = (parts.first(), parts.get(1)) else {
+                return Err(failed(
+                    g,
+                    "each row is (value label), then #true for where you are, or \"selected\"",
+                ));
+            };
+            let start = match parts.get(2) {
+                Some(Value::Boolean(true)) => Start::Current,
+                Some(other) if g.as_str(other)? == Some("selected") => Start::Selected,
+                _ => Start::Plain,
+            };
+            rows.push((
+                string_arg(g, host, *value)?,
+                string_arg(g, host, *label)?,
+                start,
+            ));
+            if rows.len() > crate::panel::MAX_ITEMS {
+                return Err(failed(
+                    g,
+                    &format!("more than {} rows", crate::panel::MAX_ITEMS),
+                ));
+            }
         }
-        host.verbs.insert(name.clone());
-        host.tell(ToViewer::BindVerb(name, verb));
+        let mut keys = Vec::new();
+        let mut functions = vec![function];
+        if let Some(actions) = actions {
+            for action in g.list_items(&actions)? {
+                let parts = g.list_items(&action)?;
+                let (Some(key), Some(caption), Some(then)) =
+                    (parts.first(), parts.get(1), parts.get(2))
+                else {
+                    return Err(failed(g, "each key of a list is (key caption function)"));
+                };
+                keys.push((string_arg(g, host, *key)?, string_arg(g, host, *caption)?));
+                functions.push(*then);
+            }
+        }
+        let id = keep_callbacks(g, host, &functions)?;
+        host.tell(ToViewer::Pick {
+            id,
+            title,
+            rows,
+            actions: keys,
+        });
+        inert()
+    }),
+    ("read-line", |g, host, args| {
+        let [prompt, initial, function] = *g.exactly(args)?;
+        let prompt = string_arg(g, host, prompt)?;
+        let initial = string_arg(g, host, initial)?;
+        if initial.chars().count() > crate::panel::MAX_LINE {
+            let why = format!(
+                "a line starts with at most {} characters",
+                crate::panel::MAX_LINE
+            );
+            return Err(failed(g, &why));
+        }
+        let id = keep_callbacks(g, host, &[function])?;
+        host.tell(ToViewer::Ask {
+            id,
+            prompt,
+            initial,
+        });
+        inert()
+    }),
+    ("arrange", |g, host, args| {
+        let mut words = vec!["layout".to_owned()];
+        for arg in args {
+            words.push(string_arg(g, host, *arg)?);
+        }
+        let area = host.context.area;
+        words.push("--area".to_owned());
+        words.push(format!("{}x{}", area.w.max(1), area.h.max(1)));
+        let out = run_word(g, host, words, None);
+        // Whatever happened, the layout is read again now.
+        host.tell(ToViewer::Reread);
+        text_answer(g, &out?)
+    }),
+    ("fit-after", |g, host, args| {
+        let [text] = *g.exactly(args)?;
+        let text = string_arg(g, host, text)?;
+        let version = text
+            .lines()
+            .find_map(|line| line.strip_prefix("version "))
+            .and_then(|v| v.parse::<u64>().ok());
+        let Some(version) = version else {
+            return Err(failed(g, "not what fux2 layout prints"));
+        };
+        let panes: Vec<String> = (text.lines())
+            .filter_map(|line| line.strip_prefix("changed "))
+            .map(str::to_owned)
+            .collect();
+        host.tell(ToViewer::Fit { version, panes });
+        g.string(&text).map(Answer::Now)
+    }),
+    ("made", |g, host, args| {
+        let [text] = *g.exactly(args)?;
+        let text = string_arg(g, host, text)?;
+        match text.lines().find_map(|line| line.strip_prefix("made ")) {
+            Some(made) => g.string(made).map(Answer::Now),
+            None => Err(failed(g, "the edit made nothing")),
+        }
+    }),
+    ("say", |g, host, args| {
+        let [text] = *g.exactly(args)?;
+        let text = string_arg(g, host, text)?;
+        host.tell(ToViewer::Say(text));
         inert()
     }),
     ("focus", |g, host, args| {
@@ -419,17 +863,12 @@ const WORDS: &[(&str, Word)] = &[
         let path = host.fux2.to_string_lossy().into_owned();
         g.string(&path).map(Answer::Now)
     }),
-    ("start-here", |g, host, args| {
+    ("start-new", |g, host, args| {
         let Some((prefix, program)) = args.split_first() else {
             return Err(g.arity_error(args));
         };
         let prefix = string_arg(g, host, *prefix)?;
-        let labels = host.labels.clone().map_err(|why| failed(g, &why))?;
         let mut tail = Vec::new();
-        for (key, value) in labels {
-            tail.push("--label".to_owned());
-            tail.push(format!("{key}={value}"));
-        }
         if !program.is_empty() {
             tail.push("--".to_owned());
         }
@@ -451,11 +890,11 @@ const WORDS: &[(&str, Word)] = &[
                     let pane = id.map_or_else(|| name.clone(), |id| format!("{name}@{id}"));
                     return g.string(&pane).map(Answer::Now);
                 }
-                Err(why) if why.contains("exists:") => {}
+                Err(failed_start) if failed_start.why.contains("exists:") => {}
                 Err(_) if host.cancel.load(Ordering::Relaxed) => {
                     return Err(g.limit("interrupted", &[]));
                 }
-                Err(why) => return Err(failed(g, &why)),
+                Err(failed_start) => return Err(failed(g, &failed_start.why)),
             }
         }
         Err(failed(g, &format!("no free name {prefix}-N")))
@@ -488,11 +927,8 @@ const WORDS: &[(&str, Word)] = &[
     ("ls", |g, host, args| {
         let [] = *g.exactly(args)?;
         let out = run_word(g, host, vec!["ls".to_owned()], None)?;
-        let mut names = Vec::new();
-        for line in out.lines() {
-            names.push(g.string(line)?);
-        }
-        g.list(&names).map(Answer::Now)
+        let names: Vec<String> = out.lines().map(str::to_owned).collect();
+        strings(g, &names).map(Answer::Now)
     }),
     ("start", |g, host, args| {
         let Some((name, program)) = args.split_first() else {
@@ -562,7 +998,7 @@ fn describe(g: &Grift<Host>, error: &Error) -> String {
     }
 }
 
-fn prepare(host: &mut Host) -> Result<Grift<Host>, String> {
+fn prepare() -> Result<Grift<Host>, String> {
     let mut g: Grift<Host> = Grift::new().map_err(|_| "no memory for grift".to_owned())?;
     g.set_memory_limit(Some(MAX_HEAP));
     for (name, word) in WORDS {
@@ -571,88 +1007,126 @@ fn prepare(host: &mut Host) -> Result<Grift<Host>, String> {
             return Err(describe(&g, &error));
         }
     }
-    let _ = host;
     Ok(g)
 }
 
-fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
-    let mut g = match prepare(&mut host) {
-        Ok(g) => g,
-        Err(why) => return host.tell(ToViewer::Done(Some(why))),
-    };
-    host.tell(ToViewer::Started {
-        stop: g.interrupter(),
-        limit: CONFIG_TIME,
-    });
-    let mut why = g
-        .evaluate(&mut host, DEFAULTS)
-        .err()
-        .map(|e| format!("the default keys: {}", describe(&g, &e)));
-    if let Some(text) = config.filter(|_| why.is_none()) {
+/// Loads the library, the default keys and then the user's configuration,
+/// each in its own time; the first that fails stops the rest, and says so.
+fn load(g: &mut Grift<Host>, host: &mut Host, config: Option<String>) -> Option<String> {
+    let parts = [
+        ("the command library", Some(LIBRARY.to_owned())),
+        ("the default keys", Some(DEFAULTS.to_owned())),
+        ("view.grift", config),
+    ];
+    for (what, text) in parts {
+        let Some(text) = text else {
+            continue;
+        };
         host.tell(ToViewer::Started {
             stop: g.interrupter(),
             limit: CONFIG_TIME,
         });
-        why = g
-            .evaluate(&mut host, &text)
-            .err()
-            .map(|e| format!("view.grift: {}", describe(&g, &e)));
+        if let Err(error) = g.evaluate(host, &text) {
+            return Some(format!("{what}: {}", describe(g, &error)));
+        }
     }
+    None
+}
+
+/// The function a run calls, and its arguments.
+fn function_of(
+    g: &mut Grift<Host>,
+    host: &mut Host,
+    job: Job,
+) -> Result<Option<(Value, Vec<Value>)>, String> {
+    let kept = |g: &Grift<Host>, kept: &Kept| g.kept(kept).map_err(|e| describe(g, &e));
+    match job {
+        Job::Binding { chord, generation } => {
+            if host.generations.get(&chord) != Some(&generation) {
+                return Err(format!(
+                    "{chord} was rebound before it ran, and did not run"
+                ));
+            }
+            match host.kept.get(&chord) {
+                Some(function) => Ok(Some((kept(g, function)?, Vec::new()))),
+                None => Ok(None),
+            }
+        }
+        Job::Answer { id, value, action } => {
+            let at = host.callbacks.iter().position(|(own, _)| *own == id);
+            let Some((_, functions)) = at.and_then(|at| host.callbacks.remove(at)) else {
+                return Err(format!(
+                    "the answer to a panel {MAX_PANELS} newer panels replaced was not run"
+                ));
+            };
+            let wanted = action.map_or(0, |n| n.saturating_add(1));
+            let function = functions.get(wanted).map(|f| kept(g, f));
+            for one in functions {
+                let _ = g.release(one);
+            }
+            let value = g.string(&value).map_err(|e| describe(g, &e))?;
+            match function {
+                Some(function) => Ok(Some((function?, vec![value]))),
+                None => Ok(None),
+            }
+        }
+        Job::Drop(id) => {
+            let at = host.callbacks.iter().position(|(own, _)| *own == id);
+            if let Some((_, functions)) = at.and_then(|at| host.callbacks.remove(at)) {
+                functions.into_iter().for_each(|f| drop(g.release(f)));
+            }
+            Ok(None)
+        }
+        Job::Call { name, args } => {
+            let symbol = g.symbol(&name).map_err(|e| describe(g, &e))?;
+            let top = g.top_level();
+            let function = g.lookup(&top, &symbol).map_err(|e| describe(g, &e))?;
+            let function = function.ok_or_else(|| format!("nothing is called {name}"))?;
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                values.push(g.string(&arg).map_err(|e| describe(g, &e))?);
+            }
+            Ok(Some((function, values)))
+        }
+    }
+}
+
+fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
+    let mut g = match prepare() {
+        Ok(g) => g,
+        Err(why) => return host.tell(ToViewer::Done(Some(why))),
+    };
+    let why = load(&mut g, &mut host, config);
     host.tell(ToViewer::Done(why));
     while let Ok(run) = runs.recv() {
         host.cancel.store(false, Ordering::Relaxed);
-        host.focus = run.focus;
-        host.labels = run.labels;
+        host.context = run.context;
         host.copied = 0;
-        let current = host.generations.get(&run.chord) == Some(&run.generation);
-        if !current {
-            let why = format!("{} was rebound before it ran, and did not run", run.chord);
-            host.tell(ToViewer::Done(Some(why)));
-            continue;
-        }
-        let function = host.kept.get(&run.chord).map(|kept| g.kept(kept));
+        let function = match function_of(&mut g, &mut host, run.job) {
+            Ok(Some(function)) => function,
+            Ok(None) => {
+                host.tell(ToViewer::Done(None));
+                continue;
+            }
+            Err(why) => {
+                host.tell(ToViewer::Done(Some(why)));
+                continue;
+            }
+        };
         host.tell(ToViewer::Started {
             stop: g.interrupter(),
             limit: BINDING_TIME,
         });
-        let outcome = match function {
-            Some(Ok(function)) => g.call(&mut host, &function, &[]).err(),
-            Some(Err(error)) => Some(error),
-            None => None,
-        };
-        let why = outcome.map(|e| format!("{}: {}", run.chord, describe(&g, &e)));
+        let (function, args) = function;
+        let outcome = g.call(&mut host, &function, &args).err();
+        // A run with no label (an answer from a list or prompt) says its
+        // error alone, as fux does.
+        let why = outcome.map(|e| match run.label.as_str() {
+            "" => describe(&g, &e),
+            label => format!("{label}: {}", describe(&g, &e)),
+        });
         host.tell(ToViewer::Done(why));
     }
-}
-
-/// Reads `path` if it is a regular file of at most `most` bytes. It is
-/// opened without waiting, so a FIFO put in its place cannot hold the
-/// viewer, and refused unless it is a file.
-pub fn read_small_file(path: &std::path::Path, most: u64) -> std::io::Result<String> {
-    let mut options = std::fs::File::options();
-    options.read(true);
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(fuxix::file::NONBLOCK);
-    }
-    let file = options.open(path)?;
-    let meta = file.metadata()?;
-    if !meta.is_file() {
-        return Err(std::io::Error::other("not a regular file"));
-    }
-    if meta.len() > most {
-        return Err(std::io::Error::other(format!(
-            "{} bytes, at most {most}",
-            meta.len()
-        )));
-    }
-    let mut text = String::new();
-    file.take(most.saturating_add(1))
-        .read_to_string(&mut text)?;
-    if u64::try_from(text.len()).unwrap_or(u64::MAX) > most {
-        return Err(std::io::Error::other(format!("more than {most} bytes")));
-    }
-    Ok(text)
 }
 
 /// Reads the user's configuration, if there is one to run: `Err` says why
@@ -662,7 +1136,7 @@ pub fn load_config() -> Result<Option<String>, String> {
         return Ok(None);
     };
     let path = dir.join("fux2").join("view.grift");
-    match read_small_file(&path, MAX_CONFIG) {
+    match fux2::layout::read_small_file(&path, MAX_CONFIG) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{}: {e}", path.display())),
@@ -682,12 +1156,14 @@ pub fn start(
         out,
         poke,
         kept: HashMap::new(),
-        focus: None,
-        labels: Ok(Vec::new()),
+        context: Context::default(),
         copied: 0,
         verbs: std::collections::HashSet::new(),
+        groups: std::collections::HashSet::new(),
         generations: HashMap::new(),
         next_generation: 0,
+        callbacks: std::collections::VecDeque::new(),
+        next_callback: 0,
         cancel: Arc::clone(&cancel),
         fux2,
     };
@@ -699,4 +1175,112 @@ pub fn start(
         runs: sender,
         cancel,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys::{Action, Binding, Group, Keys, Line};
+
+    /// Loads the library, the default keys and `config` as a viewer would,
+    /// and gives the key table they made.
+    fn loaded(config: &str) -> Result<(Keys, Option<String>), Box<dyn std::error::Error>> {
+        let (_wake, poke) = fuxix::poll::waker()?;
+        let (out, from) = std::sync::mpsc::sync_channel(1024);
+        let _script = start(Some(config.to_owned()), PathBuf::from("fux2"), out, poke)?;
+        let mut keys = Keys::default();
+        loop {
+            match from.recv_timeout(Duration::from_secs(20))? {
+                ToViewer::Bind {
+                    chord,
+                    caption,
+                    heading,
+                    generation,
+                } => {
+                    let action = Action::Script(generation);
+                    let order = generation;
+                    let binding = Binding {
+                        action,
+                        caption,
+                        heading,
+                        order,
+                    };
+                    keys.bindings.insert(chord, binding);
+                }
+                ToViewer::BindVerb {
+                    chord,
+                    caption,
+                    heading,
+                    generation,
+                    verb,
+                } => {
+                    let binding = Binding {
+                        action: Action::Verb(verb),
+                        caption,
+                        heading,
+                        order: generation,
+                    };
+                    keys.bindings.insert(chord, binding);
+                }
+                ToViewer::Group {
+                    chord,
+                    caption,
+                    heading,
+                    repeat,
+                    generation,
+                } => {
+                    let group = Group {
+                        caption,
+                        heading,
+                        repeat,
+                        order: generation,
+                    };
+                    keys.groups.insert(chord, group);
+                }
+                ToViewer::Done(why) => return Ok((keys, why)),
+                ToViewer::Unbind(_)
+                | ToViewer::Verb(_)
+                | ToViewer::Focus(_)
+                | ToViewer::Pick { .. }
+                | ToViewer::Ask { .. }
+                | ToViewer::Reread
+                | ToViewer::Fit { .. }
+                | ToViewer::Say(_)
+                | ToViewer::Started { .. } => {}
+            }
+        }
+    }
+
+    /// Every default key has a caption and a heading and is in the menu of
+    /// the keys before it, and so is one the configuration adds.
+    #[test]
+    fn every_key_is_in_a_menu_with_its_caption() -> Result<(), Box<dyn std::error::Error>> {
+        let config = r#"(bind-key "C-b t y" "my tab thing" "Mine" (lambda! () 1))"#;
+        let (keys, why) = loaded(config)?;
+        assert_eq!(why, None);
+        assert!(keys.bindings.len() > 50, "{}", keys.bindings.len());
+        for (chord, binding) in &keys.bindings {
+            assert!(!binding.caption.trim().is_empty() && !binding.heading.trim().is_empty());
+            let Some((parent, key)) = chord.rsplit_once(' ') else {
+                continue;
+            };
+            let listed = keys
+                .menu(parent)
+                .into_iter()
+                .any(|line| line == Line::Key(key.to_owned(), binding.caption.clone(), false));
+            assert!(listed, "{chord} is not in the menu of {parent}");
+        }
+        let menu = keys.menu("C-b t");
+        assert!(menu.contains(&Line::Heading("Mine".to_owned())), "{menu:?}");
+        // A key is a command or a group, never both: the menu can always
+        // reach what it shows.
+        let (_, why) = loaded(r#"(bind-key "C-b t" "mine" "Mine" (lambda! () 1))"#)?;
+        assert!(why.is_some_and(|why| why.contains("holds other keys")));
+        let (_, why) = loaded(r#"(bind-key "C-b d x" "mine" "Mine" (lambda! () 1))"#)?;
+        assert!(why.is_some_and(|why| why.contains("bound to a command")));
+        // Without a caption, a binding is refused out loud.
+        let (_, why) = loaded(r#"(bind-key "C-b y" "" "Mine" (lambda! () 1))"#)?;
+        assert!(why.is_some_and(|why| why.contains("caption")));
+        Ok(())
+    }
 }

@@ -1,6 +1,7 @@
 //! The `fux2` command.
 use fux2::client::{ANSWER_WAIT, Client};
 use fux2::dir::{self, Session};
+use fux2::layout::{self, Amount, Axis, Dir, Live, Op, PaneRef, Rect, Target};
 use fux2::model::{apply, checked_size};
 use fux2::pane::{self, DEFAULT_HISTORY, MAX_HISTORY, MAX_INPUT, Spec};
 use fux2::wire::{
@@ -27,7 +28,19 @@ fux2: a terminal multiplexer with no server
   fux2 signal NAME SIGNAL [--if TOKEN]
   fux2 kill NAME [--if TOKEN]
   fux2 kill --label K=V..
-  fux2 view [--layout FILE]
+  fux2 layout show
+  fux2 layout split PANE NEW [--rows] [--before]      fux2 layout remove PANE
+  fux2 layout replace OLD NEW                          fux2 layout swap PANE OTHER
+  fux2 layout move PANE left|right|up|down|earlier|later
+  fux2 layout move PANE --tab TAB|new                  fux2 layout move PANE --workspace WS|new
+  fux2 layout border PANE left|right|up|down N%|CELLS  fux2 layout zoom PANE
+  fux2 layout title PANE TEXT
+  fux2 layout tab new [--after TAB | --workspace WS] [--title T] [--match K=V]..
+  fux2 layout tab rename|close|move|match TAB ..       fux2 layout workspace new|rename|close|move ..
+      tab close and workspace close take --end-panes: the panes they held are ended
+  fux2 layout reset
+      every layout edit takes [--if VERSION] [--area COLSxROWS]
+  fux2 view
 
 TEXT understands \\n (the Enter key), \\r, \\\\ and \\xHH. See the README for the rest.
 ";
@@ -97,38 +110,20 @@ impl Args {
     /// of it and no later pane of the name.
     fn pane(&mut self) -> Result<Target, Failure> {
         let text = self.next()?.ok_or_else(|| usage("a pane name is needed"))?;
-        let (name, id) = match text.split_once('@') {
-            None => (text.as_str(), None),
-            Some((name, id)) => {
-                let id =
-                    PaneId::parse(id).ok_or_else(|| usage(format!("bad pane id in {text}")))?;
-                (name, Some(id))
-            }
-        };
-        dir::check_name(name)?;
-        Ok(Target {
-            name: name.to_owned(),
-            id,
-        })
+        Target::parse(&text)
     }
 }
 
-/// A pane as a command names it.
-struct Target {
-    name: String,
-    id: Option<PaneId>,
-}
-
-impl Target {
-    fn connect(&self) -> Result<Client, Failure> {
-        let client = Client::connect(&Session::open()?, &self.name)?;
-        match self.id {
-            Some(id) if id != client.hello.id => {
-                let why = format!("{} is now pane {}, not {id}", self.name, client.hello.id);
-                Err(Failure::new(Code::Replaced, why))
-            }
-            Some(_) | None => Ok(client),
+/// Connects to the pane `target` names: refused if it names one life of a
+/// pane and the name has passed to another.
+fn connect(target: &Target) -> Result<Client, Failure> {
+    let client = Client::connect(&Session::open()?, &target.name)?;
+    match target.id {
+        Some(id) if id != client.hello.id => {
+            let why = format!("{} is now pane {}, not {id}", target.name, client.hello.id);
+            Err(Failure::new(Code::Replaced, why))
         }
+        Some(_) | None => Ok(client),
     }
 }
 
@@ -346,7 +341,7 @@ fn send(mut args: Args) -> Outcome {
         let why = format!("a send is at most {MAX_REQUEST} bytes");
         return Err(Failure::new(Code::Limit, why));
     }
-    let mut client = pane.connect()?;
+    let mut client = connect(&pane)?;
     let Answer::Sent { token, .. } = client.ask(&request, ANSWER_WAIT)? else {
         return Err(odd());
     };
@@ -699,8 +694,34 @@ fn page(mut args: Args) -> Outcome {
     let id = std::env::var("FUX2_PANE_ID")
         .ok()
         .and_then(|id| PaneId::parse(&id));
-    if let (Some(name), Some(id)) = (own, id)
-        && let Ok(mut client) = (Target { name, id: Some(id) }).connect()
+    let own = own.zip(id).map(|(name, id)| Target { name, id: Some(id) });
+    // Its tile goes with it: it was made for this and nothing else. A
+    // busy layout is tried again; a failure that stays is said, and read,
+    // before the pane goes, so a tile left behind is never a surprise.
+    if let Some(own) = &own {
+        let remove = Op::Remove(own.clone());
+        let mut removed = Err(Failure::new(Code::Busy, "not tried"));
+        for _ in 0..3 {
+            removed = Session::open().and_then(|session| {
+                let live = live_panes(&session)?;
+                layout::edit(&session, None, &live, layout::NOMINAL, &remove)
+            });
+            if !matches!(&removed, Err(f) if f.code == Code::Busy) {
+                break;
+            }
+        }
+        // One with no tile has nothing to remove.
+        if let Err(failure) = removed.filter_missing() {
+            let mut err = std::io::stderr();
+            let _ = writeln!(
+                err,
+                "fux2: its tile stays: {failure}\n\npress Enter to close"
+            );
+            let _ = std::io::stdin().take(1024).read(&mut [0; 1024]);
+        }
+    }
+    if let Some(own) = &own
+        && let Ok(mut client) = connect(own)
     {
         // The answer may never come: this process is what it ends.
         let _ = client.call(&Request::Kill { expected: None }, ANSWER_WAIT);
@@ -708,9 +729,24 @@ fn page(mut args: Args) -> Outcome {
     shown
 }
 
+trait FilterMissing {
+    fn filter_missing(self) -> Result<(), Failure>;
+}
+
+impl<T> FilterMissing for Result<T, Failure> {
+    /// Ok, or the failure unless it says the thing is missing.
+    fn filter_missing(self) -> Result<(), Failure> {
+        match self {
+            Ok(_) => Ok(()),
+            Err(f) if f.code == Code::Missing => Ok(()),
+            Err(f) => Err(f),
+        }
+    }
+}
+
 /// The pane's history in `$PAGER`, else a pager of the system's.
 fn show_pager(pane: &Target) -> Outcome {
-    let text = history_text_of(&mut pane.connect()?)?;
+    let text = history_text_of(&mut connect(pane)?)?;
     let chosen = std::env::var("PAGER").ok().filter(|p| !p.trim().is_empty());
     let fallbacks: &[&str] = &["less", "more"];
     let pagers: Vec<String> = match chosen {
@@ -786,7 +822,7 @@ fn read(mut args: Args) -> Outcome {
     if (plan.until.is_some() || plan.until_line.is_some()) && plan.wait_ms.is_none() {
         return Err(usage("--until and --until-line need --wait"));
     }
-    let mut client = pane.connect()?;
+    let mut client = connect(&pane)?;
     if let Some((epoch, first, count)) = history {
         let request = Request::History {
             epoch,
@@ -839,7 +875,7 @@ fn wait(mut args: Args) -> Outcome {
         }
     }
     let after = after.ok_or_else(|| usage("wait needs --after TOKEN"))?;
-    let mut client = pane.connect()?;
+    let mut client = connect(&pane)?;
     let bound = Duration::from_millis(ms.into()).saturating_add(ANSWER_WAIT);
     let Answer::Waited { token, state } = client.ask(&Request::Wait { after, ms }, bound)? else {
         return Err(odd());
@@ -863,7 +899,7 @@ fn resize(mut args: Args) -> Outcome {
     let cols = args.number("COLS")?;
     let rows = args.number("ROWS")?;
     let expected = expected_only(&mut args)?;
-    let mut client = pane.connect()?;
+    let mut client = connect(&pane)?;
     let request = Request::Resize {
         cols,
         rows,
@@ -879,7 +915,7 @@ fn signal(mut args: Args) -> Outcome {
     let pane = args.pane()?;
     let signal = args.value("SIGNAL")?;
     let expected = expected_only(&mut args)?;
-    let mut client = pane.connect()?;
+    let mut client = connect(&pane)?;
     let request = Request::Signal {
         name: signal,
         expected,
@@ -891,7 +927,7 @@ fn signal(mut args: Args) -> Outcome {
 }
 
 fn kill_one(pane: &Target, expected: Option<Token>) -> Outcome {
-    let mut client = pane.connect()?;
+    let mut client = connect(pane)?;
     let Answer::Killed { complete, detail } =
         client.ask(&Request::Kill { expected }, ANSWER_WAIT)?
     else {
@@ -950,6 +986,297 @@ fn kill(mut args: Args) -> Outcome {
     kill_one(&pane, expected)
 }
 
+/// How long the layout waits, in all, for panes to say who they are.
+const LIVE_WAIT: Duration = Duration::from_secs(2);
+
+/// Every pane that answers within [`LIVE_WAIT`], with its labels, as the
+/// layout routes them. They are asked at once, each on its own thread, so
+/// one that stalls holds up nobody: it is left out, as one that is gone.
+fn live_panes(session: &Session) -> Result<Vec<Live>, Failure> {
+    let names = session.names()?;
+    let (sender, answers) = std::sync::mpsc::channel();
+    let mut asked = 0usize;
+    for name in names {
+        let (session, sender) = (session.clone(), sender.clone());
+        let spawned = std::thread::Builder::new().spawn(move || {
+            let live = Client::connect(&session, &name).ok().map(|client| Live {
+                pane: PaneRef {
+                    name,
+                    id: client.hello.id,
+                },
+                labels: client.hello.labels,
+            });
+            let _ = sender.send(live);
+        });
+        if spawned.is_ok() {
+            asked = asked.saturating_add(1);
+        }
+    }
+    let now = Instant::now();
+    let until = now.checked_add(LIVE_WAIT).unwrap_or(now);
+    let mut live = Vec::new();
+    for _ in 0..asked {
+        let left = until.saturating_duration_since(Instant::now());
+        match answers.recv_timeout(left) {
+            Ok(answer) => live.extend(answer),
+            Err(_) => break,
+        }
+    }
+    live.sort_by(|a: &Live, b: &Live| a.pane.name.cmp(&b.pane.name));
+    Ok(live)
+}
+
+/// A layout command's words after its name: what is left in order, and
+/// the options it takes, each `(flag, takes a value)`. A word that is no
+/// option of this command stays a word, so a title may start with `--`.
+struct Words {
+    rest: Vec<String>,
+    flags: Vec<(String, Option<String>)>,
+}
+
+impl Words {
+    fn read(words: Vec<String>, options: &[(&str, bool)]) -> Result<Words, Failure> {
+        let mut rest = Vec::new();
+        let mut flags = Vec::new();
+        let mut words = words.into_iter();
+        while let Some(word) = words.next() {
+            match options.iter().find(|(flag, _)| *flag == word) {
+                Some((flag, true)) => {
+                    let value = words
+                        .next()
+                        .ok_or_else(|| usage(format!("{flag} needs a value")))?;
+                    flags.push((word, Some(value)));
+                }
+                Some((_, false)) => flags.push((word, None)),
+                None => rest.push(word),
+            }
+        }
+        Ok(Words { rest, flags })
+    }
+
+    fn has(&self, flag: &str) -> bool {
+        self.flags.iter().any(|(f, _)| f == flag)
+    }
+
+    /// The value of `flag`, given at most once.
+    fn value(&self, flag: &str) -> Result<Option<String>, Failure> {
+        let mut values = self.flags.iter().filter(|(f, _)| f == flag);
+        let first = values.next().and_then(|(_, v)| v.clone());
+        match values.next() {
+            Some(_) => Err(usage(format!("{flag} is given twice"))),
+            None => Ok(first),
+        }
+    }
+
+    fn tests(&self) -> Result<Vec<(String, String)>, Failure> {
+        (self.flags.iter())
+            .filter(|(f, _)| f == "--match")
+            .filter_map(|(_, v)| v.as_deref())
+            .map(dir::parse_label)
+            .collect()
+    }
+}
+
+fn later(word: &str) -> Result<bool, Failure> {
+    match word {
+        "later" => Ok(true),
+        "earlier" => Ok(false),
+        other => Err(usage(format!("{other}: earlier or later"))),
+    }
+}
+
+/// Reads a layout operation from its words, and whether it ends the panes
+/// of what it closes.
+fn layout_op(words: Vec<String>) -> Result<(Op, bool), Failure> {
+    let pane = |text: &str| Target::parse(text);
+    let owned = |text: &str| text.to_owned();
+    let head: Vec<&str> = words.iter().take(2).map(String::as_str).collect();
+    let (skip, options): (usize, &[(&str, bool)]) = match head.as_slice() {
+        ["split", ..] => (
+            1,
+            &[("--rows", false), ("--columns", false), ("--before", false)],
+        ),
+        ["move", ..] => (1, &[("--tab", true), ("--workspace", true)]),
+        ["tab", "new"] => (
+            2,
+            &[
+                ("--after", true),
+                ("--workspace", true),
+                ("--title", true),
+                ("--match", true),
+            ],
+        ),
+        ["tab", "close"] | ["workspace", "close"] => (2, &[("--end-panes", false)]),
+        ["workspace", "new"] => (2, &[("--title", true)]),
+        ["tab" | "workspace", _] => (2, &[]),
+        _ => (1, &[]),
+    };
+    let named: Vec<String> = words.iter().take(skip).cloned().collect();
+    let words = Words::read(words.into_iter().skip(skip).collect(), options)?;
+    let named: Vec<&str> = named.iter().map(String::as_str).collect();
+    let rest: Vec<&str> = words.rest.iter().map(String::as_str).collect();
+    let op = match (named.as_slice(), rest.as_slice()) {
+        (["split"], [target, new]) => Op::Split {
+            target: pane(target)?,
+            new: pane(new)?,
+            axis: match (words.has("--rows"), words.has("--columns")) {
+                (true, true) => return Err(usage("split takes --rows or --columns, not both")),
+                (true, false) => Axis::Rows,
+                (false, _) => Axis::Columns,
+            },
+            before: words.has("--before"),
+        },
+        (["remove"], [target]) => Op::Remove(pane(target)?),
+        (["replace"], [old, new]) => Op::Replace {
+            old: pane(old)?,
+            new: pane(new)?,
+        },
+        (["swap"], [a, b]) => Op::Swap(pane(a)?, pane(b)?),
+        (["move"], [target]) => match (words.value("--tab")?, words.value("--workspace")?) {
+            (Some(tab), None) => Op::ToTab {
+                pane: pane(target)?,
+                tab: (tab != "new").then_some(tab),
+            },
+            (None, Some(space)) => Op::ToWorkspace {
+                pane: pane(target)?,
+                workspace: (space != "new").then_some(space),
+            },
+            _ => return Err(usage("move PANE needs a direction, --tab or --workspace")),
+        },
+        (["move"], [target, way]) if words.flags.is_empty() => match *way {
+            "earlier" | "later" => Op::Reorder {
+                pane: pane(target)?,
+                later: later(way)?,
+            },
+            _ => Op::Step {
+                pane: pane(target)?,
+                dir: Dir::parse(way)?,
+            },
+        },
+        (["border"], [target, way, amount]) => Op::Border {
+            pane: pane(target)?,
+            dir: Dir::parse(way)?,
+            amount: Amount::parse(amount)?,
+        },
+        (["zoom"], [target]) => Op::Zoom(pane(target)?),
+        (["title"], [target, text]) => Op::Title {
+            pane: pane(target)?,
+            title: owned(text),
+        },
+        (["tab", "new"], []) => Op::NewTab {
+            after: words.value("--after")?,
+            workspace: words.value("--workspace")?,
+            title: words.value("--title")?,
+            tests: words.tests()?,
+        },
+        (["tab", "rename"], [tab, text]) => Op::RenameTab {
+            tab: owned(tab),
+            title: owned(text),
+        },
+        (["tab", "close"], [tab]) => Op::CloseTab(owned(tab)),
+        (["tab", "move"], [tab, way]) => Op::MoveTab {
+            tab: owned(tab),
+            later: later(way)?,
+        },
+        (["tab", "match"], [tab, labels @ ..]) => Op::MatchTab {
+            tab: owned(tab),
+            tests: labels
+                .iter()
+                .map(|l| dir::parse_label(l))
+                .collect::<Result<_, _>>()?,
+        },
+        (["workspace", "new"], []) => Op::NewWorkspace {
+            title: words.value("--title")?,
+        },
+        (["workspace", "rename"], [space, text]) => Op::RenameWorkspace {
+            workspace: owned(space),
+            title: owned(text),
+        },
+        (["workspace", "close"], [space]) => Op::CloseWorkspace(owned(space)),
+        (["workspace", "move"], [space, way]) => Op::MoveWorkspace {
+            workspace: owned(space),
+            later: later(way)?,
+        },
+        (["reset"], []) => Op::Reset,
+        _ => {
+            let all = [named.join(" "), rest.join(" ")].join(" ");
+            return Err(usage(format!(
+                "not a layout command: {}\n\n{USAGE}",
+                all.trim()
+            )));
+        }
+    };
+    Ok((op, words.has("--end-panes")))
+}
+
+/// Ends each pane a close let go of: one already gone or replaced is no
+/// failure; any other is said, every one of them.
+fn end_panes(panes: &[PaneRef]) -> Outcome {
+    let mut failed = Vec::new();
+    for pane in panes {
+        let target = Target {
+            name: pane.name.clone(),
+            id: Some(pane.id),
+        };
+        match kill_one(&target, None) {
+            Ok(()) => {}
+            Err(f) if matches!(f.code, Code::Missing | Code::Replaced | Code::Gone) => {}
+            Err(f) => failed.push(format!("{}: {f}", pane.name)),
+        }
+    }
+    match failed.is_empty() {
+        true => Ok(()),
+        false => Err(Failure::new(Code::Io, failed.join("; "))),
+    }
+}
+
+/// Reads or changes the stored layout.
+fn layout(mut args: Args) -> Outcome {
+    let mut words = Vec::new();
+    while let Some(word) = args.next()? {
+        words.push(word);
+    }
+    // `--if` and `--area` belong to every edit; they are taken first.
+    let mut all = Words::read(words, &[("--if", true), ("--area", true)])?;
+    let expected = all
+        .value("--if")?
+        .map(|v| {
+            v.parse::<u64>()
+                .map_err(|_| usage(format!("--if: not a version: {v}")))
+        })
+        .transpose()?;
+    let area = match all.value("--area")? {
+        Some(text) => Rect::parse_area(&text)?,
+        None => layout::NOMINAL,
+    };
+    let words = std::mem::take(&mut all.rest);
+    let session = Session::open()?;
+    if words.first().map(String::as_str) == Some("show") {
+        if words.len() > 1 || !all.flags.is_empty() {
+            return Err(usage("show takes nothing more"));
+        }
+        let live = live_panes(&session)?;
+        let stored = layout::read(&session)?;
+        return say(&stored.shown(&live).to_string());
+    }
+    let (op, ending) = layout_op(words)?;
+    // Panes are asked before the lock is taken: a slow pane holds no
+    // other writer.
+    let live = live_panes(&session)?;
+    let edited = layout::edit(&session, expected, &live, area, &op)?;
+    say(&edited.to_string())?;
+    if ending {
+        end_panes(&edited.let_go)?;
+        let names: Vec<String> = edited
+            .let_go
+            .iter()
+            .map(|p| format!("ended {p}\n"))
+            .collect();
+        say(&names.concat())?;
+    }
+    Ok(())
+}
+
 /// Runs the viewer installed beside this program.
 fn view(args: Args) -> Outcome {
     let exe = std::env::current_exe().map_err(|e| Failure::new(Code::Io, format!("{e}")))?;
@@ -979,6 +1306,7 @@ fn run(mut args: Args) -> Outcome {
         "signal" => signal(args),
         "kill" => kill(args),
         "view" => view(args),
+        "layout" => layout(args),
         "page" => page(args),
         "help" | "--help" | "-h" => say(USAGE),
         other => Err(usage(format!("no command {other}"))),

@@ -43,6 +43,16 @@ impl Lab {
         let home = base.join(format!("f2c-{unique}"));
         std::fs::create_dir_all(home.join("fux2"))?;
         std::fs::write(home.join("fux2").join("view.grift"), config)?;
+        // The shell a pane the viewer starts runs: it says which pane it is.
+        let fresh = home.join("fresh.sh");
+        std::fs::write(
+            &fresh,
+            format!("#!/bin/sh\necho \"fresh-$FUX2_PANE\"\nexec {}\n", shell()),
+        )?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(0o700))?;
+        }
         Ok(Lab { root, config: home })
     }
 
@@ -53,8 +63,20 @@ impl Lab {
             .output()
     }
 
+    /// Starts a shell that first prints `pane-NAME`, so a viewer showing
+    /// it can be seen to: fux2 draws no titles.
     fn start(&self, name: &str) -> Tested {
-        let out = self.fux2(&["start", "--name", name, "--", shell()])?;
+        self.start_with(name, &[])
+    }
+
+    fn start_with(&self, name: &str, labels: &[&str]) -> Tested {
+        let mut args = vec!["start", "--name", name];
+        for label in labels {
+            args.extend(["--label", label]);
+        }
+        let hello = format!("echo pane-{name}; exec {}", shell());
+        args.extend(["--", shell(), "-c", &hello]);
+        let out = self.fux2(&args)?;
         assert!(out.status.success(), "{out:?}");
         Ok(())
     }
@@ -155,6 +177,7 @@ impl Viewer {
             command
                 .env("FUX2_DIR", &lab.root)
                 .env("XDG_CONFIG_HOME", &lab.config)
+                .env("SHELL", lab.config.join("fresh.sh"))
                 .env("TERM", "xterm-256color")
                 .envs(env.iter().copied());
         })?;
@@ -190,6 +213,20 @@ impl Viewer {
         let window = self.parser.screen().window();
         let rows: Vec<String> = window.iter().map(|(_, row)| row.text()).collect();
         rows.join("\n")
+    }
+
+    /// The bar, as the prefix shows it; the prefix's menu is then closed.
+    fn bar(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        self.keys(b"\x02")?;
+        self.shows("C-b \u{2026}")?;
+        let bar = self.text().lines().last().unwrap_or_default().to_owned();
+        self.keys(b"\x1b")?;
+        let until = soon(PATIENCE);
+        while self.text().contains("C-b \u{2026}") {
+            assert!(Instant::now() < until, "the menu stayed open");
+            self.pump(Duration::from_millis(20))?;
+        }
+        Ok(bar)
     }
 
     fn shows(&mut self, wanted: &str) -> Tested {
@@ -251,10 +288,15 @@ impl Drop for Viewer {
 const CONFIG: &str = r#"
 (define! from-binding
   (lambda! () (send (focused) "echo from-binding\r")))
-(bind-key "F7" from-binding)
+(bind-key "F7" "type a line" "Mine" from-binding)
 (define! spin (lambda! () (spin)))
-(bind-key "F8" (lambda! () (spin)))
+(bind-key "F8" "spin forever" "Mine"
+  (lambda! () (send (focused) "echo spinning\r") (spin)))
+(bind-verb "F9" "an alias" "Mine" "chord" "F10")
+(bind-verb "F10" "its alias back" "Mine" "chord" "F9")
 (unbind-key "C-b n")
+(bind-key "C-b F5" "my own command" "Mine" from-binding)
+(define! command-line (lambda! () (say "my-own-prompt")))
 "#;
 
 /// Two panes split, keys to the focused one, a rebound key running the
@@ -266,8 +308,8 @@ fn the_viewer_steers_panes_and_they_outlive_it() -> Tested {
     lab.start("left")?;
     lab.start("right")?;
     let mut viewer = Viewer::start(&lab)?;
-    viewer.shows(" left ")?;
-    viewer.shows(" right ")?;
+    viewer.shows("pane-left")?;
+    viewer.shows("pane-right")?;
 
     viewer.keys(b"echo typed-left\r")?;
     lab.pane_shows("left", "typed-left")?;
@@ -288,7 +330,24 @@ fn the_viewer_steers_panes_and_they_outlive_it() -> Tested {
 
     // The configuration took C-b n away: it is refused out loud.
     viewer.keys(b"\x02n")?;
-    viewer.shows("no binding for C-b n")?;
+    viewer.shows("C-b n is not bound")?;
+    viewer.keys(b"\x1b")?;
+
+    // The prefix shows the keys under their headings, the configuration's
+    // own among them (at the end: End scrolls there); Escape closes it.
+    viewer.keys(b"\x02")?;
+    viewer.shows("split side by side")?;
+    viewer.shows("Workspaces")?;
+    viewer.keys(b"\x1b[F")?;
+    viewer.shows("F5  my own command")?;
+    viewer.keys(b"\x1b")?;
+    // A default key runs the command as the configuration redefined it.
+    viewer.keys(b"\x02e")?;
+    viewer.shows("my-own-prompt")?;
+
+    // An alias that leads back to itself is stopped, out loud.
+    viewer.keys(b"\x1b[20~")?;
+    viewer.shows("leads back to itself")?;
 
     let job = viewer.job.as_ref().ok_or("no job")?;
     let _ = job.kill(Reach::Session);
@@ -308,9 +367,15 @@ fn detach_works_while_a_binding_runs() -> Tested {
     let lab = Lab::new(CONFIG)?;
     lab.start("only")?;
     let mut viewer = Viewer::start(&lab)?;
-    viewer.shows(" only ")?;
+    viewer.shows("pane-only")?;
+    // Repeating keys give the prefix back: C-b d there detaches too, so
+    // first leave the mode that way and come back.
+    viewer.keys(b"\x02rh")?;
+    viewer.bar()?;
     viewer.keys(b"\x1b[19~")?;
-    viewer.shows("a binding is running")?;
+    // The binding has started, and spins.
+    lab.pane_shows("only", "spinning")?;
+    viewer.keys(b"\x02rh")?;
     viewer.keys(b"\x02d")?;
     assert!(viewer.ended()?, "the viewer did not leave");
     let listed = lab.fux2(&["ls"])?;
@@ -318,49 +383,169 @@ fn detach_works_while_a_binding_runs() -> Tested {
     Ok(())
 }
 
-/// A layout file makes the tabs, a bad edit leaves them as they were, and
-/// only the fit key changes a pane's size.
+fn layout(lab: &Lab, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
+    let mut all = vec!["layout"];
+    all.extend_from_slice(args);
+    let out = lab.fux2(&all)?;
+    assert!(out.status.success(), "layout {args:?}: {out:?}");
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn size(lab: &Lab, name: &str) -> Result<String, std::io::Error> {
+    let out = lab.fux2(&["ls", "--long"])?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let line = text
+        .lines()
+        .find(|line| line.split('\t').next() == Some(name));
+    Ok(line
+        .and_then(|l| l.split('\t').nth(3))
+        .unwrap_or("")
+        .to_owned())
+}
+
+/// The stored layout's tabs choose what is shown, a bad edit of the file
+/// leaves them as they were, and only the fit key changes a pane's size.
 #[test]
-fn a_layout_makes_tabs_and_only_fit_resizes() -> Tested {
+fn stored_tabs_choose_what_is_shown_and_only_fit_resizes() -> Tested {
     let lab = Lab::new("")?;
-    for (name, group) in [("one", "a"), ("two", "b")] {
-        let label = format!("group={group}");
-        let args = ["start", "--name", name, "--label", &label, "--", shell()];
-        let out = lab.fux2(&args)?;
-        assert!(out.status.success(), "{out:?}");
-    }
-    let layout = lab.config.join("tabs.toml");
-    let tabs = "[[tab]]\ntitle = \"first\"\nmatch = [\"group=a\"]\n\
-                [[tab]]\ntitle = \"second\"\nmatch = [\"group=b\"]\n";
-    std::fs::write(&layout, tabs)?;
-    let args = ["--layout".into(), layout.clone().into_os_string()];
-    let mut viewer = Viewer::with_args(&lab, &args)?;
-    viewer.shows(" one ")?;
-    assert!(!viewer.text().contains(" two "), "{}", viewer.text());
-    let size = |lab: &Lab, name: &str| -> Result<String, std::io::Error> {
-        let out = lab.fux2(&["ls", "--long"])?;
-        let text = String::from_utf8_lossy(&out.stdout).into_owned();
-        let line = text.lines().find(|line| line.starts_with(name));
-        Ok(line
-            .and_then(|l| l.split('\t').nth(3))
-            .unwrap_or("")
-            .to_owned())
-    };
+    lab.start_with("one", &["group=a"])?;
+    lab.start_with("two", &["group=b"])?;
+    layout(
+        &lab,
+        &["tab", "new", "--title", "first", "--match", "group=a"],
+    )?;
+    layout(
+        &lab,
+        &["tab", "new", "--title", "second", "--match", "group=b"],
+    )?;
+    layout(&lab, &["tab", "close", "all"])?;
+    let mut viewer = Viewer::start(&lab)?;
+    viewer.shows("pane-one")?;
+    assert!(!viewer.text().contains("pane-two"), "{}", viewer.text());
     assert_eq!(size(&lab, "one")?, "80x24", "viewing resized a pane");
 
     viewer.keys(b"\x02n")?;
-    viewer.shows(" two ")?;
-    std::fs::write(&layout, "[[tab]]\naxis = \"sideways\"\n")?;
-    viewer.shows("no axis")?;
-    assert!(viewer.text().contains(" two "), "{}", viewer.text());
+    viewer.shows("pane-two")?;
+    let file = lab.root.join("layout");
+    let good = std::fs::read_to_string(&file)?;
+    std::fs::write(&file, "fux2-layout 1\nversion x\n")?;
+    viewer.shows("expected version N")?;
+    assert!(viewer.text().contains("pane-two"), "{}", viewer.text());
+    std::fs::write(&file, good)?;
+
+    // A prompt's key and what is typed for it, all in one read, reach the
+    // prompt, not the pane.
+    viewer.keys(b"\x02e\x1b[200~(string-join (list \"panel\" \"got-it\") \"-\")\x1b[201~\r")?;
+    viewer.shows("panel-got-it")?;
+    assert!(
+        !lab.screen("two")?.contains("got-it"),
+        "the pane got the prompt's keys"
+    );
 
     viewer.keys(b"\x02f")?;
     let until = soon(PATIENCE);
-    while size(&lab, "two")? != "100x28" {
+    while size(&lab, "two")? != "100x30" {
         assert!(Instant::now() < until, "fit gave {}", size(&lab, "two")?);
         viewer.pump(Duration::from_millis(20))?;
     }
     assert_eq!(size(&lab, "one")?, "80x24");
+    Ok(())
+}
+
+/// A layout edit from the command line shows in every running viewer, a
+/// split made in one viewer shows in the other, and a pane that ended keeps
+/// its tile while a new pane of its name gets its own.
+#[test]
+fn every_viewer_shows_the_one_stored_layout() -> Tested {
+    let lab = Lab::new("")?;
+    lab.start("left")?;
+    lab.start("right")?;
+    let mut first = Viewer::start(&lab)?;
+    let mut second = Viewer::start(&lab)?;
+    for viewer in [&mut first, &mut second] {
+        viewer.shows("pane-left")?;
+        viewer.shows("pane-right")?;
+    }
+    layout(&lab, &["zoom", "right"])?;
+    for viewer in [&mut first, &mut second] {
+        let until = soon(PATIENCE);
+        while viewer.text().contains("pane-left") {
+            assert!(Instant::now() < until, "not zoomed:\n{}", viewer.text());
+            viewer.pump(Duration::from_millis(20))?;
+        }
+    }
+    layout(&lab, &["zoom", "right"])?;
+    first.shows("pane-left")?;
+    // A layout edit from the command line resized nothing.
+    assert_eq!(size(&lab, "left")?, "80x24");
+    assert_eq!(size(&lab, "right")?, "80x24");
+
+    // Split by hand in the first viewer: the second shows it too.
+    first.keys(b"\x02v")?;
+    first.shows("fresh-shell-1")?;
+    first.keys(b"echo in-the-split\r")?;
+    lab.pane_shows("shell-1", "in-the-split")?;
+    second.shows("in-the-split")?;
+
+    // An ended pane keeps its tile; its name, reused, takes another.
+    let out = lab.fux2(&["kill", "right"])?;
+    assert!(out.status.success(), "{out:?}");
+    second.shows(" right missing ")?;
+    lab.start("right")?;
+    second.shows("pane-right")?;
+    assert!(
+        second.text().contains(" right missing "),
+        "{}",
+        second.text()
+    );
+    let shown = layout(&lab, &["show"])?;
+    assert_eq!(shown.matches("pane right@").count(), 2, "{shown}");
+    Ok(())
+}
+
+/// Opening a viewer and moving the focus resize nothing; a split resizes
+/// exactly the panes whose tiles it changed, to those tiles.
+#[test]
+fn only_a_split_resizes_and_only_what_it_changed() -> Tested {
+    let lab = Lab::new("")?;
+    lab.start("a")?;
+    lab.start("b")?;
+    let mut viewer = Viewer::start(&lab)?;
+    viewer.shows("pane-a")?;
+    viewer.shows("pane-b")?;
+    viewer.keys(b"\x02o")?;
+    viewer.keys(b"\x02o")?;
+    for name in ["a", "b"] {
+        assert_eq!(size(&lab, name)?, "80x24", "{name} was resized by viewing");
+    }
+    viewer.keys(b"\x02o")?;
+    // b is focused. Away to another tab and back, the focus is still b.
+    layout(&lab, &["tab", "new", "--title", "elsewhere"])?;
+    let until = soon(PATIENCE);
+    while !viewer.bar()?.contains(" elsewhere ") {
+        assert!(Instant::now() < until, "the new tab never showed");
+    }
+    viewer.keys(b"\x02n")?;
+    viewer.shows("no panes here")?;
+    viewer.keys(b"\x02b")?;
+    viewer.shows("pane-b")?;
+    viewer.keys(b"echo still-on-b\r")?;
+    lab.pane_shows("b", "still-on-b")?;
+    // b is focused: split it, side by side.
+    viewer.keys(b"\x02v")?;
+    // In 100 columns: a keeps 49; b and the new pane share b's 50, one
+    // column of it their border.
+    let until = soon(PATIENCE);
+    while size(&lab, "b")? != "24x30" || size(&lab, "shell-1")? != "25x30" {
+        let sizes = (size(&lab, "b")?, size(&lab, "shell-1")?);
+        assert!(
+            Instant::now() < until,
+            "b and shell-1 are {sizes:?}:\n{}",
+            viewer.text()
+        );
+        viewer.pump(Duration::from_millis(20))?;
+    }
+    assert_eq!(size(&lab, "a")?, "80x24", "a's tile did not change");
     Ok(())
 }
 
@@ -376,42 +561,45 @@ fn pager(lab: &Lab) -> Result<String, std::io::Error> {
 #[test]
 fn workspaces_and_tabs_choose_what_is_shown() -> Tested {
     let lab = Lab::new("")?;
-    for (name, group) in [("alpha", "a"), ("beta", "b")] {
-        let label = format!("group={group}");
-        let args = ["start", "--name", name, "--label", &label, "--", shell()];
-        let out = lab.fux2(&args)?;
-        assert!(out.status.success(), "{out:?}");
-    }
-    let layout = lab.config.join("spaces.toml");
-    let text = "[[workspace]]\nname = \"first\"\n[[workspace.tab]]\ntitle = \"ta\"\n\
-                match = [\"group=a\"]\n[[workspace]]\nname = \"second\"\n\
-                [[workspace.tab]]\ntitle = \"tb\"\nmatch = [\"group=b\"]\n";
-    std::fs::write(&layout, text)?;
-    let args = ["--layout".into(), layout.into_os_string()];
-    let mut viewer = Viewer::with_args(&lab, &args)?;
-    viewer.shows(" alpha ")?;
-    viewer.shows("first 1/2 | ta 1/1")?;
+    lab.start_with("alpha", &["group=a"])?;
+    lab.start_with("beta", &["group=b"])?;
+    layout(&lab, &["workspace", "rename", "main", "first"])?;
+    layout(&lab, &["tab", "rename", "all", "ta"])?;
+    layout(&lab, &["tab", "match", "ta", "group=a"])?;
+    let made = layout(&lab, &["workspace", "new", "--title", "second"])?;
+    assert!(made.contains("made w"), "{made}");
+    layout(&lab, &["tab", "rename", "1", "tb"])?;
+    layout(&lab, &["tab", "match", "tb", "group=b"])?;
+    let mut viewer = Viewer::start(&lab)?;
+    viewer.shows("pane-alpha")?;
+    let bar = viewer.bar()?;
+    assert!(bar.starts_with(" first  ta "), "{bar:?}");
 
-    viewer.keys(b"\x02)")?;
-    viewer.shows(" beta ")?;
-    viewer.shows("second 2/2 | tb 1/1")?;
-    assert!(!viewer.text().contains(" alpha "), "{}", viewer.text());
+    viewer.keys(b"\x02wl")?;
+    viewer.shows("pane-beta")?;
+    let bar = viewer.bar()?;
+    assert!(bar.starts_with(" second  tb "), "{bar:?}");
+    // The workspace list starts on the workspace shown: Enter keeps it.
+    viewer.keys(b"\x02wg")?;
+    viewer.shows("workspaces")?;
+    viewer.keys(b"\r")?;
+    let bar = viewer.bar()?;
+    assert!(bar.starts_with(" second  tb "), "{bar:?}");
+    assert!(!viewer.text().contains("pane-alpha"), "{}", viewer.text());
     viewer.keys(b"echo to-beta\r")?;
-    lab.pane_shows("beta", "to-beta")?;
+    lab.pane_shows("beta", "to-beta")
+        .map_err(|e| format!("{e}\n{}", viewer.text()))?;
     assert!(!lab.screen("alpha")?.contains("to-beta"));
 
-    viewer.keys(b"\x02c")?;
-    viewer.shows(" shell-1 ")?;
-    let listed = lab.fux2(&["ls", "--long"])?;
-    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
-    let line = listed.lines().find(|l| l.starts_with("shell-1"));
-    assert!(line.is_some_and(|l| l.contains("group=b")), "{listed}");
+    viewer.keys(b"\x02v")?;
+    viewer.shows("fresh-shell-1")?;
     viewer.keys(b"echo to-new\r")?;
     lab.pane_shows("shell-1", "to-new")?;
+    viewer.shows("to-new")?;
 
-    viewer.keys(b"\x02L")?;
-    viewer.shows("first 1/2")?;
-    assert!(!viewer.text().contains(" shell-1 "), "{}", viewer.text());
+    viewer.keys(b"\x02wh")?;
+    viewer.shows("pane-alpha")?;
+    assert!(!viewer.text().contains("to-new"), "{}", viewer.text());
     Ok(())
 }
 
@@ -423,12 +611,12 @@ fn the_history_pane_goes_away_and_gives_the_focus_back() -> Tested {
     lab.start("work")?;
     let pager = pager(&lab)?;
     let mut viewer = Viewer::with_env(&lab, &[], &[("PAGER", &pager)])?;
-    viewer.shows(" work ")?;
+    viewer.shows("pane-work")?;
     viewer.keys(b"echo marker-line\r")?;
     lab.pane_shows("work", "marker-line")?;
-    viewer.keys(b"\x02[")?;
-    // The pager's pane, showing the history, and holding the focus.
-    viewer.shows(" history-1 ")?;
+    viewer.keys(b"\x02c")?;
+    // The pager's pane below, showing the history, and holding the focus.
+    viewer.shows("\u{2500}\u{2500}\u{2500}")?;
     lab.pane_shows("history-1", "marker-line")?;
     viewer.keys(b"\r")?;
     let until = soon(PATIENCE);
@@ -436,7 +624,9 @@ fn the_history_pane_goes_away_and_gives_the_focus_back() -> Tested {
         viewer.pump(Duration::from_millis(20))?;
         let listed = lab.fux2(&["ls"])?;
         let gone = String::from_utf8_lossy(&listed.stdout).trim() == "work";
-        if gone && !viewer.text().contains("history-1") && viewer.text().contains(" work ") {
+        // No border of either kind: the pane is gone from the viewer too.
+        let single = !viewer.text().contains('\u{2500}') && !viewer.text().contains('\u{2502}');
+        if gone && single {
             break;
         }
         assert!(
@@ -446,6 +636,7 @@ fn the_history_pane_goes_away_and_gives_the_focus_back() -> Tested {
         );
     }
     viewer.keys(b"echo after\r")?;
-    lab.pane_shows("work", "after")?;
+    lab.pane_shows("work", "after")
+        .map_err(|e| format!("{e}\nthe viewer:\n{}", viewer.text()))?;
     Ok(())
 }

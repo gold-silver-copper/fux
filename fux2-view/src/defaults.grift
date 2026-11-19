@@ -1,32 +1,71 @@
-;; The keys a viewer starts with. `bind-verb` keys act at once, even while a
-;; binding runs; the others are ordinary bindings, written the way your own
-;; view.grift can write them.
-(bind-verb "C-b o" "next-pane")
-(bind-verb "C-b O" "previous-pane")
-(bind-verb "C-b n" "next-tab")
-(bind-verb "C-b p" "previous-tab")
-(bind-verb "C-b l" "last-tab")
-(bind-verb "C-b 1" "go-to-tab" 1)
-(bind-verb "C-b 2" "go-to-tab" 2)
-(bind-verb "C-b 3" "go-to-tab" 3)
-(bind-verb "C-b 4" "go-to-tab" 4)
-(bind-verb "C-b 5" "go-to-tab" 5)
-(bind-verb "C-b 6" "go-to-tab" 6)
-(bind-verb "C-b 7" "go-to-tab" 7)
-(bind-verb "C-b 8" "go-to-tab" 8)
-(bind-verb "C-b 9" "go-to-tab" 9)
-(bind-verb "C-b )" "next-workspace")
-(bind-verb "C-b (" "previous-workspace")
-(bind-verb "C-b L" "last-workspace")
-(bind-verb "C-b f" "fit")
-(bind-verb "C-b d" "detach")
-(bind-verb "C-b C-b" "literal")
+;; The keys a viewer starts with: fux's keys, wherever fux2 has the command.
+;; Each is a chord, a caption and a heading, and what it does; the prefix
+;; menu is drawn from these alone. `bind-verb` keys act at once, even while
+;; a binding runs; the rest call the commands in library.grift, the way your
+;; own view.grift can.
+(bind-key "C-b v" "split side by side" "Panes" (lambda! () (split-new "columns")))
+(bind-key "C-b s" "split stacked" "Panes" (lambda! () (split-new "rows")))
+(bind-key "C-b x" "close pane" "Panes" (lambda! () (confirm-close-pane (focused))))
+(bind-key "C-b z" "zoom or restore" "Panes" (lambda! () (edit! "zoom" (focused))))
+(bind-key "C-b c" "history in a pager" "Panes" (lambda! () (history)))
+(bind-verb "C-b f" "fit pane to its tile" "Panes" "fit")
 
-;; A new shell in the shown tab.
-(bind-key "C-b c" (lambda! () (focus (start-here "shell"))))
+(bind-verb "C-b h" "focus left" "Focus" "focus-left")
+(bind-verb "C-b j" "focus down" "Focus" "focus-down")
+(bind-verb "C-b k" "focus up" "Focus" "focus-up")
+(bind-verb "C-b l" "focus right" "Focus" "focus-right")
+(bind-verb "C-b o" "next pane" "Focus" "next-pane")
+(bind-verb "C-b q" "last pane" "Focus" "last-pane")
 
-;; The focused pane's history in a pager, in a pane of its own that goes away
-;; when the pager ends.
-(bind-key "C-b ["
-  (lambda! ()
-    (focus (start-here "history" (fux2-program) "page" (focused) "--close-pane"))))
+(bind-verb "C-b n" "next tab" "Tabs" "next-tab")
+(bind-verb "C-b b" "previous tab" "Tabs" "previous-tab")
+(bind-group "C-b t" "Tabs" "Tabs")
+(bind-key "C-b t n" "new tab" "Tabs" (lambda! () (new-tab)))
+(bind-verb "C-b t h" "previous tab" "Tabs" "previous-tab")
+(bind-verb "C-b t l" "next tab" "Tabs" "next-tab")
+(bind-key "C-b t g" "choose a tab" "Tabs" (lambda! () (choose-tab)))
+(bind-key "C-b t r" "rename tab" "Tabs" (lambda! () (rename-tab (shown-tab))))
+(bind-key "C-b t x" "close tab" "Tabs" (lambda! () (confirm-close-tab (shown-tab))))
+(bind-group "C-b t m" "Reorder" "Reorder" #true)
+(bind-key "C-b t m h" "move tab earlier" "Reorder" (lambda! () (arrange "tab" "move" (shown-tab) "earlier")))
+(bind-key "C-b t m l" "move tab later" "Reorder" (lambda! () (arrange "tab" "move" (shown-tab) "later")))
+
+(bind-group "C-b w" "Workspaces" "Workspaces")
+(bind-key "C-b w n" "new workspace" "Workspaces" (lambda! () (new-workspace)))
+(bind-verb "C-b w h" "previous workspace" "Workspaces" "previous-workspace")
+(bind-verb "C-b w l" "next workspace" "Workspaces" "next-workspace")
+(bind-key "C-b w g" "choose a workspace" "Workspaces" (lambda! () (choose-workspace)))
+(bind-key "C-b w r" "rename workspace" "Workspaces" (lambda! () (rename-workspace (shown-workspace))))
+(bind-key "C-b w x" "close workspace" "Workspaces" (lambda! () (confirm-close-workspace (shown-workspace))))
+(bind-group "C-b w m" "Reorder" "Reorder" #true)
+(bind-key "C-b w m h" "move workspace earlier" "Reorder" (lambda! () (arrange "workspace" "move" (shown-workspace) "earlier")))
+(bind-key "C-b w m l" "move workspace later" "Reorder" (lambda! () (arrange "workspace" "move" (shown-workspace) "later")))
+
+(bind-key "C-b e" "command prompt" "Session" (lambda! () (command-line)))
+(bind-verb "C-b d" "detach" "Session" "detach")
+(bind-key "C-b ?" "list every key" "Session" (lambda! () (key-list)))
+
+(bind-group "C-b r" "Resize" "Resize" #true)
+(bind-key "C-b r h" "shrink or grow left" "Resize" (lambda! () (edit! "border" (focused) "left" "1")))
+(bind-key "C-b r j" "shrink or grow down" "Resize" (lambda! () (edit! "border" (focused) "down" "1")))
+(bind-key "C-b r k" "shrink or grow up" "Resize" (lambda! () (edit! "border" (focused) "up" "1")))
+(bind-key "C-b r l" "shrink or grow right" "Resize" (lambda! () (edit! "border" (focused) "right" "1")))
+
+(bind-group "C-b a" "Pane actions" "Pane actions")
+(bind-key "C-b a r" "rename pane" "Pane actions" (lambda! () (rename-pane (focused))))
+(bind-key "C-b a x" "close pane" "Pane actions" (lambda! () (confirm-close-pane (focused))))
+(bind-key "C-b a k" "terminate the running command" "Pane actions" (lambda! () (signal (focused) "TERM")))
+(bind-key "C-b a s" "swap with…" "Pane actions" (lambda! () (swap-with (focused))))
+(bind-key "C-b a t" "move to tab…" "Pane actions" (lambda! () (move-to-tab (focused))))
+(bind-key "C-b a n" "move to a new tab" "Pane actions" (lambda! () (move-to-new-tab (focused))))
+(bind-key "C-b a w" "move to workspace…" "Pane actions" (lambda! () (move-to-workspace (focused))))
+(bind-key "C-b a W" "move to a new workspace" "Pane actions" (lambda! () (move-to-new-workspace (focused))))
+(bind-group "C-b a m" "Reorder" "Reorder" #true)
+(bind-key "C-b a m h" "move pane earlier" "Reorder" (lambda! () (edit! "move" (focused) "earlier")))
+(bind-key "C-b a m l" "move pane later" "Reorder" (lambda! () (edit! "move" (focused) "later")))
+
+(bind-group "C-b m" "Move" "Move" #true)
+(bind-key "C-b m h" "move left" "Move" (lambda! () (edit! "move" (focused) "left")))
+(bind-key "C-b m j" "move down" "Move" (lambda! () (edit! "move" (focused) "down")))
+(bind-key "C-b m k" "move up" "Move" (lambda! () (edit! "move" (focused) "up")))
+(bind-key "C-b m l" "move right" "Move" (lambda! () (edit! "move" (focused) "right")))

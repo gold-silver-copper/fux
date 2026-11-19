@@ -4,15 +4,20 @@
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("fux2-view runs on Linux and macOS only");
 
-mod layout;
+mod keys;
+mod panel;
 mod render;
 mod script;
 
 use fux_vt::keys::KeyPress;
 use fux_vt::keys::decode::{Decoder, Input, Timing};
+use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};
 use fux2::client::{check_hello, dial};
 use fux2::conn::Conn;
 use fux2::dir::{self, Session};
+use fux2::layout::{
+    self, Amount, Dir, Layout, Live, Op, PaneRef, Rect, Tab as LayoutTab, Target, Workspace,
+};
 use fux2::model::apply;
 use fux2::wire::{
     Answer, Code, Failure, Hello, MAX_COLS, MAX_PARTS, MAX_ROWS, Meta, PaneId, Part, REVISION,
@@ -21,9 +26,10 @@ use fux2::wire::{
 use fuxix::Errno;
 use fuxix::poll::{Events, Poke, Poll, PollFd, Wake, waker};
 use fuxix::process::Signal;
-use layout::{Tab, Workspace};
+use keys::{Action, Binding, Group, Keys};
+use panel::{Ask, Column, List, Outcome, Panel};
 use render::{Frame, Tile};
-use script::{Run, Script, ToViewer, Verb};
+use script::{Context, Job, Run, Script, Start, ToViewer, Verb};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
@@ -41,8 +47,19 @@ const WAIT_MS: u32 = 10_000;
 const RETRY: Duration = Duration::from_secs(1);
 /// The least time between paints.
 const PAINT: Duration = Duration::from_millis(16);
-/// How long a message stays on the status line.
-const MESSAGE: Duration = Duration::from_secs(5);
+/// How long a notice of a pane's ending stays; other notices stay until
+/// the next key.
+const ALERT: Duration = Duration::from_secs(5);
+/// The bar's colours, as fux's: the bar, the tab shown, the keys typed, a
+/// notice and an error.
+const BAR: &str = ";38;5;250;48;5;236";
+const BAR_BOLD: &str = ";1;38;5;250;48;5;236";
+const TAB: &str = ";1;30;42";
+const KEYS: &str = ";1;30;103";
+const NOTICE: &str = ";93;48;5;236";
+/// What an empty tab says, in the borders' colour.
+const BORDER_TEXT: &str = render::BORDER;
+const ERROR: &str = ";91;48;5;236";
 /// How long past its time a stopped binding gets before it is forced.
 const FORCE_AFTER: Duration = Duration::from_secs(1);
 /// How long leaving waits for the terminal to take the last bytes.
@@ -57,6 +74,12 @@ const HOLD_FOR_FOCUS: Duration = Duration::from_secs(2);
 const END_RUN_WAIT: Duration = Duration::from_secs(1);
 /// How long a focus asked for waits for its pane.
 const FOCUS_WAIT: Duration = Duration::from_secs(10);
+/// How long keys typed after a binding's key wait for it to open a panel.
+const HOLD_FOR_RUN: Duration = Duration::from_secs(1);
+/// How many `chord` aliases may lead one to another.
+const MAX_CHORD_DEPTH: u8 = 8;
+/// Panes waiting to be fitted.
+const MAX_FITS: usize = 256;
 /// How many messages from the language are taken in one turn.
 const SCRIPT_TURN: usize = 64;
 /// Input held while the configuration loads.
@@ -70,8 +93,10 @@ const FILES_PER_PANE: u64 = 2;
 /// Escape's wait for the rest of a sequence, and a paste's, in ms.
 const TIMING: Timing = Timing::new(50, 1000);
 
-const ENTER: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?25l\x1b[2J";
-const LEAVE: &str = "\x1b[0m\x1b[0 q\x1b[?25h\x1b[?2004l\x1b[?1049l";
+/// The alternate screen, pastes bracketed, the cursor hidden, and the mouse
+/// reported (buttons and drags, SGR encoding); leaving undoes them.
+const ENTER: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[2J";
+const LEAVE: &str = "\x1b[0m\x1b[0 q\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?2004l\x1b[?1049l";
 
 /// Where a pane's watching connection is in its round.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -112,14 +137,6 @@ fn after(now: Instant, wait: Duration) -> Instant {
 
 fn io_failure(what: &str, error: impl std::fmt::Display) -> Failure {
     Failure::new(Code::Io, format!("{what}: {error}"))
-}
-
-/// A binding's action.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Action {
-    Verb(Verb),
-    /// Runs the configuration's function bound under this number.
-    Script(u64),
 }
 
 /// Writes frames on a thread of its own, so that a terminal that stopped
@@ -203,35 +220,62 @@ struct Running {
     forced: bool,
 }
 
-/// Where a workspace was left.
+/// Where a workspace was left: its tab shown, and the one before it.
 #[derive(Clone, Copy, Default)]
 struct Place {
-    tab: usize,
-    last: usize,
+    tab: u32,
+    last: u32,
+}
+
+/// A border being dragged: where the press was, and the layout version it
+/// started from.
+struct Drag {
+    border: layout::Border,
+    from: (u16, u16),
+    to: (u16, u16),
+    version: u64,
 }
 
 struct View {
     session: Session,
-    layout_path: Option<PathBuf>,
+    /// The last good layout read, and the text it came from.
+    stored: Layout,
     layout_text: Option<String>,
-    workspaces: Vec<Workspace>,
-    /// The workspace shown, and the one before it.
-    workspace: usize,
-    last_workspace: usize,
-    /// For each workspace, its tab shown and the one before it.
-    places: Vec<Place>,
+    /// What the layout file's last refused reading said.
+    layout_failed: Option<String>,
+    /// What is shown: the stored layout with routed panes, derived.
+    arranged: Arc<Layout>,
+    /// The live panes `arranged` was made with.
+    live: Vec<Live>,
+    /// The workspace shown, and the one before it, by id.
+    workspace: u32,
+    last_workspace: u32,
+    places: BTreeMap<u32, Place>,
     panes: BTreeMap<String, Pane>,
-    focus: Option<PaneId>,
+    focus: Option<PaneRef>,
     focus_name: Option<String>,
+    /// The pane focused before, for `last-pane`.
+    last_focus: Option<PaneRef>,
     /// A pane to focus as soon as it is there: its name, its id if known,
     /// and until when it is waited for.
     wanted: Option<(String, Option<PaneId>, Instant)>,
-    /// That pane, and what had the focus before it: it comes back there.
-    back: Option<(String, PaneId)>,
+    /// That pane's name, and what had the focus before it: it comes back
+    /// there when the pane goes.
+    back: Option<(String, PaneRef)>,
     term: (u16, u16),
-    bindings: BTreeMap<String, Action>,
-    prefix: Option<String>,
-    message: Option<(String, Instant)>,
+    keys: Keys,
+    /// The keys typed so far of a chord: their menu is shown.
+    column: Option<Column>,
+    /// The group whose keys act again without the keys before them.
+    repeat: Option<String>,
+    panel: Option<Panel>,
+    drag: Option<Drag>,
+    /// Panes to fit once the layout reaches a version and they are seen,
+    /// until when.
+    fits: Vec<(u64, PaneRef, Instant)>,
+    /// A notice for the bar's corner: its text, its colours, and until when
+    /// if it is an alert (else until the next key).
+    notice: Option<(String, &'static str, Option<Instant>)>,
     file_limit: Option<u64>,
     script: Option<Script>,
     from_script: Receiver<ToViewer>,
@@ -239,8 +283,6 @@ struct View {
     waiting_runs: VecDeque<Run>,
     /// The configuration is still being read: keys it might bind wait.
     loading: bool,
-    /// What the layout file's last refused reading said.
-    layout_failed: Option<String>,
     held: Vec<Input>,
     /// The last key typed while loading was `C-b`.
     loading_prefix: bool,
@@ -248,11 +290,18 @@ struct View {
     focus_moved: bool,
     /// The keys have loaded; held input waits for a focused pane until then.
     keys_loaded: Option<Instant>,
+    /// A key's binding is running: what is typed after it waits, until it
+    /// opens a panel or ends, or this time, so a panel it opens gets the
+    /// keys meant for it and a binding that loops holds nothing for long.
+    awaiting_run: Option<Instant>,
+    /// How deep `chord` aliases have led, so one that leads to itself stops.
+    chord_depth: u8,
+    /// Each tab's focus, so coming back to a tab finds it where it was.
+    tab_focus: BTreeMap<u32, PaneRef>,
     /// A run was handed to the language and has not finished.
     run_sent: bool,
     painter: Painter,
-    shown: Frame,
-    tiles: Vec<(String, Tile)>,
+    drawn: Frame,
     dirty: bool,
     next_paint: Instant,
     next_scan: Instant,
@@ -260,8 +309,18 @@ struct View {
 }
 
 /// What holds before the default keys have loaded: a way out.
-fn first_bindings() -> BTreeMap<String, Action> {
-    BTreeMap::from([("C-b d".to_owned(), Action::Verb(Verb::Detach))])
+fn first_keys() -> Keys {
+    let mut keys = Keys::default();
+    keys.bindings.insert(
+        "C-b d".to_owned(),
+        Binding {
+            action: Action::Verb(Verb::Detach),
+            caption: "detach".to_owned(),
+            heading: "Session".to_owned(),
+            order: 0,
+        },
+    );
+    keys
 }
 
 /// `index` moved by one through `len` places, wrapping.
@@ -272,6 +331,16 @@ fn stepped(index: usize, len: usize, forward: bool) -> usize {
         (true, i) => i.saturating_add(1),
         (false, 0) => last,
         (false, i) => i.saturating_sub(1),
+    }
+}
+
+fn tile_of(rect: Rect) -> Tile {
+    let small = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
+    Tile {
+        x: small(rect.x),
+        y: small(rect.y),
+        w: small(rect.w),
+        h: small(rect.h),
     }
 }
 
@@ -397,142 +466,252 @@ impl Pane {
             _ => Err(Failure::new(Code::Protocol, "an answer out of turn")),
         }
     }
-
-    fn title(&self, tile: Tile) -> String {
-        let mut title = format!(" {} ", self.name);
-        if let Some(meta) = &self.meta {
-            if meta.state != State::Running {
-                title.push_str(&format!("[{}] ", meta.state));
-            }
-            if meta.cols > tile.w || meta.rows > tile.h.saturating_sub(1) {
-                title.push_str(&format!("[clipped {}x{}] ", meta.cols, meta.rows));
-            }
-            if let Some(limit) = meta.limitations.last() {
-                title.push_str(&format!("[{limit}] "));
-            }
-        }
-        title
-    }
 }
 
 impl View {
+    /// An error, in the bar's corner until the next key.
     fn say(&mut self, text: impl Into<String>) {
-        self.message = Some((text.into(), after(Instant::now(), MESSAGE)));
+        self.notice = Some((text.into(), ERROR, None));
         self.dirty = true;
     }
 
-    fn tabs(&self) -> &[Tab] {
-        (self.workspaces.get(self.workspace)).map_or(&[], |space| space.tabs.as_slice())
+    /// A notice that is no error.
+    fn note(&mut self, text: impl Into<String>, until: Option<Instant>) {
+        self.notice = Some((text.into(), NOTICE, until));
+        self.dirty = true;
+    }
+
+    /// The room tiles share: the whole screen. The bar, when it shows, is
+    /// drawn over its last row and takes no room.
+    fn area(&self) -> Rect {
+        let (cols, rows) = self.term;
+        Rect {
+            x: 0,
+            y: 0,
+            w: u32::from(cols.min(render::MAX_COLS)),
+            h: u32::from(rows.min(render::MAX_ROWS)),
+        }
+    }
+
+    fn space(&self) -> Option<&Workspace> {
+        (self.arranged.workspaces.iter()).find(|space| space.id == self.workspace)
     }
 
     fn place(&self) -> Place {
-        self.places.get(self.workspace).copied().unwrap_or_default()
+        self.places
+            .get(&self.workspace)
+            .copied()
+            .unwrap_or_default()
     }
 
-    fn shown_tab(&self) -> Option<&Tab> {
-        self.tabs().get(self.place().tab)
+    fn shown_tab(&self) -> Option<&LayoutTab> {
+        let tab = self.place().tab;
+        self.space()?.tabs.iter().find(|t| t.id == tab)
     }
 
-    /// Shows tab `tab` of this workspace, remembering the one it leaves.
-    fn show_tab(&mut self, tab: usize) {
-        let workspace = self.workspace;
-        if let Some(place) = self.places.get_mut(workspace)
-            && place.tab != tab
-        {
+    /// The tiles drawn: those of the shown tab with room for a cell.
+    fn tiles(&self) -> Vec<(PaneRef, Rect)> {
+        let area = self.area();
+        (self.shown_tab())
+            .map(|tab| tab.tiles(area))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, rect)| rect.w > 0 && rect.h > 0)
+            .collect()
+    }
+
+    fn visible(&self) -> Vec<PaneRef> {
+        self.tiles().into_iter().map(|(pane, _)| pane).collect()
+    }
+
+    /// The pane a tile shows, once it has said who it is.
+    fn live_pane(&self, pane: &PaneRef) -> Option<&Pane> {
+        (self.panes.get(&pane.name)).filter(|p| p.hello.id == pane.id && p.phase != Phase::Greeting)
+    }
+
+    /// Shows tab `id`, in whatever workspace holds it.
+    fn show_tab(&mut self, id: u32) {
+        let Some(space) = self.arranged.workspace_of(id).map(|space| space.id) else {
+            return self.say(format!("no tab t{id}"));
+        };
+        self.show_workspace(space);
+        let place = self.places.entry(space).or_default();
+        if place.tab != id {
             *place = Place {
-                tab,
+                tab: id,
                 last: place.tab,
             };
             self.tab_changed();
         }
     }
 
-    fn show_workspace(&mut self, workspace: usize) {
-        if workspace != self.workspace && workspace < self.workspaces.len() {
+    fn show_workspace(&mut self, id: u32) {
+        let known = self.arranged.workspaces.iter().any(|space| space.id == id);
+        if id != self.workspace && known {
             self.last_workspace = self.workspace;
-            self.workspace = workspace;
+            self.workspace = id;
             self.tab_changed();
         }
     }
 
     fn tab_changed(&mut self) {
         self.dirty = true;
+        // A drag of another tab's border, and its preview, are over.
+        if self.drag.take().is_some() {
+            self.arranged = Arc::new(self.stored.shown(&self.live));
+        }
+        // The tab's own focus, as it was left.
+        let tab = self.place().tab;
+        if let Some(pane) = self.tab_focus.get(&tab).cloned()
+            && self.visible().contains(&pane)
+        {
+            self.focus_name = Some(pane.name.clone());
+            self.focus = Some(pane);
+            self.focus_moved = true;
+        }
         self.settle_focus();
     }
 
-    /// The labels a new pane must carry to appear in the shown tab.
-    fn labels_for_new_pane(&self) -> Result<Vec<(String, String)>, String> {
-        let tests = self.shown_tab().map_or(&[][..], |tab| tab.tests.as_slice());
-        if tests.iter().any(|(key, _)| key == "name") {
-            return Err("this tab selects panes by name, so no label puts a new pane in it".into());
-        }
-        Ok(tests.to_vec())
+    /// Notes the focus as the shown tab's own.
+    fn keep_tab_focus(&mut self) {
+        let tab = self.place().tab;
+        match self.focus.clone() {
+            Some(pane) => self.tab_focus.insert(tab, pane),
+            None => self.tab_focus.remove(&tab),
+        };
     }
 
-    fn visible(&self) -> Vec<&Pane> {
-        let tests = self.shown_tab().map_or(&[][..], |tab| tab.tests.as_slice());
+    /// The panes that have said who they are.
+    fn live_now(&self) -> Vec<Live> {
         (self.panes.values())
             .filter(|pane| pane.phase != Phase::Greeting)
-            .filter(|pane| dir::matches(&pane.name, &pane.hello.labels, tests))
+            .map(|pane| Live {
+                pane: PaneRef {
+                    name: pane.name.clone(),
+                    id: pane.hello.id,
+                },
+                labels: pane.hello.labels.clone(),
+            })
             .collect()
     }
 
-    /// Keeps the focus on a pane of this tab. A pane asked for takes it when
-    /// it appears; when that pane goes, the focus returns to where it was;
-    /// any other pane that went gives way to the next by name.
-    fn settle_focus(&mut self) {
-        let chosen = {
-            let visible = self.visible();
-            let named = |name: &str| visible.iter().find(|p| p.name == name);
-            let by_id = |id: PaneId| visible.iter().find(|p| p.hello.id == id);
-            let wanted = (self.wanted.as_ref())
-                .filter(|(_, _, until)| Instant::now() < *until)
-                .and_then(|(name, id, _)| {
-                    named(name).filter(|pane| id.is_none_or(|id| pane.hello.id == id))
-                });
-            // Until the focus is moved by hand, it is the first pane by name,
-            // whichever pane happened to greet first.
-            let first = visible.first().map(|p| p.hello.id);
-            let settled = self.focus_moved || self.focus == first;
-            if wanted.is_none() && settled && self.focus.and_then(by_id).is_some() {
-                return;
+    /// Derives what is shown again, if the panes or the layout changed, and
+    /// keeps a workspace and tab shown that still exist.
+    fn refresh(&mut self, layout_changed: bool) {
+        let live = self.live_now();
+        if layout_changed || live != self.live {
+            self.live = live;
+            self.arranged = Arc::new(self.stored.shown(&self.live));
+            let spaces: Vec<(u32, Vec<u32>)> = (self.arranged.workspaces.iter())
+                .map(|space| (space.id, space.tabs.iter().map(|t| t.id).collect()))
+                .collect();
+            if !spaces.iter().any(|(id, _)| *id == self.workspace) {
+                self.workspace = spaces.first().map_or(0, |(id, _)| *id);
             }
-            let returning = (self.back.as_ref())
-                .filter(|(name, _)| self.focus_name.as_deref() == Some(name.as_str()))
-                .and_then(|(_, id)| by_id(*id));
-            let last = match self.focus_moved {
-                true => self.focus_name.as_deref().unwrap_or(""),
-                false => "",
-            };
-            wanted
-                .or(returning)
-                .or_else(|| visible.iter().find(|p| p.name.as_str() > last))
-                .or_else(|| visible.first())
-                .map(|p| (p.hello.id, p.name.clone()))
+            if !spaces.iter().any(|(id, _)| *id == self.last_workspace) {
+                self.last_workspace = self.workspace;
+            }
+            self.places
+                .retain(|id, _| spaces.iter().any(|(s, _)| s == id));
+            for (space, tabs) in &spaces {
+                let first = tabs.first().copied().unwrap_or(0);
+                let place = self.places.entry(*space).or_insert(Place {
+                    tab: first,
+                    last: first,
+                });
+                if !tabs.contains(&place.tab) {
+                    place.tab = first;
+                }
+                if !tabs.contains(&place.last) {
+                    place.last = place.tab;
+                }
+            }
+            self.dirty = true;
+        }
+        self.settle_focus();
+    }
+
+    /// Keeps the focus on a tile of this tab. A pane asked for takes it when
+    /// it appears, its tab shown; when that pane goes, the focus returns to
+    /// where it was; any other that went gives way to the next by name.
+    fn settle_focus(&mut self) {
+        let now = Instant::now();
+        let wanted = (self.wanted.clone())
+            .filter(|(_, _, until)| now < *until)
+            .and_then(|(name, id, _)| {
+                let live = self.live.iter().find(|l| l.pane.name == name)?;
+                id.is_none_or(|id| live.pane.id == id)
+                    .then(|| live.pane.clone())
+            });
+        if let Some(pane) = &wanted
+            && !self.visible().contains(pane)
+            && let Some(tab) = self.arranged.tab_of(pane).map(|t| t.id)
+        {
+            self.show_tab(tab);
+        }
+        let visible = self.visible();
+        let wanted = wanted.filter(|pane| visible.contains(pane));
+        // Until the focus is moved by hand, it is the first tile.
+        let first = visible.first().cloned();
+        let settled = self.focus_moved || self.focus == first;
+        let present = self.focus.as_ref().is_some_and(|f| visible.contains(f));
+        if wanted.is_none() && settled && present {
+            return;
+        }
+        let returning = (self.back.as_ref())
+            .filter(|(name, _)| self.focus_name.as_deref() == Some(name.as_str()))
+            .map(|(_, pane)| pane.clone())
+            .filter(|pane| visible.contains(pane));
+        let last = match self.focus_moved {
+            true => self.focus_name.clone().unwrap_or_default(),
+            false => String::new(),
         };
-        if let Some((_, name)) = &chosen
-            && self.wanted.as_ref().is_some_and(|w| w.0 == *name)
+        let mut by_name = visible.clone();
+        by_name.sort_by(|a, b| a.name.cmp(&b.name));
+        let chosen = wanted
+            .clone()
+            .or(returning)
+            .or_else(|| match self.focus_moved {
+                true => by_name.iter().find(|p| p.name > last).cloned(),
+                false => None,
+            })
+            .or(first);
+        if let Some(pane) = &chosen
+            && self.wanted.as_ref().is_some_and(|w| w.0 == pane.name)
         {
             self.wanted = None;
         } else if chosen.is_some() {
             self.back = None;
         }
-        let focus = chosen.as_ref().map(|c| c.0);
-        self.dirty |= focus != self.focus;
-        self.focus = focus;
-        self.focus_name = chosen.map(|c| c.1).or_else(|| self.focus_name.take());
+        self.dirty |= chosen != self.focus;
+        // A focus moved for you is a focus moved: `last-pane` goes back.
+        if chosen != self.focus && self.focus.is_some() && chosen.is_some() {
+            self.last_focus = self.focus.clone();
+        }
+        self.focus_name = chosen
+            .as_ref()
+            .map(|p| p.name.clone())
+            .or_else(|| self.focus_name.take());
+        self.focus = chosen;
+        self.keep_tab_focus();
     }
 
-    fn focused_name(&self) -> Option<String> {
-        let id = self.focus?;
-        (self.panes.values())
-            .find(|pane| pane.hello.id == id)
-            .map(|pane| pane.name.clone())
+    /// Moves the focus to `pane` by hand.
+    fn focus_on(&mut self, pane: PaneRef) {
+        if self.focus.as_ref() != Some(&pane) {
+            self.last_focus = self.focus.take();
+        }
+        self.focus_name = Some(pane.name.clone());
+        self.focus = Some(pane);
+        self.focus_moved = true;
+        self.back = None;
+        self.dirty = true;
+        self.keep_tab_focus();
     }
 
     fn rescan(&mut self, now: Instant) {
         self.next_scan = after(now, RESCAN);
-        self.reread_layout();
+        let changed = self.reread_layout();
         let names = match self.session.names() {
             Ok(names) => names,
             Err(failure) => return self.say(failure.to_string()),
@@ -563,7 +742,8 @@ impl View {
                 Err(failure) => self.say(format!("{name}: {failure}")),
             }
         }
-        self.settle_focus();
+        self.refresh(changed);
+        self.fit_due();
     }
 
     fn watch(&self, name: &str) -> Result<Pane, Failure> {
@@ -591,78 +771,91 @@ impl View {
         })
     }
 
-    fn reread_layout(&mut self) {
-        let Some(path) = self.layout_path.clone() else {
-            return;
-        };
-        let text = match script::read_small_file(&path, layout::MAX_LAYOUT_BYTES) {
-            Ok(text) => text,
-            Err(e) => return self.say(format!("{}: {e}", path.display())),
-        };
-        if self.layout_text.as_deref() == Some(text.as_str()) {
-            return;
-        }
-        match layout::parse(&text) {
-            Ok(workspaces) => {
-                // The file is good again: what it said wrong is no longer so.
-                if let Some(said) = self.layout_failed.take()
-                    && self.message.as_ref().is_some_and(|(text, _)| *text == said)
-                {
-                    self.message = None;
-                }
-                self.places.resize(workspaces.len(), Place::default());
-                for (place, space) in self.places.iter_mut().zip(&workspaces) {
-                    let most = space.tabs.len().saturating_sub(1);
-                    place.tab = place.tab.min(most);
-                    place.last = place.last.min(most);
-                }
-                let most = workspaces.len().saturating_sub(1);
-                self.workspace = self.workspace.min(most);
-                self.last_workspace = self.last_workspace.min(most);
-                self.workspaces = workspaces;
-                self.tab_changed();
-            }
-            // The last good layout stays on the screen.
-            Err(why) => {
-                let file = path.file_name().unwrap_or(path.as_os_str());
-                let said = format!("{}: {why}", file.to_string_lossy());
+    /// Reads the layout file again: true if what it holds changed. A file
+    /// that cannot be read or is wrong leaves the last good layout shown,
+    /// and says why until it is good again.
+    fn reread_layout(&mut self) -> bool {
+        let path = self.session.root.join("layout");
+        let text = match layout::read_small_file(&path, layout::MAX_BYTES) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                let said = format!("layout: {e}");
                 self.layout_failed = Some(said.clone());
                 self.say(said);
+                return false;
+            }
+        };
+        if self.layout_text == text && self.layout_failed.is_none() {
+            return false;
+        }
+        let parsed = match &text {
+            Some(text) => layout::parse(text),
+            None => Ok(Layout::default()),
+        };
+        match parsed {
+            Ok(stored) => {
+                // The file is good again: what it said wrong is no longer so.
+                if let Some(said) = self.layout_failed.take()
+                    && self
+                        .notice
+                        .as_ref()
+                        .is_some_and(|(text, _, _)| *text == said)
+                {
+                    self.notice = None;
+                }
+                self.layout_text = text;
+                let changed = stored != self.stored;
+                // A drag in progress was made against the old one: it is
+                // over, and said to be, not dropped in silence.
+                if changed && self.drag.take().is_some() {
+                    self.say("the layout changed during the drag; the border was not moved");
+                }
+                self.stored = stored;
+                changed
+            }
+            Err(why) => {
+                let said = format!("layout: {why}");
+                if self.layout_failed.as_deref() != Some(said.as_str()) {
+                    self.say(said.clone());
+                }
+                self.layout_failed = Some(said);
+                false
             }
         }
-        self.layout_text = Some(text);
     }
 
-    fn focused_pane(&mut self) -> Option<&mut Pane> {
-        let id = self.focus?;
-        self.panes.values_mut().find(|pane| pane.hello.id == id)
+    /// Opens `name`'s input connection if it has none.
+    fn inlet(&mut self, name: &str) -> Result<&mut Inlet, Failure> {
+        let session = self.session.clone();
+        let pane = (self.panes.get_mut(name))
+            .ok_or_else(|| Failure::new(Code::Missing, format!("no pane {name}")))?;
+        if pane.inlet.is_none() {
+            let (conn, _) = dial(&session, &pane.name, Instant::now())?;
+            pane.inlet = Some(Inlet::open(conn)?);
+        }
+        pane.inlet
+            .as_mut()
+            .ok_or_else(|| Failure::new(Code::Missing, format!("no pane {name}")))
     }
 
     /// Queues `parts` for the focused pane, on its input connection.
     fn type_parts(&mut self, parts: Vec<Part>) {
-        let session = self.session.clone();
-        let Some(pane) = self.focused_pane() else {
+        let Some(focus) = self.focus.clone() else {
             return self.say("no pane has the focus");
         };
-        let opened = match pane.inlet.is_some() {
-            true => Ok(()),
-            false => dial(&session, &pane.name, Instant::now())
-                .and_then(|(conn, _)| Inlet::open(conn))
-                .map(|inlet| pane.inlet = Some(inlet)),
+        if self.live_pane(&focus).is_none() {
+            return self.say(format!("pane {} is missing: it takes no keys", focus.name));
+        }
+        let inlet = match self.inlet(&focus.name) {
+            Ok(inlet) => inlet,
+            Err(failure) => return self.say(format!("keys not delivered: {failure}")),
         };
-        if let Err(failure) = opened {
-            return self.say(format!("keys not delivered: {failure}"));
+        if inlet.parts.len() >= MAX_QUEUED_PARTS {
+            return self.say(format!("keys dropped: {} is not taking them", focus.name));
         }
-        let full = (pane.inlet.as_ref()).is_some_and(|inlet| inlet.parts.len() >= MAX_QUEUED_PARTS);
-        if full {
-            let name = pane.name.clone();
-            return self.say(format!("keys dropped: {name} is not taking them"));
-        }
-        let advanced = pane.inlet.as_mut().map_or(Ok(()), |inlet| {
-            inlet.parts.extend(parts);
-            inlet.advance()
-        });
-        if let Err(failure) = advanced {
+        inlet.parts.extend(parts);
+        if let Err(failure) = inlet.advance() {
             self.say(format!("keys not delivered: {failure}"));
         }
     }
@@ -680,101 +873,245 @@ impl View {
         self.type_parts(vec![part]);
     }
 
-    fn input_pressure(&self) -> bool {
-        (self.panes.values())
-            .filter_map(|pane| pane.inlet.as_ref())
-            .any(|inlet| inlet.parts.len() >= MAX_QUEUED_PARTS)
-    }
-
     fn apply_verb(&mut self, verb: Verb) {
-        let (tab, tabs) = (self.place().tab, self.tabs().len());
-        let spaces = self.workspaces.len();
+        let tabs: Vec<u32> = (self.space())
+            .map(|space| space.tabs.iter().map(|t| t.id).collect())
+            .unwrap_or_default();
+        let spaces: Vec<u32> = self.arranged.workspaces.iter().map(|s| s.id).collect();
+        let tab_at = tabs
+            .iter()
+            .position(|t| *t == self.place().tab)
+            .unwrap_or(0);
+        let space_at = spaces
+            .iter()
+            .position(|s| *s == self.workspace)
+            .unwrap_or(0);
+        let nth = |list: &[u32], at: usize| list.get(at).copied();
         match verb {
             Verb::Detach => self.quit = true,
-            Verb::NextTab => self.show_tab(stepped(tab, tabs, true)),
-            Verb::PreviousTab => self.show_tab(stepped(tab, tabs, false)),
-            Verb::LastTab => self.show_tab(self.place().last),
-            Verb::GoToTab(number) => {
-                let index = number.saturating_sub(1);
-                match index < tabs {
-                    true => self.show_tab(index),
-                    false => self.say(format!("no tab {number}: this workspace has {tabs}")),
+            Verb::NextTab | Verb::PreviousTab => {
+                let at = stepped(tab_at, tabs.len(), verb == Verb::NextTab);
+                if let Some(tab) = nth(&tabs, at) {
+                    self.show_tab(tab);
                 }
             }
-            Verb::NextWorkspace => self.show_workspace(stepped(self.workspace, spaces, true)),
-            Verb::PreviousWorkspace => self.show_workspace(stepped(self.workspace, spaces, false)),
+            Verb::LastTab => self.show_tab(self.place().last),
+            Verb::GoToTab(number) => match nth(&tabs, number.saturating_sub(1)) {
+                Some(tab) => self.show_tab(tab),
+                None => self.say(format!(
+                    "no tab {number}: this workspace has {}",
+                    tabs.len()
+                )),
+            },
+            Verb::ShowTab(tab) => self.show_tab(tab),
+            Verb::NextWorkspace | Verb::PreviousWorkspace => {
+                let at = stepped(space_at, spaces.len(), verb == Verb::NextWorkspace);
+                if let Some(space) = nth(&spaces, at) {
+                    self.show_workspace(space);
+                }
+            }
             Verb::LastWorkspace => self.show_workspace(self.last_workspace),
+            Verb::ShowWorkspace(space) => match spaces.contains(&space) {
+                true => self.show_workspace(space),
+                false => self.say(format!("no workspace w{space}")),
+            },
             Verb::NextPane => self.step_pane(true),
             Verb::PreviousPane => self.step_pane(false),
-            Verb::Fit => self.fit(),
+            Verb::LastPane => match self
+                .last_focus
+                .clone()
+                .filter(|p| self.visible().contains(p))
+            {
+                Some(pane) => self.focus_on(pane),
+                None => self.say("no other pane was focused in this tab"),
+            },
+            Verb::Focus(dir) => {
+                let next = (self.focus.as_ref())
+                    .zip(self.shown_tab())
+                    .and_then(|(focus, tab)| tab.neighbor(focus, dir, self.area()));
+                match next {
+                    Some(pane) => self.focus_on(pane),
+                    None => self.say("no pane that way"),
+                }
+            }
+            Verb::Fit => match self.focus.clone() {
+                Some(pane) => self.fit(&pane),
+                None => self.say("no pane has the focus"),
+            },
+            Verb::Chord(chord) => {
+                if self.chord_depth >= MAX_CHORD_DEPTH {
+                    return self.say(format!("{chord} leads back to itself, and was stopped"));
+                }
+                self.chord_depth = self.chord_depth.saturating_add(1);
+                self.perform_chord(chord);
+                self.chord_depth = self.chord_depth.saturating_sub(1);
+            }
             // Handled where the chord is known.
             Verb::Literal => {}
         }
     }
 
     fn step_pane(&mut self, forward: bool) {
-        let (focus, name) = {
-            let visible = self.visible();
-            let at = visible.iter().position(|p| Some(p.hello.id) == self.focus);
-            let next = at.map_or(0, |at| stepped(at, visible.len(), forward));
-            let pane = visible.get(next);
-            (pane.map(|p| p.hello.id), pane.map(|p| p.name.clone()))
-        };
-        self.focus = focus;
-        self.focus_name = name;
-        self.focus_moved = true;
-        self.back = None;
-        self.dirty = true;
+        let visible = self.visible();
+        let at = (visible.iter()).position(|p| Some(p) == self.focus.as_ref());
+        let next = at.map_or(0, |at| stepped(at, visible.len(), forward));
+        if let Some(pane) = visible.get(next).cloned() {
+            self.focus_on(pane);
+        }
     }
 
-    /// Asks the focused pane, once, to take its tile's size.
-    fn fit(&mut self) {
-        let Some(name) = self.focused_name() else {
-            return self.say("no pane has the focus");
+    /// Asks `pane`, once, to take the size of its tile in this viewer, in
+    /// whichever tab holds it.
+    fn fit(&mut self, pane: &PaneRef) {
+        let area = self.area();
+        let rect = (self.arranged.tab_of(pane))
+            .and_then(|tab| tab.tiles(area).into_iter().find(|(p, _)| p == pane))
+            .map(|(_, rect)| rect);
+        let Some(rect) = rect.filter(|r| r.w > 0 && r.h > 0) else {
+            return self.say(format!("{} has no room on the screen", pane.name));
         };
-        let tile = (self.tiles.iter())
-            .find(|(tiled, _)| *tiled == name)
-            .map(|t| t.1);
-        let Some(tile) = tile else {
-            return self.say("the focused pane has no room on the screen");
-        };
+        if self.live_pane(pane).is_none() {
+            return;
+        }
+        let tile = tile_of(rect);
         let cols = tile.w.clamp(1, MAX_COLS);
-        let rows = tile.h.saturating_sub(1).clamp(1, MAX_ROWS);
-        self.type_parts(Vec::new());
-        if let Some(inlet) = self.focused_pane().and_then(|p| p.inlet.as_mut()) {
+        let rows = tile.h.clamp(1, MAX_ROWS);
+        let advanced = self.inlet(&pane.name).and_then(|inlet| {
             inlet.resize = Some((cols, rows));
-            if let Err(failure) = inlet.advance() {
-                self.say(format!("fit: {failure}"));
+            inlet.advance()
+        });
+        if let Err(failure) = advanced {
+            self.say(format!("fit: {failure}"));
+        }
+    }
+
+    /// Fits the panes an edit changed, once the layout has reached it and
+    /// each pane has said who it is; one not seen in time is let go.
+    fn fit_due(&mut self) {
+        let (version, now) = (self.stored.version, Instant::now());
+        let fits = std::mem::take(&mut self.fits);
+        for (wanted, pane, until) in fits {
+            let ready = wanted <= version && self.live_pane(&pane).is_some();
+            if ready {
+                self.fit(&pane);
+            } else if now < until {
+                self.fits.push((wanted, pane, until));
             }
         }
     }
 
-    fn focus_label(&mut self) -> Option<String> {
-        let pane = self.focused_pane()?;
-        Some(format!("{}@{}", pane.name, pane.hello.id))
+    /// What a run sees of this viewer.
+    fn context(&self) -> Context {
+        let keys = (self.keys.bindings.iter())
+            .map(|(chord, b)| (chord.clone(), b.caption.clone(), b.heading.clone()))
+            .collect();
+        Context {
+            focus: self.focus.as_ref().map(PaneRef::to_string),
+            tab: self.shown_tab().map(|tab| tab.id),
+            workspace: self.space().map(|space| space.id),
+            area: self.area(),
+            layout: Arc::clone(&self.arranged),
+            keys: Arc::new(keys),
+        }
     }
 
     fn on_key(&mut self, press: KeyPress) {
         let name = press.to_string();
-        if let Some(prefix) = self.prefix.take() {
-            let chord = format!("{prefix} {name}");
+        // A notice lasts until the next key.
+        if self.notice.take().is_some() {
             self.dirty = true;
-            return match self.bindings.get(&chord).cloned() {
-                Some(action) => self.perform(chord, action),
-                // The keys are still loading: this chord may be among them.
-                None => self.say(format!("no binding for {chord}")),
+        }
+        if let Some(panel) = &mut self.panel {
+            self.dirty = true;
+            let id = panel.id();
+            let (value, action) = match panel.key(press) {
+                Outcome::Stay => return,
+                Outcome::Cancel => {
+                    self.panel = None;
+                    return self.dispatch_job(String::new(), Job::Drop(id));
+                }
+                Outcome::Chosen(value) => (value, None),
+                Outcome::Action(n, value) => (value, Some(n)),
+                Outcome::Refused(why) => return self.say(why),
             };
+            self.panel = None;
+            let job = Job::Answer { id, value, action };
+            return self.dispatch_job(String::new(), job);
         }
-        if let Some(action) = self.bindings.get(&name).cloned() {
-            return self.perform(name, action);
-        }
-        let opens = format!("{name} ");
-        if self.bindings.keys().any(|key| key.starts_with(&opens)) {
-            self.prefix = Some(name);
+        if let Some(group) = self.repeat.clone() {
             self.dirty = true;
-            return;
+            if name == "Escape" || name == "Enter" {
+                self.repeat = None;
+                return;
+            }
+            let chord = format!("{group} {name}");
+            if self.keys.bindings.contains_key(&chord) || self.keys.opens(&chord) {
+                return self.perform_chord(chord);
+            }
+            // Any other key ends the mode; the prefix, or another bound key,
+            // then does what it does, as in fux.
+            self.repeat = None;
+            if !(self.keys.bindings.contains_key(&name) || self.keys.opens(&name)) {
+                return self.say(format!("{name} is not one of this mode's keys"));
+            }
+            return self.perform_chord(name);
+        }
+        if let Some(mut column) = self.column.take() {
+            self.dirty = true;
+            let lines = self.keys.menu(&column.keys);
+            let entries = Column::entries(&lines);
+            // A bound key runs, even one that would move the selection.
+            let own = format!("{} {name}", column.keys);
+            if self.keys.bindings.contains_key(&own) || self.keys.opens(&own) {
+                return self.perform_chord(own);
+            }
+            if column.moves(press, entries.len()) {
+                self.column = Some(column);
+                return;
+            }
+            let chord = match name.as_str() {
+                "Escape" => return,
+                "Enter" => match entries.get(column.selected) {
+                    Some(key) => format!("{} {key}", column.keys),
+                    None => return,
+                },
+                _ => format!("{} {name}", column.keys),
+            };
+            if self.keys.bindings.contains_key(&chord) || self.keys.opens(&chord) {
+                return self.perform_chord(chord);
+            }
+            // The prefix again, where its map does not bind it, goes to the pane.
+            let first = column.keys.split(' ').next().unwrap_or_default();
+            if name == first {
+                return self.type_key(press);
+            }
+            self.column = Some(column);
+            return self.say(format!("{chord} is not bound"));
+        }
+        if self.keys.bindings.contains_key(&name) || self.keys.opens(&name) {
+            return self.perform_chord(name);
         }
         self.type_key(press);
+    }
+
+    /// Does what `chord` is bound to; a chord that holds keys opens their
+    /// menu. A key of a repeating group stays in that group's mode.
+    fn perform_chord(&mut self, chord: String) {
+        self.dirty = true;
+        if let Some(binding) = self.keys.bindings.get(&chord).cloned() {
+            self.column = None;
+            self.repeat = self.keys.repeating_parent(&chord);
+            return self.perform(chord, binding.action);
+        }
+        if self.keys.opens(&chord) {
+            self.repeat = None;
+            self.column = Some(Column {
+                keys: chord,
+                selected: 0,
+            });
+            return;
+        }
+        self.say(format!("{chord} is not bound"));
     }
 
     fn perform(&mut self, chord: String, action: Action) {
@@ -788,26 +1125,29 @@ impl View {
             }
             Action::Verb(verb) => self.apply_verb(verb),
             Action::Script(generation) => {
-                // The pane focused now, whatever the binding does later.
-                let focus = self.focus_label();
-                let labels = self.labels_for_new_pane();
-                self.dispatch(Run {
-                    chord,
+                let job = Job::Binding {
+                    chord: chord.clone(),
                     generation,
-                    focus,
-                    labels,
-                });
+                };
+                self.dispatch_job(chord, job);
+                self.awaiting_run = Some(after(Instant::now(), HOLD_FOR_RUN));
             }
         }
     }
 
-    fn dispatch(&mut self, run: Run) {
+    /// Runs `job` with what this viewer shows now.
+    fn dispatch_job(&mut self, label: String, job: Job) {
+        let run = Run {
+            label,
+            job,
+            context: self.context(),
+        };
         if !self.run_sent && self.waiting_runs.is_empty() {
             self.start_run(run);
         } else if self.waiting_runs.len() < MAX_WAITING_RUNS {
             self.waiting_runs.push_back(run);
         } else {
-            self.say(format!("too many bindings waiting: {} dropped", run.chord));
+            self.say(format!("too many bindings waiting: {} dropped", run.label));
         }
     }
 
@@ -823,32 +1163,135 @@ impl View {
     }
 
     fn on_script(&mut self, message: ToViewer, now: Instant) {
+        self.dirty = true;
         match message {
-            ToViewer::Bind(chord, generation) => {
-                self.bindings.insert(chord, Action::Script(generation));
+            ToViewer::Bind {
+                chord,
+                caption,
+                heading,
+                generation,
+            } => {
+                self.keys.groups.remove(&chord);
+                let action = Action::Script(generation);
+                let binding = Binding {
+                    action,
+                    caption,
+                    heading,
+                    order: generation,
+                };
+                self.keys.bindings.insert(chord, binding);
             }
-            ToViewer::BindVerb(chord, verb) => {
-                self.bindings.insert(chord, Action::Verb(verb));
+            ToViewer::BindVerb {
+                chord,
+                caption,
+                heading,
+                generation,
+                verb,
+            } => {
+                self.keys.groups.remove(&chord);
+                let binding = Binding {
+                    action: Action::Verb(verb),
+                    caption,
+                    heading,
+                    order: generation,
+                };
+                self.keys.bindings.insert(chord, binding);
+            }
+            ToViewer::Group {
+                chord,
+                caption,
+                heading,
+                repeat,
+                generation,
+            } => {
+                self.keys.bindings.remove(&chord);
+                let group = Group {
+                    caption,
+                    heading,
+                    repeat,
+                    order: generation,
+                };
+                self.keys.groups.insert(chord, group);
+            }
+            ToViewer::Unbind(chord) => {
+                self.keys.bindings.remove(&chord);
+                self.keys.groups.remove(&chord);
             }
             ToViewer::Focus(pane) => {
                 let (name, id) = match pane.split_once('@') {
                     Some((name, id)) => (name.to_owned(), PaneId::parse(id)),
                     None => (pane, None),
                 };
-                if let Some(id) = self.focus {
-                    self.back = Some((name.clone(), id));
+                if let Some(focus) = self.focus.clone() {
+                    self.back = Some((name.clone(), focus));
                 }
                 self.wanted = Some((name, id, after(now, FOCUS_WAIT)));
                 self.focus_moved = true;
-                // It has just been started: look now, not at the next scan.
+                // It may have just been started: look now, not at the next scan.
                 self.next_scan = now;
             }
-            ToViewer::Unbind(chord) => {
-                self.bindings.remove(&chord);
-            }
             ToViewer::Verb(verb) => self.apply_verb(verb),
+            ToViewer::Pick {
+                id,
+                title,
+                rows,
+                actions,
+            } => {
+                self.replace_panel();
+                self.column = None;
+                self.repeat = None;
+                self.notice = None;
+                let selected = (rows.iter())
+                    .position(|row| row.2 != Start::Plain)
+                    .unwrap_or(0);
+                let rows = (rows.into_iter())
+                    .map(|(value, label, start)| panel::Row {
+                        value,
+                        label,
+                        current: start == Start::Current,
+                    })
+                    .collect();
+                self.panel = Some(Panel::List(List {
+                    id,
+                    title,
+                    rows,
+                    actions,
+                    selected,
+                }));
+                self.run_answered();
+            }
+            ToViewer::Ask {
+                id,
+                prompt,
+                initial,
+            } => {
+                self.replace_panel();
+                self.column = None;
+                self.repeat = None;
+                self.notice = None;
+                let text: Vec<char> = initial.chars().collect();
+                self.panel = Some(Panel::Ask(Ask {
+                    id,
+                    prompt,
+                    cursor: text.len(),
+                    text,
+                }));
+                self.run_answered();
+            }
+            ToViewer::Reread => self.next_scan = now,
+            ToViewer::Fit { version, panes } => {
+                for pane in panes.iter().filter_map(|p| PaneRef::parse(p).ok()) {
+                    match self.fits.len() < MAX_FITS {
+                        true => self.fits.push((version, pane, after(now, FOCUS_WAIT))),
+                        false => {
+                            self.say(format!("too many panes to fit: {} not fitted", pane.name))
+                        }
+                    }
+                }
+                self.next_scan = now;
+            }
+            ToViewer::Say(text) => self.note(text, None),
             ToViewer::Started { stop, limit } => {
-                self.dirty = true;
                 self.running = Some(Running {
                     stop,
                     at: after(now, limit),
@@ -858,7 +1301,10 @@ impl View {
             ToViewer::Done(why) => {
                 self.running = None;
                 self.run_sent = false;
-                self.dirty = true;
+                // A drag's preview that was not stored goes.
+                if self.drag.is_none() {
+                    self.arranged = Arc::new(self.stored.shown(&self.live));
+                }
                 if let Some(why) = why {
                     self.say(why);
                 }
@@ -870,7 +1316,16 @@ impl View {
                 if let Some(run) = self.waiting_runs.pop_front() {
                     self.start_run(run);
                 }
+                self.run_answered();
             }
+        }
+    }
+
+    /// A panel still open when another opens is let go of, unanswered, so
+    /// its callbacks do not linger.
+    fn replace_panel(&mut self) {
+        if let Some(old) = self.panel.take() {
+            self.dispatch_job(String::new(), Job::Drop(old.id()));
         }
     }
 
@@ -900,13 +1355,26 @@ impl View {
         }
     }
 
+    /// The key's binding has finished, or opened a panel: what was typed
+    /// after it goes on, in order.
+    fn run_answered(&mut self) {
+        if self.awaiting_run.take().is_some() && !self.loading {
+            let held = std::mem::take(&mut self.held);
+            self.on_inputs(held);
+        }
+    }
+
     /// Lets held input go once the keys have loaded and a pane has the focus,
     /// or the wait for one is over.
     fn release_held(&mut self, now: Instant) {
         let Some(until) = self.keys_loaded else {
             return;
         };
-        if self.focus.is_some() || now >= until {
+        let live = self
+            .focus
+            .as_ref()
+            .is_some_and(|f| self.live_pane(f).is_some());
+        if live || now >= until {
             self.keys_loaded = None;
             self.loading = false;
             let held = std::mem::take(&mut self.held);
@@ -941,8 +1409,7 @@ impl View {
             // The keys are still loading, and may bind what was typed: it
             // waits, in order, the load's own time at most. The way out
             // does not wait.
-            if self.loading {
-                // The way out is watched for whether or not keys are held.
+            if self.loading || self.awaiting_run.is_some() {
                 let key = match &input {
                     Input::Key(k) => Some(k.press.to_string()),
                     Input::Paste(_)
@@ -959,20 +1426,111 @@ impl View {
                 } else if self.held.len() < MAX_HELD_KEYS {
                     self.held.push(input);
                 } else {
-                    self.say("keys typed while the keys load were dropped");
+                    self.say("keys typed while a binding ran were dropped");
                 }
                 continue;
             }
             match input {
                 Input::Key(stroke) => self.on_key(stroke.press),
+                // Typed into an open panel, never a pane.
+                Input::Paste(text) if self.panel.is_some() => {
+                    let refused = self
+                        .panel
+                        .as_mut()
+                        .and_then(|panel| panel.paste(&text).err());
+                    if let Some(why) = refused {
+                        self.say(why);
+                    }
+                    self.dirty = true;
+                }
+                // A paste ends the menu or the repeating keys before it goes
+                // to the pane, as in fux.
                 Input::Paste(text) if text.len() <= MAX_PASTE => {
+                    self.column = None;
+                    self.repeat = None;
+                    self.dirty = true;
                     self.type_parts(vec![Part::Paste(text)]);
                 }
                 Input::Paste(_) | Input::PasteTooLong => {
                     self.say(format!("a paste over {MAX_PASTE} bytes was dropped"));
                 }
-                Input::FocusIn | Input::FocusOut | Input::Mouse(_) | Input::Reply(_) => {}
+                Input::Mouse(event) if self.panel.is_none() => self.on_mouse(event),
+                Input::Mouse(_) | Input::FocusIn | Input::FocusOut | Input::Reply(_) => {}
             }
+        }
+    }
+
+    /// A click focuses the tile under it; a border dragged moves, and is
+    /// stored when let go.
+    fn on_mouse(&mut self, event: MouseEvent) {
+        let at = (event.col, event.row);
+        match event.action {
+            MouseAction::Press(MouseButton::Left) => {
+                let area = self.area();
+                let border = (self.shown_tab())
+                    .map(|tab| tab.borders(area))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|b| on_border(b, at));
+                match border {
+                    Some(border) => {
+                        self.drag = Some(Drag {
+                            border,
+                            from: at,
+                            to: at,
+                            version: self.stored.version,
+                        });
+                    }
+                    None => self.click(at),
+                }
+            }
+            MouseAction::Motion(Some(MouseButton::Left)) => {
+                if let Some(drag) = &mut self.drag {
+                    drag.to = at;
+                    self.preview();
+                }
+            }
+            MouseAction::Release(_) => {
+                let Some(drag) = self.drag.take() else {
+                    return;
+                };
+                drag_or_click(self, drag, at);
+            }
+            MouseAction::Press(_) | MouseAction::Motion(_) => {}
+        }
+    }
+
+    fn click(&mut self, (x, y): (u16, u16)) {
+        let hit = (self.tiles().into_iter())
+            .find(|(_, rect)| rect.contains(u32::from(x), u32::from(y)))
+            .map(|(pane, _)| pane);
+        if let Some(pane) = hit {
+            self.focus_on(pane);
+        }
+    }
+
+    /// Shows the drag as it would land, from the stored layout.
+    fn preview(&mut self) {
+        let Some(drag) = &self.drag else {
+            return;
+        };
+        let Some((pane, dir, cells)) = drag_edit(drag) else {
+            self.arranged = Arc::new(self.stored.shown(&self.live));
+            self.dirty = true;
+            return;
+        };
+        let mut copy = self.stored.clone();
+        let op = Op::Border {
+            pane: Target {
+                name: pane.name.clone(),
+                id: Some(pane.id),
+            },
+            dir,
+            amount: Amount::Cells(cells),
+        };
+        if layout::apply(&mut copy, &self.live, self.area(), &op).is_ok() {
+            self.arranged = Arc::new(copy.shown(&self.live));
+            self.dirty = true;
         }
     }
 
@@ -980,19 +1538,35 @@ impl View {
     fn pump(&mut self, name: &str, now: Instant) -> bool {
         let mut said = None;
         let mut changed = false;
+        let mut greeted = false;
+        let mut ended = None;
         let Some(pane) = self.panes.get_mut(name) else {
             return true;
         };
         let mut alive = pane.conn.flush().is_ok();
         while alive {
             match pane.conn.receive() {
-                Ok(Some(body)) => match pane.answered(&body, now) {
-                    Ok(screen) => changed |= screen,
-                    Err(failure) => {
-                        said = Some(format!("{name}: {failure}"));
-                        alive = false;
+                Ok(Some(body)) => {
+                    let was_greeting = pane.phase == Phase::Greeting;
+                    // Only an ending seen happen is told: a pane ended before it was
+                    // first read is just shown ended.
+                    let was_running = pane
+                        .meta
+                        .as_ref()
+                        .is_some_and(|m| m.state == State::Running);
+                    match pane.answered(&body, now) {
+                        Ok(screen) => changed |= screen,
+                        Err(failure) => {
+                            said = Some(format!("{name}: {failure}"));
+                            alive = false;
+                        }
                     }
-                },
+                    greeted |= was_greeting && pane.phase != Phase::Greeting;
+                    let state = pane.meta.as_ref().map(|m| &m.state);
+                    if was_running && let Some(state) = state.filter(|s| **s != State::Running) {
+                        ended = Some(format!("{name} {state}"));
+                    }
+                }
                 Ok(None) => break,
                 Err(_) => alive = false,
             }
@@ -1034,8 +1608,14 @@ impl View {
             }
         }
         self.dirty |= changed;
-        // A pane that just said who it is may be the one to focus.
-        self.settle_focus();
+        // A pane that just said who it is may be routed, or be the one to focus.
+        if greeted {
+            self.refresh(false);
+            self.fit_due();
+        }
+        if let Some(text) = ended {
+            self.note(text, Some(after(now, ALERT)));
+        }
         if let Some(text) = said {
             self.say(text);
         }
@@ -1060,100 +1640,235 @@ impl View {
     fn paint(&mut self, now: Instant) {
         self.dirty = false;
         self.next_paint = after(now, PAINT);
-        if self
-            .message
-            .as_ref()
-            .is_some_and(|(_, until)| now >= *until)
-        {
-            self.message = None;
+        if (self.notice.as_ref()).is_some_and(|(_, _, until)| until.is_some_and(|u| now >= u)) {
+            self.notice = None;
         }
         let (cols, rows) = self.term;
         let mut frame = Frame::new(cols, rows);
-        let area = Tile {
-            x: 0,
-            y: 0,
-            w: cols.min(render::MAX_COLS),
-            h: rows.min(render::MAX_ROWS).saturating_sub(1),
-        };
-        let axis = self.shown_tab().map_or(layout::Axis::Auto, |t| t.axis);
-        let visible = self.visible();
-        let tiles = render::split(area, visible.len(), axis);
+        let area = self.area();
+        let tiles = self.tiles();
+        let focused_tile = (tiles.iter())
+            .find(|(pane, _)| Some(pane) == self.focus.as_ref())
+            .map(|(_, rect)| tile_of(*rect));
         let mut cursor = None;
-        let mut placed = Vec::new();
-        for (pane, tile) in visible.iter().zip(&tiles) {
-            let focused = Some(pane.hello.id) == self.focus;
-            let sgr = if focused { ";7" } else { ";2" };
-            frame.fill(tile.x, tile.y, tile.w, "\u{2500}", sgr);
-            frame.label(tile.x, tile.y, tile.w, &pane.title(*tile), sgr);
-            if tile.x > 0 {
-                let border = tile.x.saturating_sub(1);
-                for y in tile.y..tile.y.saturating_add(tile.h) {
-                    frame.fill(border, y, 1, "\u{2502}", ";2");
-                }
+        for (pane, rect) in &tiles {
+            let tile = tile_of(*rect);
+            let Some(live) = self.live_pane(pane) else {
+                let text = format!(" {} missing ", pane.name);
+                frame.label(tile.x, tile.y, tile.w, &text, NOTICE);
+                continue;
+            };
+            let Some(meta) = &live.meta else {
+                continue;
+            };
+            let at = frame.pane(tile, &live.rows, meta);
+            if Some(pane) == self.focus.as_ref() {
+                cursor = at.map(|at| (at, meta.cursor_shape));
             }
-            if let Some(meta) = &pane.meta {
-                let at = frame.pane(*tile, &pane.rows, meta);
-                if focused {
-                    cursor = at.map(|at| (at, meta.cursor_shape));
-                }
+            if meta.state != State::Running {
+                let text = format!(" {} ended ", pane.name);
+                let width = u16::try_from(fux_vt::str_width(&text)).unwrap_or(u16::MAX);
+                let x = tile.x.saturating_add(tile.w.saturating_sub(width));
+                let y = tile.y.saturating_add(tile.h.saturating_sub(1));
+                frame.label(x, y, tile.w, &text, NOTICE);
             }
-            placed.push((pane.name.clone(), *tile));
         }
-        if visible.is_empty() {
-            let text = "no panes here: fux2 start --name NAME";
-            frame.label(1, area.h.checked_div(2).unwrap_or(0), area.w, text, ";2");
+        if let Some(tab) = self.shown_tab() {
+            frame.borders(&edges(&tab.borders(area)), focused_tile);
         }
-        let hidden = visible.len().saturating_sub(tiles.len());
-        let status = self.status_line(hidden);
-        let last = rows.saturating_sub(1);
-        frame.fill(0, last, area.w, " ", ";7");
-        frame.label(0, last, area.w, &status, ";7");
-        self.tiles = placed;
-        let mut bytes = b"\x1b[?25l".to_vec();
-        bytes.extend(frame.diff(&self.shown));
+        let all = self.shown_tab().map_or(0, |tab| tab.tiles(area).len());
+        if all == 0 {
+            let text = "no panes here: fux2 start --name NAME, or C-b t n";
+            let middle = u16::try_from(area.h / 2).unwrap_or(0);
+            frame.label(1, middle, tile_of(area).w, text, BORDER_TEXT);
+        }
+        // Panels and the bar cover the panes; the cursor hides beneath them.
+        let above_bar = Tile {
+            h: tile_of(area).h.saturating_sub(1),
+            ..tile_of(area)
+        };
+        if let Some(column) = &self.column {
+            let lines = self.keys.menu(&column.keys);
+            column.draw(&mut frame, above_bar, &lines);
+            cursor = None;
+        }
+        if let Some(open) = &self.panel {
+            open.draw(&mut frame, above_bar);
+            cursor = None;
+        }
+        if self.draw_bar(&mut frame, &tiles) {
+            let last = rows.saturating_sub(1);
+            if cursor.is_some_and(|((_, y), _)| y >= last) {
+                cursor = None;
+            }
+        }
+        let mut bytes = b"\x1b[?2026h\x1b[?25l".to_vec();
+        bytes.extend(frame.diff(&self.drawn));
         bytes.extend_from_slice(b"\x1b[0m");
         if let Some(((x, y), shape)) = cursor {
             let (row, col) = (y.saturating_add(1), x.saturating_add(1));
             let shape = if shape == 7 { 0 } else { shape };
             bytes.extend_from_slice(format!("\x1b[{shape} q\x1b[{row};{col}H\x1b[?25h").as_bytes());
         }
+        bytes.extend_from_slice(b"\x1b[?2026l");
         if self.painter.send(bytes) {
-            self.shown = frame;
+            self.drawn = frame;
         } else {
             self.dirty = true;
         }
     }
 
-    fn status_line(&self, hidden: usize) -> String {
-        let mut line = String::new();
-        let place = self.place();
-        let space = self.workspaces.get(self.workspace);
-        line.push_str(&format!(
-            " {} {}/{} | {} {}/{} ",
-            space.map_or("", |space| space.name.as_str()),
-            self.workspace.saturating_add(1),
-            self.workspaces.len(),
-            self.shown_tab().map_or("", |tab| tab.title.as_str()),
-            place.tab.saturating_add(1),
-            self.tabs().len(),
-        ));
-        if let Some(prefix) = &self.prefix {
-            line.push_str(&format!("| {prefix} … "));
+    /// The bar, on the last row, as fux draws it: all of it while a menu,
+    /// a repeating group, a list or a prompt is open; else only its right
+    /// corner, and only for a notice or panes hidden or cut. True if drawn.
+    fn draw_bar(&self, frame: &mut Frame, tiles: &[(PaneRef, Rect)]) -> bool {
+        let (cols, rows) = (frame_cols(self.term), self.term.1.min(render::MAX_ROWS));
+        let y = rows.saturating_sub(1);
+        let whole = self.column.is_some() || self.repeat.is_some() || self.panel.is_some();
+        let unseen = self.unseen(tiles);
+        let mut right: Vec<(String, &str)> = Vec::new();
+        if let Some((text, sgr, _)) = &self.notice {
+            right.push((text.replace('\n', "  "), sgr));
+        } else if let Some(column) = &self.column {
+            right.push((format!("{} \u{2026}", column.keys), KEYS));
+        } else if let Some(group) = &self.repeat {
+            right.push((self.repeat_text(group), KEYS));
+        } else {
+            let zoomed = (self.shown_tab())
+                .is_some_and(|tab| tab.zoom.as_ref().is_some_and(|z| tab.holds(z)));
+            let mut text = unseen.clone();
+            if zoomed {
+                text.push_str("[zoom] ");
+            }
+            if whole {
+                text.push_str(&self.pane_label());
+            }
+            if !text.is_empty() {
+                right.push((text, BAR));
+            }
         }
-        if hidden > 0 {
-            line.push_str(&format!("| {hidden} panes do not fit "));
+        if !whole && right.is_empty() {
+            return false;
         }
-        if self.input_pressure() {
-            line.push_str("| keys are waiting for a pane ");
+        let width = |parts: &[(String, &str)]| {
+            parts
+                .iter()
+                .map(|(t, _)| fux_vt::str_width(t))
+                .sum::<usize>()
+        };
+        let cols_n = usize::from(cols);
+        let share = match whole && cols >= 4 {
+            true => (cols_n / 2).saturating_add(cols_n / 4),
+            false => cols_n,
+        };
+        let right_width = width(&right)
+            .min(share.max(fux_vt::str_width(&unseen)))
+            .min(cols_n);
+        let start = cols_n.saturating_sub(right_width).saturating_sub(1);
+        let left_limit = cols_n
+            .saturating_sub(right_width)
+            .saturating_sub(usize::from(right_width > 0));
+        let small = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+        if whole {
+            frame.fill(0, y, cols, " ", BAR);
+            let mut x = 0usize;
+            for (text, sgr) in self.bar_left() {
+                let room = left_limit.saturating_sub(x);
+                if room == 0 {
+                    break;
+                }
+                let shown = panel::cut(&text, small(room));
+                frame.label(small(x), y, small(room), &shown, sgr);
+                x = x.saturating_add(fux_vt::str_width(&shown));
+            }
+        } else {
+            let from = start.saturating_sub(1);
+            frame.fill(small(from), y, small(cols_n.saturating_sub(from)), " ", BAR);
         }
-        if self.running.is_some() {
-            line.push_str("| a binding is running ");
+        let mut x = start;
+        for (text, sgr) in right {
+            let room = start.saturating_add(right_width).saturating_sub(x);
+            if room == 0 {
+                break;
+            }
+            let shown = panel::cut(&text, small(room));
+            frame.label(small(x), y, small(room), &shown, sgr);
+            x = x.saturating_add(fux_vt::str_width(&shown));
         }
-        if let Some((text, _)) = &self.message {
-            line.push_str("| ");
-            line.push_str(text);
+        true
+    }
+
+    /// The workspace shown, then its tabs, the shown one marked.
+    fn bar_left(&self) -> Vec<(String, &'static str)> {
+        let mut parts = Vec::new();
+        let Some(space) = self.space() else {
+            return parts;
+        };
+        parts.push((format!(" {} ", space.title), BAR_BOLD));
+        let shown = self.place().tab;
+        for tab in &space.tabs {
+            let sgr = if tab.id == shown { TAB } else { BAR };
+            parts.push((format!(" {} ", tab.title), sgr));
         }
-        line
+        parts
+    }
+
+    /// The focused pane, as the bar names it: its name, then its title.
+    fn pane_label(&self) -> String {
+        let Some(pane) = &self.focus else {
+            return String::new();
+        };
+        let title = (self.arranged.tab_of(pane))
+            .and_then(|tab| {
+                tab.leaves()
+                    .into_iter()
+                    .find(|l| l.pane == *pane)
+                    .map(|l| l.title.clone())
+            })
+            .unwrap_or_default();
+        match title.is_empty() {
+            true => pane.name.clone(),
+            false => format!("{} {title}", pane.name),
+        }
+    }
+
+    /// `[hidden …] [cut …] `: panes of this tab with no room, and panes
+    /// larger than their tiles.
+    fn unseen(&self, tiles: &[(PaneRef, Rect)]) -> String {
+        let all = (self.shown_tab())
+            .map(|tab| tab.tiles(self.area()))
+            .unwrap_or_default();
+        let hidden: Vec<&str> = (all.iter())
+            .filter(|(pane, _)| !tiles.iter().any(|(p, _)| p == pane))
+            .map(|(pane, _)| pane.name.as_str())
+            .collect();
+        let cut: Vec<&str> = (tiles.iter())
+            .filter(|(pane, rect)| {
+                let meta = self.live_pane(pane).and_then(|p| p.meta.as_ref());
+                meta.is_some_and(|m| u32::from(m.cols) > rect.w || u32::from(m.rows) > rect.h)
+            })
+            .map(|(pane, _)| pane.name.as_str())
+            .collect();
+        let mut out = String::new();
+        if !hidden.is_empty() {
+            out.push_str(&format!("[hidden {}] ", hidden.join(" ")));
+        }
+        if !cut.is_empty() {
+            out.push_str(&format!("[cut {}] ", cut.join(" ")));
+        }
+        out
+    }
+
+    /// A repeating group's mode, as `RESIZE  h j k l · Esc`.
+    fn repeat_text(&self, group: &str) -> String {
+        let name = (self.keys.groups.get(group))
+            .map_or_else(|| group.to_owned(), |g| g.caption.to_uppercase());
+        let below = format!("{group} ");
+        let keys: Vec<&str> = (self.keys.bindings.keys())
+            .filter_map(|chord| chord.strip_prefix(&below))
+            .filter(|key| !key.contains(' '))
+            .collect();
+        format!("{name}  {} \u{b7} Esc", keys.join(" "))
     }
 
     fn timeout(&self, now: Instant, decoder: &Decoder) -> Duration {
@@ -1162,13 +1877,16 @@ impl View {
         if let Some(until) = self.keys_loaded {
             consider(until);
         }
+        if let Some(until) = self.awaiting_run {
+            consider(until);
+        }
         if self.dirty && self.painter.is_idle() {
             consider(self.next_paint);
         }
         if let Some(running) = &self.running {
             consider(running.at);
         }
-        if let Some((_, until)) = &self.message {
+        if let Some((_, _, Some(until))) = &self.notice {
             consider(*until);
         }
         if let Some(due) = decoder.deadline() {
@@ -1181,6 +1899,95 @@ impl View {
         }
         at.saturating_duration_since(now)
     }
+}
+
+/// The cells of `borders`, as the frame draws them.
+fn edges(borders: &[layout::Border]) -> Vec<render::Edge> {
+    let small = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
+    let mut out = Vec::new();
+    for border in borders {
+        let along = border.from..border.from.saturating_add(border.length);
+        for at in along {
+            out.push(match border.axis {
+                layout::Axis::Columns => render::Edge {
+                    x: small(border.at),
+                    y: small(at),
+                    upright: true,
+                },
+                layout::Axis::Rows => render::Edge {
+                    x: small(at),
+                    y: small(border.at),
+                    upright: false,
+                },
+            });
+        }
+    }
+    out
+}
+
+/// The columns a frame of the terminal's size has.
+fn frame_cols((cols, _): (u16, u16)) -> u16 {
+    cols.min(render::MAX_COLS)
+}
+
+/// Whether the cell `at` is on `border`.
+fn on_border(border: &layout::Border, (x, y): (u16, u16)) -> bool {
+    let (x, y) = (u32::from(x), u32::from(y));
+    let end = border.from.saturating_add(border.length);
+    match border.axis {
+        layout::Axis::Columns => x == border.at && (border.from..end).contains(&y),
+        layout::Axis::Rows => y == border.at && (border.from..end).contains(&x),
+    }
+}
+
+/// The edit a drag makes: the pane whose border moves, which way, and how
+/// many cells; `None` if it has not moved.
+fn drag_edit(drag: &Drag) -> Option<(PaneRef, Dir, u32)> {
+    let (moved, forward) = match drag.border.axis {
+        layout::Axis::Columns => (drag.to.0.abs_diff(drag.from.0), drag.to.0 > drag.from.0),
+        layout::Axis::Rows => (drag.to.1.abs_diff(drag.from.1), drag.to.1 > drag.from.1),
+    };
+    if moved == 0 {
+        return None;
+    }
+    // The pane on the side the border moves away from, so the nearest
+    // split along that axis is the one this border belongs to.
+    let edit = match (drag.border.axis, forward) {
+        (layout::Axis::Columns, true) => (drag.border.before.clone(), Dir::Right),
+        (layout::Axis::Columns, false) => (drag.border.after.clone(), Dir::Left),
+        (layout::Axis::Rows, true) => (drag.border.before.clone(), Dir::Down),
+        (layout::Axis::Rows, false) => (drag.border.after.clone(), Dir::Up),
+    };
+    Some((edit.0, edit.1, u32::from(moved)))
+}
+
+/// A border let go: stored through the configuration's `drag-border`, or,
+/// if it never moved, a click.
+fn drag_or_click(view: &mut View, mut drag: Drag, at: (u16, u16)) {
+    drag.to = at;
+    let Some((pane, dir, cells)) = drag_edit(&drag) else {
+        view.refresh(true);
+        return view.click(drag.from);
+    };
+    let way = match dir {
+        Dir::Left => "left",
+        Dir::Right => "right",
+        Dir::Up => "up",
+        Dir::Down => "down",
+    };
+    let args = vec![
+        pane.to_string(),
+        way.to_owned(),
+        cells.to_string(),
+        drag.version.to_string(),
+    ];
+    view.dispatch_job(
+        "drag-border".to_owned(),
+        Job::Call {
+            name: "drag-border".to_owned(),
+            args,
+        },
+    );
 }
 
 fn terminal_size() -> (u16, u16) {
@@ -1204,39 +2011,24 @@ fn fux2_program() -> Result<PathBuf, Failure> {
     Ok(exe.with_file_name("fux2"))
 }
 
-fn parse_args() -> Result<Option<PathBuf>, Failure> {
-    let mut args = std::env::args_os().skip(1);
-    let mut layout = None;
-    while let Some(arg) = args.next() {
-        if arg != "--layout" {
+fn parse_args() -> Result<(), Failure> {
+    match std::env::args_os().nth(1) {
+        None => Ok(()),
+        Some(arg) => {
             let why = format!("unexpected argument: {}", arg.to_string_lossy());
-            return Err(Failure::new(Code::Invalid, why));
+            Err(Failure::new(Code::Invalid, why))
         }
-        let path = args
-            .next()
-            .ok_or_else(|| Failure::new(Code::Invalid, "--layout needs a file"))?;
-        layout = Some(PathBuf::from(path));
     }
-    Ok(layout)
 }
 
 fn run() -> Result<(), Failure> {
-    let layout_path = parse_args()?;
+    parse_args()?;
     if !fuxix::terminal::on_one_terminal() {
         let why = "the viewer needs one terminal on stdin and stdout";
         return Err(Failure::new(Code::Invalid, why));
     }
     let session = Session::open()?;
     let file_limit = file_limit()?;
-    let workspaces = match &layout_path {
-        None => layout::everything(),
-        Some(path) => {
-            let text = script::read_small_file(path, layout::MAX_LAYOUT_BYTES)
-                .map_err(|e| Failure::new(Code::Invalid, format!("{}: {e}", path.display())))?;
-            layout::parse(&text)
-                .map_err(|why| Failure::new(Code::Invalid, format!("{}: {why}", path.display())))?
-        }
-    };
     let stops = [
         Signal::Winch,
         Signal::Term,
@@ -1262,41 +2054,53 @@ fn run() -> Result<(), Failure> {
     let now = Instant::now();
     let mut view = View {
         session,
-        layout_path,
+        stored: Layout::default(),
         layout_text: None,
-        places: vec![Place::default(); workspaces.len()],
-        workspaces,
+        layout_failed: None,
+        arranged: Arc::new(Layout::default()),
+        live: Vec::new(),
         workspace: 0,
         last_workspace: 0,
+        places: BTreeMap::new(),
         panes: BTreeMap::new(),
         focus: None,
         focus_name: None,
+        last_focus: None,
         wanted: None,
         back: None,
         term: terminal_size(),
-        bindings: first_bindings(),
-        prefix: None,
-        message: None,
+        keys: first_keys(),
+        column: None,
+        repeat: None,
+        panel: None,
+        drag: None,
+        fits: Vec::new(),
+        notice: None,
         file_limit,
         script: Some(script),
         from_script,
         running: None,
         waiting_runs: VecDeque::new(),
         loading: true,
-        layout_failed: None,
         held: Vec::new(),
         loading_prefix: false,
         focus_moved: false,
         keys_loaded: None,
-        run_sent: false,
+        awaiting_run: None,
+        chord_depth: 0,
+        tab_focus: BTreeMap::new(),
+        // The configuration's load is a run: leaving stops it too.
+        run_sent: true,
         painter,
-        shown: Frame::default(),
-        tiles: Vec::new(),
+        drawn: Frame::default(),
         dirty: true,
         next_paint: now,
         next_scan: now,
         quit: false,
     };
+    // The layout first, so the first tab shown is the first in order.
+    view.reread_layout();
+    view.refresh(true);
     if let Some(note) = note {
         view.say(note);
     }
@@ -1376,13 +2180,12 @@ fn serve(
         }
         view.retry_rested(now);
         view.release_held(now);
+        if view.awaiting_run.is_some_and(|until| now >= until) {
+            view.run_answered();
+        }
         view.police_run(now);
-        if view
-            .message
-            .as_ref()
-            .is_some_and(|(_, until)| now >= *until)
-        {
-            view.message = None;
+        if (view.notice.as_ref()).is_some_and(|(_, _, until)| until.is_some_and(|u| now >= u)) {
+            view.notice = None;
             view.dirty = true;
         }
         if view.dirty && view.painter.is_idle() && now >= view.next_paint {
@@ -1443,7 +2246,7 @@ fn serve(
         }
         if gone {
             view.dirty = true;
-            view.settle_focus();
+            view.refresh(false);
         }
     }
     Ok(())

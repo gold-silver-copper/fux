@@ -1,7 +1,6 @@
 //! Composing the screen: cells in rectangles first, escape sequences only
 //! from the finished result, so nothing a pane printed can reach the outer
 //! terminal as a sequence.
-use crate::layout::Axis;
 use fux2::wire::{Cell as PaneCell, Meta, Row};
 
 /// The largest screen composed; a bigger terminal is left blank past it.
@@ -70,6 +69,23 @@ impl Frame {
     }
 
     fn put(&mut self, x: u16, y: u16, text: &str, sgr: &str, tail: bool) {
+        // Writing over half of a wide glyph loses the other half on a
+        // terminal: it is blanked here too, so this frame is what the
+        // terminal shows and a later frame redraws the glyph whole.
+        if !tail {
+            let was_tail = self.at(x, y).is_some_and(|cell| cell.tail);
+            if was_tail && let Some(head) = x.checked_sub(1).and_then(|h| self.at(h, y)) {
+                head.text.clear();
+                head.text.push(' ');
+            }
+            if let Some(next) = x.checked_add(1).and_then(|n| self.at(n, y))
+                && next.tail
+            {
+                next.tail = false;
+                next.text.clear();
+                next.text.push(' ');
+            }
+        }
         if let Some(cell) = self.at(x, y) {
             cell.text.clear();
             cell.text.push_str(text);
@@ -136,12 +152,11 @@ impl Frame {
         }
     }
 
-    /// Draws a pane into `tile`, below its title row: top-left, a taller
-    /// screen scrolled to keep the cursor in view. Where the cursor lands,
-    /// if it is shown there.
+    /// Draws a pane into `tile`: top-left, a taller screen scrolled to keep
+    /// the cursor in view. Where the cursor lands, if it is shown there.
     pub fn pane(&mut self, tile: Tile, rows: &[Row], meta: &Meta) -> Option<(u16, u16)> {
-        let height = tile.h.saturating_sub(1);
-        let top = tile.y.saturating_add(1);
+        let height = tile.h;
+        let top = tile.y;
         let first = meta
             .cursor_row
             .saturating_add(1)
@@ -203,61 +218,76 @@ impl Frame {
                 &cell.text
             };
             out.extend_from_slice(text.as_bytes());
-            let wide = fux_vt::str_width(text) >= 2;
-            at = Some((x.saturating_add(if wide { 2 } else { 1 }), y));
+            // Where the terminal's cursor is now: unknown after a glyph
+            // that took no cell, so the next cell moves there itself.
+            at = match fux_vt::str_width(text) {
+                0 => None,
+                1 => Some((x.saturating_add(1), y)),
+                _ => Some((x.saturating_add(2), y)),
+            };
         }
         out
     }
 }
 
-/// `count` tiles in `area`, a column or row of the area between them left
-/// for a border. Too small a piece is left out: fewer tiles come back.
-pub fn split(area: Tile, count: usize, axis: Axis) -> Vec<Tile> {
-    if count == 0 || area.w == 0 || area.h < 2 {
-        return Vec::new();
+/// The borders' colour, and that of the borders around the focused pane.
+pub const BORDER: &str = ";38;5;240";
+pub const FOCUSED_BORDER: &str = ";32";
+
+/// One cell of a border: where it is, and whether its line runs up and
+/// down (between panes side by side) or across.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Edge {
+    pub x: u16,
+    pub y: u16,
+    pub upright: bool,
+}
+
+impl Frame {
+    /// Draws border cells as lines, each joined to the border cells beside
+    /// it; those touching `focus` (its edges and corners) in green.
+    pub fn borders(&mut self, edges: &[Edge], focus: Option<Tile>) {
+        let set: std::collections::HashSet<(u16, u16)> =
+            edges.iter().map(|edge| (edge.x, edge.y)).collect();
+        let has = |x: Option<u16>, y: Option<u16>| match (x, y) {
+            (Some(x), Some(y)) => set.contains(&(x, y)),
+            _ => false,
+        };
+        let ring = |x: u16, y: u16| {
+            focus.is_some_and(|tile| {
+                let (x, y) = (u32::from(x), u32::from(y));
+                let (left, top) = (u32::from(tile.x), u32::from(tile.y));
+                let right = left.saturating_add(u32::from(tile.w));
+                let bottom = top.saturating_add(u32::from(tile.h));
+                x.saturating_add(1) >= left
+                    && x <= right
+                    && y.saturating_add(1) >= top
+                    && y <= bottom
+            })
+        };
+        for edge in edges {
+            let (x, y) = (edge.x, edge.y);
+            let up = has(Some(x), y.checked_sub(1));
+            let down = has(Some(x), y.checked_add(1));
+            let left = has(x.checked_sub(1), Some(y));
+            let right = has(x.checked_add(1), Some(y));
+            let glyph = match (up, down, left, right) {
+                (true, true, true, true) => "\u{253c}",
+                (true, true, false, true) => "\u{251c}",
+                (true, true, true, false) => "\u{2524}",
+                (false, true, true, true) => "\u{252c}",
+                (true, false, true, true) => "\u{2534}",
+                (true, false, false, true) => "\u{2514}",
+                (true, false, true, false) => "\u{2518}",
+                (false, true, false, true) => "\u{250c}",
+                (false, true, true, false) => "\u{2510}",
+                _ if edge.upright => "\u{2502}",
+                _ => "\u{2500}",
+            };
+            let sgr = if ring(x, y) { FOCUSED_BORDER } else { BORDER };
+            self.put(x, y, glyph, sgr, false);
+        }
     }
-    if count == 1 {
-        return vec![area];
-    }
-    let across = match axis {
-        Axis::Rows => false,
-        Axis::Columns => true,
-        // A cell is about twice as tall as wide.
-        Axis::Auto => area.w >= area.h.saturating_mul(2),
-    };
-    let first_count = count.div_ceil(2);
-    let share = |side: u16| {
-        let side = usize::from(side);
-        let part = side
-            .saturating_mul(first_count)
-            .checked_div(count)
-            .unwrap_or(0);
-        u16::try_from(part).unwrap_or(0)
-    };
-    let (one, two) = if across {
-        let w = share(area.w.saturating_sub(1));
-        (
-            Tile { w, ..area },
-            Tile {
-                x: area.x.saturating_add(w).saturating_add(1),
-                w: area.w.saturating_sub(w).saturating_sub(1),
-                ..area
-            },
-        )
-    } else {
-        let h = share(area.h);
-        (
-            Tile { h, ..area },
-            Tile {
-                y: area.y.saturating_add(h),
-                h: area.h.saturating_sub(h),
-                ..area
-            },
-        )
-    };
-    let mut tiles = split(one, first_count, axis);
-    tiles.extend(split(two, count.saturating_sub(first_count), axis));
-    tiles
 }
 
 #[cfg(test)]
@@ -304,35 +334,52 @@ mod tests {
         assert!(out.contains('\u{4e16}'), "{out:?}");
     }
 
+    /// What a terminal shows of row 0 after `bytes`, from a blank screen.
+    fn shown(screens: &[&[u8]], cols: u16) -> Result<String, Box<dyn std::error::Error>> {
+        let size = fux_vt::Size::new(1, cols)?;
+        let mut term = fux_vt::Parser::with_options(size, 0, fux_vt::Options::new())?;
+        for bytes in screens {
+            term.process_all(bytes, &mut ());
+        }
+        let window = term.screen().window();
+        Ok(window
+            .iter()
+            .map(|(_, row)| row.text())
+            .collect::<Vec<_>>()
+            .join(""))
+    }
+
+    /// A panel covering half of a wide glyph, then gone: the terminal shows
+    /// each frame as composed, with no half glyph and nothing left behind.
+    #[test]
+    fn covering_half_a_wide_glyph_leaves_nothing_behind() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut glyph = Frame::new(6, 1);
+        glyph.label(0, 0, 6, "a\u{4e16}bc", "");
+        let mut covered = glyph.clone();
+        covered.label(2, 0, 4, "XYZ", ";7");
+        let blank = Frame::new(6, 1);
+        let first = glyph.diff(&blank);
+        let cover = covered.diff(&glyph);
+        let uncover = glyph.diff(&covered);
+        assert_eq!(shown(&[&first, &cover], 6)?.trim_end(), "a XYZ");
+        assert_eq!(
+            shown(&[&first, &cover, &uncover], 6)?.trim_end(),
+            "a\u{4e16}bc"
+        );
+        // And a glyph written over the first half of another.
+        let mut over = glyph.clone();
+        over.label(1, 0, 1, "Q", "");
+        let both = [&first[..], &over.diff(&glyph)[..]];
+        assert_eq!(shown(&both, 6)?.trim_end(), "aQ bc");
+        Ok(())
+    }
+
     #[test]
     fn a_wide_glyph_cut_by_the_edge_is_blank() {
         let mut frame = Frame::new(4, 1);
         frame.row(0, 0, 2, &wide_row());
         let out = String::from_utf8_lossy(&frame.diff(&Frame::new(4, 1))).into_owned();
         assert!(out.contains('a') && !out.contains('\u{4e16}'), "{out:?}");
-    }
-
-    #[test]
-    fn tiles_do_not_overlap_and_stay_inside() {
-        let area = Tile {
-            x: 0,
-            y: 0,
-            w: 80,
-            h: 23,
-        };
-        for count in 1..=9 {
-            let tiles = split(area, count, Axis::Auto);
-            assert_eq!(tiles.len(), count);
-            for (index, tile) in tiles.iter().enumerate() {
-                assert!(tile.x.saturating_add(tile.w) <= 80 && tile.y.saturating_add(tile.h) <= 23);
-                for other in tiles.iter().skip(index.saturating_add(1)) {
-                    let apart = tile.x.saturating_add(tile.w) <= other.x
-                        || other.x.saturating_add(other.w) <= tile.x
-                        || tile.y.saturating_add(tile.h) <= other.y
-                        || other.y.saturating_add(other.h) <= tile.y;
-                    assert!(apart, "{tile:?} and {other:?}");
-                }
-            }
-        }
     }
 }
