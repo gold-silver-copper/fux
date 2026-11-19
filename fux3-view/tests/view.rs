@@ -309,14 +309,16 @@ fn viewing_focusing_and_resizing_the_viewer_resize_no_pane() -> Tested {
 }
 
 /// A binding that loops forever is stopped, a chord that leads to itself
-/// (bound to it, or run by its own binding) is refused, and detach works
+/// (bound to it, or run by its own binding) is refused, a redefined command
+/// is what its default key runs, and detach works
 /// while a binding runs; the panes outlive the viewer.
 #[test]
 fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
     let config = "(define! spin (lambda! () (spin)))\n\
         (bind-key \"F8\" \"spin\" \"Mine\" spin)\n\
         (bind-verb \"F9\" \"itself\" \"Mine\" \"chord\" \"F9\")\n\
-        (bind-key \"F7\" \"again\" \"Mine\" (lambda! () (act \"chord\" \"F7\")))\n";
+        (bind-key \"F7\" \"again\" \"Mine\" (lambda! () (act \"chord\" \"F7\")))\n\
+        (define! history (lambda! () (say \"my own history\")))\n";
     let lab = Lab::new("loop", config)?;
     lab.start("only")?;
     lab.viewer("v", "100x30", &[])?;
@@ -325,6 +327,10 @@ fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
     lab.shows("v", "F9: refused")?;
     lab.keys("v", b"\x1b[18~")?;
     lab.shows("v", "F7: refused")?;
+    // A default key calls the command by name when pressed: redefined, it
+    // runs the new one.
+    lab.keys("v", b"\x02c")?;
+    lab.shows("v", "my own history")?;
     lab.keys("v", b"\x1b[19~")?;
     lab.shows("v", "F8: interrupted")?;
     lab.keys("v", b"\x1b[19~")?;
