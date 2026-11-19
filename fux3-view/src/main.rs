@@ -126,9 +126,13 @@ impl Painter {
         if !self.is_idle() {
             return false;
         }
+        // Busy before the writer can see the frame, so that its "done"
+        // always comes after.
         self.busy.store(true, Ordering::SeqCst);
         let sent = self.frames.try_send(bytes).is_ok();
-        self.busy.store(sent, Ordering::SeqCst);
+        if !sent {
+            self.busy.store(false, Ordering::SeqCst);
+        }
         sent
     }
 
