@@ -106,11 +106,19 @@ struct Viewer {
 
 impl Viewer {
     fn start(lab: &Lab) -> Result<Viewer, Box<dyn std::error::Error>> {
+        Viewer::with_args(lab, &[])
+    }
+
+    fn with_args(
+        lab: &Lab,
+        args: &[std::ffi::OsString],
+    ) -> Result<Viewer, Box<dyn std::error::Error>> {
         let _ = fux2::sys::prepare_terminal(&lab.root);
         let size = Size::new(30, 100)?;
         let (master, slave) = fuxix::pty::open(size.nonzero().into())?;
         let viewer = beside_tests("fux2-view")?;
-        let argv = [viewer.into_os_string()];
+        let mut argv = vec![viewer.into_os_string()];
+        argv.extend_from_slice(args);
         let job = fux2::sys::spawn(slave, &argv, |command| {
             command
                 .env("FUX2_DIR", &lab.root)
@@ -274,5 +282,51 @@ fn detach_works_while_a_binding_runs() -> Tested {
     assert!(viewer.ended()?, "the viewer did not leave");
     let listed = lab.fux2(&["ls"])?;
     assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "only");
+    Ok(())
+}
+
+/// A layout file makes the tabs, a bad edit leaves them as they were, and
+/// only the fit key changes a pane's size.
+#[test]
+fn a_layout_makes_tabs_and_only_fit_resizes() -> Tested {
+    let lab = Lab::new("")?;
+    for (name, group) in [("one", "a"), ("two", "b")] {
+        let label = format!("group={group}");
+        let args = ["start", "--name", name, "--label", &label, "--", shell()];
+        let out = lab.fux2(&args)?;
+        assert!(out.status.success(), "{out:?}");
+    }
+    let layout = lab.config.join("tabs.toml");
+    let tabs = "[[tab]]\ntitle = \"first\"\nmatch = [\"group=a\"]\n\
+                [[tab]]\ntitle = \"second\"\nmatch = [\"group=b\"]\n";
+    std::fs::write(&layout, tabs)?;
+    let args = ["--layout".into(), layout.clone().into_os_string()];
+    let mut viewer = Viewer::with_args(&lab, &args)?;
+    viewer.shows(" one ")?;
+    assert!(!viewer.text().contains(" two "), "{}", viewer.text());
+    let size = |lab: &Lab, name: &str| -> Result<String, std::io::Error> {
+        let out = lab.fux2(&["ls", "--long"])?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let line = text.lines().find(|line| line.starts_with(name));
+        Ok(line
+            .and_then(|l| l.split('\t').nth(3))
+            .unwrap_or("")
+            .to_owned())
+    };
+    assert_eq!(size(&lab, "one")?, "80x24", "viewing resized a pane");
+
+    viewer.keys(b"\x02n")?;
+    viewer.shows(" two ")?;
+    std::fs::write(&layout, "[[tab]]\naxis = \"sideways\"\n")?;
+    viewer.shows("no axis")?;
+    assert!(viewer.text().contains(" two "), "{}", viewer.text());
+
+    viewer.keys(b"\x02f")?;
+    let until = soon(PATIENCE);
+    while size(&lab, "two")? != "100x28" {
+        assert!(Instant::now() < until, "fit gave {}", size(&lab, "two")?);
+        viewer.pump(Duration::from_millis(20))?;
+    }
+    assert_eq!(size(&lab, "one")?, "80x24");
     Ok(())
 }

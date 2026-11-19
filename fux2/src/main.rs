@@ -771,7 +771,9 @@ fn view(args: Args) -> Outcome {
 }
 
 fn run(mut args: Args) -> Outcome {
-    let command = args.next()?.ok_or_else(|| usage("no command"))?;
+    let command = args
+        .next()?
+        .ok_or_else(|| usage(format!("no command\n\n{USAGE}")))?;
     match command.as_str() {
         "start" => start(args),
         "ls" => ls(args),
@@ -805,9 +807,6 @@ fn main() -> ExitCode {
         Err(failure) => {
             let mut err = std::io::stderr();
             let _ = writeln!(err, "fux2: {failure}");
-            if failure.code == Code::Invalid {
-                let _ = err.write_all(USAGE.as_bytes());
-            }
             ExitCode::from(failure.code.exit())
         }
     }
