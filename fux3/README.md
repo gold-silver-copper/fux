@@ -396,7 +396,7 @@ group opens that group's menu, and Escape closes it. `C-b` twice sends `C-b`.
 | Keys | |
 |---|---|
 | `C-b v` / `C-b s` | split side by side / stacked (a new shell) |
-| `C-b x`, `C-b z`, `C-b c`, `C-b f` | close pane (asks), zoom or restore, history in a pager, fit the pane to its tile |
+| `C-b x`, `C-b z`, `C-b c`, `C-b f` | close pane (asks; ends it), zoom or restore, history in a pager, fit the pane to its tile |
 | `C-b h j k l`, `C-b o`, `C-b q` | focus left/down/up/right, next pane, last pane |
 | `C-b n`, `C-b b` | next / previous tab |
 | `C-b t n h l g r x`, `C-b t m h l` | tabs: new, previous, next, choose, rename, close; reorder |
@@ -451,6 +451,11 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 - **No server.** Panes are fux3 holders; the viewer reads their files, so a
   pane appears within a second of its directory, and a screen within about
   20 ms of its publish (fux3 publishes at most 25 times a second).
+- **Ended panes keep their tiles.** A pane whose program ended, or whose
+  directory is gone, keeps its tile, marked `NAME exited 3` or `NAME gone`,
+  until you close it (`C-b x`); in fux an ended pane goes away.
+- **Tab names.** The first tab is `all`, new ones `2`, `3`, …; fux names
+  tabs by their first pane (`%1`).
 - **Sizes stay.** A pane keeps its size when viewed, focused, or when the
   terminal is resized; only the split, move and border commands (and `C-b f`)
   fit it, once. fux resizes panes to their tiles.
