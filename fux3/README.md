@@ -88,7 +88,10 @@ mv "$D/main/build" "$D/main/server"         # renamed
 mv "$D/main/server" "$D/rig/"               # moved to workspace rig
 ```
 
-It is the same pane: the same id, the same program, every file kept current
+A workspace is renamed the same way (`mv "$D/rig" "$D/rig2"`): its panes run
+on and its recipes go with it.
+
+A moved pane is the same pane: the same id, the same program, every file kept current
 where it is now, `in` and `ctl` still read, and `fux3 ls` lists it under its
 new name. The holder works through its directory, never through a path. What
 follows from "a name is only where it is listed":
