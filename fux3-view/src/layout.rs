@@ -1383,7 +1383,7 @@ pub fn parse_command(line: &str) -> Result<Op, Failure> {
 
 /// The tile `target` names in the shown layout: a live pane of that name
 /// first, else the one tile of that name.
-fn resolve(shown: &Layout, live: &[Live], target: &Target) -> Result<PaneRef, Failure> {
+pub fn resolve(shown: &Layout, live: &[Live], target: &Target) -> Result<PaneRef, Failure> {
     let tiles = shown.placed();
     let missing = || bad(format!("no tile for pane {target}"));
     if let Some(id) = &target.id {
@@ -1406,16 +1406,10 @@ fn resolve(shown: &Layout, live: &[Live], target: &Target) -> Result<PaneRef, Fa
     }
 }
 
-/// The live pane `target` names.
-fn resolve_live(live: &[Live], target: &Target) -> Result<PaneRef, Failure> {
-    match (live.iter().find(|l| l.pane.name == target.name), &target.id) {
-        (None, _) => Err(bad(format!("no pane {target}"))),
-        (Some(l), Some(id)) if l.pane.id != *id => Err(bad(format!(
-            "{} is now pane {}, not {id}",
-            target.name, l.pane
-        ))),
-        (Some(l), _) => Ok(l.pane.clone()),
-    }
+/// Whether `target` names `pane`: by its id if it gives one, whatever
+/// the pane is called now, else by its name.
+fn names(target: &Target, pane: &PaneRef) -> bool {
+    (target.id.as_ref()).map_or(target.name == pane.name, |id| *id == pane.id)
 }
 
 /// Stores the tab that shows `pane`, routed panes and all, so an edit can
@@ -1452,9 +1446,9 @@ fn routing(op: &Op, live: &[Live]) -> Vec<Live> {
     let (Op::Split(_, new, _) | Op::Move(new, Whither::Tab(_))) = op else {
         return live.to_vec();
     };
-    let named =
-        |l: &&Live| new.name == l.pane.name && new.id.as_ref().is_none_or(|id| *id == l.pane.id);
-    live.iter().filter(|l| !named(l)).cloned().collect()
+    (live.iter().filter(|l| !names(new, &l.pane)))
+        .cloned()
+        .collect()
 }
 
 /// Takes `pane`'s tile out of whatever stored tab has it.
@@ -1538,7 +1532,9 @@ fn apply_bound(
     match op {
         Op::Split(target, new, dir) => {
             let target = resolve(&shown, live, target)?;
-            let new = resolve_live(live, new)?;
+            let found = live.iter().find(|l| names(new, &l.pane));
+            let new =
+                (found.map(|l| l.pane.clone())).ok_or_else(|| bad(format!("no pane {new}")))?;
             if new == target {
                 return Err(bad(format!("{new} cannot split itself")));
             }
@@ -1861,12 +1857,21 @@ mod tests {
         // A FIFO planted where the new file is written holds no edit up.
         fuxix::file::private_fifo(&path.join(TEMP)).map_err(|e| bad(e.to_string()))?;
         let names: Vec<String> = (0..12).map(|n| format!("p{n}")).collect();
-        let panes: Vec<Live> = (names.iter()).map(|name| live(name, 'a', &[])).collect();
+        let ids = "0123456789ab".chars();
+        let panes: Vec<Live> = (names.iter().zip(ids))
+            .map(|(name, id)| live(name, id, &[]))
+            .collect();
         let mut refused = 0;
         for (n, (old, new)) in names.iter().zip(names.iter().skip(1)).enumerate() {
             let way = if n % 2 == 0 { "right" } else { "down" };
             let op = parse_command(&format!("split {old} {way} {new}"))?;
-            refused += usize::from(edit(&view, &panes, AREA, &op).is_err());
+            if let Err(failure) = edit(&view, &panes, AREA, &op) {
+                assert!(
+                    failure.0.contains("deep"),
+                    "refused for another reason: {failure}"
+                );
+                refused += 1;
+            }
             read(&view)?;
         }
         // A viewer that made `.view` late writes no default over the edits.
@@ -1996,6 +2001,20 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("pane a@"), "{text}");
+        // The old name with the id still names the pane a split places.
+        let more = [after[0].clone(), after[1].clone(), live("d", '3', &[])];
+        run(&mut layout, &more, &format!("zoom {}", pane("a", '1')))?;
+        run(
+            &mut layout,
+            &more,
+            &format!("split d right {}", pane("a", '1')),
+        )?;
+        let text = layout.to_string();
+        assert_eq!(
+            text.matches(&pane("c", '1').to_string()).count(),
+            1,
+            "{text}"
+        );
         Ok(())
     }
 }

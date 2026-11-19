@@ -49,31 +49,35 @@
     (change (join "close " pane)))))
 
 ;; The focused pane's history and then its screen (as it is when the key
-;; is pressed, without trailing blank rows), as one text in a private file
+;; is pressed, without trailing blank rows; read first, so no line is in
+;; neither, and one that scrolled off meanwhile is there twice), the pane
+;; found by its id, whatever it is called by then, as one text in a private file
 ;; (in a directory of its own in the session's, so what an editor writes
 ;; beside it goes with it), opened at its end in a pane below: $EDITOR, else
 ;; $PAGER, else less. The text is a copy: editing it changes nothing in the
-;; pane. When the editor ends, the pane removes the file and its recipe
-;; (a template never starts one; it is under the name the pane started
-;; with) and ends itself, wherever it was moved to (it finds its directory
-;; by its id); this viewer then closes its tile. Opening and closing the
+;; pane. When the editor ends, the pane removes the file, and the recipe
+;; under the name it started with if that is still a copy's (a template
+;; never starts one), and ends itself, wherever it was moved to (it finds
+;; its directory by its id); this viewer then closes its tile. Opening and closing the
 ;; copy resize only its own pane: the pane copied keeps its size (its tile
 ;; clips it meanwhile), so its screen is what it was when the key was pressed.
 (define! history-script
   "umask 077; d=\"$FUX3_DIR/.history-$FUX3_PANE_ID\"; f=history-and-screen
 trap 'rm -rf \"$d\"' EXIT; trap 'exit 1' HUP INT TERM; mkdir \"$d\" && cd \"$d\" || exit 1
-{ if [ -e \"$1.1\" ]; then cat \"$1.1\"; fi; cat \"$1\"; awk 'NR>1{if(/[^ ]/){printf b;print;b=e}else b=b ORS}' \"${1%history}screen\"; } > \"$f\"
+s=$(grep -lx \"$1\" \"$FUX3_DIR\"/*/*/id); s=${s%id}
+awk 'NR>1{if(/[^ ]/){printf b;print;b=e}else b=b ORS}' \"${s}screen\" > screen
+{ if [ -e \"${s}history.1\" ]; then cat \"${s}history.1\"; fi; cat \"${s}history\" screen; } > \"$f\"; rm -f screen
 e=${EDITOR%% *}; case \"${e##*/}\" in
   vi|vim|nvim|nano|emacs) $EDITOR \"+$(($(wc -l < \"$f\")))\" \"$f\";;
   '') ${PAGER:-less +G} \"$f\";;
   *) $EDITOR \"$f\";;
 esac
-rm -rf \"$d\" \"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"
+r=\"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"; rm -rf \"$d\"
+if grep -q \"$f\" \"$r\" 2>/dev/null; then rm -f \"$r\"; fi
 p=$(grep -lx \"$FUX3_PANE_ID\" \"$FUX3_DIR\"/*/*/id) && echo kill 1<>\"${p%id}ctl\"")
 (define! history (lambda! ()
   (let! ((target (focused))
-         (file (join (workspace-dir) "/" (name-of target) "/history"))
-         (pane (start-new "history" "sh" "-c" history-script "sh" file)))
+         (pane (start-new "history" "sh" "-c" history-script "sh" (second (string-split target "@")))))
     (when-gone pane (lambda! () (close-tile pane arrange)))
     (place-new! pane (lambda! (p)
       (arrange (join "split " target " down " p))

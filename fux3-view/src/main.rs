@@ -425,7 +425,10 @@ impl View {
     /// fits nothing: the panes whose tiles it changed are fitted here.
     fn rescan(&mut self, now: Instant, fit: bool) {
         self.next_scan = after(now, RESCAN);
-        if self.workspace.check().is_err() {
+        // As it is called now: it may have been renamed.
+        if let Ok(now) = command::named(&self.workspace) {
+            self.workspace = now;
+        } else {
             // Another directory may have its name now: that one is shown.
             let left = (self.workspace.session.workspaces()).unwrap_or_default();
             let name = std::mem::take(&mut self.workspace.name);
@@ -445,17 +448,20 @@ impl View {
             Ok(names) => names,
             Err(failure) => return self.say(failure.to_string()),
         };
-        // A name is only where a pane is listed now: each is kept while
-        // its name still lists the directory held for it.
-        self.panes.retain(|name, _| names.contains(name));
+        // A name is only where a pane is listed now: each pane is kept,
+        // with the keys waiting for it, under the name that lists its
+        // directory now.
+        let mut before = std::mem::take(&mut self.panes);
         for name in names {
             let Ok(dir) = self.workspace.pane(&name) else {
-                self.panes.remove(&name);
                 continue;
             };
-            if !self.panes.get(&name).is_some_and(|pane| pane.is(&dir)) {
-                self.panes.insert(name.clone(), Pane::new(&name, dir));
-            }
+            let old = before.iter().find(|(_, pane)| pane.is(&dir));
+            let old = old.map(|(old, _)| old.clone());
+            let mut pane =
+                (old.and_then(|old| before.remove(&old))).unwrap_or_else(|| Pane::new(&name, dir));
+            pane.name.clone_from(&name);
+            self.panes.insert(name, pane);
         }
         let visible = self.visible();
         let names: Vec<String> = self.panes.keys().cloned().collect();
@@ -473,7 +479,9 @@ impl View {
         let shown = self.workspace.id();
         let gone = |(space, pane): &(String, Target)| {
             let there = match &pane.id {
-                Some(id) => (self.panes.values()).any(|p| p.id().is_none_or(|now| now == id)),
+                // One of its name whose status is not read yet may be it.
+                Some(id) => (self.panes.values())
+                    .any(|p| p.id().map_or(p.name == pane.name, |now| now == id)),
                 None => self.panes.contains_key(&pane.name),
             };
             *space == shown && !there
@@ -578,7 +586,8 @@ impl View {
             return self.say(format!("paste dropped: {MAX_PASTES} are waiting"));
         }
         self.pasted = self.pasted.saturating_add(1);
-        let (shown, number) = (self.workspace.dir.join(command::VIEW), self.pasted);
+        let now = command::named(&self.workspace).unwrap_or_else(|_| self.workspace.clone());
+        let (shown, number) = (now.dir.join(command::VIEW), self.pasted);
         let pasted = self
             .view
             .try_clone()
