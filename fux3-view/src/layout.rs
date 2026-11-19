@@ -1285,7 +1285,7 @@ pub fn parse_command(line: &str) -> Result<Op, Failure> {
         ["tab", "move", tab, way] => Op::MoveTab(owned(tab), later_of(way)?),
         ["reset"] => Op::Reset,
         [] => return Err(bad("an empty command")),
-        _ => return Err(bad("no such layout command; see fux3-view's README")),
+        _ => return Err(bad("no such layout command; see \"Layout commands\" in fux3's README")),
     };
     Ok(op)
 }

@@ -333,6 +333,7 @@ impl View {
         }
         let (tab, focus) = self.places.remove(name).unwrap_or_default();
         self.panes.values_mut().for_each(Pane::drop_pastes);
+        release_ctl(&self.view, self.ctl.take());
         (self.workspace, self.view, self.ctl) = (workspace, view, Some(ctl));
         (self.tab, self.focus, self.last_focus) = (tab, focus, None);
         self.panes.clear();
@@ -1280,6 +1281,32 @@ fn do_line(space: &str, line: &str) -> Result<(), Failure> {
         .map_err(|e| io_failure("stdout", e))
 }
 
+/// Stops serving `.view/ctl`; if no other viewer reads it, the FIFO goes,
+/// so a line written later with no viewer running makes a regular file
+/// (which the next viewer runs) instead of waiting for a reader for ever.
+fn release_ctl(view: &std::path::Path, ctl: Option<File>) {
+    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+    let Some(ctl) = ctl else {
+        return;
+    };
+    drop(ctl);
+    let Ok(_lock) = layout::lock(view) else {
+        return;
+    };
+    let path = view.join("ctl");
+    let fifo = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_fifo());
+    let unread = File::options()
+        .write(true)
+        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
+        // A private FIFO opened to write without waiting fails only when
+        // nobody reads it (ENXIO).
+        .open(&path)
+        .is_err();
+    if fifo && unread {
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
 /// `.view/ctl`, made if missing, opened to read without waiting (and to
 /// write, so it never reads as ended while no writer has it open). A
 /// regular file there was written with no viewer running (a shell's `>`
@@ -1287,6 +1314,9 @@ fn do_line(space: &str, line: &str) -> Result<(), Failure> {
 /// place.
 fn open_ctl(view: &std::path::Path) -> Result<(File, Vec<u8>), Failure> {
     use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+    // Under the layout's lock, so a viewer leaving can't remove the FIFO
+    // between its making and its opening here.
+    let _lock = layout::lock(view)?;
     let path = view.join("ctl");
     let mut written = Vec::new();
     if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
@@ -1408,6 +1438,7 @@ fn run() -> Result<(), Failure> {
     let ended = serve(&mut view, &signals, &paint_wake, &script_wake);
     view.end_run();
     view.leave_pastes();
+    release_ctl(&view.view, view.ctl.take());
     view.painter.finish(LEAVE.as_bytes().to_vec());
     drop(raw);
     ended
