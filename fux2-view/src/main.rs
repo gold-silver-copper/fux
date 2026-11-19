@@ -18,7 +18,7 @@ use fux2::wire::{
 use fuxix::Errno;
 use fuxix::poll::{Events, Poke, Poll, PollFd, Wake, waker};
 use fuxix::process::Signal;
-use layout::Tab;
+use layout::{Tab, Workspace};
 use render::{Frame, Tile};
 use script::{Run, Script, ToViewer, Verb};
 use std::collections::{BTreeMap, VecDeque};
@@ -107,8 +107,6 @@ fn io_failure(what: &str, error: impl std::fmt::Display) -> Failure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Action {
     Verb(Verb),
-    /// Types the prefix key itself.
-    Literal(KeyPress),
     /// Runs the configuration's function.
     Script,
 }
@@ -173,15 +171,30 @@ struct Running {
     forced: bool,
 }
 
+/// Where a workspace was left.
+#[derive(Clone, Copy, Default)]
+struct Place {
+    tab: usize,
+    last: usize,
+}
+
 struct View {
     session: Session,
     layout_path: Option<PathBuf>,
     layout_text: Option<String>,
-    tabs: Vec<Tab>,
-    tab: usize,
+    workspaces: Vec<Workspace>,
+    /// The workspace shown, and the one before it.
+    workspace: usize,
+    last_workspace: usize,
+    /// For each workspace, its tab shown and the one before it.
+    places: Vec<Place>,
     panes: BTreeMap<String, Pane>,
     focus: Option<PaneId>,
     focus_name: Option<String>,
+    /// A pane to focus as soon as it is there.
+    wanted: Option<String>,
+    /// That pane, and what had the focus before it: it comes back there.
+    back: Option<(String, PaneId)>,
     term: (u16, u16),
     bindings: BTreeMap<String, Action>,
     prefix: Option<String>,
@@ -204,25 +217,20 @@ struct View {
     quit: bool,
 }
 
-fn default_bindings() -> BTreeMap<String, Action> {
-    let prefix = KeyPress::new(
-        fux_vt::keys::Key::Char('b'),
-        fux_vt::keys::Modifiers {
-            ctrl: true,
-            ..fux_vt::keys::Modifiers::NONE
-        },
-    );
-    let mut bindings = BTreeMap::new();
-    for (key, verb) in [
-        ("o", Verb::NextPane),
-        ("n", Verb::NextTab),
-        ("f", Verb::Fit),
-        ("d", Verb::Detach),
-    ] {
-        bindings.insert(format!("{prefix} {key}"), Action::Verb(verb));
+/// What holds before the default keys have loaded: a way out.
+fn first_bindings() -> BTreeMap<String, Action> {
+    BTreeMap::from([("C-b d".to_owned(), Action::Verb(Verb::Detach))])
+}
+
+/// `index` moved by one through `len` places, wrapping.
+fn stepped(index: usize, len: usize, forward: bool) -> usize {
+    let last = len.saturating_sub(1);
+    match (forward, index) {
+        (true, i) if i >= last => 0,
+        (true, i) => i.saturating_add(1),
+        (false, 0) => last,
+        (false, i) => i.saturating_sub(1),
     }
-    bindings.insert(format!("{prefix} {prefix}"), Action::Literal(prefix));
-    bindings
 }
 
 impl Inlet {
@@ -371,31 +379,96 @@ impl View {
         self.dirty = true;
     }
 
+    fn tabs(&self) -> &[Tab] {
+        (self.workspaces.get(self.workspace)).map_or(&[], |space| space.tabs.as_slice())
+    }
+
+    fn place(&self) -> Place {
+        self.places.get(self.workspace).copied().unwrap_or_default()
+    }
+
+    fn shown_tab(&self) -> Option<&Tab> {
+        self.tabs().get(self.place().tab)
+    }
+
+    /// Shows tab `tab` of this workspace, remembering the one it leaves.
+    fn show_tab(&mut self, tab: usize) {
+        let workspace = self.workspace;
+        if let Some(place) = self.places.get_mut(workspace)
+            && place.tab != tab
+        {
+            *place = Place {
+                tab,
+                last: place.tab,
+            };
+            self.tab_changed();
+        }
+    }
+
+    fn show_workspace(&mut self, workspace: usize) {
+        if workspace != self.workspace && workspace < self.workspaces.len() {
+            self.last_workspace = self.workspace;
+            self.workspace = workspace;
+            self.tab_changed();
+        }
+    }
+
+    fn tab_changed(&mut self) {
+        self.focus = None;
+        self.dirty = true;
+        self.settle_focus();
+    }
+
+    /// The labels a new pane must carry to appear in the shown tab.
+    fn labels_for_new_pane(&self) -> Result<Vec<(String, String)>, String> {
+        let tests = self.shown_tab().map_or(&[][..], |tab| tab.tests.as_slice());
+        if tests.iter().any(|(key, _)| key == "name") {
+            return Err("this tab selects panes by name, so no label puts a new pane in it".into());
+        }
+        Ok(tests.to_vec())
+    }
+
     fn visible(&self) -> Vec<&Pane> {
-        let tests = self.tabs.get(self.tab).map_or(&[][..], |tab| &tab.tests);
+        let tests = self.shown_tab().map_or(&[][..], |tab| tab.tests.as_slice());
         (self.panes.values())
             .filter(|pane| pane.phase != Phase::Greeting)
             .filter(|pane| dir::matches(&pane.name, &pane.hello.labels, tests))
             .collect()
     }
 
-    /// Keeps the focus on a pane of this tab: a pane that went gives way
-    /// to the next by name.
+    /// Keeps the focus on a pane of this tab. A pane asked for takes it when
+    /// it appears; when that pane goes, the focus returns to where it was;
+    /// any other pane that went gives way to the next by name.
     fn settle_focus(&mut self) {
-        let (focus, name) = {
+        let chosen = {
             let visible = self.visible();
-            if visible.iter().any(|p| Some(p.hello.id) == self.focus) {
+            let named = |name: &str| visible.iter().find(|p| p.name == name);
+            let by_id = |id: PaneId| visible.iter().find(|p| p.hello.id == id);
+            let wanted = self.wanted.as_deref().and_then(named);
+            if wanted.is_none() && self.focus.and_then(by_id).is_some() {
                 return;
             }
+            let returning = (self.back.as_ref())
+                .filter(|(name, _)| self.focus_name.as_deref() == Some(name.as_str()))
+                .and_then(|(_, id)| by_id(*id));
             let last = self.focus_name.as_deref().unwrap_or("");
-            let next = (visible.iter().find(|p| p.name.as_str() > last))
+            wanted
+                .or(returning)
+                .or_else(|| visible.iter().find(|p| p.name.as_str() > last))
                 .or_else(|| visible.first())
-                .map(|p| (p.hello.id, p.name.clone()));
-            (next.as_ref().map(|n| n.0), next.map(|n| n.1))
+                .map(|p| (p.hello.id, p.name.clone()))
         };
+        if let Some((_, name)) = &chosen
+            && self.wanted.as_deref() == Some(name.as_str())
+        {
+            self.wanted = None;
+        } else if chosen.is_some() {
+            self.back = None;
+        }
+        let focus = chosen.as_ref().map(|c| c.0);
         self.dirty |= focus != self.focus;
         self.focus = focus;
-        self.focus_name = name.or_else(|| self.focus_name.take());
+        self.focus_name = chosen.map(|c| c.1).or_else(|| self.focus_name.take());
     }
 
     fn focused_name(&self) -> Option<String> {
@@ -478,10 +551,18 @@ impl View {
             return;
         }
         match layout::parse(&text) {
-            Ok(tabs) => {
-                self.tabs = tabs;
-                self.tab = self.tab.min(self.tabs.len().saturating_sub(1));
-                self.dirty = true;
+            Ok(workspaces) => {
+                self.places.resize(workspaces.len(), Place::default());
+                for (place, space) in self.places.iter_mut().zip(&workspaces) {
+                    let most = space.tabs.len().saturating_sub(1);
+                    place.tab = place.tab.min(most);
+                    place.last = place.last.min(most);
+                }
+                let most = workspaces.len().saturating_sub(1);
+                self.workspace = self.workspace.min(most);
+                self.last_workspace = self.last_workspace.min(most);
+                self.workspaces = workspaces;
+                self.tab_changed();
             }
             // The last good layout stays on the screen.
             Err(why) => {
@@ -541,28 +622,43 @@ impl View {
     }
 
     fn apply_verb(&mut self, verb: Verb) {
+        let (tab, tabs) = (self.place().tab, self.tabs().len());
+        let spaces = self.workspaces.len();
         match verb {
             Verb::Detach => self.quit = true,
-            Verb::NextTab => {
-                let next = self.tab.saturating_add(1);
-                self.tab = if next < self.tabs.len() { next } else { 0 };
-                self.focus = None;
-                self.settle_focus();
+            Verb::NextTab => self.show_tab(stepped(tab, tabs, true)),
+            Verb::PreviousTab => self.show_tab(stepped(tab, tabs, false)),
+            Verb::LastTab => self.show_tab(self.place().last),
+            Verb::GoToTab(number) => {
+                let index = number.saturating_sub(1);
+                match index < tabs {
+                    true => self.show_tab(index),
+                    false => self.say(format!("no tab {number}: this workspace has {tabs}")),
+                }
             }
-            Verb::NextPane => {
-                let (focus, name) = {
-                    let visible = self.visible();
-                    let at = visible.iter().position(|p| Some(p.hello.id) == self.focus);
-                    let next = at.map_or(0, |at| at.saturating_add(1));
-                    let pane = visible.get(next).or_else(|| visible.first());
-                    (pane.map(|p| p.hello.id), pane.map(|p| p.name.clone()))
-                };
-                self.focus = focus;
-                self.focus_name = name;
-                self.dirty = true;
-            }
+            Verb::NextWorkspace => self.show_workspace(stepped(self.workspace, spaces, true)),
+            Verb::PreviousWorkspace => self.show_workspace(stepped(self.workspace, spaces, false)),
+            Verb::LastWorkspace => self.show_workspace(self.last_workspace),
+            Verb::NextPane => self.step_pane(true),
+            Verb::PreviousPane => self.step_pane(false),
             Verb::Fit => self.fit(),
+            // Handled where the chord is known.
+            Verb::Literal => {}
         }
+    }
+
+    fn step_pane(&mut self, forward: bool) {
+        let (focus, name) = {
+            let visible = self.visible();
+            let at = visible.iter().position(|p| Some(p.hello.id) == self.focus);
+            let next = at.map_or(0, |at| stepped(at, visible.len(), forward));
+            let pane = visible.get(next);
+            (pane.map(|p| p.hello.id), pane.map(|p| p.name.clone()))
+        };
+        self.focus = focus;
+        self.focus_name = name;
+        self.back = None;
+        self.dirty = true;
     }
 
     /// Asks the focused pane, once, to take its tile's size.
@@ -599,6 +695,11 @@ impl View {
             self.dirty = true;
             return match self.bindings.get(&chord).cloned() {
                 Some(action) => self.perform(chord, action),
+                // The keys are still loading: this chord may be among them.
+                None if self.loading && self.held_keys.len() < MAX_HELD_KEYS => {
+                    self.held_keys.extend(prefix.parse::<KeyPress>());
+                    self.held_keys.push(press);
+                }
                 None => self.say(format!("no binding for {chord}")),
             };
         }
@@ -622,12 +723,23 @@ impl View {
 
     fn perform(&mut self, chord: String, action: Action) {
         match action {
+            Action::Verb(Verb::Literal) => {
+                let first = chord.split(' ').next().unwrap_or_default();
+                match first.parse::<KeyPress>() {
+                    Ok(press) => self.type_key(press),
+                    Err(e) => self.say(e.to_string()),
+                }
+            }
             Action::Verb(verb) => self.apply_verb(verb),
-            Action::Literal(press) => self.type_key(press),
             Action::Script => {
                 // The pane focused now, whatever the binding does later.
                 let focus = self.focus_label();
-                self.dispatch(Run { chord, focus });
+                let labels = self.labels_for_new_pane();
+                self.dispatch(Run {
+                    chord,
+                    focus,
+                    labels,
+                });
             }
         }
     }
@@ -656,6 +768,17 @@ impl View {
         match message {
             ToViewer::Bind(chord) => {
                 self.bindings.insert(chord, Action::Script);
+            }
+            ToViewer::BindVerb(chord, verb) => {
+                self.bindings.insert(chord, Action::Verb(verb));
+            }
+            ToViewer::Focus(name) => {
+                if let Some(id) = self.focus {
+                    self.back = Some((name.clone(), id));
+                }
+                self.wanted = Some(name);
+                // It has just been started: look now, not at the next scan.
+                self.next_scan = now;
             }
             ToViewer::Unbind(chord) => {
                 self.bindings.remove(&chord);
@@ -817,10 +940,7 @@ impl View {
             w: cols.min(render::MAX_COLS),
             h: rows.min(render::MAX_ROWS).saturating_sub(1),
         };
-        let axis = self
-            .tabs
-            .get(self.tab)
-            .map_or(layout::Axis::Auto, |t| t.axis);
+        let axis = self.shown_tab().map_or(layout::Axis::Auto, |t| t.axis);
         let visible = self.visible();
         let tiles = render::split(area, visible.len(), axis);
         let mut cursor = None;
@@ -872,10 +992,17 @@ impl View {
 
     fn status_line(&self, hidden: usize) -> String {
         let mut line = String::new();
-        for (index, tab) in self.tabs.iter().enumerate() {
-            let mark = if index == self.tab { "*" } else { " " };
-            line.push_str(&format!("{mark}{} ", tab.title));
-        }
+        let place = self.place();
+        let space = self.workspaces.get(self.workspace);
+        line.push_str(&format!(
+            " {} {}/{} | {} {}/{} ",
+            space.map_or("", |space| space.name.as_str()),
+            self.workspace.saturating_add(1),
+            self.workspaces.len(),
+            self.shown_tab().map_or("", |tab| tab.title.as_str()),
+            place.tab.saturating_add(1),
+            self.tabs().len(),
+        ));
         if let Some(prefix) = &self.prefix {
             line.push_str(&format!("| {prefix} … "));
         }
@@ -969,7 +1096,7 @@ fn run() -> Result<(), Failure> {
     }
     let session = Session::open()?;
     let file_limit = file_limit()?;
-    let tabs = match &layout_path {
+    let workspaces = match &layout_path {
         None => layout::everything(),
         Some(path) => {
             let text = std::fs::read_to_string(path)
@@ -988,7 +1115,6 @@ fn run() -> Result<(), Failure> {
         Ok(config) => (config, None),
         Err(why) => (None, Some(why)),
     };
-    let loading = config.is_some();
     let script = script::start(config, fux2_program()?, to_viewer, script_poke)
         .map_err(|e| io_failure("a thread", e))?;
     let raw =
@@ -998,13 +1124,17 @@ fn run() -> Result<(), Failure> {
         session,
         layout_path,
         layout_text: None,
-        tabs,
-        tab: 0,
+        places: vec![Place::default(); workspaces.len()],
+        workspaces,
+        workspace: 0,
+        last_workspace: 0,
         panes: BTreeMap::new(),
         focus: None,
         focus_name: None,
+        wanted: None,
+        back: None,
         term: terminal_size(),
-        bindings: default_bindings(),
+        bindings: first_bindings(),
         prefix: None,
         message: None,
         file_limit,
@@ -1012,7 +1142,7 @@ fn run() -> Result<(), Failure> {
         from_script,
         running: None,
         waiting_runs: VecDeque::new(),
-        loading,
+        loading: true,
         held_keys: Vec::new(),
         painter,
         shown: Frame::default(),

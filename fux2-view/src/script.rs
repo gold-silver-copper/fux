@@ -25,20 +25,42 @@ pub const BINDING_TIME: Duration = Duration::from_secs(5);
 /// The longest one `fux2` command of a binding may take.
 const COMMAND_TIME: Duration = Duration::from_secs(4);
 const MAX_OUTPUT: u64 = 1 << 20;
+/// How many numbers a new pane's name is tried with.
+const MAX_NEW_NAMES: u32 = 128;
 
 /// A viewer action a binding asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verb {
     NextPane,
+    PreviousPane,
     NextTab,
+    PreviousTab,
+    LastTab,
+    /// The tab numbered from 1.
+    GoToTab(usize),
+    NextWorkspace,
+    PreviousWorkspace,
+    LastWorkspace,
     Fit,
     Detach,
+    /// Types the binding's first key itself: a prefix sent through.
+    Literal,
 }
 
+/// The keys every viewer starts with. They are ordinary bindings: a
+/// configuration may unbind or replace any of them.
+const DEFAULTS: &str = include_str!("defaults.grift");
+
 pub enum ToViewer {
+    /// The chord runs its function on this thread.
     Bind(String),
+    /// The chord does this at once on the viewer's own thread, so it works
+    /// while a binding runs.
+    BindVerb(String, Verb),
     Unbind(String),
     Verb(Verb),
+    /// Focus this pane once it is there, and come back when it goes.
+    Focus(String),
     /// A run begins; `stop` ends it, `limit` is its time.
     Started {
         stop: Interrupter,
@@ -52,6 +74,9 @@ pub struct Run {
     pub chord: String,
     /// The pane focused when the key was pressed, as `name@id`.
     pub focus: Option<String>,
+    /// The labels a new pane needs to appear in the shown tab, or why no
+    /// labels can put it there.
+    pub labels: Result<Vec<(String, String)>, String>,
 }
 
 /// What the viewer holds of this thread.
@@ -65,6 +90,7 @@ struct Host {
     poke: Poke,
     kept: HashMap<String, Kept>,
     focus: Option<String>,
+    labels: Result<Vec<(String, String)>, String>,
     cancel: Arc<AtomicBool>,
     fux2: PathBuf,
 }
@@ -194,6 +220,33 @@ fn run_word(
     }
 }
 
+fn tab_number(g: &mut HostCall<'_, Host>, value: Value) -> Result<usize, Error> {
+    if let Value::Integer(n) = value
+        && let Ok(n) = usize::try_from(n)
+        && n > 0
+    {
+        return Ok(n);
+    }
+    Err(g.type_error(value))
+}
+
+fn named_verb(word: &str) -> Option<Verb> {
+    Some(match word {
+        "next-pane" => Verb::NextPane,
+        "previous-pane" => Verb::PreviousPane,
+        "next-tab" => Verb::NextTab,
+        "previous-tab" => Verb::PreviousTab,
+        "last-tab" => Verb::LastTab,
+        "next-workspace" => Verb::NextWorkspace,
+        "previous-workspace" => Verb::PreviousWorkspace,
+        "last-workspace" => Verb::LastWorkspace,
+        "fit" => Verb::Fit,
+        "detach" => Verb::Detach,
+        "literal" => Verb::Literal,
+        _ => return None,
+    })
+}
+
 fn inert() -> Result<Answer, Error> {
     Ok(Answer::Now(Value::Inert))
 }
@@ -243,9 +296,33 @@ const WORDS: &[(&str, Word)] = &[
         let [] = *g.exactly(args)?;
         verb(host, Verb::NextPane)
     }),
+    ("previous-pane", |g, host, args| {
+        let [] = *g.exactly(args)?;
+        verb(host, Verb::PreviousPane)
+    }),
     ("next-tab", |g, host, args| {
         let [] = *g.exactly(args)?;
         verb(host, Verb::NextTab)
+    }),
+    ("previous-tab", |g, host, args| {
+        let [] = *g.exactly(args)?;
+        verb(host, Verb::PreviousTab)
+    }),
+    ("last-tab", |g, host, args| {
+        let [] = *g.exactly(args)?;
+        verb(host, Verb::LastTab)
+    }),
+    ("next-workspace", |g, host, args| {
+        let [] = *g.exactly(args)?;
+        verb(host, Verb::NextWorkspace)
+    }),
+    ("previous-workspace", |g, host, args| {
+        let [] = *g.exactly(args)?;
+        verb(host, Verb::PreviousWorkspace)
+    }),
+    ("last-workspace", |g, host, args| {
+        let [] = *g.exactly(args)?;
+        verb(host, Verb::LastWorkspace)
     }),
     ("fit", |g, host, args| {
         let [] = *g.exactly(args)?;
@@ -254,6 +331,79 @@ const WORDS: &[(&str, Word)] = &[
     ("detach", |g, host, args| {
         let [] = *g.exactly(args)?;
         verb(host, Verb::Detach)
+    }),
+    ("go-to-tab", |g, host, args| {
+        let [number] = *g.exactly(args)?;
+        let number = tab_number(g, number)?;
+        verb(host, Verb::GoToTab(number))
+    }),
+    ("bind-verb", |g, host, args| {
+        let (key, word, number) = match args {
+            [key, word] => (*key, *word, None),
+            [key, word, number] => (*key, *word, Some(*number)),
+            _ => return Err(g.arity_error(args)),
+        };
+        let chord_text = string_arg(g, key)?;
+        let name = chord(&chord_text).map_err(|why| failed(g, &why))?;
+        let word = string_arg(g, word)?;
+        let verb = match (word.as_str(), number) {
+            ("go-to-tab", Some(number)) => Verb::GoToTab(tab_number(g, number)?),
+            (word, None) => match named_verb(word) {
+                Some(verb) => verb,
+                None => return Err(failed(g, &format!("no verb {word}"))),
+            },
+            (_, Some(_)) => return Err(g.arity_error(args)),
+        };
+        if let Some(old) = host.kept.remove(&name) {
+            let _ = g.release(old);
+        }
+        host.tell(ToViewer::BindVerb(name, verb));
+        inert()
+    }),
+    ("focus", |g, host, args| {
+        let [pane] = *g.exactly(args)?;
+        let pane = string_arg(g, pane)?;
+        let name = pane.split(['@', ' ']).next().unwrap_or_default().to_owned();
+        host.tell(ToViewer::Focus(name));
+        inert()
+    }),
+    ("fux2-program", |g, host, args| {
+        let [] = *g.exactly(args)?;
+        let path = host.fux2.to_string_lossy().into_owned();
+        g.string(&path).map(Answer::Now)
+    }),
+    ("start-here", |g, host, args| {
+        let Some((prefix, program)) = args.split_first() else {
+            return Err(g.arity_error(args));
+        };
+        let prefix = string_arg(g, *prefix)?;
+        let labels = host.labels.clone().map_err(|why| failed(g, &why))?;
+        let mut tail = Vec::new();
+        for (key, value) in labels {
+            tail.push("--label".to_owned());
+            tail.push(format!("{key}={value}"));
+        }
+        if !program.is_empty() {
+            tail.push("--".to_owned());
+        }
+        for word in program {
+            tail.push(string_arg(g, *word)?);
+        }
+        for number in 1..=MAX_NEW_NAMES {
+            let name = format!("{prefix}-{number}");
+            let mut words = vec!["start".to_owned(), "--name".to_owned(), name.clone()];
+            words.extend(tail.iter().cloned());
+            let os: Vec<OsString> = words.into_iter().map(Into::into).collect();
+            match command(host, &os, None) {
+                Ok(_) => return g.string(&name).map(Answer::Now),
+                Err(why) if why.contains("exists:") => {}
+                Err(_) if host.cancel.load(Ordering::Relaxed) => {
+                    return Err(g.limit("interrupted", &[]));
+                }
+                Err(why) => return Err(failed(g, &why)),
+            }
+        }
+        Err(failed(g, &format!("no free name {prefix}-N")))
     }),
     ("send", |g, host, args| {
         let [pane, text] = *g.exactly(args)?;
@@ -375,18 +525,29 @@ fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
         Ok(g) => g,
         Err(why) => return host.tell(ToViewer::Done(Some(why))),
     };
-    if let Some(text) = config {
+    host.tell(ToViewer::Started {
+        stop: g.interrupter(),
+        limit: CONFIG_TIME,
+    });
+    let mut why = g
+        .evaluate(&mut host, DEFAULTS)
+        .err()
+        .map(|e| format!("the default keys: {}", describe(&g, &e)));
+    if let Some(text) = config.filter(|_| why.is_none()) {
         host.tell(ToViewer::Started {
             stop: g.interrupter(),
             limit: CONFIG_TIME,
         });
-        let outcome = g.evaluate(&mut host, &text).err();
-        let why = outcome.map(|e| format!("view.grift: {}", describe(&g, &e)));
-        host.tell(ToViewer::Done(why));
+        why = g
+            .evaluate(&mut host, &text)
+            .err()
+            .map(|e| format!("view.grift: {}", describe(&g, &e)));
     }
+    host.tell(ToViewer::Done(why));
     while let Ok(run) = runs.recv() {
         host.cancel.store(false, Ordering::Relaxed);
         host.focus = run.focus;
+        host.labels = run.labels;
         let function = host.kept.get(&run.chord).map(|kept| g.kept(kept));
         host.tell(ToViewer::Started {
             stop: g.interrupter(),
@@ -447,6 +608,7 @@ pub fn start(
         poke,
         kept: HashMap::new(),
         focus: None,
+        labels: Ok(Vec::new()),
         cancel: Arc::clone(&cancel),
         fux2,
     };

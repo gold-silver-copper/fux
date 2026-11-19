@@ -4,8 +4,8 @@ use fux2::dir::{self, Session};
 use fux2::model::{apply, checked_size};
 use fux2::pane::{self, DEFAULT_HISTORY, MAX_HISTORY, MAX_INPUT, Spec};
 use fux2::wire::{
-    Answer, Change, Code, Failure, MAX_PARTS, MAX_REQUEST, MAX_WAIT_MS, Meta, PaneId, Part,
-    Request, Row, State, Token,
+    Answer, Change, Code, Failure, MAX_HISTORY_ROWS, MAX_PARTS, MAX_REQUEST, MAX_WAIT_MS, Meta,
+    PaneId, Part, Request, Row, State, Token,
 };
 use std::ffi::OsString;
 use std::io::{BufRead, Read, Write};
@@ -20,10 +20,13 @@ fux2: a terminal multiplexer with no server
   fux2 send NAME [TEXT] [--key KEY].. [--paste TEXT] [--stdin] [--if TOKEN]
   fux2 read NAME [--json] [--since TOKEN [--wait MS] [--settle MS] [--until TEXT] [--until-line TEXT] [--text]]
   fux2 read NAME --history EPOCH FIRST COUNT
+  fux2 read NAME --history-text
+  fux2 page NAME
   fux2 wait NAME --after TOKEN [--ms MS]
   fux2 resize NAME COLS ROWS [--if TOKEN]
   fux2 signal NAME SIGNAL [--if TOKEN]
   fux2 kill NAME [--if TOKEN]
+  fux2 kill --label K=V..
   fux2 view [--layout FILE]
 
 TEXT understands \\n (the Enter key), \\r, \\\\ and \\xHH. See the README for the rest.
@@ -36,6 +39,10 @@ const START_WAIT: Duration = Duration::from_secs(if cfg!(windows) { 120 } else {
 const DEFAULT_SETTLE_MS: u32 = 100;
 /// How long `read --since` waits when no `--wait` is given.
 const NO_WAIT: u32 = 0;
+/// The most text `read --history-text` gathers.
+const MAX_HISTORY_TEXT: usize = 256 << 20;
+/// How often a history read that lost its place starts again.
+const HISTORY_TRIES: u32 = 3;
 
 type Outcome = Result<(), Failure>;
 
@@ -593,13 +600,134 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
     say(&out)
 }
 
+/// One pass over a pane's primary screen, history first, by row number:
+/// a row keeps its number as it scrolls, so what is read is each row once.
+fn collect_history(client: &mut Client) -> Result<String, Failure> {
+    let (_, meta, _) = screen(client, None)?;
+    let mut text = String::new();
+    let mut next = meta.history_start;
+    let mut last = None;
+    loop {
+        let request = Request::History {
+            epoch: meta.epoch,
+            first: next,
+            count: MAX_HISTORY_ROWS,
+        };
+        let Answer::History {
+            screen_end, rows, ..
+        } = client.ask(&request, ANSWER_WAIT)?
+        else {
+            return Err(odd());
+        };
+        // What arrives after the first answer is left for the next read.
+        let last = *last.get_or_insert(screen_end);
+        for item in rows.iter().take_while(|item| item.number < last) {
+            if item.wrapped_at > 0 {
+                text.push_str(&item.row.text_to(item.wrapped_at));
+            } else {
+                text.push_str(&item.row.text());
+                text.push('\n');
+            }
+            next = item.number.saturating_add(1);
+            if text.len() > MAX_HISTORY_TEXT {
+                let why = format!("more than {MAX_HISTORY_TEXT} bytes of text");
+                return Err(Failure::new(Code::Limit, why));
+            }
+        }
+        if next >= last || rows.is_empty() {
+            break;
+        }
+    }
+    let mut text = text.trim_end_matches(['\n', ' ']).to_owned();
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    if meta.alternate {
+        let (_, _, rows) = whole_rows(client)?;
+        text.push_str(&screen_text(&rows));
+    }
+    Ok(text)
+}
+
+/// The pane's history and screen as text. A resize or eviction under the
+/// read starts it again, a few times, and then is said.
+fn history_text_of(client: &mut Client) -> Result<String, Failure> {
+    let mut tries = 0;
+    loop {
+        match collect_history(client) {
+            Err(failure)
+                if matches!(failure.code, Code::Stale | Code::Gone) && tries < HISTORY_TRIES =>
+            {
+                tries = tries.saturating_add(1);
+            }
+            done => return done,
+        }
+    }
+}
+
+/// Shows a pane's history in a pager, then, run inside a pane of its own,
+/// removes that pane.
+fn page(mut args: Args) -> Outcome {
+    let pane = args.pane()?;
+    if let Some(extra) = args.next()? {
+        return Err(unknown(&extra));
+    }
+    let text = history_text_of(&mut pane.connect()?)?;
+    let chosen = std::env::var("PAGER").ok().filter(|p| !p.trim().is_empty());
+    let fallbacks: &[&str] = if cfg!(windows) {
+        &["more.com"]
+    } else {
+        &["less", "more"]
+    };
+    let pagers: Vec<String> = match chosen {
+        Some(pager) => vec![pager],
+        None => fallbacks.iter().map(|p| (*p).to_owned()).collect(),
+    };
+    let mut child = None;
+    let mut failure = String::new();
+    for pager in &pagers {
+        let mut words = pager.split_whitespace();
+        let Some(program) = words.next() else {
+            continue;
+        };
+        let started = std::process::Command::new(program)
+            .args(words)
+            .stdin(std::process::Stdio::piped())
+            .spawn();
+        match started {
+            Ok(started) => {
+                child = Some(started);
+                break;
+            }
+            Err(e) => failure = format!("{program}: {e}"),
+        }
+    }
+    let mut child = child.ok_or_else(|| Failure::new(Code::Io, failure))?;
+    // A pager that quits early closes this: not a failure.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    child
+        .wait()
+        .map_err(|e| Failure::new(Code::Io, format!("the pager: {e}")))?;
+    if let Ok(own) = std::env::var("FUX2_PANE")
+        && let Ok(mut client) = Client::connect(&Session::open()?, &own)
+    {
+        // The answer may never come: this process is what it ends.
+        let _ = client.call(&Request::Kill { expected: None }, ANSWER_WAIT);
+    }
+    Ok(())
+}
+
 fn read(mut args: Args) -> Outcome {
     let pane = args.pane()?;
     let (mut plan, mut json, mut history) = (Follow::default(), false, None);
+    let mut history_text = false;
     while let Some(arg) = args.next()? {
         match arg.as_str() {
             "--json" => json = true,
             "--text" => plan.text = true,
+            "--history-text" => history_text = true,
             "--since" => plan.since = Some(args.token("--since")?),
             "--wait" => plan.wait_ms = Some(args.number("--wait")?),
             "--settle" => plan.settle_ms = Some(args.number("--settle")?),
@@ -638,15 +766,21 @@ fn read(mut args: Args) -> Outcome {
             epoch,
             start,
             end,
+            screen_end,
             rows,
         } = client.ask(&request, ANSWER_WAIT)?
         else {
             return Err(odd());
         };
-        let mut out = format!("{{\"epoch\":{epoch},\"start\":{start},\"end\":{end},\"rows\":");
-        json_rows(rows.iter().map(|(n, row)| (*n, row)), &mut out);
+        let mut out = format!(
+            "{{\"epoch\":{epoch},\"start\":{start},\"end\":{end},\"screen_end\":{screen_end},\"rows\":"
+        );
+        json_rows(rows.iter().map(|r| (r.number, &r.row)), &mut out);
         out.push_str("}\n");
         return say(&out);
+    }
+    if history_text {
+        return say(&history_text_of(&mut client)?);
     }
     if let Some(since) = plan.since {
         return follow(&mut client, since, &plan);
@@ -725,9 +859,7 @@ fn signal(mut args: Args) -> Outcome {
     say(&format!("{delivery}\n"))
 }
 
-fn kill(mut args: Args) -> Outcome {
-    let pane = args.pane()?;
-    let expected = expected_only(&mut args)?;
+fn kill_one(pane: &Target, expected: Option<Token>) -> Outcome {
     let mut client = pane.connect()?;
     let Answer::Killed { complete, detail } =
         client.ask(&Request::Kill { expected }, ANSWER_WAIT)?
@@ -739,6 +871,52 @@ fn kill(mut args: Args) -> Outcome {
     }
     let why = format!("pane {} is gone, but: {detail}", pane.name);
     Err(Failure::new(Code::Io, why))
+}
+
+/// Kills every pane whose labels pass all the tests.
+fn kill_labelled(mut args: Args, first: String) -> Outcome {
+    let mut tests = vec![dir::parse_label(&first)?];
+    while let Some(arg) = args.next()? {
+        match arg.as_str() {
+            "--label" => tests.push(dir::parse_label(&args.value("--label")?)?),
+            other => return Err(unknown(other)),
+        }
+    }
+    let session = Session::open()?;
+    let mut failed = Vec::new();
+    for name in session.names()? {
+        let Ok(client) = Client::connect(&session, &name) else {
+            continue;
+        };
+        if !dir::matches(&name, &client.hello.labels, &tests) {
+            continue;
+        }
+        let pane = Target {
+            name,
+            id: Some(client.hello.id),
+        };
+        drop(client);
+        if let Err(failure) = kill_one(&pane, None) {
+            failed.push(failure.to_string());
+        }
+    }
+    match failed.is_empty() {
+        true => Ok(()),
+        false => Err(Failure::new(Code::Io, failed.join("; "))),
+    }
+}
+
+fn kill(mut args: Args) -> Outcome {
+    let rest: Vec<OsString> = args.0.by_ref().collect();
+    let mut args = Args(rest.clone().into_iter());
+    if args.next()?.as_deref() == Some("--label") {
+        let first = args.value("--label")?;
+        return kill_labelled(args, first);
+    }
+    let mut args = Args(rest.into_iter());
+    let pane = args.pane()?;
+    let expected = expected_only(&mut args)?;
+    kill_one(&pane, expected)
 }
 
 /// Runs the viewer installed beside this program.
@@ -784,6 +962,7 @@ fn run(mut args: Args) -> Outcome {
         "signal" => signal(args),
         "kill" => kill(args),
         "view" => view(args),
+        "page" => page(args),
         "help" | "--help" | "-h" => say(USAGE),
         other => Err(usage(format!("no command {other}"))),
     }

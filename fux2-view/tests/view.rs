@@ -6,7 +6,6 @@ use fuxix::process::{Job, Reach};
 use fuxix::pty::Master;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 type Tested = Result<(), Box<dyn std::error::Error>>;
@@ -44,12 +43,11 @@ struct Lab {
 
 impl Lab {
     fn new(config: &str) -> Result<Lab, Box<dyn std::error::Error>> {
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let number = NEXT.fetch_add(1, Ordering::SeqCst);
+        let unique = fux2::wire::PaneId::random();
         let base = fuxix::file::scratch()?;
-        let root = base.join(format!("f2v-{}-{number}", std::process::id()));
+        let root = base.join(format!("f2v-{unique}"));
         fuxix::file::private_dir(&root)?;
-        let home = base.join(format!("f2c-{}-{number}", std::process::id()));
+        let home = base.join(format!("f2c-{unique}"));
         std::fs::create_dir_all(home.join("fux2"))?;
         std::fs::write(home.join("fux2").join("view.grift"), config)?;
         Ok(Lab { root, config: home })
@@ -121,6 +119,14 @@ impl Viewer {
         lab: &Lab,
         args: &[std::ffi::OsString],
     ) -> Result<Viewer, Box<dyn std::error::Error>> {
+        Viewer::with_env(lab, args, &[])
+    }
+
+    fn with_env(
+        lab: &Lab,
+        args: &[std::ffi::OsString],
+        env: &[(&str, &str)],
+    ) -> Result<Viewer, Box<dyn std::error::Error>> {
         let _ = fux2::sys::prepare_terminal(&lab.root);
         let size = Size::new(30, 100)?;
         let (master, slave) = fuxix::pty::open(size.nonzero().into())?;
@@ -131,7 +137,8 @@ impl Viewer {
             command
                 .env("FUX2_DIR", &lab.root)
                 .env("XDG_CONFIG_HOME", &lab.config)
-                .env("TERM", "xterm-256color");
+                .env("TERM", "xterm-256color")
+                .envs(env.iter().copied());
         })?;
         Ok(Viewer {
             master,
@@ -345,5 +352,83 @@ fn a_layout_makes_tabs_and_only_fit_resizes() -> Tested {
         viewer.pump(Duration::from_millis(20))?;
     }
     assert_eq!(size(&lab, "one")?, "80x24");
+    Ok(())
+}
+
+fn pager() -> &'static str {
+    if cfg!(windows) { "findstr ." } else { "cat" }
+}
+
+/// Workspaces and tabs change what is shown and who gets the keys; a pane
+/// started from a tab appears there and nowhere else.
+#[test]
+fn workspaces_and_tabs_choose_what_is_shown() -> Tested {
+    let lab = Lab::new("")?;
+    for (name, group) in [("alpha", "a"), ("beta", "b")] {
+        let label = format!("group={group}");
+        let args = ["start", "--name", name, "--label", &label, "--", shell()];
+        let out = lab.fux2(&args)?;
+        assert!(out.status.success(), "{out:?}");
+    }
+    let layout = lab.config.join("spaces.toml");
+    let text = "[[workspace]]\nname = \"first\"\n[[workspace.tab]]\ntitle = \"ta\"\n\
+                match = [\"group=a\"]\n[[workspace]]\nname = \"second\"\n\
+                [[workspace.tab]]\ntitle = \"tb\"\nmatch = [\"group=b\"]\n";
+    std::fs::write(&layout, text)?;
+    let args = ["--layout".into(), layout.into_os_string()];
+    let mut viewer = Viewer::with_args(&lab, &args)?;
+    viewer.shows(" alpha ")?;
+    viewer.shows("first 1/2 | ta 1/1")?;
+
+    viewer.keys(b"\x02)")?;
+    viewer.shows(" beta ")?;
+    viewer.shows("second 2/2 | tb 1/1")?;
+    assert!(!viewer.text().contains(" alpha "), "{}", viewer.text());
+    viewer.keys(b"echo to-beta\r")?;
+    lab.pane_shows("beta", "to-beta")?;
+    assert!(!lab.screen("alpha")?.contains("to-beta"));
+
+    viewer.keys(b"\x02c")?;
+    viewer.shows(" shell-1 ")?;
+    let listed = lab.fux2(&["ls", "--long"])?;
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    let line = listed.lines().find(|l| l.starts_with("shell-1"));
+    assert!(line.is_some_and(|l| l.contains("group=b")), "{listed}");
+    viewer.keys(b"echo to-new\r")?;
+    lab.pane_shows("shell-1", "to-new")?;
+
+    viewer.keys(b"\x02L")?;
+    viewer.shows("first 1/2")?;
+    assert!(!viewer.text().contains(" shell-1 "), "{}", viewer.text());
+    Ok(())
+}
+
+/// The history key opens a pager in a pane of its own; when it ends, the
+/// pane is gone and keys go where they went before.
+#[test]
+fn the_history_pane_goes_away_and_gives_the_focus_back() -> Tested {
+    let lab = Lab::new("")?;
+    lab.start("work")?;
+    let mut viewer = Viewer::with_env(&lab, &[], &[("PAGER", pager())])?;
+    viewer.shows(" work ")?;
+    viewer.keys(b"echo before\r")?;
+    lab.pane_shows("work", "before")?;
+    viewer.keys(b"\x02[")?;
+    let until = soon(PATIENCE);
+    let mut saw_it_end = false;
+    while Instant::now() < until {
+        viewer.pump(Duration::from_millis(20))?;
+        let listed = lab.fux2(&["ls"])?;
+        if String::from_utf8_lossy(&listed.stdout).trim() == "work"
+            && viewer.text().contains(" work ")
+            && !viewer.text().contains("history-1")
+        {
+            saw_it_end = true;
+            break;
+        }
+    }
+    assert!(saw_it_end, "the history pane stayed:\n{}", viewer.text());
+    viewer.keys(b"echo after\r")?;
+    lab.pane_shows("work", "after")?;
     Ok(())
 }

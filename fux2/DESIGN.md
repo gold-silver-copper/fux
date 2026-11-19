@@ -51,6 +51,11 @@ rows moved up and carries each row whose id at the moved place differs or which
 changed since, so a scroll costs its new rows. Every legal screen fits one 8 MiB
 answer (`WORST_SCREEN`, checked at compile time).
 
+History reads go by row number. Numbers run on past history down the primary
+screen, and a row keeps its number as it scrolls up, so `read --history-text` sees
+each row once however the program moves meanwhile. It stops at the end the first
+page reported. An answer stops adding rows at 4 MiB.
+
 A resize prepares a copy of the terminal at the new size, asks the system, and
 only then installs the copy and advances the version. A refusal changes nothing.
 
@@ -69,7 +74,10 @@ program can be replaced while panes run.
 One thread polls: keys, each pane's watching connection, and each pane's input
 connection, opened at the first key. A second thread writes to the terminal, so a
 terminal that stops reading delays no key; frames merge meanwhile. A third runs
-grift. Bindings reach panes by running the `fux2` command, which can be killed when
+grift, starting with the default keys in `defaults.grift`. A workspace and a tab are
+what the viewer filters by; panes know nothing of them. Keys bound with `bind-verb`
+act on the viewer's own thread, so they work while a binding runs. Other bindings
+reach panes by running the `fux2` command, which can be killed when
 a binding is stopped, and they name a pane as `NAME@ID`. Screens are composed as
 cells first; bytes for the terminal are made only from those, with control
 characters and malformed style text dropped.

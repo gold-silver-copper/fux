@@ -75,3 +75,31 @@ never waits.
 The other four slots cannot be held by waits. Idle connections are displaced for a
 newcomer, and a connection mid-request is bounded by its five-second limit, so a
 control request always gets through within that bound.
+
+## D-13: scrollback is text and a pager (the owner, 2026-11-18)
+
+The owner chose this over a scroll mode: `read --history-text` prints the retained
+history and screen, and `C-b [` opens it in a pager in a new pane. The daemon gains
+only larger history pages and row numbers that run on through the screen. Wrapped
+lines are joined using `Row::continues`.
+
+## D-14: workspaces and more keys, all in the viewer (the owner, 2026-11-18)
+
+A workspace is a named list of tabs in the layout file, and a tab stays a filter on
+labels, so the daemon and protocol do not change. Default chords follow tmux where
+it has one: `n p l c [`, digits, `( )`, with `O` and `L` for the two "other way"
+moves it spells differently.
+
+## D-15: the default keys are grift, and most of them are verbs
+
+The owner wants them rebindable and the pager key to be a worked example, so they
+live in `defaults.grift`. But a key that ran on the language's thread could not act
+while a binding is stuck, which would break detach. `bind-verb` therefore binds a
+chord to an action the viewer's own thread performs. `C-b d` is also present in Rust
+before anything loads, so there is always a way out.
+
+## D-16: `fux2 page` rather than a shell pipeline
+
+The history pane's program must work without a shell's quoting on any system, and
+must remove its own pane only if the pager ran. If no pager can start, the pane stays
+and shows why.

@@ -2,8 +2,8 @@
 //! version counter, and the row identities behind every token it gave out.
 //! It does no I/O, so what it promises can be tested on its own.
 use crate::wire::{
-    Answer, Change, Code, Failure, MAX_ANSWER, MAX_COLS, MAX_HISTORY_ROWS, MAX_ROWS, Meta, PaneId,
-    Part, Row, State, Token, Writer, history_head, screen_head,
+    Answer, Change, Code, Failure, HISTORY_PAGE, MAX_ANSWER, MAX_COLS, MAX_HISTORY_ROWS, MAX_ROWS,
+    Meta, PaneId, Part, Row, State, Token, Writer, history_head, screen_head,
 };
 use fux_vt::keys::encode;
 use fux_vt::{Feature, Identity, Mark, Mode, Options, Parser, RowId, Sink, Size, Stop};
@@ -277,17 +277,32 @@ impl Model {
             let why = format!("row {first} is gone; {}..{} remain", range.start, range.end);
             return Err(Failure::new(Code::Gone, why));
         }
-        let end = first.saturating_add(count).min(range.end);
-        let numbers = first..end.max(first);
+        // Numbers go on past history down the primary screen, and a row
+        // keeps its number as it scrolls up into history.
+        let kept = u64::try_from(screen.main_rows().len()).unwrap_or(u64::MAX);
+        let screen_end = range.start.saturating_add(kept);
+        let end = first.saturating_add(count).min(screen_end);
         let skip = usize::try_from(first.saturating_sub(range.start)).unwrap_or(usize::MAX);
-        let rows: Vec<_> = numbers.zip(screen.main_rows().skip(skip)).collect();
-        let mut w = Writer::default();
-        history_head(&mut w, self.epoch, (range.start, range.end), rows.len());
-        for (number, row) in rows {
-            w.array(2);
-            w.uint(number);
-            w.screen_row(&row);
+        let mut rows = Writer::default();
+        let mut count = 0usize;
+        for (number, row) in (first..end.max(first)).zip(screen.main_rows().skip(skip)) {
+            let wrapped_at = match row.continues() {
+                true => u64::try_from(row.len()).unwrap_or(0),
+                false => 0,
+            };
+            rows.array(3);
+            rows.uint(number);
+            rows.uint(wrapped_at);
+            rows.screen_row(&row);
+            count = count.saturating_add(1);
+            if rows.0.len() >= HISTORY_PAGE {
+                break;
+            }
         }
+        let mut w = Writer::default();
+        let range = (range.start, range.end, screen_end);
+        history_head(&mut w, self.epoch, range, count);
+        w.0.extend_from_slice(&rows.0);
         checked(w)
     }
 

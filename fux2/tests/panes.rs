@@ -6,7 +6,6 @@ use fux2::dir::Session;
 use fux2::wire::{Answer, Code, Failure, MAX_ANSWER, Part, REVISION, Request, Token};
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 type Tested = Result<(), Box<dyn std::error::Error>>;
@@ -35,10 +34,8 @@ fn idle() -> Vec<String> {
 
 impl Lab {
     fn new() -> Result<Lab, Box<dyn std::error::Error>> {
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let number = NEXT.fetch_add(1, Ordering::SeqCst);
         let root: PathBuf =
-            fuxix::file::scratch()?.join(format!("f2t-{}-{number}", std::process::id()));
+            fuxix::file::scratch()?.join(format!("f2t-{}", fux2::wire::PaneId::random()));
         fuxix::file::private_dir(&root)?;
         Ok(Lab {
             session: Session { root },
@@ -233,5 +230,61 @@ fn kill_ends_what_an_ended_program_left_behind() -> Tested {
     let killed = lab.fux2(&["kill", "orphan"])?;
     assert!(killed.status.success(), "{killed:?}");
     assert!(!alive(&pid)?.status.success(), "{pid} outlived the kill");
+    Ok(())
+}
+
+/// What a program printed and scrolled away is in the text read, in order,
+/// each line once, a line the terminal wrapped back in one piece.
+#[test]
+fn history_text_holds_every_line_once_in_order() -> Tested {
+    let lab = Lab::new()?;
+    let long: String = std::iter::repeat_n('w', 200).collect();
+    let script_unix =
+        format!("i=1; while [ $i -le 500 ]; do echo line-$i; i=$((i+1)); done; echo {long}");
+    let windows = format!("(for /L %i in (1,1,500) do @echo line-%i) & echo {long}");
+    lab.start("many", &program(&script_unix, &windows))?;
+    let until = soon(Duration::from_secs(30));
+    loop {
+        let listed = lab.fux2(&["ls", "--long"])?;
+        if String::from_utf8_lossy(&listed.stdout).contains("exited") {
+            break;
+        }
+        assert!(Instant::now() < until, "the program never ended");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = lab.fux2(&["read", "many", "--history-text"])?;
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    let numbered: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with("line-"))
+        .collect();
+    let wanted: Vec<String> = (1..=500).map(|n| format!("line-{n}")).collect();
+    assert_eq!(numbered, wanted);
+    assert!(
+        lines.contains(&long.as_str()),
+        "the wrapped line came apart"
+    );
+    Ok(())
+}
+
+/// Kill by label takes exactly the panes that carry it.
+#[test]
+fn kill_by_label_takes_only_its_group() -> Tested {
+    let lab = Lab::new()?;
+    for (name, group) in [("a", "x"), ("b", "x"), ("c", "y")] {
+        let label = format!("group={group}");
+        let mut args = vec!["start", "--name", name, "--label", &label, "--"];
+        let argv = idle();
+        args.extend(argv.iter().map(String::as_str));
+        let out = lab.fux2(&args)?;
+        assert!(out.status.success(), "{out:?}");
+    }
+    let out = lab.fux2(&["kill", "--label", "group=x"])?;
+    assert!(out.status.success(), "{out:?}");
+    let listed = lab.fux2(&["ls"])?;
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "c");
     Ok(())
 }

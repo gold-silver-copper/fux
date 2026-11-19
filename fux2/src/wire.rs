@@ -14,8 +14,11 @@ pub const MAX_ANSWER: usize = 8 << 20;
 pub const MAX_ROWS: u16 = 128;
 /// The most columns a pane has.
 pub const MAX_COLS: u16 = 256;
-/// The most rows one history read returns.
-pub const MAX_HISTORY_ROWS: u64 = 16;
+/// The most rows one history read asks for; an answer may hold fewer, to
+/// stay within [`HISTORY_PAGE`].
+pub const MAX_HISTORY_ROWS: u64 = 4096;
+/// Past this many bytes a history answer stops adding rows.
+pub const HISTORY_PAGE: usize = MAX_ANSWER / 2;
 /// The longest a wait lasts; a client renews it.
 pub const MAX_WAIT_MS: u32 = 30_000;
 /// The most parts one send has.
@@ -379,6 +382,24 @@ pub struct Row {
 }
 
 impl Row {
+    /// Its text as the first part of a line that goes on in the next row:
+    /// blanks kept, out to `width` cells.
+    pub fn text_to(&self, width: u64) -> String {
+        let mut text = String::new();
+        let mut cells = 0u64;
+        for cell in self.spans.iter().flat_map(|span| &span.cells) {
+            cells = cells.saturating_add(1);
+            match cell {
+                Cell::Text(glyph) if glyph.is_empty() => text.push(' '),
+                Cell::Text(glyph) => text.push_str(glyph),
+                Cell::Tail => {}
+            }
+        }
+        let blanks = usize::try_from(width.saturating_sub(cells)).unwrap_or(0);
+        text.extend(std::iter::repeat_n(' ', blanks));
+        text
+    }
+
     /// Its text, trailing blanks dropped.
     pub fn text(&self) -> String {
         let mut text = String::new();
@@ -391,6 +412,15 @@ impl Row {
         }
         text.trim_end().to_owned()
     }
+}
+
+/// A row read by number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryRow {
+    pub number: u64,
+    /// The row's width if its line goes on in the next row, else 0.
+    pub wrapped_at: u64,
+    pub row: Row,
 }
 
 /// How a screen differs from the one a token saw.
@@ -426,11 +456,14 @@ pub enum Answer {
         meta: Box<Meta>,
         change: Change,
     },
+    /// Numbered rows of the primary screen: history is `start..end`, and
+    /// the screen below it runs on to `screen_end`.
     History {
         epoch: u64,
         start: u64,
         end: u64,
-        rows: Vec<(u64, Row)>,
+        screen_end: u64,
+        rows: Vec<HistoryRow>,
     },
     Waited {
         token: Token,
@@ -983,12 +1016,13 @@ pub fn screen_head(w: &mut Writer, token: Token, meta: &Meta) {
 
 /// The first part of a history answer; the caller writes `rows` rows, each
 /// after its number in a pair.
-pub fn history_head(w: &mut Writer, epoch: u64, range: (u64, u64), rows: usize) {
-    w.array(5);
+pub fn history_head(w: &mut Writer, epoch: u64, range: (u64, u64, u64), rows: usize) {
+    w.array(6);
     w.uint(5);
     w.uint(epoch);
     w.uint(range.0);
     w.uint(range.1);
+    w.uint(range.2);
     w.array(rows);
 }
 
@@ -1141,20 +1175,25 @@ impl Answer {
                     change,
                 }
             }
-            (5, 5) => {
-                let (epoch, start, end) = (r.uint()?, r.uint()?, r.uint()?);
+            (5, 6) => {
+                let (epoch, start, end, screen_end) = (r.uint()?, r.uint()?, r.uint()?, r.uint()?);
                 let most = usize::try_from(MAX_HISTORY_ROWS).unwrap_or(usize::MAX);
                 let rows = r.array(most)?;
                 let rows = (0..rows)
                     .map(|_| {
-                        r.fields(2)?;
-                        Ok((r.uint()?, r.row()?))
+                        r.fields(3)?;
+                        Ok(HistoryRow {
+                            number: r.uint()?,
+                            wrapped_at: r.uint()?,
+                            row: r.row()?,
+                        })
                     })
                     .collect::<Read<_>>()?;
                 Answer::History {
                     epoch,
                     start,
                     end,
+                    screen_end,
                     rows,
                 }
             }

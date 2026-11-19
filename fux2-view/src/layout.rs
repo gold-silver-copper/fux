@@ -3,6 +3,7 @@
 //! an `axis`.
 pub const MAX_LAYOUT: usize = 64 << 10;
 const MAX_TABS: usize = 32;
+const MAX_WORKSPACES: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
@@ -19,13 +20,27 @@ pub struct Tab {
     pub axis: Axis,
 }
 
-/// The tab shown with no layout file.
-pub fn everything() -> Vec<Tab> {
-    vec![Tab {
-        title: "all".to_owned(),
+/// A named list of tabs; a viewer shows one at a time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Workspace {
+    pub name: String,
+    pub tabs: Vec<Tab>,
+}
+
+/// What is shown with no layout file.
+pub fn everything() -> Vec<Workspace> {
+    vec![Workspace {
+        name: "default".to_owned(),
+        tabs: vec![new_tab("all".to_owned())],
+    }]
+}
+
+fn new_tab(title: String) -> Tab {
+    Tab {
+        title,
         tests: Vec::new(),
         axis: Axis::Auto,
-    }]
+    }
 }
 
 /// Reads one `"…"` from the start of `text`: the string and what follows.
@@ -98,12 +113,15 @@ fn without_comment(line: &str) -> &str {
     line
 }
 
-/// The tabs `text` describes. Any fault is refused with its line.
-pub fn parse(text: &str) -> Result<Vec<Tab>, String> {
+/// The workspaces `text` describes: `[[workspace]]` sections with
+/// `[[workspace.tab]]`s, or plain `[[tab]]`s for one unnamed workspace. Any
+/// fault is refused with its line.
+pub fn parse(text: &str) -> Result<Vec<Workspace>, String> {
     if text.len() > MAX_LAYOUT {
         return Err(format!("{} bytes, at most {MAX_LAYOUT}", text.len()));
     }
-    let mut tabs: Vec<Tab> = Vec::new();
+    let mut spaces: Vec<Workspace> = Vec::new();
+    let mut named = false;
     for (index, line) in text.lines().enumerate() {
         let number = index.saturating_add(1);
         let at = |why: String| format!("line {number}: {why}");
@@ -111,25 +129,56 @@ pub fn parse(text: &str) -> Result<Vec<Tab>, String> {
         if line.is_empty() {
             continue;
         }
-        if line == "[[tab]]" {
-            if tabs.len() >= MAX_TABS {
+        if line == "[[workspace]]" {
+            if !named && !spaces.is_empty() {
+                return Err(at("[[tab]] and [[workspace]] do not mix".to_owned()));
+            }
+            if spaces.len() >= MAX_WORKSPACES {
+                return Err(at(format!("more than {MAX_WORKSPACES} workspaces")));
+            }
+            named = true;
+            spaces.push(Workspace {
+                name: format!("workspace {}", spaces.len().saturating_add(1)),
+                tabs: Vec::new(),
+            });
+            continue;
+        }
+        if line == "[[tab]]" || line == "[[workspace.tab]]" {
+            if named != (line == "[[workspace.tab]]") {
+                let why = "use [[workspace.tab]] under [[workspace]], and [[tab]] without one";
+                return Err(at(why.to_owned()));
+            }
+            if spaces.is_empty() {
+                spaces.extend(everything().into_iter().map(|mut space| {
+                    space.tabs.clear();
+                    space
+                }));
+            }
+            let space = spaces
+                .last_mut()
+                .ok_or_else(|| at("a tab outside a workspace".to_owned()))?;
+            if space.tabs.len() >= MAX_TABS {
                 return Err(at(format!("more than {MAX_TABS} tabs")));
             }
-            tabs.push(Tab {
-                title: format!("tab {}", tabs.len().saturating_add(1)),
-                tests: Vec::new(),
-                axis: Axis::Auto,
-            });
+            let title = format!("tab {}", space.tabs.len().saturating_add(1));
+            space.tabs.push(new_tab(title));
             continue;
         }
         let (key, value) = line
             .split_once('=')
-            .ok_or_else(|| at("expected [[tab]] or key = value".to_owned()))?;
-        let value = value.trim();
-        let tab = tabs
+            .ok_or_else(|| at("expected a [[section]] or key = value".to_owned()))?;
+        let (key, value) = (key.trim(), value.trim());
+        let space = spaces
             .last_mut()
-            .ok_or_else(|| at("a setting before the first [[tab]]".to_owned()))?;
-        match key.trim() {
+            .ok_or_else(|| at("a setting before the first section".to_owned()))?;
+        let Some(tab) = space.tabs.last_mut() else {
+            if key != "name" {
+                return Err(at(format!("no workspace setting {key:?}")));
+            }
+            space.name = whole_string(value).map_err(at)?;
+            continue;
+        };
+        match key {
             "title" => tab.title = whole_string(value).map_err(at)?,
             "match" => tab.tests = tests(value).map_err(at)?,
             "axis" => {
@@ -143,10 +192,13 @@ pub fn parse(text: &str) -> Result<Vec<Tab>, String> {
             other => return Err(at(format!("no setting {other:?}"))),
         }
     }
-    match tabs.is_empty() {
-        true => Err("no [[tab]]".to_owned()),
-        false => Ok(tabs),
+    if spaces.is_empty() {
+        return Err("no [[tab]]".to_owned());
     }
+    if let Some(empty) = spaces.iter().find(|space| space.tabs.is_empty()) {
+        return Err(format!("workspace {:?} has no tab", empty.name));
+    }
+    Ok(spaces)
 }
 
 #[cfg(test)]
@@ -155,18 +207,33 @@ mod tests {
 
     #[test]
     fn a_layout_is_read_and_a_bad_one_says_where() -> Result<(), String> {
-        let tabs = parse(
+        let spaces = parse(
             "# mine\n[[tab]]\ntitle = \"a # b\"\nmatch = [\"p=q\", \"name=x\"] # both\n\
              axis = \"rows\"\n[[tab]]\n",
         )?;
+        assert_eq!(spaces.len(), 1);
+        let tabs = spaces.first().map_or(&[][..], |space| &space.tabs);
         assert_eq!(tabs.len(), 2);
         assert_eq!(tabs.first().map(|t| t.title.as_str()), Some("a # b"));
         assert_eq!(tabs.first().map(|t| t.axis), Some(Axis::Rows));
         assert_eq!(tabs.first().map(|t| t.tests.len()), Some(2));
-        let refused = parse("[[tab]]\naxis = \"sideways\"\n")
-            .err()
-            .unwrap_or_default();
-        assert!(refused.starts_with("line 2"), "{refused}");
+        let refused = parse("[[tab]]\naxis = \"sideways\"\n").err();
+        assert!(refused.is_some_and(|why| why.starts_with("line 2")));
+        Ok(())
+    }
+
+    #[test]
+    fn workspaces_hold_their_own_tabs() -> Result<(), String> {
+        let spaces = parse(
+            "[[workspace]]\nname = \"one\"\n[[workspace.tab]]\ntitle = \"a\"\n\
+             [[workspace.tab]]\n[[workspace]]\n[[workspace.tab]]\n",
+        )?;
+        let shape: Vec<(&str, usize)> = (spaces.iter())
+            .map(|space| (space.name.as_str(), space.tabs.len()))
+            .collect();
+        assert_eq!(shape, [("one", 2), ("workspace 2", 1)]);
+        assert!(parse("[[tab]]\n[[workspace]]\n").is_err());
+        assert!(parse("[[workspace]]\n").is_err());
         Ok(())
     }
 }

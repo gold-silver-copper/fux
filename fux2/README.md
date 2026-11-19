@@ -40,7 +40,8 @@ the pane has moved on.
 | `wait` | `fux2 wait build --after "$t" --ms 5000` | `<token> <state>` |
 | `resize` | `fux2 resize build 100 30` | `100 30` |
 | `signal` | `fux2 signal build INT` | `foreground-group`, or `console-input` on Windows |
-| `kill` | `fux2 kill build` | nothing, when everything it started is gone |
+| `kill` | `fux2 kill build`, or a group: `fux2 kill --label project=x` | nothing, when everything it started is gone |
+| `page` | `fux2 page build` | shows the pane's scrollback in a pager |
 | `view` | `fux2 view --layout tabs.toml` | the viewer |
 
 With no program after `--`, `start` runs `$SHELL` (`%COMSPEC%` on Windows). The
@@ -69,7 +70,8 @@ result yet. To wait in one command, give it the token `send` printed:
 | `--until-line TEXT` | keep waiting until a whole row equals TEXT (the safe choice: a typed command echoes on the screen, so `--until hi` matches `echo hi` itself) |
 | `--text` | print the whole screen as text instead of JSON |
 | `--json` | without `--since`: the whole screen and its metadata as JSON |
-| `--history EPOCH FIRST COUNT` | up to 16 rows of history as JSON; `EPOCH` and the retained range come from `--json` |
+| `--history-text` | all retained history and then the screen, as plain text |
+| `--history EPOCH FIRST COUNT` | numbered rows as JSON, for programs; `EPOCH` and the retained range come from `--json` |
 
 A program that has ended keeps its last screen, readable until `fux2 kill`.
 
@@ -86,18 +88,47 @@ so); a larger one leaves blank room. Viewing never resizes a pane.
 
 | Keys | Action |
 |---|---|
-| `C-b o` | next pane |
-| `C-b n` | next tab |
+| `C-b o`, `C-b O` | next, previous pane |
+| `C-b n`, `C-b p` | next, previous tab |
+| `C-b 1` to `C-b 9` | that tab |
+| `C-b l` | the tab shown before |
+| `C-b )`, `C-b (` | next, previous workspace |
+| `C-b L` | the workspace shown before |
+| `C-b c` | a new shell in the shown tab |
+| `C-b [` | the focused pane's scrollback, in a pager |
 | `C-b f` | resize the focused pane to fit its tile |
 | `C-b d` | detach |
 | `C-b C-b` | type a literal `C-b` |
 
-The mouse is not forwarded.
+The status line says which workspace and tab are shown and how many there are,
+such as `compiler 1/2 | logs 2/3`. Each viewer keeps its own place. The mouse is
+not forwarded.
+
+## Scrollback and copying
+
+The viewer has no scroll mode. A pane's history is text you read with the tools
+you already have:
+
+```sh
+fux2 read build --history-text | less
+fux2 read build --history-text | wl-copy     # or pbcopy, or clip on Windows
+```
+
+That prints everything the pane still retains, then its screen. A line the
+terminal wrapped comes out as the one line the program wrote. If a resize
+interrupts the read it starts again, and after three tries it says so
+(`stale`). Above 256 MiB of text it refuses (`limit`).
+
+In the viewer, `C-b [` opens the focused pane's history in a new pane running
+`$PAGER`, else `less`, else `more` (`more.com` on Windows). Search and scroll
+there, and select with your terminal to copy. When the pager ends, the pane
+removes itself and the focus returns.
 
 ### Layout file
 
-`fux2 view --layout FILE` reads tabs from a small TOML file, and rereads it every
-second. A bad edit keeps the last good layout and shows the error.
+`fux2 view --layout FILE` reads a small TOML file, and rereads it every second. A
+bad edit keeps the last good layout and shows the error. A tab is a filter on
+labels, and a workspace is a named list of tabs.
 
 ```toml
 [[tab]]
@@ -105,6 +136,32 @@ title = "compiler"
 match = ["project=x"]     # labels that must all match; `name=build` works too
 axis = "columns"          # auto, rows or columns
 ```
+
+With several workspaces:
+
+```toml
+[[workspace]]
+name = "compiler"
+
+[[workspace.tab]]
+title = "build"
+match = ["project=x", "role=build"]
+
+[[workspace.tab]]
+title = "logs"
+match = ["project=x", "role=logs"]
+
+[[workspace]]
+name = "docs"
+
+[[workspace.tab]]
+title = "all"
+match = ["project=docs"]
+```
+
+`C-b c` starts a shell carrying the labels the shown tab matches, so it appears
+there. In a tab that matches `name=`, no label can do that, and it says so. To end
+a whole group: `fux2 kill --label project=x`.
 
 ### Keys and commands: `view.grift`
 
@@ -125,16 +182,33 @@ the [grift](https://crates.io/crates/grift) language:
 |---|---|
 | `(bind-key CHORD f)`, `(unbind-key CHORD)` | a chord is `"F7"` or `"C-b x"`; at most 256 |
 | `(focused)` | the pane focused when the key was pressed, as `NAME@ID` |
-| `(next-pane)`, `(next-tab)`, `(fit)`, `(detach)` | the viewer's actions |
+| `(next-pane)`, `(previous-pane)`, `(next-tab)`, `(previous-tab)`, `(last-tab)`, `(go-to-tab N)` | move around |
+| `(next-workspace)`, `(previous-workspace)`, `(last-workspace)` | change workspace |
+| `(fit)`, `(detach)` | the viewer's actions |
+| `(bind-verb CHORD WORD [N])` | bind a chord to one of those actions by name (or `"literal"`, which types the chord's first key). It acts at once, even while a binding runs |
+| `(start-here PREFIX [PROGRAM ARG ...])` | a new pane named `PREFIX-N` with the shown tab's labels; gives its name |
+| `(focus PANE)` | focus that pane when it appears, and come back when it goes |
+| `(fux2-program)` | the path of the `fux2` command |
 | `(send PANE TEXT)` | types TEXT literally: write `\r` for Enter |
 | `(send-key PANE KEY)`, `(read PANE)`, `(ls)` | as the commands |
 | `(start NAME PROGRAM ARG ...)`, `(resize PANE COLS ROWS)` | as the commands |
 | `(signal PANE NAME)`, `(wait PANE TOKEN MS)`, `(kill PANE)` | as the commands |
 
+The default keys are this same language, in
+[`fux2-view/src/defaults.grift`](../fux2-view/src/defaults.grift), and any of them
+can be unbound or replaced. `C-b [` is three lines there:
+
+```lisp
+(bind-key "C-b ["
+  (lambda! ()
+    (focus (start-here "history" (fux2-program) "page" (focused)))))
+```
+
 Loading gets 2 seconds and each binding 5, on a thread of their own: the viewer
 keeps drawing and taking keys, and `C-b d` works, while one runs. One that
 overruns is stopped and the status line says so. An elevated viewer on Windows
-does not run this file, since a normal process could have written it.
+does not run this file, since a normal process could have written it; the default
+keys still work.
 
 ## Where panes live, and who may connect
 
@@ -154,8 +228,10 @@ prevent mistakes such as typing into a replaced pane. They are not passwords.
 
 No shared layout or session state, no ordering across panes, no restart of a
 program, no taking over of a pane from a crashed daemon, no mouse, no graphics, no
-clipboard bridge, no program-set palette colours, and no judgement of whether a
-program is "ready". If a pane's daemon itself is killed its screen is gone, and
+clipboard bridge, no scroll mode in the viewer, no program-set palette colours, and
+no judgement of whether a program is "ready". Tiles are equal: no uneven splits,
+resizable borders or splitting by hand. There is no tab or workspace picker, and a
+pane cannot move between tabs, since its labels are fixed when it starts. If a pane's daemon itself is killed its screen is gone, and
 its program normally gets a hang-up; a program that ignores that keeps running
 with nothing attached.
 
