@@ -1010,7 +1010,7 @@ impl Holder {
 
     /// The pictures shown now, each written once to `images/` while the
     /// rate allows; those no longer shown are removed.
-    fn place_pictures(&mut self, now: Instant) -> Vec<Placed> {
+    fn place_pictures(&mut self, now: Instant, out: &mut publish::Publish) -> Vec<Placed> {
         let since = self
             .images
             .filled_at
@@ -1046,8 +1046,8 @@ impl Holder {
                         self.images.budget = self.images.budget.saturating_sub(pixels);
                         self.images.next = self.images.next.saturating_add(1);
                         let name = format!("{}.sixel", self.images.next);
-                        self.publisher
-                            .image(name.clone(), Arc::clone(picture.picture));
+                        out.new_images
+                            .push((name.clone(), Arc::clone(picture.picture)));
                         name
                     })
                 }
@@ -1070,7 +1070,7 @@ impl Holder {
         }
         for (picture, name) in std::mem::take(&mut self.images.written) {
             if !kept.iter().any(|(p, _)| Arc::ptr_eq(p, &picture)) {
-                self.publisher.image_gone(name);
+                out.gone_images.push(name);
             }
         }
         self.images.written = kept;
@@ -1130,7 +1130,11 @@ impl Holder {
     fn publish(&mut self, now: Instant) {
         let head = self.head();
         self.dirty = false;
-        let placed = self.place_pictures(now);
+        let mut out = publish::Publish {
+            history: std::mem::take(&mut self.history),
+            ..publish::Publish::default()
+        };
+        let placed = self.place_pictures(now, &mut out);
         let screen = self.parser.screen();
         let errors = std::mem::take(&mut self.errors_changed).then(|| {
             let mut text = String::new();
@@ -1140,16 +1144,15 @@ impl Holder {
             }
             text.into_bytes()
         });
-        if !self.history.is_empty() {
-            self.publisher.history(&std::mem::take(&mut self.history));
-        }
-        let files = publish::Files {
+        out.files = Some(publish::Files {
             screen: publish::plain(screen, &head),
             styled: publish::styled(screen, &head, &placed),
             status: self.status(),
             errors,
-        };
-        self.publisher.files(files);
+        });
+        // One hand-over: a picture's file is removed only with the screens
+        // that no longer name it.
+        self.publisher.hand(out);
         self.published_at = Some(now);
     }
 

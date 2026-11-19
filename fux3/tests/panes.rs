@@ -247,7 +247,8 @@ fn a_picture_comes_and_goes_as_a_file() -> Result {
     until("the second picture", || second.exists())?;
     s.write("p", "in", b"seq 1 40\n")?;
     until("the scrolled picture's file gone", || !second.exists())?;
-    assert!(!s.read("p", "screen.styled").contains("\npicture "));
+    let styled = s.read("p", "screen.styled");
+    assert!(!styled.contains("\npicture "), "{styled}");
     Ok(())
 }
 

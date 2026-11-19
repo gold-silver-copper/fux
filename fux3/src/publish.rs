@@ -76,6 +76,15 @@ pub struct Files {
     pub errors: Option<Vec<u8>>,
 }
 
+/// One publish, as the holder hands it over.
+#[derive(Default)]
+pub struct Publish {
+    pub files: Option<Files>,
+    pub history: Vec<u8>,
+    pub new_images: Vec<(String, Arc<Picture>)>,
+    pub gone_images: Vec<String>,
+}
+
 /// What waits for the publisher.
 #[derive(Default)]
 struct Work {
@@ -87,21 +96,9 @@ struct Work {
     stop: bool,
 }
 
-/// What the publisher says back.
-#[derive(Default)]
-pub struct Report {
-    /// The last failure, until a publish succeeds.
-    pub failure: Option<String>,
-    /// Files written or replaced, ever.
-    pub writes: u64,
-    /// Bytes written, ever.
-    pub bytes: u64,
-}
-
 struct Shared {
     work: Mutex<Work>,
     wake: Condvar,
-    report: Mutex<Report>,
 }
 
 /// The publisher thread, and the way to hand it work.
@@ -117,7 +114,6 @@ impl Publisher {
         let shared = Arc::new(Shared {
             work: Mutex::new(Work::default()),
             wake: Condvar::new(),
-            report: Mutex::new(Report::default()),
         });
         let theirs = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
@@ -136,60 +132,29 @@ impl Publisher {
         }
     }
 
-    /// Hands over a publish: one not yet written is replaced, as only the
-    /// newest screen matters.
-    pub fn files(&self, files: Files) {
+    /// Hands over one publish, whole: screens not yet written are replaced
+    /// by these, history text is kept in order, a picture both waiting to be
+    /// written and gone is never written.
+    pub fn hand(&self, publish: Publish) {
         self.with_work(|work| {
-            let errors = files
-                .errors
-                .is_none()
-                .then(|| work.files.take().and_then(|f| f.errors))
-                .flatten();
-            work.files = Some(Files {
-                errors: files.errors.or(errors),
-                ..files
-            });
-        });
-    }
-
-    /// Hands over text for `history`, kept in order.
-    pub fn history(&self, text: &[u8]) {
-        self.with_work(|work| {
-            work.history.extend_from_slice(text);
+            if let Some(files) = publish.files {
+                let errors = files
+                    .errors
+                    .or_else(|| work.files.take().and_then(|f| f.errors));
+                work.files = Some(Files { errors, ..files });
+            }
+            work.history.extend_from_slice(&publish.history);
             let over = work.history.len().saturating_sub(MAX_HISTORY_WAITING);
             if over > 0 {
                 work.history = work.history.get(over..).unwrap_or_default().to_vec();
                 work.history_lost = work.history_lost.saturating_add(over);
             }
+            work.new_images.extend(publish.new_images);
+            for name in publish.gone_images {
+                work.new_images.retain(|(n, _)| *n != name);
+                work.gone_images.push(name);
+            }
         });
-    }
-
-    /// A picture to write once as `images/NAME`.
-    pub fn image(&self, name: String, picture: Arc<Picture>) {
-        self.with_work(|work| work.new_images.push((name, picture)));
-    }
-
-    /// A picture's file to remove, after the next screens.
-    pub fn image_gone(&self, name: String) {
-        self.with_work(|work| {
-            work.new_images.retain(|(n, _)| *n != name);
-            work.gone_images.push(name);
-        });
-    }
-
-    /// What the publisher said last.
-    pub fn report(&self) -> (Option<String>, u64, u64) {
-        match self.shared.report.lock() {
-            Ok(report) => (report.failure.clone(), report.writes, report.bytes),
-            Err(_) => (Some("the publisher failed".to_owned()), 0, 0),
-        }
-    }
-
-    /// Whether everything handed over has been written.
-    pub fn idle(&self) -> bool {
-        self.shared.work.lock().is_ok_and(|work| {
-            work.files.is_none() && work.history.is_empty() && work.new_images.is_empty()
-        })
     }
 
     /// Writes what waits, then stops; later work is never written.
@@ -222,13 +187,7 @@ fn run(shared: &Shared, dir: &Path, history_cap: usize) {
         let taken = std::mem::take(&mut *work);
         work.stop = taken.stop;
         drop(work);
-        let had_files = taken.files.is_some();
-        let mut writer = Writer {
-            dir,
-            failure: None,
-            writes: 0,
-            bytes: 0,
-        };
+        let mut writer = Writer { dir, failure: None };
         writer.publish(taken.new_images, taken.files, taken.gone_images);
         if !taken.history.is_empty() || taken.history_lost > 0 {
             let mut text = Vec::new();
@@ -242,13 +201,6 @@ fn run(shared: &Shared, dir: &Path, history_cap: usize) {
             text.extend_from_slice(&taken.history);
             history_len = writer.append_history(&text, history_len, history_cap);
         }
-        if let Ok(mut report) = shared.report.lock() {
-            report.writes = report.writes.saturating_add(writer.writes);
-            report.bytes = report.bytes.saturating_add(writer.bytes);
-            if writer.failure.is_some() || had_files {
-                report.failure = writer.failure;
-            }
-        }
         if taken.stop {
             return;
         }
@@ -258,8 +210,6 @@ fn run(shared: &Shared, dir: &Path, history_cap: usize) {
 struct Writer<'a> {
     dir: &'a Path,
     failure: Option<String>,
-    writes: u64,
-    bytes: u64,
 }
 
 impl Writer<'_> {
@@ -280,12 +230,7 @@ impl Writer<'_> {
             .and_then(|mut file| file.write_all(bytes))
             .and_then(|()| std::fs::rename(&aside, &path));
         match written {
-            Ok(()) => {
-                self.writes = self.writes.saturating_add(1);
-                let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                self.bytes = self.bytes.saturating_add(len);
-                true
-            }
+            Ok(()) => true,
             Err(e) => {
                 let _ = std::fs::remove_file(&aside);
                 self.note(&format!("writing {name}"), e);
@@ -366,12 +311,7 @@ impl Writer<'_> {
             .open(&path)
             .and_then(|mut file| file.write_all(text));
         match appended {
-            Ok(()) => {
-                self.writes = self.writes.saturating_add(1);
-                let n = u64::try_from(text.len()).unwrap_or(u64::MAX);
-                self.bytes = self.bytes.saturating_add(n);
-                len.saturating_add(text.len())
-            }
+            Ok(()) => len.saturating_add(text.len()),
             Err(e) => {
                 self.note("appending to history", e);
                 len
