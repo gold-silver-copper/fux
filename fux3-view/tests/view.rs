@@ -236,7 +236,7 @@ fn a_wrong_layout_is_refused_and_the_last_good_one_kept() -> Tested {
     let file = lab.view.join(".view/layout");
     for wrong in [
         "fux3-layout 1\nversion x\n".to_owned(),
-        "x".repeat(70 << 10),
+        std::iter::repeat_n('x', 70 << 10).collect(),
     ] {
         std::fs::write(&file, &wrong).map_err(|e| e.to_string())?;
         let out = lab.run(&lab.view, &["--do", "zoom left"])?;
