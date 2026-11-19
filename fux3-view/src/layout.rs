@@ -785,6 +785,20 @@ pub fn changed(before: &Layout, after: &Layout, area: Rect) -> Vec<PaneRef> {
         .collect()
 }
 
+/// The panes whose tile differs between the layout files `old` and `new`,
+/// shown in `area` with `live`. A pane only `new` gives a tile to had none
+/// (it was routed, which fits nothing), wherever it showed.
+pub fn changed_file(old: &Layout, new: &Layout, live: &[Live], area: Rect) -> Vec<PaneRef> {
+    let has = |layout: &Layout, l: &Live| {
+        let its = |p: &PaneRef| p.id == l.pane.id || *p == l.pane.bare();
+        layout.placed().iter().any(its)
+    };
+    let before: Vec<Live> = (live.iter().filter(|l| has(old, l) || !has(new, l)))
+        .cloned()
+        .collect();
+    changed(&old.shown(&before), &new.shown(live), area)
+}
+
 // ---- The file's text ----
 
 fn quoted(text: &str, out: &mut String) {

@@ -461,7 +461,7 @@ impl View {
         }
         self.refresh(changed);
         if let Some(old) = old.filter(|_| changed) {
-            for pane in layout::changed(&old.shown(&self.live), &self.arranged, self.area()) {
+            for pane in layout::changed_file(&old, &self.stored, &self.live, self.area()) {
                 self.fit(&pane);
             }
         }
