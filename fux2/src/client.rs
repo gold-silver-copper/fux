@@ -89,6 +89,7 @@ impl Client {
                     cols: 0,
                     rows: 0,
                     state: crate::wire::State::Running,
+                    pid: 0,
                 },
             };
             let hello = Request::Hello { revision: REVISION };

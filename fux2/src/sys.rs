@@ -31,6 +31,8 @@ pub fn try_claim(dir: &Path) -> Result<Option<File>, Failure> {
 pub struct Launch {
     pub go: PipeWriter,
     pub ready: PipeReader,
+    /// What the caller must be told before the pane's program starts.
+    pub bound: Option<&'static str>,
 }
 
 /// The null device, for the standard streams of a process that is done
@@ -190,7 +192,11 @@ mod unix {
             .spawn()
             .map_err(|e| io(format!("starting {}", exe.display()), e))?;
         drop(child);
-        Ok(Launch { go, ready })
+        Ok(Launch {
+            go,
+            ready,
+            bound: None,
+        })
     }
 
     /// Starts `argv` on `slave`.
@@ -215,7 +221,7 @@ mod windows {
     use super::{Launch, OsString, Path, PathBuf, io};
     use crate::wire::{Code, Failure, PaneId};
     use fuxix::Errno;
-    use fuxix::process::{Breakaway, Dispositions, Fate, Job};
+    use fuxix::process::{Breakaway, Dispositions, Job};
     use fuxix::pty::Slave;
     use std::ffi::OsStr;
     use std::fs::File;
@@ -360,19 +366,9 @@ mod windows {
     }
 
     /// Starts this program as a pane's daemon, out of any job it may
-    /// leave. A job that keeps it in would end the pane with the launcher:
-    /// that is refused here, before any program starts.
+    /// leave. A job that keeps it in means the pane ends with that job:
+    /// said in `bound`, for the caller to report before the program starts.
     pub fn launch(root: &Path, args: &[OsString]) -> Result<Launch, Failure> {
-        let bound = || {
-            Failure::new(
-                Code::Denied,
-                "this process is in a job that lets nothing leave it, so a pane would end \
-                 with the terminal or launcher that made the job; start it from outside that job",
-            )
-        };
-        if fuxix::process::job_fate() == Fate::Bound {
-            return Err(bound());
-        }
         let exe = kept_copy(root)?;
         let (go_read, go) = std::io::pipe().map_err(|e| io("pipe", e))?;
         let (ready, ready_write) = std::io::pipe().map_err(|e| io("pipe", e))?;
@@ -384,11 +380,11 @@ mod windows {
         ];
         let started = fuxix::process::start_in(&exe, &args, stdio, Some(root))
             .map_err(|e| io(format!("starting {}", exe.display()), e))?;
-        if started.breakaway == Breakaway::Refused {
-            // `go` closes unsaid, and the daemon ends with nothing started.
-            return Err(bound());
-        }
-        Ok(Launch { go, ready })
+        let bound = (started.breakaway == Breakaway::Refused).then_some(
+            "this process is in a job that lets nothing leave it: \
+             the pane ends when that job does",
+        );
+        Ok(Launch { go, ready, bound })
     }
 
     /// Starts `argv` on `slave`.

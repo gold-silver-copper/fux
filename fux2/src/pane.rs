@@ -295,10 +295,15 @@ struct Pane {
 pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     let mut stdout = std::io::stdout();
     let mut go = String::new();
-    if std::io::stdin().lock().read_line(&mut go).is_err() || go.trim() != "go" {
+    if std::io::stdin().lock().read_line(&mut go).is_err() {
         return ExitCode::FAILURE;
     }
-    match Spec::parse(args).and_then(prepare) {
+    let bound = match go.trim() {
+        "go" => false,
+        "go bound" => true,
+        _ => return ExitCode::FAILURE,
+    };
+    match Spec::parse(args).and_then(|spec| prepare(spec, bound)) {
         Ok(mut pane) => {
             let token = pane.model.token();
             let said = writeln!(stdout, "ok {token}").and_then(|()| stdout.flush());
@@ -322,7 +327,7 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
 
 /// Claims the name, opens the terminal and starts the program. Whatever
 /// fails gives the name back.
-fn prepare(spec: Spec) -> Result<Pane, Failure> {
+fn prepare(spec: Spec, bound: bool) -> Result<Pane, Failure> {
     dir::check_name(&spec.name)?;
     let session = Session {
         root: spec.root.clone(),
@@ -333,6 +338,9 @@ fn prepare(spec: Spec) -> Result<Pane, Failure> {
     let mut model = Model::new(id, size, spec.history.min(MAX_HISTORY))?;
     if let Some(note) = note {
         model.limitation(note);
+    }
+    if bound {
+        model.limitation("this pane ends when the job that started it does".to_owned());
     }
     let io = |what: &str, e: &dyn std::fmt::Display| Failure::new(Code::Io, format!("{what}: {e}"));
     // Before anything could start: what a program leaves behind stays this
@@ -808,6 +816,7 @@ impl Pane {
             cols,
             rows,
             state: self.model.state().clone(),
+            pid: std::process::id(),
         }
     }
 
@@ -1032,8 +1041,12 @@ impl Pane {
         }
         if let Some(job) = &self.job {
             let sent = job.kill(Reach::Session);
+            // An ended leader's group may hold nothing to signal, which
+            // macOS calls EPERM: what is really left is counted below.
+            let leader = job.leader();
+            let ended = matches!(job.ended(), Ok(Some(_)));
             for (pid, errno) in sent.failed {
-                if errno != Errno::SRCH {
+                if errno != Errno::SRCH && !(ended && pid == leader) {
                     missed.push(format!("{pid} could not be killed: {errno}"));
                 }
             }

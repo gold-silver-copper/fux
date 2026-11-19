@@ -322,6 +322,8 @@ pub struct Hello {
     pub cols: u16,
     pub rows: u16,
     pub state: State,
+    /// The daemon's process.
+    pub pid: u32,
 }
 
 impl Hello {
@@ -1012,7 +1014,7 @@ impl Answer {
         let mut w = Writer::default();
         match self {
             Answer::Hello(hello) => {
-                w.array(7);
+                w.array(8);
                 w.uint(0);
                 w.uint(hello.revision);
                 w.bytes(&hello.id.0);
@@ -1025,6 +1027,7 @@ impl Answer {
                 w.uint(hello.cols.into());
                 w.uint(hello.rows.into());
                 w.state(&hello.state);
+                w.uint(hello.pid.into());
             }
             Answer::Sent { bytes, token } => {
                 w.array(3);
@@ -1074,9 +1077,9 @@ impl Answer {
 
     pub fn decode(body: &[u8]) -> Result<Answer, Failure> {
         let mut r = Reader::new(body);
-        let fields = r.array(7)?;
+        let fields = r.array(8)?;
         let answer = match (r.uint()?, fields) {
-            (0, 7) => {
+            (0, 8) => {
                 let revision = r.uint()?;
                 let id = r.bytes()?;
                 let id = PaneId(id.try_into().map_err(|_| malformed("a pane id's length"))?);
@@ -1094,6 +1097,7 @@ impl Answer {
                     cols: r.small()?,
                     rows: r.small()?,
                     state: r.state()?,
+                    pid: r.small()?,
                 })
             }
             (1, 3) => Answer::Sent {

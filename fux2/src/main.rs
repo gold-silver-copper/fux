@@ -4,8 +4,8 @@ use fux2::dir::{self, Session};
 use fux2::model::{apply, checked_size};
 use fux2::pane::{self, DEFAULT_HISTORY, MAX_HISTORY, MAX_INPUT, Spec};
 use fux2::wire::{
-    Answer, Change, Code, Failure, MAX_PARTS, MAX_REQUEST, MAX_WAIT_MS, Meta, Part, Request, Row,
-    State, Token,
+    Answer, Change, Code, Failure, MAX_PARTS, MAX_REQUEST, MAX_WAIT_MS, Meta, PaneId, Part,
+    Request, Row, State, Token,
 };
 use std::ffi::OsString;
 use std::io::{BufRead, Read, Write};
@@ -87,10 +87,42 @@ impl Args {
         self.value(flag)?.parse()
     }
 
-    fn name(&mut self) -> Result<String, Failure> {
-        let name = self.next()?.ok_or_else(|| usage("a pane name is needed"))?;
-        dir::check_name(&name)?;
-        Ok(name)
+    /// The pane an argument names: `NAME`, or `NAME@ID` for that one life
+    /// of it and no later pane of the name.
+    fn pane(&mut self) -> Result<Target, Failure> {
+        let text = self.next()?.ok_or_else(|| usage("a pane name is needed"))?;
+        let (name, id) = match text.split_once('@') {
+            None => (text.as_str(), None),
+            Some((name, id)) => {
+                let id =
+                    PaneId::parse(id).ok_or_else(|| usage(format!("bad pane id in {text}")))?;
+                (name, Some(id))
+            }
+        };
+        dir::check_name(name)?;
+        Ok(Target {
+            name: name.to_owned(),
+            id,
+        })
+    }
+}
+
+/// A pane as a command names it.
+struct Target {
+    name: String,
+    id: Option<PaneId>,
+}
+
+impl Target {
+    fn connect(&self) -> Result<Client, Failure> {
+        let client = Client::connect(&Session::open()?, &self.name)?;
+        match self.id {
+            Some(id) if id != client.hello.id => {
+                let why = format!("{} is now pane {}, not {id}", self.name, client.hello.id);
+                Err(Failure::new(Code::Replaced, why))
+            }
+            Some(_) | None => Ok(client),
+        }
     }
 }
 
@@ -152,7 +184,15 @@ fn start(mut args: Args) -> Outcome {
     };
     let launch = fux2::sys::launch(&session.root, &spec.to_args())?;
     let mut go = launch.go;
-    let told = go.write_all(b"go\n").and_then(|()| go.flush());
+    // Said before the program starts, and kept with the pane's screen.
+    let word: &[u8] = match launch.bound {
+        Some(why) => {
+            let _ = writeln!(std::io::stderr(), "fux2: {name}: {why}");
+            b"go bound\n"
+        }
+        None => b"go\n",
+    };
+    let told = go.write_all(word).and_then(|()| go.flush());
     // The line comes on a thread of its own, so that a daemon that says
     // nothing cannot hold this command past its bound.
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -216,8 +256,9 @@ fn ls(mut args: Args) -> Outcome {
                 .map(|(key, value)| format!("{key}={value}"))
                 .collect();
             out.push_str(&format!(
-                "\t{}\t{}x{}\t{}\t{}",
+                "\t{}\t{}\t{}x{}\t{}\t{}",
                 hello.id,
+                hello.pid,
                 hello.cols,
                 hello.rows,
                 hello.state,
@@ -273,7 +314,7 @@ fn text_parts(text: &str) -> Result<Vec<Part>, Failure> {
 }
 
 fn send(mut args: Args) -> Outcome {
-    let name = args.name()?;
+    let pane = args.pane()?;
     let (mut parts, mut expected) = (Vec::new(), None);
     while let Some(arg) = args.next()? {
         match arg.as_str() {
@@ -308,7 +349,7 @@ fn send(mut args: Args) -> Outcome {
         let why = format!("a send is at most {MAX_REQUEST} bytes");
         return Err(Failure::new(Code::Limit, why));
     }
-    let mut client = Client::connect(&Session::open()?, &name)?;
+    let mut client = pane.connect()?;
     let Answer::Sent { token, .. } = client.ask(&request, ANSWER_WAIT)? else {
         return Err(odd());
     };
@@ -553,7 +594,7 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
 }
 
 fn read(mut args: Args) -> Outcome {
-    let name = args.name()?;
+    let pane = args.pane()?;
     let (mut plan, mut json, mut history) = (Follow::default(), false, None);
     while let Some(arg) = args.next()? {
         match arg.as_str() {
@@ -586,7 +627,7 @@ fn read(mut args: Args) -> Outcome {
     if (plan.until.is_some() || plan.until_line.is_some()) && plan.wait_ms.is_none() {
         return Err(usage("--until and --until-line need --wait"));
     }
-    let mut client = Client::connect(&Session::open()?, &name)?;
+    let mut client = pane.connect()?;
     if let Some((epoch, first, count)) = history {
         let request = Request::History {
             epoch,
@@ -623,7 +664,7 @@ fn read(mut args: Args) -> Outcome {
 }
 
 fn wait(mut args: Args) -> Outcome {
-    let name = args.name()?;
+    let pane = args.pane()?;
     let (mut after, mut ms) = (None, MAX_WAIT_MS);
     while let Some(arg) = args.next()? {
         match arg.as_str() {
@@ -633,7 +674,7 @@ fn wait(mut args: Args) -> Outcome {
         }
     }
     let after = after.ok_or_else(|| usage("wait needs --after TOKEN"))?;
-    let mut client = Client::connect(&Session::open()?, &name)?;
+    let mut client = pane.connect()?;
     let bound = Duration::from_millis(ms.into()).saturating_add(ANSWER_WAIT);
     let Answer::Waited { token, state } = client.ask(&Request::Wait { after, ms }, bound)? else {
         return Err(odd());
@@ -653,11 +694,11 @@ fn expected_only(args: &mut Args) -> Result<Option<Token>, Failure> {
 }
 
 fn resize(mut args: Args) -> Outcome {
-    let name = args.name()?;
+    let pane = args.pane()?;
     let cols = args.number("COLS")?;
     let rows = args.number("ROWS")?;
     let expected = expected_only(&mut args)?;
-    let mut client = Client::connect(&Session::open()?, &name)?;
+    let mut client = pane.connect()?;
     let request = Request::Resize {
         cols,
         rows,
@@ -670,10 +711,10 @@ fn resize(mut args: Args) -> Outcome {
 }
 
 fn signal(mut args: Args) -> Outcome {
-    let name = args.name()?;
+    let pane = args.pane()?;
     let signal = args.value("SIGNAL")?;
     let expected = expected_only(&mut args)?;
-    let mut client = Client::connect(&Session::open()?, &name)?;
+    let mut client = pane.connect()?;
     let request = Request::Signal {
         name: signal,
         expected,
@@ -685,9 +726,9 @@ fn signal(mut args: Args) -> Outcome {
 }
 
 fn kill(mut args: Args) -> Outcome {
-    let name = args.name()?;
+    let pane = args.pane()?;
     let expected = expected_only(&mut args)?;
-    let mut client = Client::connect(&Session::open()?, &name)?;
+    let mut client = pane.connect()?;
     let Answer::Killed { complete, detail } =
         client.ask(&Request::Kill { expected }, ANSWER_WAIT)?
     else {
@@ -696,7 +737,7 @@ fn kill(mut args: Args) -> Outcome {
     if complete {
         return Ok(());
     }
-    let why = format!("pane {name} is gone, but: {detail}");
+    let why = format!("pane {} is gone, but: {detail}", pane.name);
     Err(Failure::new(Code::Io, why))
 }
 
