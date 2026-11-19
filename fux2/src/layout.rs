@@ -31,8 +31,6 @@ const MAX_SHARE: u64 = 1_000_000;
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 /// What each part of a new split gets: shares are relative.
 const SHARE: u64 = 1000;
-/// The least share of a split a border move leaves on a side, in thousandths.
-const LEAST: u64 = 50;
 /// The area changes are measured in when no `--area` is given.
 pub const NOMINAL: Rect = Rect {
     x: 0,
@@ -318,12 +316,12 @@ impl Node {
     /// Puts `new` beside `target`'s leaf: in its split if that runs along
     /// `axis`, taking half of `target`'s share, else in a new split of the
     /// two. True if `target` was found.
-    fn split(&mut self, target: &PaneRef, new: &PaneRef, axis: Axis, before: bool) -> bool {
+    fn split(&mut self, target: &PaneRef, new: &Leaf, axis: Axis, before: bool) -> bool {
         if let Node::Leaf(leaf) = self
             && leaf.pane == *target
         {
             let old = Node::Leaf(leaf.clone());
-            let mut parts = vec![(SHARE, old), (SHARE, Node::leaf(new.clone()))];
+            let mut parts = vec![(SHARE, old), (SHARE, Node::Leaf(new.clone()))];
             if before {
                 parts.reverse();
             }
@@ -347,7 +345,7 @@ impl Node {
                 }
                 let half = share.div_ceil(2).max(1);
                 let rest = share.saturating_sub(half).max(1);
-                let new = (rest, Node::leaf(new.clone()));
+                let new = (rest, Node::Leaf(new.clone()));
                 if before {
                     out.push(new);
                     out.push((half, node));
@@ -422,16 +420,13 @@ impl Node {
         let (first, second) = (holder.min(other), holder.max(other));
         let total: u64 = parts.iter().map(|(share, _)| *share).sum();
         let room = match axis {
-            Axis::Columns => area.w.saturating_sub(gaps(parts.len())),
-            Axis::Rows => area.h.saturating_sub(gaps(parts.len())),
+            Axis::Columns => area.w,
+            Axis::Rows => area.h,
         };
         let delta = amount.shares(total, room)?;
         let (a, b) = (share_of(parts, first), share_of(parts, second));
-        let least = total
-            .saturating_mul(LEAST)
-            .checked_div(1000)
-            .unwrap_or(0)
-            .max(1);
+        // Each side keeps at least a cell, as it is drawn in `area`.
+        let least = Amount::Cells(1).shares(total, room)?;
         let (a, b) = match dir.forward() {
             true => {
                 let moved = delta.min(b.saturating_sub(least));
@@ -442,6 +437,10 @@ impl Node {
                 (a.saturating_sub(moved), b.saturating_add(moved))
             }
         };
+        if a == share_of(parts, first) {
+            let why = format!("{pane}'s border cannot move further that way");
+            return Err(invalid(why));
+        }
         if let Some((share, _)) = parts.get_mut(first) {
             *share = a.max(1);
         }
@@ -580,41 +579,38 @@ impl Rect {
     }
 }
 
-/// The cells a split gives to the borders between its parts: a column
-/// between parts side by side, a row between parts stacked.
-fn gaps(parts: usize) -> u32 {
-    u32::try_from(parts.saturating_sub(1)).unwrap_or(u32::MAX)
-}
-
 /// Each part's rectangle, with a column (side by side) or a row (stacked)
 /// between two parts for their border.
 fn part_rects(axis: Axis, parts: &[(u64, Node)], area: Rect) -> Vec<Rect> {
     let total: u64 = parts.iter().map(|(share, _)| *share).sum();
-    let room = match axis {
-        Axis::Columns => area.w.saturating_sub(gaps(parts.len())),
-        Axis::Rows => area.h.saturating_sub(gaps(parts.len())),
+    let length = match axis {
+        Axis::Columns => area.w,
+        Axis::Rows => area.h,
     };
+    let last = parts.len().saturating_sub(1);
     let mut out = Vec::with_capacity(parts.len());
     let mut sum = 0u64;
     let mut start = 0u32;
     for (index, (share, _)) in parts.iter().enumerate() {
         sum = sum.saturating_add(*share);
-        let end = u64::from(room)
+        let end = u64::from(length)
             .saturating_mul(sum)
             .checked_div(total)
             .and_then(|end| u32::try_from(end).ok())
-            .unwrap_or(room);
-        let length = end.saturating_sub(start);
-        let gap = u32::try_from(index).unwrap_or(u32::MAX);
+            .unwrap_or(length);
+        // Each part but the last gives its own last cell to the border
+        // after it, so a part added or moved shifts no other part.
+        let border = u32::from(index < last);
+        let size = end.saturating_sub(start).saturating_sub(border);
         out.push(match axis {
             Axis::Columns => Rect {
-                x: area.x.saturating_add(start).saturating_add(gap),
-                w: length,
+                x: area.x.saturating_add(start),
+                w: size,
                 ..area
             },
             Axis::Rows => Rect {
-                y: area.y.saturating_add(start).saturating_add(gap),
-                h: length,
+                y: area.y.saturating_add(start),
+                h: size,
                 ..area
             },
         });
@@ -705,7 +701,10 @@ impl Tab {
     /// The pane beside `pane` toward `dir` in `area`: the nearest one there
     /// that shares the most of its edge.
     pub fn neighbor(&self, pane: &PaneRef, dir: Dir, area: Rect) -> Option<PaneRef> {
-        let tiles = self.tiles(area);
+        // A tile with no room is no neighbour: nothing there can be seen.
+        let tiles: Vec<(PaneRef, Rect)> = (self.tiles(area).into_iter())
+            .filter(|(p, r)| p == pane || (r.w > 0 && r.h > 0))
+            .collect();
         let (_, from) = tiles.iter().find(|(p, _)| p == pane)?;
         let overlap = |a0: u32, a1: u32, b0: u32, b1: u32| a1.min(b1).saturating_sub(a0.max(b0));
         let end = |start: u32, length: u32| start.saturating_add(length);
@@ -842,7 +841,9 @@ impl Layout {
             if id == OTHER {
                 let mut tab = Tab::new(OTHER, "other");
                 tab.root = grid(&panes);
-                if let Some(space) = shown.workspaces.first_mut() {
+                // Last of all, so stored, it still takes only what no other
+                // tab takes.
+                if let Some(space) = shown.workspaces.last_mut() {
                     space.tabs.push(tab);
                 }
                 continue;
@@ -1689,7 +1690,7 @@ fn store_tab(layout: &mut Layout, shown: &Layout, id: u32) -> Result<u32, Failur
     let id = made.id;
     let space = layout
         .workspaces
-        .first_mut()
+        .last_mut()
         .ok_or_else(|| invalid("no workspace"))?;
     space.tabs.push(made);
     Ok(id)
@@ -1749,12 +1750,41 @@ fn unplace(layout: &mut Layout, pane: &PaneRef) {
     }
 }
 
-fn add_to_tab(layout: &mut Layout, tab: u32, pane: &PaneRef) -> Result<(), Failure> {
+/// Takes `pane`'s tile out of whatever stored tab has it, and gives it:
+/// its title goes with it. A routed pane gets a tile of its own.
+fn take_leaf(layout: &mut Layout, pane: &PaneRef) -> Leaf {
+    let found = (layout.tabs())
+        .flat_map(|tab| tab.leaves())
+        .find(|leaf| leaf.pane == *pane)
+        .cloned();
+    unplace(layout, pane);
+    found.unwrap_or_else(|| Leaf {
+        pane: pane.clone(),
+        title: String::new(),
+    })
+}
+
+/// Moves `pane` into tab `to`, at the end of its tree. The routed panes
+/// already shown there get tiles of their own first, as any edit of a
+/// tab's tree gives them.
+fn move_into(
+    layout: &mut Layout,
+    live: &[Live],
+    shown: &Layout,
+    pane: &PaneRef,
+    to: u32,
+) -> Result<(), Failure> {
+    if shown.tab_of(pane).is_some_and(|tab| tab.id == to) {
+        return Ok(());
+    }
+    let leaf = take_leaf(layout, pane);
+    let others: Vec<Live> = live.iter().filter(|l| l.pane != *pane).cloned().collect();
+    materialize(layout, &layout.shown(&others), to)?;
     let tab = layout
-        .tab_mut(tab)
-        .ok_or_else(|| Failure::new(Code::Missing, format!("no tab t{tab}")))?;
+        .tab_mut(to)
+        .ok_or_else(|| Failure::new(Code::Missing, format!("no tab t{to}")))?;
     tab.zoom = None;
-    let leaf = Node::leaf(pane.clone());
+    let leaf = Node::Leaf(leaf);
     tab.root = Some(match tab.root.take() {
         Some(root) => root.attach(leaf),
         None => leaf,
@@ -1859,6 +1889,25 @@ pub fn apply(
     area: Rect,
     op: &Op,
 ) -> Result<Option<String>, Failure> {
+    let made = apply_op(layout, live, area, op)?;
+    // A zoom names a pane its tab shows; one that left the tab is let go.
+    let shown = layout.shown(live);
+    for tab in layout.tabs_mut() {
+        let kept = (tab.zoom.as_ref())
+            .is_some_and(|zoom| shown.tab(tab.id).is_some_and(|t| t.holds(zoom)));
+        if !kept {
+            tab.zoom = None;
+        }
+    }
+    Ok(made)
+}
+
+fn apply_op(
+    layout: &mut Layout,
+    live: &[Live],
+    area: Rect,
+    op: &Op,
+) -> Result<Option<String>, Failure> {
     let everything = layout.shown(live);
     let shown = layout.shown(&routing(op, live));
     match op {
@@ -1874,13 +1923,13 @@ pub fn apply(
                 return Err(invalid(format!("{new} cannot split itself")));
             }
             let tab = materialize_pane(layout, &shown, &target)?;
-            unplace(layout, &new);
+            let leaf = take_leaf(layout, &new);
             let tab = layout.tab_mut(tab).ok_or_else(|| invalid("the tab went"))?;
             tab.zoom = None;
             let placed = tab
                 .root
                 .as_mut()
-                .is_some_and(|root| root.split(&target, &new, *axis, *before));
+                .is_some_and(|root| root.split(&target, &leaf, *axis, *before));
             if !placed {
                 return Err(Failure::new(
                     Code::Missing,
@@ -1920,7 +1969,8 @@ pub fn apply(
         Op::Swap(a, b) => {
             let (a, b) = (resolve(&shown, live, a)?, resolve(&shown, live, b)?);
             materialize_pane(layout, &shown, &a)?;
-            materialize_pane(layout, &shown, &b)?;
+            // Read again: the first may have stored the tab both are in.
+            materialize_pane(layout, &layout.shown(live), &b)?;
             exchange(layout, &a, &b);
             Ok(None)
         }
@@ -1970,11 +2020,7 @@ pub fn apply(
                     (id, Some(format!("t{id}")))
                 }
             };
-            if layout.tab(to).is_some_and(|tab| tab.holds(&pane)) {
-                return Ok(made);
-            }
-            unplace(layout, &pane);
-            add_to_tab(layout, to, &pane)?;
+            move_into(layout, live, &everything, &pane, to)?;
             Ok(made)
         }
         Op::ToWorkspace { pane, workspace } => {
@@ -1991,11 +2037,7 @@ pub fn apply(
                     (tab, Some(format!("w{space}")))
                 }
             };
-            if layout.tab(to).is_some_and(|tab| tab.holds(&pane)) {
-                return Ok(made);
-            }
-            unplace(layout, &pane);
-            add_to_tab(layout, to, &pane)?;
+            move_into(layout, live, &everything, &pane, to)?;
             Ok(made)
         }
         Op::Border { pane, dir, amount } => {
@@ -2131,7 +2173,7 @@ pub fn apply(
                 .flat_map(|s| s.tabs.iter().map(|t| t.id))
                 .collect();
             for tab in tabs {
-                apply(layout, live, area, &Op::CloseTab(format!("t{tab}")))?;
+                apply_op(layout, live, area, &Op::CloseTab(format!("t{tab}")))?;
             }
             Ok(None)
         }
@@ -2502,6 +2544,204 @@ mod tests {
         Ok(())
     }
 
+    fn names(panes: Vec<PaneRef>) -> Vec<String> {
+        let mut names: Vec<String> = panes.into_iter().map(|p| p.name).collect();
+        names.sort();
+        names
+    }
+
+    /// Three columns a | b | c stored, and `d` in a spare tab.
+    fn three_columns() -> Result<(Layout, Vec<Live>), Failure> {
+        let id = |n: u8| PaneId([n; 16]);
+        let text = format!(
+            "{HEADER}\nversion 4\nnext 5\nworkspace w1 \"main\"\ntab t2 \"all\"\n  split columns\n    \
+             1000 pane a@{}\n    1000 pane b@{}\n    1000 pane c@{}\ntab t3 \"spare\"\n  pane d@{} \"the d\"\n",
+            id(1),
+            id(2),
+            id(3),
+            id(4)
+        );
+        let live = vec![
+            live("a", 1, &[]),
+            live("b", 2, &[]),
+            live("c", 3, &[]),
+            live("d", 4, &[]),
+        ];
+        Ok((parse(&text).map_err(invalid)?, live))
+    }
+
+    #[test]
+    fn a_split_along_its_own_axis_moves_no_neighbour_and_keeps_titles() -> Result<(), Failure> {
+        let (mut layout, panes) = three_columns()?;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 40,
+        };
+        let before = layout.shown(&panes);
+        apply(
+            &mut layout,
+            &panes,
+            area,
+            &Op::Split {
+                target: target("a"),
+                new: target("d"),
+                axis: Axis::Columns,
+                before: false,
+            },
+        )?;
+        assert_eq!(
+            names(changed(&before, &layout.shown(&panes), area)),
+            ["a", "d"]
+        );
+        let titled = |layout: &Layout| -> String {
+            (layout.tabs().flat_map(|t| t.leaves()))
+                .find(|l| l.pane.name == "d")
+                .map(|l| l.title.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(titled(&layout), "the d");
+        apply(
+            &mut layout,
+            &panes,
+            area,
+            &Op::ToTab {
+                pane: target("d"),
+                tab: None,
+            },
+        )?;
+        assert_eq!(titled(&layout), "the d");
+        Ok(())
+    }
+
+    #[test]
+    fn moving_a_routed_pane_names_the_neighbour_it_widens() -> Result<(), Failure> {
+        let mut layout = Layout::default();
+        let panes = [live("a", 1, &[]), live("b", 2, &[])];
+        let before = layout.shown(&panes);
+        let edited_layout = {
+            apply(
+                &mut layout,
+                &panes,
+                NOMINAL,
+                &Op::ToTab {
+                    pane: target("a"),
+                    tab: None,
+                },
+            )?;
+            layout.shown(&panes)
+        };
+        assert_eq!(names(changed(&before, &edited_layout, NOMINAL)), ["a", "b"]);
+        Ok(())
+    }
+
+    #[test]
+    fn the_tab_other_takes_only_what_no_tab_takes() -> Result<(), Failure> {
+        let mut layout = Layout::default();
+        apply(
+            &mut layout,
+            &[],
+            NOMINAL,
+            &Op::MatchTab {
+                tab: "all".to_owned(),
+                tests: vec![("name".to_owned(), "build".to_owned())],
+            },
+        )?;
+        apply(
+            &mut layout,
+            &[],
+            NOMINAL,
+            &Op::NewWorkspace {
+                title: Some("two".to_owned()),
+            },
+        )?;
+        apply(
+            &mut layout,
+            &[],
+            NOMINAL,
+            &Op::MatchTab {
+                tab: "1".to_owned(),
+                tests: vec![("name".to_owned(), "logs".to_owned())],
+            },
+        )?;
+        let panes = [
+            live("logs", 1, &[]),
+            live("misc", 2, &[]),
+            live("odd", 3, &[]),
+        ];
+        let tab_of = |layout: &Layout, name: &str, n: u8| {
+            layout
+                .shown(&panes)
+                .tab_of(&pane(name, n))
+                .map(|t| t.title.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(tab_of(&layout, "logs", 1), "1");
+        assert_eq!(tab_of(&layout, "misc", 2), "other");
+        // Stored by a rename, it still takes nothing another tab takes.
+        apply(
+            &mut layout,
+            &panes,
+            NOMINAL,
+            &Op::RenameTab {
+                tab: "other".to_owned(),
+                title: "spare".to_owned(),
+            },
+        )?;
+        assert_eq!(tab_of(&layout, "logs", 1), "1");
+        assert_eq!(tab_of(&layout, "misc", 2), "spare");
+        // Two panes there swap.
+        apply(
+            &mut layout,
+            &panes,
+            NOMINAL,
+            &Op::Swap(target("misc"), target("odd")),
+        )?;
+        assert!(encode(&layout).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn a_zoom_follows_no_pane_out_of_its_tab_and_no_one_moves_into_nothing() -> Result<(), Failure>
+    {
+        let (mut layout, panes) = three_columns()?;
+        apply(&mut layout, &panes, NOMINAL, &Op::Zoom(target("a")))?;
+        apply(
+            &mut layout,
+            &panes,
+            NOMINAL,
+            &Op::Swap(target("a"), target("d")),
+        )?;
+        assert!(layout.tabs().all(|t| t.zoom.is_none()), "{layout}");
+        // A column with no room is no neighbour.
+        let mut layout = Layout::default();
+        let text = format!(
+            "{HEADER}\nversion 1\nnext 3\nworkspace w1 \"main\"\ntab t2 \"all\"\n  split columns\n    \
+             500 pane a@{}\n    1 pane b@{}\n    499 pane c@{}\n",
+            PaneId([1; 16]),
+            PaneId([2; 16]),
+            PaneId([3; 16])
+        );
+        layout = parse(&text).map_err(invalid).unwrap_or(layout);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 40,
+        };
+        let tab = layout
+            .tabs()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| Tab::new(2, "x"));
+        assert_eq!(
+            tab.neighbor(&pane("a", 1), Dir::Right, area),
+            Some(pane("c", 3))
+        );
+        Ok(())
+    }
+
     #[test]
     fn borders_move_within_bounds_and_removal_closes_the_gap() -> Result<(), Failure> {
         let mut layout = Layout::default();
@@ -2526,7 +2766,8 @@ mod tests {
                 .map_or(0, |(_, r)| r.w)
         };
         apply(&mut layout, &panes, NOMINAL, &Op::Zoom(target("a")))?;
-        assert_eq!(width(&layout, "a", 1), 50);
+        // 101 columns: a's half ends at 50, its last column the border.
+        assert_eq!(width(&layout, "a", 1), 49);
         let area = Rect {
             x: 0,
             y: 0,
@@ -2543,8 +2784,9 @@ mod tests {
                 amount: Amount::Cells(10),
             },
         )?;
-        assert_eq!(width(&layout, "a", 1), 60);
-        // As far as it goes: the other side keeps its least share.
+        assert_eq!(width(&layout, "a", 1), 59);
+        // As far as it goes: the other side keeps a cell, and a border
+        // that cannot move further says so.
         apply(
             &mut layout,
             &panes,
@@ -2555,7 +2797,18 @@ mod tests {
                 amount: Amount::Percent(100),
             },
         )?;
-        assert!(width(&layout, "b", 2) >= 5, "{}", width(&layout, "b", 2));
+        assert!(width(&layout, "b", 2) >= 1, "{}", width(&layout, "b", 2));
+        let stuck = apply(
+            &mut layout,
+            &panes,
+            area,
+            &Op::Border {
+                pane: target("b"),
+                dir: Dir::Right,
+                amount: Amount::Cells(1),
+            },
+        );
+        assert!(stuck.is_err(), "{stuck:?}");
         apply(&mut layout, &panes, area, &Op::Remove(target("b")))?;
         let stored = layout.tabs().next().and_then(|t| t.root.clone());
         assert!(matches!(stored, Some(Node::Leaf(_))), "{stored:?}");
