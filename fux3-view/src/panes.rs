@@ -12,16 +12,11 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 /// The most bytes of keys waiting for a pane's `in`.
 const MAX_QUEUED: usize = 64 << 10;
 /// The largest `status` read.
 const MAX_STATUS: usize = 64 << 10;
-/// How long a paste's file waits for its pane to take it.
-const PASTE_WAIT: Duration = Duration::from_secs(10);
-/// Pastes waiting for their pane at once.
-const MAX_PASTES: usize = 16;
 
 /// What changes when a file is replaced: its inode, size and time.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -53,8 +48,6 @@ pub struct Pane {
     parser: Option<fux_vt::Parser>,
     input: Option<File>,
     queued: VecDeque<u8>,
-    /// Paste files, the command number that takes each, and until when.
-    pastes: Vec<(PathBuf, u64, Instant)>,
 }
 
 /// Opens a FIFO of `dir` to write, without waiting: refused if it is no
@@ -114,7 +107,6 @@ impl Pane {
             parser: None,
             input: None,
             queued: VecDeque::new(),
-            pastes: Vec::new(),
         }
     }
 
@@ -153,7 +145,7 @@ impl Pane {
 
     /// Looks at `status`, and at the screen too if it is shown, reading
     /// each again only if it was replaced: true if either was.
-    pub fn look(&mut self, shown: bool, now: Instant) -> Result<bool, Failure> {
+    pub fn look(&mut self, shown: bool) -> Result<bool, Failure> {
         let mut changed = false;
         let status_stamp = stamp(&self.dir.join(files::STATUS));
         if status_stamp != self.stamps.1 {
@@ -167,7 +159,6 @@ impl Pane {
                 self.queued.clear();
             }
             changed = true;
-            self.settle_pastes(now);
         }
         if !shown {
             return Ok(changed);
@@ -291,62 +282,16 @@ impl Pane {
     }
 
     /// Hands `text` to the program as one paste: written to a private file
-    /// in `view`, named to `ctl`'s `paste`, and removed once the pane has
-    /// taken the command (or after a bounded wait).
-    pub fn paste(
-        &mut self,
-        view: &Path,
-        text: &str,
-        number: u64,
-        now: Instant,
-    ) -> Result<(), Failure> {
-        if self.pastes.len() >= MAX_PASTES {
-            return Err(Failure::new(format!(
-                "paste dropped: {} has {MAX_PASTES} waiting",
-                self.name
-            )));
-        }
+    /// in `view`, whose path is given back, and named to `ctl`'s `paste`.
+    pub fn paste(&self, view: &Path, text: &str, number: u64) -> Result<PathBuf, Failure> {
         let name = format!("paste-{}-{number}", std::process::id());
         crate::layout::replace(view, &name, &format!(".{name}.new"), text)?;
         let path = view.join(&name);
-        let taken = read_status(&self.dir)
-            .ok()
-            .and_then(|s| files::status_value(&s, "commands").and_then(|n| n.parse::<u64>().ok()))
-            .unwrap_or(0)
-            .saturating_add(1);
         if let Err(failure) = ctl_line(&self.dir, &format!("paste {}", path.display())) {
             let _ = std::fs::remove_file(&path);
             return Err(failure);
         }
-        self.pastes
-            .push((path, taken, now.checked_add(PASTE_WAIT).unwrap_or(now)));
-        Ok(())
-    }
-
-    /// Removes the paste files the pane has taken, or waited on too long.
-    pub fn settle_pastes(&mut self, now: Instant) {
-        let commands = self
-            .value("commands")
-            .and_then(|n| n.parse::<u64>().ok())
-            .unwrap_or(0);
-        self.pastes.retain(|(path, taken, until)| {
-            let done = commands >= *taken || now >= *until;
-            if done {
-                let _ = std::fs::remove_file(path);
-            }
-            !done
-        });
-    }
-
-    pub fn has_pastes(&self) -> bool {
-        !self.pastes.is_empty()
-    }
-
-    /// Removes every paste file left: the viewer is leaving.
-    pub fn drop_pastes(&mut self) {
-        for (path, _, _) in std::mem::take(&mut self.pastes) {
-            let _ = std::fs::remove_file(path);
-        }
+        Ok(path)
     }
 
     /// The key mode the program asked for, as `status` says.

@@ -72,8 +72,15 @@ const MAX_PASTE: usize = 1 << 20;
 /// keeps.
 const MAX_CTL_LINE: usize = fux3::files::PIPE_BUF;
 const MAX_ERRORS: usize = 32;
-/// How long leaving waits for pastes to be taken.
+/// How long a paste's file is kept for its pane to take it; the viewer
+/// can't tell when it has (another writer's command moves the same
+/// `commands` count), so it keeps each the whole time.
+const PASTE_WAIT: Duration = Duration::from_secs(10);
+/// Leaving keeps a paste this long after it was made, at most, before its
+/// file goes.
 const PASTE_LEAVE_WAIT: Duration = Duration::from_secs(1);
+/// Paste files kept at once.
+const MAX_PASTES: usize = 16;
 /// Escape's wait for the rest of a sequence, and a paste's, in ms.
 const TIMING: Timing = Timing::new(50, 1000);
 
@@ -202,8 +209,10 @@ struct View {
     /// What the run in flight was started for: a `.view/ctl` line's
     /// refusal goes to `.view/errors`.
     run_label: String,
-    /// Pastes handed over, to name their files.
+    /// Pastes handed over, to name their files, and the files kept, each
+    /// with when it was made.
     pasted: u64,
+    pastes: Vec<(PathBuf, Instant)>,
     script: Option<Script>,
     from_script: Receiver<ToViewer>,
     running: Option<Running>,
@@ -333,7 +342,6 @@ impl View {
             self.places.insert(self.workspace.name.clone(), left);
         }
         let (tab, focus) = self.places.remove(name).unwrap_or_default();
-        self.panes.values_mut().for_each(Pane::drop_pastes);
         release_ctl(&self.view, self.ctl.take());
         (self.workspace, self.view, self.ctl) = (workspace, view, Some(ctl));
         (self.tab, self.focus, self.last_focus) = (tab, focus, None);
@@ -433,7 +441,7 @@ impl View {
         let visible = self.visible();
         let names: Vec<String> = self.panes.keys().cloned().collect();
         for name in names {
-            self.look_at(&name, visible.iter().any(|p| p.name == name), now);
+            self.look_at(&name, visible.iter().any(|p| p.name == name));
         }
         self.refresh(changed);
     }
@@ -444,15 +452,8 @@ impl View {
         let before = self.live.len();
         for pane in self.visible() {
             if self.live_pane(&pane).is_some() {
-                self.look_at(&pane.name, true, now);
+                self.look_at(&pane.name, true);
             }
-        }
-        let pasting: Vec<String> = (self.panes.iter())
-            .filter(|(_, p)| p.has_pastes())
-            .map(|(n, _)| n.clone())
-            .collect();
-        for name in pasting {
-            self.look_at(&name, false, now);
         }
         if self.live_now().len() != before {
             self.refresh(false);
@@ -460,12 +461,12 @@ impl View {
     }
 
     /// Looks at one pane's files.
-    fn look_at(&mut self, name: &str, shown: bool, now: Instant) {
+    fn look_at(&mut self, name: &str, shown: bool) {
         let Some(pane) = self.panes.get_mut(name) else {
             return;
         };
         // A pane still starting, or going, is seen at the next look.
-        if let Ok(changed) = pane.look(shown, now) {
+        if let Ok(changed) = pane.look(shown) {
             self.dirty |= changed;
         }
     }
@@ -531,13 +532,28 @@ impl View {
     }
 
     fn paste(&mut self, text: &str) {
-        self.pasted = self.pasted.saturating_add(1);
-        let (view, number, now) = (self.view.clone(), self.pasted, Instant::now());
-        let pasted = (self.focused_pane())
-            .and_then(|pane| pane.paste(&view, text, number, now).map_err(|f| f.0));
-        if let Err(why) = pasted {
-            self.say(why);
+        if self.pastes.len() >= MAX_PASTES {
+            return self.say(format!("paste dropped: {MAX_PASTES} are waiting"));
         }
+        self.pasted = self.pasted.saturating_add(1);
+        let (view, number) = (self.view.clone(), self.pasted);
+        let pasted =
+            (self.focused_pane()).and_then(|pane| pane.paste(&view, text, number).map_err(|f| f.0));
+        match pasted {
+            Ok(path) => self.pastes.push((path, Instant::now())),
+            Err(why) => self.say(why),
+        }
+    }
+
+    /// Removes the paste files kept their whole wait.
+    fn settle_pastes(&mut self, now: Instant) {
+        self.pastes.retain(|(path, made)| {
+            let done = now >= after(*made, PASTE_WAIT);
+            if done {
+                let _ = std::fs::remove_file(path);
+            }
+            !done
+        });
     }
 
     fn apply_verb(&mut self, verb: Verb, now: Instant) {
@@ -1212,8 +1228,11 @@ impl View {
         if let Some(due) = decoder.deadline() {
             consider(due);
         }
-        if !self.tiles().is_empty() || self.panes.values().any(Pane::has_pastes) {
+        if !self.tiles().is_empty() {
             consider(self.next_look);
+        }
+        if let Some((_, made)) = self.pastes.first() {
+            consider(after(*made, PASTE_WAIT));
         }
         if self.panes.values().any(Pane::has_queued) {
             consider(after(now, RETRY_KEYS));
@@ -1420,6 +1439,7 @@ fn run() -> Result<(), Failure> {
         ctl_part: Vec::new(),
         run_label: String::new(),
         pasted: 0,
+        pastes: Vec::new(),
         script: Some(script),
         from_script,
         running: None,
@@ -1452,18 +1472,17 @@ fn run() -> Result<(), Failure> {
 }
 
 impl View {
-    /// Leaving: pastes handed over get a bounded time to be taken, then
-    /// their files go.
+    /// Leaving: a paste just made gets the rest of `PASTE_LEAVE_WAIT` to
+    /// be taken, then every paste file goes.
     fn leave_pastes(&mut self) {
-        let until = after(Instant::now(), PASTE_LEAVE_WAIT);
-        while self.panes.values().any(Pane::has_pastes) && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(10));
-            let now = Instant::now();
-            for pane in self.panes.values_mut() {
-                let _ = pane.look(false, now);
-            }
+        if let Some((_, newest)) = self.pastes.last() {
+            std::thread::sleep(
+                after(*newest, PASTE_LEAVE_WAIT).saturating_duration_since(Instant::now()),
+            );
         }
-        self.panes.values_mut().for_each(Pane::drop_pastes);
+        for (path, _) in std::mem::take(&mut self.pastes) {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -1533,6 +1552,7 @@ fn serve(
             }
         }
         view.police_run(now);
+        view.settle_pastes(now);
         if view.dirty && view.painter.is_idle() && now >= view.next_paint {
             view.paint(now);
         }

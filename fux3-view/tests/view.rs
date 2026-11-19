@@ -344,3 +344,30 @@ fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
     assert!(!layout("two").contains("mine"), "{}", layout("two"));
     Ok(())
 }
+
+/// A paste reaches the focused pane, and its file stays for its whole wait
+/// even when other writers' commands move the pane's `commands` count on
+/// (the viewer can't tell which command was its paste).
+#[test]
+fn a_paste_file_outlives_other_writers_commands() -> Tested {
+    let lab = Lab::new("paste", "")?;
+    lab.start("only")?;
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "$")?;
+    lab.keys("v", b"\x1b[200~echo pas''ted\x1b[201~\r")?;
+    until("the paste ran", || {
+        lab.read(&lab.view, "only", "screen").contains("pasted")
+    })?;
+    let ctl = lab.view.join("main/only/ctl");
+    for _ in 0..3 {
+        fifo(&ctl, b"cell 10 20\n")?;
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let pastes = std::fs::read_dir(lab.view.join("main/.view"))
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("paste-"))
+        .count();
+    assert_eq!(pastes, 1, "the paste file went before its wait ended");
+    Ok(())
+}
