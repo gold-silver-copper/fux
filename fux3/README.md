@@ -535,8 +535,10 @@ fux3 view main --do "split build right"         # every viewer of main shows it 
 `fux3 start` does). The workspace keys go over the session's workspaces, the
 directories of `$D`, by name: next, previous, a list, new (a name at a prompt:
 the directory is made and a shell started in it) and close (asks, then ends
-each pane, waits for them to go, and removes the directory, `.view` and all;
-it refuses, removing nothing, if a pane is still starting or ending).
+each pane, waits for them to go, and removes `.view`, `.recipes` and then the
+directory; it never deletes a file or directory of yours: with one in the
+workspace, or a pane still starting or ending, it stops before ending any
+pane and names what is there; move it out and close again).
 A viewer whose workspace's directory goes shows the first one left, else a new
 `main`. Each viewer remembers, for each workspace it has shown, the tab and
 focus it left there. Workspaces have no order but their names'.
@@ -769,8 +771,8 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 | `(fit-after RESULT)`, `(line-of KEY RESULT)` | fit the panes a result changed; a result line's value |
 | `(start-new PREFIX PROGRAM ARG…)` | starts `PREFIX-N` in the workspace shown, or in WORKSPACE (made if missing) for `WORKSPACE/PREFIX` (your shell if no program): `NAME@ID` |
 | `(hold-workspace NAME)` | holds the workspace's directory, as it is now, and gives its id: what a question about a workspace keeps while it waits for its answer |
-| `(close-workspace HELD)` | ends the panes of a workspace held and removes its directory, whatever it is called by then; refused, saying which, if a pane will not end within 12 s, and with no pane ended if one in it is starting, ending or sits inside another's directory |
-| `(forget-recipe PANE)` | removes the recipe of a pane just started (the copy's pane leaves none) |
+| `(close-workspace HELD)` | ends the panes of a workspace held and removes `.view`, `.recipes` and its directory, whatever it is called by then. Refused, with no pane ended, if the workspace holds anything else (it says what): nothing of yours is ever removed. Refused, saying which, if a pane will not end within 12 s |
+| `(start-once PREFIX PROGRAM ARG…)` | as `start-new`, but the pane writes no recipe (`fux3 start --no-recipe`): for a pane nobody starts again, as the copy's |
 | `(send PANE TEXT)` | to the pane's `in`, after keys typed before |
 | `(ctl PANE LINE)` | one line to the pane's `ctl` (`kill`, `signal INT`, …). A pane that is gone (its directory went, or another life has its name) raises `pane-gone`, any other failure `fux3-error`: closing a pane or a tab ignores only the first, and keeps the tile otherwise |
 | `(pick TITLE ROWS FUNCTION [KEYS])`, `(read-line PROMPT INITIAL FUNCTION)` | a list or a line to type; what is chosen goes to FUNCTION |
