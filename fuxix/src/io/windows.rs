@@ -446,6 +446,21 @@ impl std::os::windows::io::AsHandle for Stream {
     }
 }
 
+impl Stream {
+    /// Gives up the write in flight, if one is: for a reader that stopped
+    /// reading. It ends as cancelled, so a [`Stream`] dropped after this
+    /// leaves no thread waiting on a reader that may never come back; what
+    /// it had not written is lost.
+    pub fn cancel_write(&self) {
+        let write = lock(&self.write);
+        if write.pending {
+            // SAFETY: cancels this stream's own write, on its open handle;
+            // its packet still comes, and hands the op back.
+            unsafe { CancelIoEx(self.handle.as_raw_handle(), self.write.overlapped.get()) };
+        }
+    }
+}
+
 impl Drop for Stream {
     fn drop(&mut self) {
         let read = lock(&self.read);
@@ -759,6 +774,30 @@ pub(crate) fn stdout_reader_gone() -> bool {
         )
     };
     asked >= 0 && local.NamedPipeState == FILE_PIPE_CLOSING_STATE
+}
+
+/// Points this process's standard input at a copy of `to`, closing what it
+/// was, as Unix's `dup2` onto 0 does: a daemon done with the pipe it was
+/// started on points it at `NUL`, so that pipe's end is let go.
+pub fn redirect_stdin(to: impl std::os::windows::io::AsHandle) -> Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Console::{STD_INPUT_HANDLE, SetStdHandle};
+    let copy = (to.as_handle().try_clone_to_owned())
+        .map_err(|error| Errno::from_io_error(&error).unwrap_or_else(Errno::last))?;
+    // SAFETY: it takes a number and touches no memory.
+    let old = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    // SAFETY: the handle is open; from now on it is the process's stdin,
+    // which std looks up at each read and never closes.
+    if unsafe { SetStdHandle(STD_INPUT_HANDLE, copy.as_raw_handle()) } == 0 {
+        return Err(Errno::last());
+    }
+    let _ = copy.into_raw_handle();
+    if !old.is_null() && old != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        // SAFETY: the old stdin, no longer the process's, was inherited and
+        // is closed once, here.
+        unsafe { CloseHandle(old) };
+    }
+    Ok(())
 }
 
 /// Points this process's standard output at a copy of `to`, closing what

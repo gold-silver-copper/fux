@@ -1,0 +1,32 @@
+;; The keys a viewer starts with. `bind-verb` keys act at once, even while a
+;; binding runs; the others are ordinary bindings, written the way your own
+;; view.grift can write them.
+(bind-verb "C-b o" "next-pane")
+(bind-verb "C-b O" "previous-pane")
+(bind-verb "C-b n" "next-tab")
+(bind-verb "C-b p" "previous-tab")
+(bind-verb "C-b l" "last-tab")
+(bind-verb "C-b 1" "go-to-tab" 1)
+(bind-verb "C-b 2" "go-to-tab" 2)
+(bind-verb "C-b 3" "go-to-tab" 3)
+(bind-verb "C-b 4" "go-to-tab" 4)
+(bind-verb "C-b 5" "go-to-tab" 5)
+(bind-verb "C-b 6" "go-to-tab" 6)
+(bind-verb "C-b 7" "go-to-tab" 7)
+(bind-verb "C-b 8" "go-to-tab" 8)
+(bind-verb "C-b 9" "go-to-tab" 9)
+(bind-verb "C-b )" "next-workspace")
+(bind-verb "C-b (" "previous-workspace")
+(bind-verb "C-b L" "last-workspace")
+(bind-verb "C-b f" "fit")
+(bind-verb "C-b d" "detach")
+(bind-verb "C-b C-b" "literal")
+
+;; A new shell in the shown tab.
+(bind-key "C-b c" (lambda! () (focus (start-here "shell"))))
+
+;; The focused pane's history in a pager, in a pane of its own that goes away
+;; when the pager ends.
+(bind-key "C-b ["
+  (lambda! ()
+    (focus (start-here "history" (fux2-program) "page" (focused) "--close-pane"))))

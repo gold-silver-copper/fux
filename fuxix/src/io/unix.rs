@@ -107,6 +107,37 @@ pub fn redirect_stdout(to: impl AsFd) -> Result<()> {
     check(unsafe { libc::dup2(to.as_fd().as_raw_fd(), libc::STDOUT_FILENO) }).map(drop)
 }
 
+/// Points this process's stdin at what `to` is open on (`dup2` onto 0),
+/// closing what it was: a daemon done with the pipe it was started on points
+/// it at `/dev/null`, so nothing later opened takes descriptor 0.
+pub fn redirect_stdin(to: impl AsFd) -> Result<()> {
+    // SAFETY: dup2 takes two descriptor numbers and touches no memory; the
+    // one it replaces is stdin, which std reads through by number.
+    check(unsafe { libc::dup2(to.as_fd().as_raw_fd(), libc::STDIN_FILENO) }).map(drop)
+}
+
+/// Raises this process's soft limit on open descriptors to `wanted`, as far
+/// as its hard limit allows, and says what the soft limit is then: never
+/// lowered, so the answer may be more than `wanted`, or less if the hard
+/// limit is.
+pub fn raise_open_files(wanted: u64) -> Result<u64> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit fills one rlimit, and `limit` is one.
+    check(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) })?;
+    let current: u64 = crate::errno::fit(limit.rlim_cur)?;
+    let target = wanted.min(crate::errno::fit(limit.rlim_max)?);
+    if target <= current {
+        return Ok(current);
+    }
+    limit.rlim_cur = crate::errno::fit(target)?;
+    // SAFETY: setrlimit reads one rlimit, and `limit` is one.
+    check(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) })?;
+    Ok(target)
+}
+
 /// Marks every descriptor from `first` up close-on-exec, whoever opened it
 /// and however: descriptors this process inherited without the flag, and
 /// ones another thread opened before it could set it. Nothing is closed,

@@ -87,6 +87,15 @@ jobs:
           # The pane process's crate with what its features add.
           cargo clippy -p fux-pane --features testing,in-process --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
 
+      # fux2's README example with a real shell and no server, as a person
+      # would run it. fux2 runs on Linux and macOS only.
+      - name: fux2 example
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cargo build -p fux2 -p fux2-view --locked
+          fux2/tests/example.sh
+
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
       # in release, as debug is too slow for the step's 5 minutes; built in
       # a step of its own, and run under an 8 GiB data limit, so a bound

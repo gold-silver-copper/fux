@@ -7,6 +7,9 @@ pub const NOFOLLOW: i32 = libc::O_NOFOLLOW;
 /// Opens without waiting: a FIFO opened so returns at once.
 #[cfg(unix)]
 pub const NONBLOCK: i32 = libc::O_NONBLOCK;
+/// Opening anything but a directory fails.
+#[cfg(unix)]
+pub const DIRECTORY: i32 = libc::O_DIRECTORY;
 /// Opening a terminal does not make it the caller's controlling terminal.
 #[cfg(unix)]
 pub const NOCTTY: i32 = libc::O_NOCTTY;

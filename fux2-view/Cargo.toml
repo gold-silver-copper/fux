@@ -1,0 +1,22 @@
+[package]
+name = "fux2-view"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "The viewer of fux2: shows a session's panes, split, in one terminal"
+repository = "https://github.com/gold-silver-copper/fux"
+publish = false
+
+[[bin]]
+name = "fux2-view"
+path = "src/main.rs"
+
+[dependencies]
+fux2 = { path = "../fux2" }
+fux-vt = { path = "../fux-vt", version = "0.17.0" }
+fuxix = { path = "../fuxix", version = "0.10.0" }
+grift = "7.0.0"
+
+[lints]
+workspace = true

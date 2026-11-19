@@ -162,6 +162,13 @@ pub fn session(pid: Pid) -> Option<Pid> {
     Pid::from_raw(unsafe { libc::getsid(pid.as_raw()) })
 }
 
+/// Ends this process at once with `code`: no destructor, no exit handler,
+/// nothing that could wait.
+pub fn end_now(code: i32) {
+    // SAFETY: _exit takes a number and does not return.
+    unsafe { libc::_exit(code) }
+}
+
 /// Whether `pid`, a child of this process, has ended, without reaping it:
 /// `None` while it runs, and while it is only stopped.
 pub fn ended(pid: Pid) -> Result<Option<Status>> {
