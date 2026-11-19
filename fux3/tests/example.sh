@@ -70,8 +70,10 @@ until_long test -p "$D/main/.view/ctl"
 echo "split build right" > "$D/main/.view/ctl"
 until_long grep -qs 'pane shell-1@' "$D/main/.view/layout"
 until_long test -d "$D/main/shell-1"
-# The split fitted build to its half of the viewer, once.
-until_ok sh -c "! grep -qx 'size 100 30' '$D/main/build/status'"
+# The split fitted build to its half of the viewer, once; the viewer's own
+# pane stays the size it was started at.
+until_ok grep -qx 'size 49 30' "$D/main/build/status"
+grep -qx 'size 100 30' "$V/main/viewer/status"
 # Killing the viewer outright leaves every pane running and typable.
 kill -9 "$(sed -n 's/^pid //p' "$V/main/viewer/status")"
 until_ok grep -q '^state signalled KILL' "$V/main/viewer/status"

@@ -37,9 +37,9 @@ pub fn parse(line: &str) -> Result<Command, Failure> {
         }
     };
     let path = |rest: &[&str]| -> Result<PathBuf, Failure> {
-        // The path is the rest of the line after the verb and one space,
-        // spaces and all (a carriage return a writer added is no part).
-        let text = (line.trim_start().split_once(' ')).map(|(_, p)| p.trim_end_matches('\r'));
+        // The path is the rest of the line after the verb and the one
+        // blank after it, every other byte its own.
+        let text = (line.trim_start().split_once(char::is_whitespace)).map(|(_, p)| p);
         let path = PathBuf::from(text.unwrap_or_default());
         if rest.is_empty() || !path.is_absolute() {
             return Err(Failure::new("it takes an absolute path"));
@@ -126,6 +126,10 @@ mod tests {
         assert_eq!(
             parse("signal SIGSIGKILL"),
             Ok(Command::Signal("SIGKILL".to_owned()))
+        );
+        assert_eq!(
+            parse("send\t/a /b\r"),
+            Ok(Command::Send(PathBuf::from("/a /b\r")))
         );
         assert_eq!(parse("kill"), Ok(Command::Kill));
         assert!(parse("resize 0 30").is_err());

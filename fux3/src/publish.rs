@@ -101,6 +101,8 @@ struct Work {
     written: u64,
     /// Whether the last publish written was written whole.
     written_ok: bool,
+    /// Whether `exit` is on disk.
+    exit_done: bool,
 }
 
 struct Shared {
@@ -177,6 +179,11 @@ impl Publisher {
         });
     }
 
+    /// Whether the `exit` file is on disk.
+    pub fn exit_done(&self) -> bool {
+        self.shared.work.lock().is_ok_and(|work| work.exit_done)
+    }
+
     /// Waits, at most `most`, until every publish handed over is written:
     /// whether it was, whole.
     pub fn wait_written(&self, most: std::time::Duration) -> bool {
@@ -233,9 +240,14 @@ fn run(shared: &Shared, dir: &Path, history_cap: usize) {
             handed: work.handed,
             written: 0,
             written_ok: false,
+            exit_done: false,
         };
         drop(work);
-        let mut writer = Writer { dir, failure: None };
+        let mut writer = Writer {
+            dir,
+            failure: None,
+            exit_done: false,
+        };
         let files = taken.files.map(|files| Files {
             errors: files.errors.or_else(|| errors_left.take()),
             ..files
@@ -250,6 +262,7 @@ fn run(shared: &Shared, dir: &Path, history_cap: usize) {
         if let Ok(mut work) = shared.work.lock() {
             work.written = taken.handed;
             work.written_ok = writer.failure.is_none();
+            work.exit_done |= writer.exit_done;
             shared.written.notify_all();
         }
         if taken.stop {
@@ -261,6 +274,7 @@ fn run(shared: &Shared, dir: &Path, history_cap: usize) {
 struct Writer<'a> {
     dir: &'a Path,
     failure: Option<String>,
+    exit_done: bool,
 }
 
 impl Writer<'_> {
@@ -355,8 +369,11 @@ impl Writer<'_> {
                 let _ = writeln!(status, "publish failed: {failure}");
             }
             self.replace(files::STATUS, &status);
-            if let Some(exit) = &files.exit {
-                self.replace(files::EXIT, exit);
+            // Only beside screens written whole: else tried with the next.
+            if let Some(exit) = &files.exit
+                && self.failure.is_none()
+            {
+                self.exit_done = self.replace(files::EXIT, exit);
             }
         }
         // Removed only once a styled screen no longer naming them is
@@ -433,10 +450,19 @@ impl Writer<'_> {
 
     fn append(&mut self, text: &[u8]) -> bool {
         let mut options = std::fs::File::options();
+        // Without waiting, and only into a regular file: a FIFO put there
+        // can't stall the publisher.
         options.append(true).create(true);
-        let appended = fuxix::file::private_file(&mut options)
-            .open(self.dir.join(files::HISTORY))
-            .and_then(|mut file| file.write_all(text));
+        let appended = {
+            use std::os::unix::fs::OpenOptionsExt;
+            fuxix::file::private_file(&mut options)
+                .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
+        }
+        .open(self.dir.join(files::HISTORY))
+        .and_then(|mut file| match file.metadata()?.is_file() {
+            true => file.write_all(text),
+            false => Err(std::io::Error::other("history is not a regular file")),
+        });
         match appended {
             Ok(()) => true,
             Err(e) => {

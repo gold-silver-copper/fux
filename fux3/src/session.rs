@@ -240,7 +240,11 @@ impl Session {
             let Ok(workspace) = self.workspace(&name, false) else {
                 continue;
             };
-            for pane in workspace.clear_dead(lock)? {
+            // One workspace that can't be read blocks no other.
+            let Ok(panes) = workspace.clear_dead(lock) else {
+                continue;
+            };
+            for pane in panes {
                 live.push(format!("{name}/{pane}"));
             }
         }

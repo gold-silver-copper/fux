@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 /// How often the screens are published at most while output goes on. The
 /// first change after a rest is published at once.
 pub const INTERVAL: Duration = Duration::from_millis(40);
+/// How often an `exit` not yet written is tried again.
+const EXIT_RETRY: Duration = Duration::from_secs(1);
 /// How long `start` waits for the first files to be written.
 const START_PUBLISH: Duration = Duration::from_secs(2);
 /// The most bytes of output read at a time.
@@ -71,6 +73,8 @@ const DRAIN_MOST: Duration = Duration::from_secs(1);
 /// kill waits for everything to be gone.
 const HANGUP_GRACE: Duration = Duration::from_millis(200);
 const KILL_WAIT: Duration = Duration::from_secs(2);
+/// The most variables `--env` names.
+pub const MAX_ENV: usize = 64;
 /// The most labels, and their keys' and values' lengths.
 pub const MAX_LABELS: usize = 16;
 const MAX_LABEL_KEY: usize = 32;
@@ -95,6 +99,8 @@ pub struct Spec {
     pub labels: Vec<(String, String)>,
     /// Variables named at start, given to the program after fux3's own.
     pub env: Vec<(String, OsString)>,
+    /// Started from its recipe: the recipe stays as it is.
+    pub keep_recipe: bool,
     pub argv: Vec<OsString>,
 }
 
@@ -149,17 +155,18 @@ impl Spec {
         for (key, value) in &self.labels {
             args.push(format!("{key}={value}").into());
         }
+        // The variables' values come on the startup pipe (`env_bytes`):
+        // arguments are public, a program's environment is not.
         args.push(self.env.len().to_string().into());
-        for (key, value) in &self.env {
-            let mut arg = OsString::from(format!("{key}="));
-            arg.push(value);
-            args.push(arg);
-        }
+        args.push(if self.keep_recipe { "keep" } else { "write" }.into());
         args.extend(self.argv.iter().cloned());
         args
     }
 
-    fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Spec, Failure> {
+    fn parse(
+        mut args: impl Iterator<Item = OsString>,
+        stdin: &mut impl BufRead,
+    ) -> Result<Spec, Failure> {
         let bad = |what: &str| Failure::new(format!("holder arguments: {what}"));
         let mut next = |what: &'static str| args.next().ok_or_else(|| bad(what));
         let text = |value: OsString, what: &str| value.into_string().map_err(|_| bad(what));
@@ -191,23 +198,8 @@ impl Spec {
             labels.push(parse_label(&text(next("label")?, "label")?)?);
         }
         let count: usize = text(next("env")?, "env")?.parse().map_err(|_| bad("env"))?;
-        let mut env = Vec::new();
-        for _ in 0..count {
-            use std::os::unix::ffi::{OsStrExt, OsStringExt};
-            let arg = next("variable")?;
-            let bytes = arg.as_bytes();
-            let at = bytes
-                .iter()
-                .position(|b| *b == b'=')
-                .ok_or_else(|| bad("variable"))?;
-            let key = String::from_utf8(bytes.get(..at).unwrap_or_default().to_vec())
-                .map_err(|_| bad("variable"))?;
-            let value = bytes
-                .get(at.saturating_add(1)..)
-                .unwrap_or_default()
-                .to_vec();
-            env.push((key, OsString::from_vec(value)));
-        }
+        let keep_recipe = text(next("recipe")?, "recipe")? == "keep";
+        let env = read_env(stdin, count)?;
         let argv: Vec<OsString> = args.collect();
         if argv.is_empty() {
             return Err(bad("no program"));
@@ -224,9 +216,60 @@ impl Spec {
             cwd,
             labels,
             env,
+            keep_recipe,
             argv,
         })
     }
+
+    /// The variables as the startup pipe carries them: `NAME=VALUE`, each
+    /// ended by a NUL.
+    pub fn env_bytes(&self) -> Vec<u8> {
+        use std::os::unix::ffi::OsStrExt;
+        let mut out = Vec::new();
+        for (key, value) in &self.env {
+            out.extend_from_slice(key.as_bytes());
+            out.push(b'=');
+            out.extend_from_slice(value.as_bytes());
+            out.push(0);
+        }
+        out
+    }
+}
+
+/// Reads `count` variables from the startup pipe, each at most a recipe's
+/// size.
+fn read_env(input: &mut impl BufRead, count: usize) -> Result<Vec<(String, OsString)>, Failure> {
+    use std::io::Read;
+    use std::os::unix::ffi::OsStringExt;
+    let bad = || Failure::new("holder input: a variable");
+    let mut env = Vec::new();
+    if count > MAX_ENV {
+        return Err(Failure::new(format!(
+            "{count} variables, at most {MAX_ENV}"
+        )));
+    }
+    for _ in 0..count {
+        let mut entry = Vec::new();
+        let limit = u64::try_from(crate::recipe::MAX_RECIPE).unwrap_or(u64::MAX);
+        input
+            .by_ref()
+            .take(limit)
+            .read_until(0, &mut entry)
+            .map_err(|_| bad())?;
+        if entry.pop() != Some(0) {
+            return Err(bad());
+        }
+        let at = entry.iter().position(|b| *b == b'=').ok_or_else(bad)?;
+        let value = entry
+            .get(at.saturating_add(1)..)
+            .unwrap_or_default()
+            .to_vec();
+        let key =
+            String::from_utf8(entry.get(..at).unwrap_or_default().to_vec()).map_err(|_| bad())?;
+        crate::recipe::check_env_name(&key)?;
+        env.push((key, OsString::from_vec(value)));
+    }
+    Ok(env)
 }
 
 /// What waits to be written to the program, in order: typed bytes and the
@@ -369,7 +412,6 @@ struct Holder {
     errors: VecDeque<String>,
     errors_changed: bool,
     in_dropped: u64,
-    exit_written: bool,
     cell: (u16, u16),
     pictures: bool,
     history_end: u64,
@@ -385,11 +427,14 @@ struct Holder {
 /// Runs the holder `args` describe; what it says goes to its starter.
 pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     let mut stdout = std::io::stdout();
+    let mut stdin = std::io::stdin().lock();
     let mut go = String::new();
-    if std::io::stdin().lock().read_line(&mut go).is_err() || go.trim() != "go" {
+    if stdin.read_line(&mut go).is_err() || go.trim() != "go" {
         return ExitCode::FAILURE;
     }
-    match Spec::parse(args).and_then(prepare) {
+    let spec = Spec::parse(args, &mut stdin);
+    drop(stdin);
+    match spec.and_then(prepare) {
         Ok(mut holder) => {
             holder.publish(Instant::now());
             // `ok` only once the files are there, whole: a client reading
@@ -520,6 +565,12 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         .workspace(&spec.workspace, true)?
         .claim(&spec.name)?;
     let made = (|| {
+        // The recipe, while this holder owns the name: a start that can't
+        // write it fails, and no older start can overwrite a newer one's.
+        if !spec.keep_recipe {
+            let text = crate::recipe::render(&spec.cwd, &spec.env, &spec.argv)?;
+            crate::recipe::write(&spec.root.join(&spec.workspace), &spec.name, &text)?;
+        }
         let in_fifo = fifo(&dir, files::IN)?;
         let ctl_fifo = fifo(&dir, files::CTL)?;
         let images = dir.join(files::IMAGES);
@@ -573,7 +624,6 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         errors: VecDeque::new(),
         errors_changed: true,
         in_dropped: 0,
-        exit_written: false,
         cell: spec.cell,
         pictures: spec.pictures,
         history_end: 0,
@@ -662,6 +712,16 @@ impl Holder {
                 self.read_terminal();
             }
             self.parse();
+            // A program that closed its terminal gets nothing more: what
+            // waited for it is said, once, and goes.
+            if !self.open && self.running() && self.input.waiting() > 0 {
+                let unwritten = self.input.waiting();
+                self.refuse(
+                    "in",
+                    format!("{unwritten} bytes never reached the program: it closed its terminal"),
+                );
+                self.input = Input::default();
+            }
             self.settle(now);
             let queued = self.input.waiting();
             if fifo_ctl && self.read_ctl() {
@@ -688,6 +748,17 @@ impl Holder {
                 );
             }
             self.gather_history();
+            // An `exit` not yet on disk (a full disk) is tried again, once
+            // a second, until it is.
+            if self.ended()
+                && !self.dirty
+                && self
+                    .published_at
+                    .is_some_and(|at| now.saturating_duration_since(at) >= EXIT_RETRY)
+                && !self.publisher.exit_done()
+            {
+                self.dirty = true;
+            }
             if self.dirty && self.publish_due(now) {
                 self.publish(now);
             }
@@ -707,7 +778,9 @@ impl Holder {
         }
         let publish = (self.dirty).then(|| self.published_at.map_or(now, |at| after(at, INTERVAL)));
         let settle = (self.exit.as_ref()).map(|exit| exit.settled_at.max(now).min(exit.latest));
-        let next = publish.into_iter().chain(settle).min()?;
+        let retry = (self.ended() && !self.publisher.exit_done())
+            .then(|| self.published_at.map_or(now, |at| after(at, EXIT_RETRY)));
+        let next = publish.into_iter().chain(settle).chain(retry).min()?;
         let wait = next.saturating_duration_since(now);
         Some(match self.exit.is_some() {
             // Looked at again soon, never at once: no spin while it settles.
@@ -916,7 +989,9 @@ impl Holder {
                 true => "the program closed its terminal".to_owned(),
                 false => format!("the program has ended ({})", self.state),
             };
-            self.errors.retain(|line| !line.starts_with("in: "));
+            self.errors.retain(|line| {
+                !(line.starts_with("in: ") && line.contains(" bytes dropped in all: "))
+            });
             let total = self.in_dropped;
             self.refuse("in", format!("{total} bytes dropped in all: {why}"));
         }
@@ -1222,10 +1297,15 @@ impl Holder {
         s.into_bytes()
     }
 
-    /// The `exit` file's line, once: when the program's end has settled.
-    fn exit_line(&mut self) -> Option<Vec<u8>> {
-        let ended = self.state.starts_with("exited ") || self.state.starts_with("signalled ");
-        (ended && !std::mem::replace(&mut self.exit_written, true))
+    /// Whether the program's end has settled.
+    fn ended(&self) -> bool {
+        self.state.starts_with("exited ") || self.state.starts_with("signalled ")
+    }
+
+    /// The `exit` file's line, with every publish once the end has settled,
+    /// until the publisher says it is on disk.
+    fn exit_line(&self) -> Option<Vec<u8>> {
+        (self.ended() && !self.publisher.exit_done())
             .then(|| format!("state {}\n", self.state).into_bytes())
     }
 
@@ -1343,7 +1423,9 @@ impl Holder {
             missed.push(format!("process {} was not reaped", job.leader()));
             self.job = Some(job);
         }
-        fuxix::process::reap_orphans(|_| false);
+        // What is kept for a second kill is not reaped as an orphan.
+        let kept = self.job.as_ref().map(Job::leader);
+        fuxix::process::reap_orphans(|pid| Some(pid) == kept);
         if missed.is_empty()
             && let Some(held) = self.held.take()
         {
@@ -1356,6 +1438,7 @@ impl Holder {
             }
         }
         self.state = format!("kill-incomplete {}", missed.join("; "));
+        self.refused = self.refused.saturating_add(1);
         self.exit = None;
         self.advance();
         let why = self.state.clone();

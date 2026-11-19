@@ -517,6 +517,22 @@ fn a_recipe_starts_the_same_program_again() -> Result {
         .map_err(|e| e.to_string())?;
     assert!(out.status.success(), "{out:?}");
     let recipe = s.root.join("main/.recipes/p");
+    let saved = std::fs::read_to_string(&recipe).map_err(|e| e.to_string())?;
+    assert!(
+        !saved.contains("HOME="),
+        "the recipe holds an inherited variable"
+    );
+    // The variable's value is no argument of the holder's: arguments are
+    // public, a program's environment is not.
+    #[cfg(target_os = "linux")]
+    {
+        let holder = s.holder("p").ok_or("no holder pid")?;
+        let args = std::fs::read(format!("/proc/{holder}/cmdline")).map_err(|e| e.to_string())?;
+        assert!(
+            !String::from_utf8_lossy(&args).contains("it's"),
+            "--env is in the holder's arguments"
+        );
+    }
     until("the first run", || {
         std::fs::read_to_string(&run).is_ok_and(|t| t.lines().count() == 1)
     })?;
@@ -552,13 +568,20 @@ fn put_writes_or_refuses_but_never_waits() -> Result {
     assert!(refused(&["put", "nobody", "x"])?.contains("no pane"));
     let long: String = std::iter::repeat_n('x', 600).collect();
     assert!(refused(&["put", "p", &long])?.contains("512"));
-    let holder = s.holder("p").ok_or("no holder pid")?;
-    Command::new("kill")
-        .args(["-9", &holder.to_string()])
-        .status()
+    // A pane whose `in` nobody reads, its lock held as a live holder's
+    // is: a blocking open would wait for ever.
+    let q = s.pane("q");
+    std::fs::create_dir(&q).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&q, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| e.to_string())?;
-    std::thread::sleep(Duration::from_millis(200));
-    let said = refused(&["put", "p", "x"])?;
-    assert!(said.contains("no pane") || said.contains("dead"), "{said}");
+    for fifo in ["in", "ctl"] {
+        fuxix::file::private_fifo(&q.join(fifo)).map_err(|e| e.to_string())?;
+    }
+    let lock = std::fs::File::open(&q).map_err(|e| e.to_string())?;
+    lock.try_lock().map_err(|e| e.to_string())?;
+    let said = refused(&["put", "q", "x"])?;
+    assert!(said.contains("dead"), "{said}");
+    drop(lock);
+    std::fs::remove_dir_all(&q).map_err(|e| e.to_string())?;
     Ok(())
 }

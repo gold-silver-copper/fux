@@ -113,7 +113,14 @@ fn session() -> Result<(Session, Vec<String>), Failure> {
 fn dir(args: impl Iterator<Item = OsString>) -> Outcome {
     none_left(args)?;
     let (session, _) = session()?;
-    Ok(say(&format!("{}\n", session.root.display())))
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = session.root.as_os_str().as_bytes().to_vec();
+    out.push(b'\n');
+    let mut stdout = std::io::stdout();
+    match stdout.write_all(&out).and_then(|()| stdout.flush()) {
+        Ok(()) => Ok(ExitCode::SUCCESS),
+        Err(e) => Err(io("stdout", e)),
+    }
 }
 
 fn ls(args: impl Iterator<Item = OsString>) -> Outcome {
@@ -197,6 +204,9 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
                     .unwrap_or_default()
                     .to_vec();
                 env.push((key, OsString::from_vec(value)));
+                if env.len() > holder::MAX_ENV {
+                    return Err(Failure::new(format!("at most {} --env", holder::MAX_ENV)));
+                }
             }
             "--" => {
                 argv.extend(args.by_ref());
@@ -212,18 +222,31 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
     // recipe is written as any program's is.
     let space = session.root.join(&workspace);
     let saved = fux3::recipe::path(&space, &name);
-    let from_recipe =
-        argv.is_empty() && std::fs::symlink_metadata(&saved).is_ok_and(|m| m.is_file());
+    // A recipe there is run only if it is a plain file of a recipe's size;
+    // anything else there is refused, never taken for "no recipe".
+    let from_recipe = argv.is_empty()
+        && match std::fs::symlink_metadata(&saved) {
+            Ok(meta) if meta.is_file() && meta.len() <= recipe_most() => true,
+            Ok(_) => {
+                return Err(Failure::new(format!(
+                    "{} is not a recipe: not a regular file of at most {} bytes",
+                    saved.display(),
+                    fux3::recipe::MAX_RECIPE
+                )));
+            }
+            Err(_) => false,
+        };
     if from_recipe {
         argv = vec!["/bin/sh".into(), saved.clone().into()];
     } else if argv.is_empty() {
         let shell = std::env::var_os("SHELL").filter(|s| !s.is_empty());
         argv.push(shell.unwrap_or_else(|| "/bin/sh".into()));
     }
-    // Refused before anything starts if it would be too large.
-    let recipe = (!from_recipe)
-        .then(|| fux3::recipe::render(&cwd, &env, &argv))
-        .transpose()?;
+    // Refused before anything starts if it would be too large; the holder
+    // writes it.
+    if !from_recipe {
+        fux3::recipe::render(&cwd, &env, &argv)?;
+    }
     let spec = Spec {
         root: session.root.clone(),
         workspace,
@@ -236,18 +259,14 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
         cwd,
         labels,
         env,
+        keep_recipe: from_recipe,
         argv,
     };
     let line = launch(&spec)?;
     if line != "ok" {
         return Err(Failure::new(line.strip_prefix("err ").unwrap_or(&line)));
     }
-    if let Some(recipe) = recipe
-        && let Err(failure) = fux3::recipe::write(&space, &spec.name, &recipe)
-    {
-        let mut stderr = std::io::stderr();
-        let _ = writeln!(stderr, "fux3: the pane started, but {failure}");
-    }
+
     // The directory as the system names it, bytes and all.
     use std::os::unix::ffi::OsStrExt;
     let dir = spec.root.join(&spec.workspace).join(&spec.name);
@@ -258,6 +277,10 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
         Ok(()) => Ok(ExitCode::SUCCESS),
         Err(e) => Err(io("stdout", e)),
     }
+}
+
+fn recipe_most() -> u64 {
+    u64::try_from(fux3::recipe::MAX_RECIPE).unwrap_or(u64::MAX)
 }
 
 /// Starts the holder in a session of its own, holding nothing of this
@@ -285,6 +308,7 @@ fn launch(spec: &Spec) -> Result<String, Failure> {
         ))
     };
     go.write_all(b"go\n")
+        .and_then(|()| go.write_all(&spec.env_bytes()))
         .and_then(|()| go.flush())
         .map_err(|e| unknown(format!("telling it to go: {e}")))?;
     // The line comes on a thread of its own, so that a holder that says
@@ -405,9 +429,20 @@ fn put(mut args: impl Iterator<Item = OsString>) -> Outcome {
             "more than {MAX_PUT} bytes: nothing was written; use ctl's send"
         )));
     }
-    let (session, _) = session()?;
-    let path = session.root.join(&space).join(&name).join(files::IN);
+    // No session lock and no clearing here: `put` never waits.
+    let session = Session::open()?;
     let shown = format!("{space}/{name}");
+    let pane = session.root.join(&space).join(&name);
+    let real = |path: &std::path::Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
+    if !real(&session.root.join(&space)) || !real(&pane) || !session::is_pane(&pane) {
+        return Err(Failure::new(format!("no pane {shown}")));
+    }
+    if matches!(session::try_lock_dir(&pane), Ok(Some(_))) {
+        return Err(Failure::new(format!(
+            "pane {shown} has no holder: it is dead"
+        )));
+    }
+    let path = pane.join(files::IN);
     let file = std::fs::File::options()
         .write(true)
         .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
