@@ -124,6 +124,8 @@ pub fn parse(text: &str) -> Result<Vec<Workspace>, String> {
     }
     let mut spaces: Vec<Workspace> = Vec::new();
     let mut named = false;
+    // A key set twice in one section is refused, not taken as the last.
+    let mut seen = std::collections::HashSet::new();
     for (index, line) in text.lines().enumerate() {
         let number = index.saturating_add(1);
         let at = |why: String| format!("line {number}: {why}");
@@ -170,16 +172,25 @@ pub fn parse(text: &str) -> Result<Vec<Workspace>, String> {
             .split_once('=')
             .ok_or_else(|| at("expected a [[section]] or key = value".to_owned()))?;
         let (key, value) = (key.trim(), value.trim());
+        let space_index = spaces.len();
         let space = spaces
             .last_mut()
             .ok_or_else(|| at("a setting before the first section".to_owned()))?;
+        let space_tabs = space.tabs.len();
         let Some(tab) = space.tabs.last_mut() else {
+            if !seen.insert((space_index, usize::MAX, key.to_owned())) {
+                return Err(at(format!("{key} is set twice")));
+            }
             if key != "name" {
                 return Err(at(format!("no workspace setting {key:?}")));
             }
             space.name = whole_string(value).map_err(at)?;
             continue;
         };
+        let place = (space_index, space_tabs, key.to_owned());
+        if !seen.insert(place) {
+            return Err(at(format!("{key} is set twice in one tab")));
+        }
         match key {
             "title" => tab.title = whole_string(value).map_err(at)?,
             "match" => tab.tests = tests(value).map_err(at)?,
@@ -236,6 +247,7 @@ mod tests {
         assert_eq!(shape, [("one", 2), ("workspace 2", 1)]);
         assert!(parse("[[tab]]\n[[workspace]]\n").is_err());
         assert!(parse("[[workspace]]\n").is_err());
+        assert!(parse("[[tab]]\ntitle = \"a\"\ntitle = \"b\"\n").is_err());
         Ok(())
     }
 }

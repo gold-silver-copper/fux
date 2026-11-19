@@ -27,7 +27,11 @@ impl Gathered {
     }
 
     fn lost(&self, found: u64) -> Failure {
-        let why = format!("row {} was asked for and row {found} came", self.next);
+        let why = format!(
+            "the pane printed faster than its history could be read: rows {} to {found} \
+             were let go before they were read",
+            self.next
+        );
         Failure::new(Code::Stale, why)
     }
 
@@ -38,6 +42,14 @@ impl Gathered {
         screen_end: u64,
         rows: &[HistoryRow],
     ) -> Result<bool, Failure> {
+        // Rows older than the first asked for were let go: a read that has
+        // taken nothing yet starts at the oldest kept.
+        if self.text.is_empty()
+            && let Some(first) = rows.first()
+            && first.number > self.next
+        {
+            self.next = first.number;
+        }
         let mut expected = self.next;
         for item in rows {
             if item.number != expected {
@@ -166,6 +178,22 @@ mod tests {
         let mut model = model(3, 2)?;
         feed(&mut model, "ab\u{754c}".as_bytes());
         assert_eq!(all_text(&model)?, "ab\u{754c}\n");
+        Ok(())
+    }
+
+    /// F2: a busy pane's whole history comes in one answer, so the reader
+    /// is never overtaken; rows let go before the first page are skipped.
+    #[test]
+    fn a_whole_history_comes_at_once() -> Result<(), Failure> {
+        let mut model = model(40, 5)?;
+        let lines: String = (0..20_000).map(|n| format!("line {n}\r\n")).collect();
+        feed(&mut model, lines.as_bytes());
+        let (start, end, screen_end, rows) = page(&model, 0, 0, MAX_HISTORY_ROWS)?;
+        assert!(start > 0, "some history was let go");
+        let mut read = Gathered::new(0);
+        assert!(read.take(end, screen_end, &rows)?, "not in one answer");
+        let text = read.finish();
+        assert!(text.ends_with("line 19999\n"), "{}", text.len());
         Ok(())
     }
 

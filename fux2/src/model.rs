@@ -2,7 +2,7 @@
 //! version counter, and the row identities behind every token it gave out.
 //! It does no I/O, so what it promises can be tested on its own.
 use crate::wire::{
-    Answer, Change, Code, Failure, HISTORY_PAGE, MAX_ANSWER, MAX_COLS, MAX_HISTORY_ROWS, MAX_ROWS,
+    Answer, Change, Code, Failure, HISTORY_HEAD, MAX_ANSWER, MAX_COLS, MAX_HISTORY_ROWS, MAX_ROWS,
     Meta, PaneId, Part, Row, State, Token, Writer, history_head, screen_head,
 };
 use fux_vt::keys::encode;
@@ -287,23 +287,13 @@ impl Model {
         }
         let screen = self.parser.screen();
         let range = screen.history_numbers();
-        if first < range.start {
-            let why = format!("row {first} is gone; {}..{} remain", range.start, range.end);
-            return Err(Failure::new(Code::Gone, why));
-        }
-        // Numbers go on past history down the primary screen. A history row
-        // keeps its number for good; a screen row's holds only for this
-        // answer, which is why the screen is sent whole or not at all.
+        // Rows let go before the asked-for one are skipped: the answer starts
+        // at the oldest kept, and its first number says what was lost.
+        let first = first.max(range.start);
         let kept = u64::try_from(screen.main_rows().len()).unwrap_or(u64::MAX);
         let screen_end = range.start.saturating_add(kept);
         let end = first.saturating_add(count).min(screen_end);
-        let skip = usize::try_from(first.saturating_sub(range.start)).unwrap_or(usize::MAX);
-        let mut rows = Writer::default();
-        let mut sent = 0usize;
-        for (number, row) in (first..end.max(first)).zip(screen.main_rows().skip(skip)) {
-            if number < range.end && rows.0.len() >= HISTORY_PAGE {
-                break;
-            }
+        let row_of = |number: u64, row: &fux_vt::Row<'_>, w: &mut Writer| {
             // A wide glyph that did not fit left a blank that is no part of
             // what the program wrote.
             let width = row.len().saturating_sub(usize::from(row.ends_in_spacer()));
@@ -311,11 +301,45 @@ impl Model {
                 true => u64::try_from(width).unwrap_or(0),
                 false => 0,
             };
-            rows.array(3);
-            rows.uint(number);
-            rows.uint(wrapped_at);
-            rows.screen_row(&row);
+            w.array(3);
+            w.uint(number);
+            w.uint(wrapped_at);
+            w.screen_row(row);
+        };
+        // The screen's rows first, apart: a history row keeps its number for
+        // good, a screen row's holds only for this answer, so the screen is
+        // sent whole after the last history row or not at all.
+        let in_history = usize::try_from(range.end.saturating_sub(range.start)).unwrap_or(0);
+        let mut below = Writer::default();
+        let mut below_count = 0usize;
+        for (number, row) in (range.end..screen_end).zip(screen.main_rows().skip(in_history)) {
+            if number >= first && number < end {
+                row_of(number, &row, &mut below);
+                below_count = below_count.saturating_add(1);
+            }
+        }
+        let room = MAX_ANSWER
+            .saturating_sub(below.0.len())
+            .saturating_sub(HISTORY_HEAD);
+        let skip = usize::try_from(first.saturating_sub(range.start)).unwrap_or(usize::MAX);
+        let mut rows = Writer::default();
+        let mut row = Writer::default();
+        let mut sent = 0usize;
+        let mut reached = first;
+        let history_end = end.min(range.end);
+        for (number, line) in (first..history_end.max(first)).zip(screen.main_rows().skip(skip)) {
+            row.0.clear();
+            row_of(number, &line, &mut row);
+            if rows.0.len().saturating_add(row.0.len()) > room {
+                break;
+            }
+            rows.0.extend_from_slice(&row.0);
             sent = sent.saturating_add(1);
+            reached = number.saturating_add(1);
+        }
+        if reached >= range.end || first >= range.end {
+            rows.0.extend_from_slice(&below.0);
+            sent = sent.saturating_add(below_count);
         }
         let mut w = Writer::default();
         let range = (range.start, range.end, screen_end);
@@ -335,7 +359,14 @@ impl Model {
                     let press: fux_vt::keys::KeyPress = name
                         .parse()
                         .map_err(|e| Failure::new(Code::Invalid, format!("{e}")))?;
-                    encode::key_bytes(press.into(), screen.key_mode(), &mut out);
+                    // Newline mode (LNM) has Return send CR LF, as xterm does.
+                    let plain_enter =
+                        press == fux_vt::keys::KeyPress::plain(fux_vt::keys::Key::Enter);
+                    if plain_enter && screen.mode(Mode::NewLine) {
+                        out.extend_from_slice(b"\r\n");
+                    } else {
+                        encode::key_bytes(press.into(), screen.key_mode(), &mut out);
+                    }
                 }
                 Part::Paste(text) => {
                     encode::paste(text, screen.mode(Mode::BracketedPaste), &mut out);
@@ -508,6 +539,17 @@ mod tests {
         };
         assert_eq!(moved, 1);
         assert!(rows.len() <= 2, "{rows:?}");
+        Ok(())
+    }
+
+    /// F5: Enter is what the program's newline mode makes it.
+    #[test]
+    fn enter_follows_newline_mode() -> Result<(), Failure> {
+        let mut model = model(10, 3)?;
+        let enter = [Part::Key("Enter".to_owned())];
+        assert_eq!(model.encode(&enter)?, b"\r");
+        feed(&mut model, b"\x1b[20h");
+        assert_eq!(model.encode(&enter)?, b"\r\n");
         Ok(())
     }
 

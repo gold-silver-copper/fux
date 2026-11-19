@@ -14,13 +14,12 @@ pub const MAX_ANSWER: usize = 8 << 20;
 pub const MAX_ROWS: u16 = 128;
 /// The most columns a pane has.
 pub const MAX_COLS: u16 = 256;
-/// The most rows one history read asks for; an answer may hold fewer, to
-/// stay within [`HISTORY_PAGE`].
-pub const MAX_HISTORY_ROWS: u64 = 4096;
-/// Past this many bytes a history answer adds no more history rows. The screen
-/// below them always fits after it, so one answer can end a read atomically.
-pub const HISTORY_PAGE: usize = 512 << 10;
-const _: () = assert!(HISTORY_PAGE + WORST_ROW + WORST_SCREEN < MAX_ANSWER);
+/// The most rows one history read asks for; an answer holds as many as fit,
+/// so a pane's whole history of the default size comes in one.
+pub const MAX_HISTORY_ROWS: u64 = 1 << 20;
+/// What a history answer leaves free for its head.
+pub const HISTORY_HEAD: usize = 64;
+const _: () = assert!(WORST_ROW + WORST_SCREEN + HISTORY_HEAD < MAX_ANSWER);
 /// The longest a wait lasts; a client renews it.
 pub const MAX_WAIT_MS: u32 = 30_000;
 /// The most parts one send has.

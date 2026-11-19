@@ -103,3 +103,17 @@ before anything loads, so there is always a way out.
 The history pane's program must work without a shell's quoting on any system, and
 must remove its own pane only if the pager ran. If no pager can start, the pane stays
 and shows why.
+
+## D-17: review round 1 (2026-11-18)
+
+Six reviewers and two testers. What changed in the design, in short:
+- A history answer fills to the answer cap and sends the screen only with the
+  last history row, so a pane's whole default history comes in one observation;
+  rows let go before the first one asked for are skipped, and the answer's first
+  row number says so. `gone` no longer comes from a history read.
+- `--until` and `--until-line` count only rows changed since the token.
+- `C-b [` runs `fux2 page ... --close-pane`; plain `fux2 page` never removes a pane.
+- An ended program is reaped when nothing it started is left, so ended panes
+  leave no zombie; otherwise it stays unreaped for `kill`.
+- A connection gives up its slot to a newcomer only after a second of asking
+  nothing, so one just greeted is not evicted before its request.

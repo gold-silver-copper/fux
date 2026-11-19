@@ -223,6 +223,8 @@ struct View {
     waiting_runs: VecDeque<Run>,
     /// The configuration is still being read: keys it might bind wait.
     loading: bool,
+    /// The layout file's last reading was refused.
+    layout_failed: bool,
     held: Vec<Input>,
     /// A run was handed to the language and has not finished.
     run_sent: bool,
@@ -573,6 +575,10 @@ impl View {
         }
         match layout::parse(&text) {
             Ok(workspaces) => {
+                // The file is good again: what it said wrong is no longer so.
+                if std::mem::take(&mut self.layout_failed) {
+                    self.message = None;
+                }
                 self.places.resize(workspaces.len(), Place::default());
                 for (place, space) in self.places.iter_mut().zip(&workspaces) {
                     let most = space.tabs.len().saturating_sub(1);
@@ -587,6 +593,7 @@ impl View {
             }
             // The last good layout stays on the screen.
             Err(why) => {
+                self.layout_failed = true;
                 let file = path.file_name().unwrap_or(path.as_os_str());
                 self.say(format!("{}: {why}", file.to_string_lossy()));
             }
@@ -807,6 +814,7 @@ impl View {
             }
             ToViewer::Verb(verb) => self.apply_verb(verb),
             ToViewer::Started { stop, limit } => {
+                self.dirty = true;
                 self.running = Some(Running {
                     stop,
                     at: after(now, limit),
@@ -816,6 +824,7 @@ impl View {
             ToViewer::Done(why) => {
                 self.running = None;
                 self.run_sent = false;
+                self.dirty = true;
                 if let Some(why) = why {
                     self.say(why);
                 }
@@ -1219,6 +1228,7 @@ fn run() -> Result<(), Failure> {
         running: None,
         waiting_runs: VecDeque::new(),
         loading: true,
+        layout_failed: false,
         held: Vec::new(),
         run_sent: false,
         painter,

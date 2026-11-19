@@ -50,6 +50,8 @@ const DRAIN_MOST: Duration = Duration::from_secs(1);
 const HANGUP_GRACE: Duration = Duration::from_millis(200);
 /// How long a kill waits for its program to be gone.
 const KILL_WAIT: Duration = Duration::from_secs(2);
+/// How long a connection must have asked nothing to give up its slot.
+const EVICT_IDLE: Duration = Duration::from_secs(1);
 /// How long a listener that failed to accept is left alone.
 const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 /// How long a kill reads on for the terminal's close to finish.
@@ -667,6 +669,27 @@ impl Pane {
         };
         self.input = Input::default();
         self.model.set_state(state);
+        self.reap_if_alone();
+    }
+
+    /// An ended program is kept unreaped only while something it started
+    /// lives, which `kill` must still be able to reach by its session;
+    /// alone, it is reaped now, so ended panes leave no zombie.
+    fn reap_if_alone(&mut self) {
+        #[cfg(unix)]
+        {
+            let Some(job) = &self.job else {
+                return;
+            };
+            let leader = job.leader();
+            #[cfg(target_os = "linux")]
+            let others = (fuxix::process::tree().pids.iter()).any(|pid| *pid != leader);
+            #[cfg(not(target_os = "linux"))]
+            let others = !job.members().pids.is_empty();
+            if !others && let Some(job) = self.job.take() {
+                drop(job.reap());
+            }
+        }
     }
 
     fn accept(&mut self, now: Instant) {
@@ -682,7 +705,7 @@ impl Pane {
                     return;
                 }
             };
-            if self.peers.len() >= MAX_PEERS && !self.evict_idle() {
+            if self.peers.len() >= MAX_PEERS && !self.evict_idle(now) {
                 // Every slot is mid-request, each bounded by its deadline.
                 sys::abandon(&stream);
                 continue;
@@ -703,10 +726,12 @@ impl Pane {
 
     /// Closes the connection idle longest, for a newcomer: it asked for
     /// nothing, and a client reconnects.
-    fn evict_idle(&mut self) -> bool {
+    fn evict_idle(&mut self, now: Instant) -> bool {
         let oldest = (self.peers.iter().enumerate())
             .filter(|(_, p)| {
-                p.wait.is_none()
+                // One just greeted is about to ask: it is not idle yet.
+                now.saturating_duration_since(p.idle_since) >= EVICT_IDLE
+                    && p.wait.is_none()
                     && p.conn.pending() == 0
                     && fuxix::io::written(&p.conn.stream)
                     && !p.conn.mid_frame()

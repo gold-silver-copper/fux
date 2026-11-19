@@ -39,6 +39,8 @@ const START_WAIT: Duration = Duration::from_secs(if cfg!(windows) { 120 } else {
 const DEFAULT_SETTLE_MS: u32 = 100;
 /// How long `read --since` waits when no `--wait` is given.
 const NO_WAIT: u32 = 0;
+/// How often a matching read waits for two reads to see one screen.
+const PAIR_TRIES: u32 = 20;
 /// How often a history read that lost its place starts again.
 const HISTORY_TRIES: u32 = 3;
 
@@ -548,8 +550,10 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
                 let why = format!("no change after {seen} within {bound:?}");
                 return Err(Failure::new(Code::Timeout, why));
             };
-            let (now, meta, rows) = whole_rows(client)?;
-            let matched = rows.iter().map(Row::text).any(|line| {
+            // Only rows that changed since the token count: a line already on
+            // the screen, from an earlier command, is no answer to this one.
+            let (now, meta, rows, changed) = rows_and_changes(client, since)?;
+            let matched = changed.iter().map(Row::text).any(|line| {
                 plan.until_line.as_ref().is_none_or(|want| *want == line)
                     && plan.until.as_ref().is_none_or(|want| line.contains(want))
             });
@@ -601,6 +605,29 @@ fn follow(client: &mut Client, since: Token, plan: &Follow) -> Outcome {
     }
     out.push_str("}\n");
     say(&out)
+}
+
+/// The screen, and the rows of it that changed since `since`, from one
+/// observation: tried again until no output came between the two reads.
+fn rows_and_changes(
+    client: &mut Client,
+    since: Token,
+) -> Result<(Token, Meta, Vec<Row>, Vec<Row>), Failure> {
+    for _ in 0..PAIR_TRIES {
+        let (whole, meta, rows) = whole_rows(client)?;
+        let (token, _, change) = screen(client, Some(since))?;
+        if token != whole {
+            continue;
+        }
+        let changed = match change {
+            Change::Unchanged => Vec::new(),
+            Change::Whole(rows) => rows,
+            Change::Patch { rows, .. } => rows.into_iter().map(|(_, row)| row).collect(),
+        };
+        return Ok((whole, meta, rows, changed));
+    }
+    let why = "the pane changes faster than its screen can be read twice";
+    Err(Failure::new(Code::Busy, why))
 }
 
 /// One pass over a pane's primary screen, history first, by row number.
@@ -662,6 +689,28 @@ fn page(mut args: Args) -> Outcome {
             other => return Err(unknown(other)),
         }
     }
+    let shown = show_pager(&pane);
+    if !close_pane {
+        return shown;
+    }
+    // Run in a pane made for it: a failure is said there, and stays until
+    // read, before the pane goes.
+    if let Err(failure) = &shown {
+        let mut err = std::io::stderr();
+        let _ = writeln!(err, "fux2: {failure}\n\npress Enter to close");
+        let _ = std::io::stdin().lock().read_line(&mut String::new());
+    }
+    if let Ok(own) = std::env::var("FUX2_PANE")
+        && let Ok(mut client) = Client::connect(&Session::open()?, &own)
+    {
+        // The answer may never come: this process is what it ends.
+        let _ = client.call(&Request::Kill { expected: None }, ANSWER_WAIT);
+    }
+    shown
+}
+
+/// The pane's history in `$PAGER`, else a pager of the system's.
+fn show_pager(pane: &Target) -> Outcome {
     let text = history_text_of(&mut pane.connect()?)?;
     let chosen = std::env::var("PAGER").ok().filter(|p| !p.trim().is_empty());
     let fallbacks: &[&str] = if cfg!(windows) {
@@ -700,15 +749,6 @@ fn page(mut args: Args) -> Outcome {
     child
         .wait()
         .map_err(|e| Failure::new(Code::Io, format!("the pager: {e}")))?;
-    // Only a pane started to show this one asks to go; any other caller's
-    // pane is left alone.
-    if close_pane
-        && let Ok(own) = std::env::var("FUX2_PANE")
-        && let Ok(mut client) = Client::connect(&Session::open()?, &own)
-    {
-        // The answer may never come: this process is what it ends.
-        let _ = client.call(&Request::Kill { expected: None }, ANSWER_WAIT);
-    }
     Ok(())
 }
 

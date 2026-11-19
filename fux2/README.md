@@ -46,26 +46,44 @@ the pane has moved on.
 
 With no program after `--`, `start` runs `$SHELL` (`%COMSPEC%` on Windows). The
 program gets the caller's directory and environment, plus `TERM=xterm-256color`,
-`TERM_PROGRAM=fux2` and `FUX2_PANE=<name>`. Panes are 80x24 unless told, at most
-256x128. History is 1 MiB unless told, at most 16 MiB.
+`TERM_PROGRAM=fux2` and `FUX2_PANE=<name>`. Panes are 80x24 unless told; a size
+outside 1–256 columns and 1–128 rows is a usage error (exit 2). `--history BYTES`
+is the memory history may use, 1 MiB unless told, at most 16 MiB (over it: exit
+6). It is memory, not text: 1 MiB kept about 95 KB of short lines in a test.
+A pane that has ended still counts toward the session's 128 until `fux2 kill`.
+The session directory's path must leave room for a socket name: about 100 bytes
+in all on Linux and macOS, said with the numbers if it is too long.
 
 **`send`** takes any of these, in order, as one send that is queued whole or
 refused whole (`busy`, at most 64 KiB waiting):
 
 - `TEXT`, where `\n` is the Enter key as the program's terminal mode sends it,
   `\r` a carriage return, `\\` a backslash and `\xHH` a byte
-- `--key NAME`: a key, such as `Enter`, `C-c`, `Up`, `F5`
-- `--paste TEXT`: a paste, bracketed if the program asked for that
+- `--key NAME`: a key: `Enter`, `Tab`, `Escape`, `Space`, `BSpace`, `Up`,
+  `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`,
+  `Delete`, `BTab`, `F1` to `F35`, or a character; with `C-`, `M-` or `S-` in
+  front for Ctrl, Alt and Shift (`C-c`, `M-x`)
+- `--paste TEXT`: a paste, bracketed if the program asked for that; its text is
+  taken as it is (`\n` there is a backslash and an `n`)
 - `--stdin`: standard input, byte for byte
+
+**`signal`** names are `HUP INT TERM KILL STOP TSTP CONT WINCH QUIT USR1 USR2`
+and the other POSIX names (`ABRT`, `ALRM`, ...). On Windows only `INT` and
+`QUIT` are delivered (as Ctrl-C and Ctrl-Break); the rest are `unsupported`.
 
 **`kill`** hangs the program up, then kills its session (Windows: its job) and
 waits for all of it. On Linux it also kills anything the program started that
 left its session (`setsid`), since every such process stays the pane's. On macOS
 a process that left the session can't be found, and is not killed. `kill` exits
 1 and names what it could not end; exit 0 means nothing it found is left.
+`kill --label K=V` kills every pane that matches, and exits 0 when none does.
 
 **`read`** alone is a snapshot, so right after a `send` it may not show the
-result yet. To wait in one command, give it the token `send` printed:
+result yet. To wait in one command, give it the token `send` printed. Only rows
+that changed after that token count for `--until` and `--until-line`, so a line
+an earlier command left on the screen is never taken for this one's.
+`--wait`, `--settle`, `--until`, `--until-line` and `--text` need `--since`, and
+`--until` and `--until-line` need `--wait`:
 
 | Flag | Meaning |
 |---|---|
@@ -75,15 +93,21 @@ result yet. To wait in one command, give it the token `send` printed:
 | `--until TEXT` | keep waiting until a screen row contains TEXT |
 | `--until-line TEXT` | keep waiting until a whole row equals TEXT (the safe choice: a typed command echoes on the screen, so `--until hi` matches `echo hi` itself) |
 | `--text` | print the whole screen as text instead of JSON |
-| `--json` | without `--since`: the whole screen and its metadata as JSON |
+| `--json` | without `--since`: the whole screen and its metadata as JSON (`token`, `cols`, `rows`, `cursor`, `alternate`, `history` with `start`, `end` and `epoch`, `state`, `limitations`, and `screen`, a list of rows each with `row`, `text`, `rendition` and `spans`) |
 | `--history-text` | all retained history and then the screen, as plain text |
 | `--history EPOCH FIRST COUNT` | numbered rows as JSON, for programs; `EPOCH` and the retained range come from `--json` |
+
+**`wait`** needs `--after TOKEN`; `--ms` is 30000 unless told, which is also the
+most. At most 12 waits are parked on one pane at a time; a 13th is refused
+`busy` (exit 6) at once.
 
 A program that has ended keeps its last screen, readable until `fux2 kill`.
 
 **Exit codes:** 0 success, 2 usage, 3 missing or replaced or gone, 4 stale,
 5 timed out, 6 busy or over a limit, 7 unknown outcome (the command may or may
-not have taken effect; it is never retried for you), 1 anything else. Errors go
+not have taken effect; it is never retried for you), 1 anything else, which
+includes `exists` (that name is taken) and `ended` (the program has ended, so
+it takes no keys). Errors go
 to stderr as `fux2: <code>: <what>`.
 
 ## The viewer
@@ -106,9 +130,10 @@ so); a larger one leaves blank room. Viewing never resizes a pane.
 | `C-b d` | detach |
 | `C-b C-b` | type a literal `C-b` |
 
-The status line says which workspace and tab are shown and how many there are,
-such as `compiler 1/2 | logs 2/3`. Each viewer keeps its own place. The mouse is
-not forwarded.
+The focused pane's title bar is drawn in reverse video; the others are dim. The
+status line says which workspace and tab are shown and how many there are, such
+as `compiler 1/2 | logs 2/3`. Each viewer keeps its own place. The mouse is not
+forwarded.
 
 ## Scrollback and copying
 
@@ -136,9 +161,13 @@ focus returns.
 
 ### Layout file
 
-`fux2 view --layout FILE` reads a small TOML file, and rereads it every second. A
-bad edit keeps the last good layout and shows the error. A tab is a filter on
-labels, and a workspace is a named list of tabs.
+`fux2 view --layout FILE` reads a small file in a subset of TOML, and rereads it
+every second. A bad edit keeps the last good layout and shows the error, until
+the file is good again. A tab is a filter on labels, and a workspace is a named
+list of tabs. A pane that no tab matches is not shown. The subset: the sections
+`[[tab]]`, `[[workspace]]` and `[[workspace.tab]]`, the keys `name`, `title`,
+`match` and `axis`, double-quoted strings, one-line lists and `#` comments. A key
+set twice in one section is refused.
 
 ```toml
 [[tab]]
@@ -196,22 +225,29 @@ the [grift](https://crates.io/crates/grift) language:
 | `(next-workspace)`, `(previous-workspace)`, `(last-workspace)` | change workspace |
 | `(fit)`, `(detach)` | the viewer's actions |
 | `(bind-verb CHORD WORD [N])` | bind a chord to one of those actions by name (or `"literal"`, which types the chord's first key). It acts at once, even while a binding runs |
-| `(start-here PREFIX [PROGRAM ARG ...])` | a new pane named `PREFIX-N` with the shown tab's labels; gives its name |
-| `(focus PANE)` | focus that pane when it appears, and come back when it goes |
-| `(fux2-program)` | the path of the `fux2` command |
+| `(start-here PREFIX [PROGRAM ARG ...])` | a new pane named `PREFIX-N` with the shown tab's labels; gives `NAME@ID` |
+| `(focus PANE)` | focus that pane (`NAME` or `NAME@ID`) when it appears within 10 s, and come back when it goes |
+| `(fux2-program)` | the path of the `fux2` command, as a string |
 | `(send PANE TEXT)` | types TEXT literally: write `\r` for Enter |
-| `(send-key PANE KEY)`, `(read PANE)`, `(ls)` | as the commands |
-| `(start NAME PROGRAM ARG ...)`, `(resize PANE COLS ROWS)` | as the commands |
-| `(signal PANE NAME)`, `(wait PANE TOKEN MS)`, `(kill PANE)` | as the commands |
+| `(send-key PANE KEY)`, `(signal PANE NAME)`, `(resize PANE COLS ROWS)`, `(kill PANE)` | as the commands |
+| `(read PANE)` | the screen as one string |
+| `(ls)` | the pane names, a list of strings |
+| `(start NAME PROGRAM ARG ...)` | as the command; gives `NAME TOKEN` as a string |
+| `(wait PANE TOKEN MS)` | as the command; gives `TOKEN STATE` as a string |
 
-The default keys are this same language, in
-[`fux2-view/src/defaults.grift`](../fux2-view/src/defaults.grift), and any of them
-can be unbound or replaced. `C-b [` is three lines there:
+The actions give nothing back (`#inert`). A word that fails raises an error
+that names what went wrong, shown on the status line. A binding copies at most
+16 MiB of text out of the language in all, and a command's output is at most
+8 MiB.
+
+The default keys are this same language, in `fux2-view/src/defaults.grift` in
+the source (built into the viewer), and any of them can be unbound or replaced.
+`C-b [` is three lines there:
 
 ```lisp
 (bind-key "C-b ["
   (lambda! ()
-    (focus (start-here "history" (fux2-program) "page" (focused)))))
+    (focus (start-here "history" (fux2-program) "page" (focused) "--close-pane"))))
 ```
 
 Loading gets 2 seconds and each binding 5, on a thread of their own: the viewer
