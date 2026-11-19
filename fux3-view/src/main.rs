@@ -9,10 +9,11 @@ mod keys;
 mod layout;
 mod panel;
 mod panes;
+mod pictures;
 mod render;
 mod script;
 
-use fux_vt::keys::decode::{Decoder, Input, Timing};
+use fux_vt::keys::decode::{Decoder, Input, Reply, Timing};
 use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};
 use fux_vt::keys::{KeyPress, Keystroke};
 use fux3::Failure;
@@ -84,7 +85,7 @@ const TIMING: Timing = Timing::new(50, 1000);
 
 /// The alternate screen, pastes bracketed, the cursor hidden, and the mouse
 /// reported (buttons and drags, SGR encoding); leaving undoes them.
-const ENTER: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[2J";
+const ENTER: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[c";
 const LEAVE: &str = "\x1b[0m\x1b[0 q\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?2004l\x1b[?1049l";
 
 fn after(now: Instant, wait: Duration) -> Instant {
@@ -251,6 +252,9 @@ struct View {
     run_sent: bool,
     painter: Painter,
     drawn: Frame,
+    /// The terminal draws sixel (its DA1 said), and the pictures drawn.
+    sixel: bool,
+    pictures: Vec<pictures::Drawn>,
     dirty: bool,
     next_paint: Instant,
     next_scan: Instant,
@@ -1121,6 +1125,10 @@ impl View {
                     self.say(format!("a paste over {MAX_PASTE} bytes was dropped"));
                 }
                 Input::Mouse(event) if self.panel.is_none() => self.on_mouse(event),
+                Input::Reply(Reply::Attributes { sixel }) => {
+                    self.sixel = sixel;
+                    self.dirty = true;
+                }
                 Input::Mouse(_) | Input::FocusIn | Input::FocusOut | Input::Reply(_) => {}
             }
         }
@@ -1234,14 +1242,41 @@ impl View {
             open.draw(&mut frame, above_bar);
             cursor = None;
         }
-        if self.draw_bar(&mut frame, &tiles) {
+        let bar = self.draw_bar(&mut frame, &tiles);
+        if bar {
             let last = rows.saturating_sub(1);
             if cursor.is_some_and(|(_, y)| y >= last) {
                 cursor = None;
             }
         }
+        // Pictures go over the panes, never under a menu or list, nor on
+        // the bar's row; any change draws everything again, as a picture's
+        // pixels stay until the cells under them are written.
+        let mut drawn = Vec::new();
+        if self.sixel && self.column.is_none() && self.panel.is_none() {
+            let bottom = if bar { rows.saturating_sub(1) } else { rows };
+            for (pane, rect) in &tiles {
+                let tile = tile_of(*rect);
+                let Some(screen) = self.live_pane(pane).and_then(|p| p.screen.as_ref()) else {
+                    continue;
+                };
+                let first = render::first_row(screen, tile);
+                let shown = (screen.pictures.iter())
+                    .filter_map(|(placed, pixels)| Some((placed, pixels.as_ref()?)));
+                drawn.extend(shown.filter_map(|(placed, pixels)| {
+                    pictures::place(tile, first, bottom, placed, pixels)
+                }));
+            }
+        }
+        let fresh = drawn != self.pictures;
+        if fresh {
+            self.drawn = Frame::default();
+        }
         let mut bytes = b"\x1b[?2026h\x1b[?25l".to_vec();
         bytes.extend(frame.diff(&self.drawn));
+        if fresh {
+            pictures::draw(&drawn, &mut bytes);
+        }
         bytes.extend_from_slice(b"\x1b[0m");
         if let Some((x, y)) = cursor {
             let (row, col) = (y.saturating_add(1), x.saturating_add(1));
@@ -1250,7 +1285,9 @@ impl View {
         bytes.extend_from_slice(b"\x1b[?2026l");
         if self.painter.send(bytes) {
             self.drawn = frame;
+            self.pictures = drawn;
         } else {
+            self.pictures.clear();
             self.dirty = true;
         }
     }
@@ -1665,6 +1702,8 @@ fn run() -> Result<(), Failure> {
         run_sent: false,
         painter,
         drawn: Frame::default(),
+        sixel: false,
+        pictures: Vec::new(),
         dirty: true,
         next_paint: now,
         next_scan: now,
@@ -1747,6 +1786,8 @@ fn serve(
 ) -> Result<(), Failure> {
     let mut poll = Poll::default();
     let mut decoder = Decoder::with_paste_limit(TIMING, MAX_PASTE);
+    // ENTER asked for the primary device attributes: whether sixel shows.
+    decoder.expect(Instant::now());
     let mut buffer = vec![0u8; 16 << 10];
     let stdin = std::io::stdin();
     while !view.quit {

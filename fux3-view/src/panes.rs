@@ -5,6 +5,7 @@
 //! file that `ctl`'s `paste` names.
 use crate::layout::{Live, PaneRef};
 use crate::render::Cell;
+use fux_vt::sixel::Picture;
 use fux3::Failure;
 use fux3::files::{self, Head, Placed};
 use fuxix::Errno;
@@ -12,6 +13,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The most bytes of keys waiting for a pane's `in`.
@@ -41,8 +43,8 @@ fn stamp(path: &Path) -> Option<Stamp> {
 pub struct Screen {
     pub head: Head,
     pub rows: Vec<Vec<Cell>>,
-    #[expect(dead_code, reason = "pictures are drawn next")]
-    pub pictures: Vec<Placed>,
+    /// Each picture shown, with its pixels if its file could be read.
+    pub pictures: Vec<(Placed, Option<Arc<Picture>>)>,
 }
 
 pub struct Pane {
@@ -221,10 +223,24 @@ impl Pane {
             });
             out.push(cells.collect());
         }
+        // A picture already read keeps its pixels; one gone is let go.
+        let old = self.screen.take().map(|s| s.pictures).unwrap_or_default();
+        let images = self.dir.join(files::IMAGES);
+        let pictures = (published.pictures.into_iter())
+            .map(|placed| {
+                let known = old
+                    .iter()
+                    .find(|(p, _)| p.file == placed.file)
+                    .and_then(|(_, pic)| pic.clone());
+                let pixels =
+                    known.or_else(|| crate::pictures::load(&images.join(&placed.file), &placed));
+                (placed, pixels)
+            })
+            .collect();
         Ok(Screen {
             head: published.head,
             rows: out,
-            pictures: published.pictures,
+            pictures,
         })
     }
 

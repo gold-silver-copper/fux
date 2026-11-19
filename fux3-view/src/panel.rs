@@ -399,10 +399,7 @@ impl Column {
 
 /// The items from `at` on, taken out of `items`.
 fn split_off<T>(items: &mut Vec<T>, at: usize) -> Vec<T> {
-    let mut tail = Vec::new();
-    while items.len() > at {
-        tail.extend(items.pop());
-    }
-    tail.reverse();
-    tail
+    let mut rest = std::mem::take(items).into_iter();
+    *items = rest.by_ref().take(at).collect();
+    rest.collect()
 }

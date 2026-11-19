@@ -1594,28 +1594,11 @@ fn new_tab(
     );
     let at = (after.and_then(|after| space.tabs.iter().position(|t| t.id == after)))
         .map_or(space.tabs.len(), |at| at.saturating_add(1));
-    let mut tabs: Vec<Tab> = std::mem::take(&mut space.tabs);
-    let tail: Vec<Tab> = tabs.split_off_checked(at);
-    tabs.push(Tab::new(id, &title));
-    tabs.extend(tail);
-    space.tabs = tabs;
+    let mut rest = std::mem::take(&mut space.tabs).into_iter();
+    space.tabs = rest.by_ref().take(at).collect();
+    space.tabs.push(Tab::new(id, &title));
+    space.tabs.extend(rest);
     Ok(id)
-}
-
-trait SplitOffChecked<T> {
-    fn split_off_checked(&mut self, at: usize) -> Vec<T>;
-}
-
-impl<T> SplitOffChecked<T> for Vec<T> {
-    /// The items from `at` on, taken out; none if `at` is past the end.
-    fn split_off_checked(&mut self, at: usize) -> Vec<T> {
-        let mut tail = Vec::new();
-        while self.len() > at {
-            tail.extend(self.pop());
-        }
-        tail.reverse();
-        tail
-    }
 }
 
 fn new_workspace(layout: &mut Layout, title: Option<&str>) -> Result<(u32, u32), Failure> {

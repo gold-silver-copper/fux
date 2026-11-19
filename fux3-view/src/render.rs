@@ -122,8 +122,7 @@ impl Frame {
     /// would cut is left blank. Where the cursor lands, if it is shown there.
     pub fn pane(&mut self, tile: Tile, screen: &Screen) -> Option<(u16, u16)> {
         let head = &screen.head;
-        let first = (head.cursor_row.saturating_add(1).saturating_sub(tile.h))
-            .min(head.rows.saturating_sub(tile.h));
+        let first = first_row(screen, tile);
         for (offset, row) in screen
             .rows
             .iter()
@@ -201,6 +200,13 @@ impl Frame {
         }
         out
     }
+}
+
+/// The first of a pane's rows shown in `tile`: a taller screen is scrolled
+/// to keep the cursor in view.
+pub fn first_row(screen: &Screen, tile: Tile) -> u16 {
+    let head = &screen.head;
+    (head.cursor_row.saturating_add(1).saturating_sub(tile.h)).min(head.rows.saturating_sub(tile.h))
 }
 
 /// The borders' colour, and that of the borders around the focused pane.
