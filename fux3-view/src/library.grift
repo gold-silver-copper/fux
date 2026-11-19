@@ -46,12 +46,14 @@
   (focus (started (edit! (join "split " (focused) " " dir))))))
 
 ;; The focused pane's history in a pager, below it: $PAGER, else less at
-;; the end. The pane ends itself when the pager does.
+;; the end. When the pager ends, the pane closes its tile (a line to
+;; .view/ctl, opened read-write so that it never waits) and ends itself.
+(define! history-script
+  "${PAGER:-less +G} \"$1\"; exec 3<>\"$FUX3_DIR/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; echo kill > \"$FUX3_DIR/$FUX3_PANE/ctl\"")
 (define! history (lambda! ()
   (let! ((target (focused))
          (file (join (session-dir) "/" (name-of target) "/history"))
-         (pane (start-new "history" "sh" "-c"
-                 "${PAGER:-less +G} \"$1\"; echo kill > \"$FUX3_DIR/$FUX3_PANE/ctl\"" "sh" file)))
+         (pane (start-new "history" "sh" "-c" history-script "sh" file)))
     (place-new! pane (lambda! (p) (edit! (join "split " target " down " p)))))))
 
 ;; Asks, as a list with one row, Yes, and calls `then` only if it is chosen.

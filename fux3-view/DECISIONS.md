@@ -24,3 +24,24 @@ Append-only: one short entry per decision, newest last.
    `layout-command`, which by default applies it and fits the panes it changed, once. `--do`
    applies the same grammar to the file directly and fits nothing (no viewer, no tile size).
    Why: the fit is policy, and the brief puts it in the grift library.
+7. **Pane names skip names a tile still shows.** A gone pane's tile keeps its name on screen
+   (`shell-1 gone`); a new `shell-1` beside it read as the same pane. `start-new` takes the first
+   `PREFIX-N` no pane and no tile uses.
+8. **`Reread` re-reads at once.** A binding that edits and then shows the tab it made
+   (`move-to-new-tab`) failed: the viewer had not read the edit yet. Re-reading on the message
+   also made the deferred-fit list and the wait-for-a-focused-pane machinery unnecessary; both
+   are gone.
+9. **Cuts for the 6,000-line cap** (the owner's bound): no pane titles, no `replace`, no
+   `tab match` (a filter is set by `tab new … match`), no percent border amounts, no live drag
+   preview (a drag applies on release), and the verbs fux binds to no key (`literal`,
+   `go-to-tab`, `last-tab`, `last-workspace`, `previous-pane`).
+10. **Pictures redraw everything when they change.** A sixel's pixels stay until the cells under
+    them are written, so when the set of pictures drawn changes (one moves, a menu opens over
+    it) the frame is drawn whole, then the pictures. No picture is drawn while a menu, list or
+    prompt is open, nor on the bar's row. Each file is read back into pixels by a fux-vt parser
+    with `Feature::Pictures` once, while its screen names it.
+11. **Tests drive the viewer inside a pane of a second fux3 session.** Keys are written to that
+    pane's `in`, the viewer's screen read from its `screen`, its terminal resized with
+    `resize` on its `ctl`. No pty code in the tests, and they read exactly what a person would
+    see. Writes to FIFOs in tests are non-blocking, so a gone holder is an error, not a hang.
+    `cargo test -p fux3-view` builds `fux3` first if the run did not (`$CARGO build -p fux3`).
