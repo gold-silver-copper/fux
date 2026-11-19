@@ -876,6 +876,13 @@ impl Term {
                 };
                 self.respond(&format!("\x1b[?{mode};{}$y", set.map_or(0, |on| 2 - u8::from(on))));
             }
+            (0, b'!', b'p') => {
+                // A soft reset: modes and the scroll region back to how they start.
+                (self.insert, self.origin, self.autowrap, self.cursor_shown) = (false, false, true, true);
+                (self.app_cursor, self.app_keypad, self.graphics, self.shift) = (false, false, [false; 2], false);
+                (self.top, self.bottom, self.style) = (0, self.rows - 1, Style::default());
+                self.saved = [Saved::default(); 2];
+            }
             (0, b' ', b'q') => self.cursor_shape = u8::try_from(self.arg(0, 0)).unwrap_or(0),
             (0, 0, b'r') => {
                 let (top, bottom) = (n - 1, self.arg(1, self.rows).min(self.rows) - 1);

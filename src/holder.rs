@@ -68,17 +68,10 @@ pub fn replace(name: &str, content: &[u8]) -> io::Result<()> {
     fs::rename(&new, name)
 }
 
-/// Keeps the pane whose directory is the working directory until its program ends.
+/// Keeps the pane whose directory is the working directory until its program
+/// ends. `fux3 start` locked the directory and handed the lock over as this
+/// process's standard input: it is held for exactly as long as the holder lives.
 pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
-    let lock = File::open(".").map_err(|e| format!("cannot open the pane's directory: {e}"))?;
-    // A `fux3 wait` may hold the lock for an instant: try for a little while.
-    let locked = (0..20).any(|i| {
-        std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
-        lock.try_lock().is_ok()
-    });
-    if !locked {
-        return Err("a holder already keeps this pane".into());
-    }
     let (input, _input_writer) = fifo("in").map_err(|e| format!("cannot make in: {e}"))?;
     let (ctl, _ctl_writer) = fifo("ctl").map_err(|e| format!("cannot make ctl: {e}"))?;
     // The first size is COLUMNS x LINES when the starter set them (the viewer

@@ -327,7 +327,14 @@ impl View {
             let pane_directory = directory.join(name);
             pane.read(&pane_directory);
             let focused = self.focus.as_ref() == Some(name);
-            let titled = usize::from(tiles.len() > 1);
+            let state = match (pane.input.is_some(), pane.state.as_str()) {
+                (true, "running") => String::new(),
+                (false, "running") => " [lost]".into(),
+                (_, "") => " [no pane here]".into(),
+                (_, state) => format!(" [{state}]"),
+            };
+            // A title when there is more than one tile, or something to say.
+            let titled = usize::from(tiles.len() > 1 || !state.is_empty());
             let body = Rect { y: rect.y + titled, h: rect.h.saturating_sub(titled), ..*rect };
             if body.w == 0 || body.h == 0 {
                 continue;
@@ -340,11 +347,6 @@ impl View {
                     ctl.and_then(|mut ctl| ctl.write_all(format!("resize {} {}{cell}\n", body.w, body.h).as_bytes()));
             }
             if titled == 1 {
-                let state = match (pane.input.is_some(), pane.state.as_str()) {
-                    (true, "running") => String::new(),
-                    (false, "running") => " [lost: its holder is gone]".into(),
-                    (_, state) => format!(" [{state}]"),
-                };
                 let style = Style { flags: if focused { REVERSE | BOLD } else { 0 }, ..Style::default() };
                 let fill = if focused { ' ' } else { '─' };
                 let title: Vec<char> = format!("{fill} {name}{state} ").chars().collect();

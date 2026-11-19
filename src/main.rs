@@ -87,6 +87,17 @@ fn start(args: &[OsString]) -> Result<(), String> {
         [] => vec![std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into())],
         program => program.to_vec(),
     };
+    // The lock on the directory is the proof that a holder lives: the kernel
+    // drops it when the holder is gone, however it went. We take it here and
+    // the holder inherits it. A `fux3 wait` may hold it for an instant.
+    let lock = File::open(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let locked = (0..20).any(|i| {
+        std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
+        lock.try_lock().is_ok()
+    });
+    if !locked {
+        return Err(format!("{}: a holder already keeps this pane", dir.display()));
+    }
     // A pane left by an earlier program is started again in place. Its old
     // status goes first: a new one is how we know the holder is up.
     let _ = fs::remove_file(dir.join("status"));
@@ -99,7 +110,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let mut holder = Command::new(me);
     holder.arg("hold").arg(cwd).args(&program).current_dir(&dir);
-    holder.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
+    holder.stdin(Stdio::from(lock)).stdout(Stdio::null()).stderr(log);
     sys::new_session(&mut holder, false);
     let mut holder = holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?;
     loop {
@@ -112,7 +123,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
             return Err(format!(
                 "{}: {}",
                 dir.display(),
-                log.lines().last().unwrap_or("the holder ended without a word")
+                log.lines().last().unwrap_or("the holder ended without a word").trim_start_matches("fux3: ")
             ));
         }
         std::thread::sleep(Duration::from_millis(2));

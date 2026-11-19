@@ -77,8 +77,11 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
 #[test]
 fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
     let session = Session::new("end");
-    let pane = session
-        .start("a", &["sh", "-c", "trap 'echo hup > \"$FUX3C_PANE/saw\"; exit 0' HUP; while :; do sleep 1; done"]);
+    let pane = session.start(
+        "a",
+        &["sh", "-c", "trap 'echo hup > \"$FUX3C_PANE/saw\"; exit 0' HUP; echo r''eady; while :; do sleep 1; done"],
+    );
+    until("the program has set its trap", || read(&pane.join("screen")).contains("ready"));
     fs::write(pane.join("ctl"), "kill\n").unwrap();
     until("the program saw the hangup", || read(&pane.join("saw")) == "hup\n");
     until("its end is in status", || read(&pane.join("status")).contains("state exited 0"));
