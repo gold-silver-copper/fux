@@ -681,9 +681,11 @@ impl Pane {
             let Some(job) = &self.job else {
                 return;
             };
-            let leader = job.leader();
             #[cfg(target_os = "linux")]
-            let others = (fuxix::process::tree().pids.iter()).any(|pid| *pid != leader);
+            let others = {
+                let leader = job.leader();
+                (fuxix::process::tree().pids.iter()).any(|pid| *pid != leader)
+            };
             #[cfg(not(target_os = "linux"))]
             let others = !job.members().pids.is_empty();
             if !others && let Some(job) = self.job.take() {

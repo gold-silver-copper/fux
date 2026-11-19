@@ -473,8 +473,15 @@ fn slow_requests_cannot_lock_out_a_kill() -> Tested {
 #[test]
 fn a_timed_out_client_does_not_read_an_old_answer() -> Tested {
     let lab = Lab::new()?;
-    let token = lab.start("late", &idle())?;
+    // A program that prints nothing, so that the wait below cannot be
+    // answered at once.
+    lab.start("late", &program("exec sleep 300", "pause >NUL"))?;
+    std::thread::sleep(Duration::from_millis(500));
     let mut client = lab.client("late")?;
+    let Answer::Screen { token, .. } = client.ask(&Request::Screen { since: None }, ANSWER_WAIT)?
+    else {
+        return Err("not a screen".into());
+    };
     let wait = Request::Wait {
         after: token,
         ms: 100,
