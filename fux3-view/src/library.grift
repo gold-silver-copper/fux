@@ -54,24 +54,26 @@
 ;; beside it goes with it), opened at its end in a pane below: $EDITOR, else
 ;; $PAGER, else less. The text is a copy: editing it changes nothing in the
 ;; pane.
-;; The script finds the pane by its id (among regular `id` files only) and
-;; enters its directory once, so it reads that pane whatever it is called
-;; by then. It reads the screen first, then opens `history` and `history.1`
-;; before reading either: no line is in neither, and one that scrolled off,
-;; or a generation rotated, meanwhile is there twice.
-;; The copy's pane leaves no recipe (a template never starts one): the
-;; viewer removes it as soon as the pane has started. When the editor ends
-;; the pane removes the file and ends itself, wherever it was moved to;
-;; this viewer then closes its tile. Opening and closing the copy resize
-;; only its own pane: the pane copied keeps its size (its tile clips it
-;; meanwhile), so its screen is what it was when the key was pressed.
+;; The script enters the pane's directory and checks its id there (the
+;; directory entered is the one read, whatever it is called by then), then
+;; reads the screen, and `history.1` and `history` (opened in the other
+;; order, before either is read): no line is in neither, and one that
+;; scrolled off, or a generation rotated, meanwhile is there twice. With
+;; no `history` (a rotation in progress) `history.1` is still read.
+;; The copy's pane writes no recipe (`start-once`): a template never
+;; starts one, and a recipe saved under its name is left alone. When the
+;; editor ends the pane removes the file, enters its own directory the
+;; same way and ends itself; this viewer then closes its tile. Opening and
+;; closing the copy resize only its own pane: the pane copied keeps its
+;; size (its tile clips it meanwhile), so its screen is what it was when
+;; the key was pressed.
 (define! history-script
   "umask 077; d=\"$FUX3_DIR/.history-$FUX3_PANE_ID\"; f=history-and-screen
 trap 'rm -rf \"$d\"' EXIT; trap 'exit 1' HUP INT TERM; mkdir \"$d\" || exit 1
-at() { for i in \"$FUX3_DIR\"/*/*/id; do if [ -f \"$i\" ] && [ \"$(cat \"$i\")\" = \"$1\" ]; then echo \"${i%id}\"; fi; done; }
-s=$(at \"$1\"); if [ -n \"$s\" ] && cd \"$s\"; then
+enter() { for i in \"$FUX3_DIR\"/*/*/; do if cd \"$i\" 2>/dev/null && [ -f id ] && [ \"$(cat id)\" = \"$1\" ]; then return 0; fi; done; return 1; }
+if enter \"$1\"; then
   awk 'NR>1{if(/[^ ]/){printf b;print;b=e}else b=b ORS}' screen > \"$d/screen\"
-  { { cat <&4; cat <&3; } 4<history.1 || cat <&3; } 3<history > \"$d/$f\" 2>/dev/null
+  { { { cat <&4; cat <&3; } 4<history.1 || cat <&3; } 3<history || cat history.1; } > \"$d/$f\" 2>/dev/null
   cat \"$d/screen\" >> \"$d/$f\"; rm -f \"$d/screen\"
 fi; cd \"$d\" || exit 1
 e=${EDITOR%% *}; case \"${e##*/}\" in
@@ -79,11 +81,10 @@ e=${EDITOR%% *}; case \"${e##*/}\" in
   '') ${PAGER:-less +G} \"$f\";;
   *) $EDITOR \"$f\";;
 esac
-rm -rf \"$d\"; p=$(at \"$FUX3_PANE_ID\"); if [ -n \"$p\" ]; then echo kill 1<>\"${p}ctl\"; fi")
+enter \"$FUX3_PANE_ID\" || exit 1; rm -rf \"$d\"; echo kill 1<>ctl")
 (define! history (lambda! ()
   (let! ((target (focused))
-         (pane (start-new "history" "sh" "-c" history-script "sh" (second (string-split target "@")))))
-    (forget-recipe pane)
+         (pane (start-once "history" "sh" "-c" history-script "sh" (second (string-split target "@")))))
     (when-gone pane (lambda! () (close-tile pane arrange)))
     (place-new! pane (lambda! (p)
       (arrange (join "split " target " down " p))

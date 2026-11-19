@@ -685,34 +685,35 @@ fn a_viewer_follows_its_workspace_through_a_rename() -> Tested {
     Ok(())
 }
 
-/// The copy's pane removes only its own recipe: one another program left
-/// under the name it started with, after it was renamed, stays.
+/// The copy's pane writes no recipe and removes none: one saved under
+/// the name it takes is as it was, while the copy is open and after.
 #[test]
-fn the_copy_removes_no_recipe_but_its_own() -> Tested {
+fn the_copy_leaves_a_recipe_under_its_name_alone() -> Tested {
     let lab = Lab::new("recipes", "")?;
     lab.start("only")?;
+    let saved = lab.run(&lab.view, &["start", "history-1", "--", "sleep", "60"])?;
+    assert!(saved.status.success(), "{saved:?}");
+    let main = lab.view.join("main");
+    fifo(&main.join("history-1/ctl"), b"kill\n")?;
+    until("the saved pane ended", || !main.join("history-1").exists())?;
+    let recipe = || std::fs::read_to_string(main.join(".recipes/history-1")).unwrap_or_default();
+    let before = recipe();
+    assert!(before.contains("sleep"), "{before:?}");
     lab.viewer("v", "100x30", &[])?;
     lab.shows("v", "$")?;
-    let (hold, main) = (lab.base.join("editor.hold"), lab.view.join("main"));
+    let hold = lab.base.join("editor.hold");
     std::fs::write(&hold, "").map_err(|e| e.to_string())?;
     lab.keys("v", b"\x02c")?;
     until("the editor is open", || {
         lab.base.join("editor.copied").exists()
     })?;
-    std::fs::rename(main.join("history-1"), main.join("moved")).map_err(|e| e.to_string())?;
-    // Even one that holds the copy's words.
-    let program = "printf '%s\\n' history-and-screen; exec sleep 60";
-    let other = lab.run(
-        &lab.view,
-        &["start", "history-1", "--", "sh", "-c", program],
-    )?;
-    assert!(other.status.success(), "{other:?}");
-    std::fs::remove_file(&hold).map_err(|e| e.to_string())?;
-    until("the copy's pane ended", || !main.join("moved").exists())?;
-    let recipe = std::fs::read_to_string(main.join(".recipes/history-1")).unwrap_or_default();
     assert!(
-        recipe.contains("sleep"),
-        "the other program's recipe went: {recipe:?}"
+        main.join("history-1").exists(),
+        "the copy took another name"
     );
+    assert_eq!(recipe(), before, "the copy wrote over the saved recipe");
+    std::fs::remove_file(&hold).map_err(|e| e.to_string())?;
+    until("the copy's pane ended", || !main.join("history-1").exists())?;
+    assert_eq!(recipe(), before, "the copy removed the saved recipe");
     Ok(())
 }

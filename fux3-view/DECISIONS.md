@@ -355,3 +355,27 @@ Append-only: one short entry per decision, newest last.
       error, in the core's `view_dir`) are as they were.
     - Lines: production 5,924 → 5,986. Over the 5,900 band by 86: the two words, the listing of
       held directories and the script are the fixes themselves; nothing was found to pay with.
+25. **Round 3's two must-fixes (2026-11-19; eight seats, both 8 of 8 "now").**
+    - **Closing a workspace removes only what fux3 made.** It ends the panes the workspace
+      lists, removes `.view` and `.recipes` (their files, never a directory in them) and then
+      the directory it holds, which must be empty by then. Anything else in the workspace (a
+      user's file or directory, a pane starting or ending under a name nothing lists, a
+      directory it cannot read) refuses the close before any pane is ended, naming what is
+      there: "workspace W stays, and no pane was ended: it holds NAMES, which is no pane of
+      it". Gone: `empty` (the recursive delete, which removed a user's `notes/` with the
+      workspace) and `held` (the lock scan by depth, which a directory it could not read
+      defeated). A pane that does not end in 12 s still refuses, after the others ended.
+    - **The notice and the dropped key after a workspace went** are skipped only for this
+      viewer's own close of that workspace: `close-workspace` tells the viewer which directory
+      it is closing before it starts, and the next `Reread` ends that. Entry 24's test (any
+      binding running) let a key through to a replacement workspace's program while an
+      unrelated binding ran.
+    - **The copy's pane writes no recipe**: `(start-once PREFIX PROGRAM…)` is `start-new` with
+      `fux3 start --no-recipe`. `forget-recipe` is gone: it removed a recipe the user had saved
+      as `history-1`, after the copy had written over it.
+    - **The copy's script checks the id in the directory it has entered**: `enter ID` goes into
+      each pane directory and reads `id` there, so the directory read (and, at the end, the
+      one whose `ctl` gets the kill) is the one verified, whatever it is called by then. With
+      no `history` (a rotation between rename and create) it reads `history.1`.
+    - Lines: production 5,986 → 5,984. The close lost `empty` and `held`; `remove_own`, the
+      listing of what else is there, `start-once` and the viewer's "closing" took most of it back.

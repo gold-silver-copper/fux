@@ -197,6 +197,8 @@ struct View {
     notice: Option<(String, &'static str)>,
     /// The next key is dropped: the workspace it was typed at was removed.
     swallow: bool,
+    /// The workspace this viewer is closing now, by its directory's id.
+    closing: Option<String>,
     /// The panes `when-gone` waits for the going of, each with its
     /// workspace's directory (`Workspace::id`).
     watched: Vec<(String, Target)>,
@@ -436,11 +438,14 @@ impl View {
                 true => &name,
                 false => left.first().map_or(DEFAULT_WORKSPACE, String::as_str),
             };
-            let own = self.run_sent;
+            let own = self
+                .closing
+                .take()
+                .is_some_and(|id| id == self.workspace.id());
             self.show_workspace(next, now);
-            // Said where it is seen, unless a binding of this viewer is
-            // closing it; the next key was meant for what was shown before,
-            // and is dropped with the notice still up.
+            // Said where it is seen, unless this viewer's own close of it
+            // took it away; the next key was meant for what was shown
+            // before, and is dropped with the notice still up.
             if own {
                 return;
             }
@@ -860,6 +865,7 @@ impl View {
                 | ToViewer::Unbind(_)
                 | ToViewer::Verb(_)
                 | ToViewer::Reread
+                | ToViewer::Closing(_)
                 | ToViewer::Say(_)
                 | ToViewer::Started(..)
                 | ToViewer::Done(_)
@@ -907,7 +913,11 @@ impl View {
                 self.panel = Some(panel);
             }
             // What a binding does next may name what the edit made.
-            ToViewer::Reread => self.rescan(now, false),
+            ToViewer::Reread => {
+                self.rescan(now, false);
+                self.closing = None;
+            }
+            ToViewer::Closing(id) => self.closing = Some(id),
             ToViewer::Watch(pane) => {
                 let space = self.workspace.id();
                 (self.watched).extend(Target::parse(&pane).ok().map(|pane| (space, pane)));
@@ -1426,6 +1436,7 @@ fn run() -> Result<(), Failure> {
         panel: None,
         notice: None,
         swallow: false,
+        closing: None,
         watched: Vec::new(),
         in_flight: None,
         pasted: 0,

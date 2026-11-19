@@ -12,7 +12,6 @@ use crate::keys::{Action, Binding, Group};
 use crate::layout::{Dir, Layout, Rect};
 use crate::panel::{Ask, List, Panel, Row};
 use fux3::session::Workspace;
-use fuxix::file::at;
 use fuxix::poll::Poke;
 use grift::{Answer, Error, Grift, HostCall, HostFunction, Interrupter, Kept, Value};
 use std::collections::HashMap;
@@ -77,6 +76,9 @@ pub enum ToViewer {
     Panel(Panel),
     /// The layout changed: read it now.
     Reread,
+    /// This viewer is closing the workspace whose directory has this id
+    /// (`Workspace::id`): until the next `Reread`, its going is no surprise.
+    Closing(String),
     /// Run `Job::Gone` for this pane (`NAME`, or one life `NAME@ID`) once
     /// it is gone from the workspace shown.
     Watch(String),
@@ -392,6 +394,36 @@ fn keep_callbacks(
     Ok(host.next_callback)
 }
 
+/// `start-new PREFIX [PROGRAM…]`: a pane named `PREFIX-N`, the first N
+/// free; `start-once` the same with no recipe written, for a pane nobody
+/// starts again.
+fn start_new(
+    g: &mut HostCall<'_, Host>,
+    host: &mut Host,
+    args: &[Value],
+    recipe: bool,
+) -> Result<Answer, Error> {
+    let Some((prefix, rest)) = args.split_first() else {
+        return Err(g.arity_error(args));
+    };
+    let prefix = string_arg(g, host, *prefix)?;
+    let words = program(g, host, rest)?;
+    // `WORKSPACE/PREFIX` starts it in that workspace, made if missing.
+    let (workspace, prefix) = match prefix.split_once('/') {
+        Some((space, prefix)) => (
+            host.context.workspace.session.workspace(space, true),
+            prefix,
+        ),
+        None => (Ok(host.context.workspace.clone()), &*prefix),
+    };
+    let workspace = workspace.map_err(|f| failed(g, &f.0))?;
+    let program = (&*words, recipe);
+    match crate::command::start_new(&host.fux3, &workspace, prefix, program, &host.cancel) {
+        Ok(pane) => g.string(&pane.to_string()).map(Answer::Now),
+        Err(failure) => Err(refused(g, host, &failure)),
+    }
+}
+
 const WORDS: &[(&str, Word)] = &[
     ("bind-key", |g, host, args| {
         let [key, caption, heading, function] = *g.exactly(args)?;
@@ -674,25 +706,9 @@ const WORDS: &[(&str, Word)] = &[
         let path = now.dir.to_string_lossy().into_owned();
         g.string(&path).map(Answer::Now)
     }),
-    ("start-new", |g, host, args| {
-        let Some((prefix, rest)) = args.split_first() else {
-            return Err(g.arity_error(args));
-        };
-        let prefix = string_arg(g, host, *prefix)?;
-        let words = program(g, host, rest)?;
-        // `WORKSPACE/PREFIX` starts it in that workspace, made if missing.
-        let (workspace, prefix) = match prefix.split_once('/') {
-            Some((space, prefix)) => (
-                host.context.workspace.session.workspace(space, true),
-                prefix,
-            ),
-            None => (Ok(host.context.workspace.clone()), &*prefix),
-        };
-        let workspace = workspace.map_err(|f| failed(g, &f.0))?;
-        match crate::command::start_new(&host.fux3, &workspace, prefix, &words, &host.cancel) {
-            Ok(pane) => g.string(&pane.to_string()).map(Answer::Now),
-            Err(failure) => Err(refused(g, host, &failure)),
-        }
+    ("start-new", |g, host, args| start_new(g, host, args, true)),
+    ("start-once", |g, host, args| {
+        start_new(g, host, args, false)
     }),
     ("hold-workspace", |g, host, args| {
         let [name] = *g.exactly(args)?;
@@ -723,23 +739,13 @@ const WORDS: &[(&str, Word)] = &[
             let why = format!("{held:?} is no workspace held: (hold-workspace NAME) gives one");
             return Err(failed(g, &why));
         };
+        host.tell(ToViewer::Closing(held));
         let outcome = crate::command::close_workspace(&workspace, &host.cancel);
         host.tell(ToViewer::Reread);
         match outcome {
             Ok(()) => inert(),
             Err(failure) => Err(refused(g, host, &failure)),
         }
-    }),
-    ("forget-recipe", |g, host, args| {
-        let [pane] = *g.exactly(args)?;
-        let pane = string_arg(g, host, pane)?;
-        // Of the pane this names now, by its id: just started, so the
-        // recipe under its name is its own.
-        pane_dir(g, host, &pane)?;
-        let name = pane.split('@').next().unwrap_or_default();
-        let recipes = at::open_dir(host.context.workspace.held(), fux3::recipe::DIR);
-        let _ = recipes.and_then(|dir| at::remove_file(&dir, name));
-        inert()
     }),
     ("send", |g, host, args| {
         let [pane, text] = *g.exactly(args)?;

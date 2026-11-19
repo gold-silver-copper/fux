@@ -43,10 +43,7 @@ pub fn view_dir(workspace: &Workspace) -> Result<File, Failure> {
     match at::rename_new(held, &aside, held, VIEW) {
         Ok(()) => {}
         // Another got there first: theirs is the one, and ours goes.
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            empty(&dir, 0)?;
-            at::remove_dir(held, &aside).map_err(|e| fux3::io(&aside, e))?;
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => remove_own(held, &aside)?,
         Err(e) => return Err(fux3::io(VIEW, e)),
     }
     fux3::session::private_dir(held, VIEW, false)
@@ -92,7 +89,7 @@ pub fn start(
     fux3: &Path,
     workspace: &Workspace,
     name: &str,
-    program: &[String],
+    (program, recipe): (&[String], bool),
     cancel: &AtomicBool,
 ) -> Result<PaneRef, Failure> {
     let workspace = &named(workspace)?;
@@ -100,6 +97,7 @@ pub fn start(
     command
         .args(["start", &format!("{}/{name}", workspace.name)])
         .args(["--workspace-id", &workspace.id()])
+        .args((!recipe).then_some("--no-recipe"))
         .env("FUX3_DIR", &workspace.session.root);
     // Named even for the shell, so a reused name never runs a recipe.
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
@@ -156,7 +154,7 @@ pub fn start_new(
     fux3: &Path,
     workspace: &Workspace,
     prefix: &str,
-    program: &[String],
+    program: (&[String], bool),
     cancel: &AtomicBool,
 ) -> Result<PaneRef, Failure> {
     // A name a tile still shows (a pane gone) is not reused either.
@@ -196,7 +194,7 @@ pub fn run_line(
             // The pane split must have a tile before a shell is started for it.
             let live = live_panes(workspace);
             layout::resolve(&layout::read(&view)?.shown(&live), &live, target)?;
-            let pane = start_new(&fux3_program()?, workspace, "shell", &[], cancel)?;
+            let pane = start_new(&fux3_program()?, workspace, "shell", (&[], true), cancel)?;
             let new = Target {
                 name: pane.name.clone(),
                 id: Some(pane.id.clone()),
@@ -219,64 +217,48 @@ pub fn run_line(
     }
 }
 
-/// Every directory in `dir`, `depth` levels down, whose lock a holder
-/// has, as its path from `dir` (after `under`): none of them is entered.
-fn held(dir: &File, depth: u8, under: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for (name, _) in at::names(dir, 1 << 16).unwrap_or_default() {
-        let Ok(inner) = at::open_dir(dir, &name) else {
-            continue;
-        };
-        let shown = format!("{under}{}", name.to_string_lossy());
-        match (fux3::session::try_lock(&inner), depth.checked_sub(1)) {
-            (Ok(true), Some(depth)) => out.extend(held(&inner, depth, &format!("{shown}/"))),
-            (Ok(true), None) => {}
-            (Ok(false) | Err(_), _) => out.push(shown),
-        }
+/// Removes `name` in `dir`, a directory of the viewer's or the core's own
+/// that holds only files, and those files; one missing is no fault. A
+/// directory in it is not entered: it stops there, saying which.
+fn remove_own(dir: &File, name: &str) -> Result<(), Failure> {
+    let Ok(own) = at::open_dir(dir, name) else {
+        return Ok(());
+    };
+    for (file, _) in at::names(&own, 1 << 16).map_err(|e| fux3::io(name, e))? {
+        let shown = format!("{name}/{}", file.to_string_lossy());
+        at::remove_file(&own, &file).map_err(|e| fux3::io(shown, e))?;
     }
-    out
-}
-
-/// Removes everything in `dir`, through its handle: files and links
-/// themselves, directories emptied first, `depth` levels down at most. A
-/// directory a holder has locked is neither entered nor removed.
-fn empty(dir: &File, depth: u8) -> Result<(), Failure> {
-    for (name, _) in at::names(dir, 1 << 16).map_err(|e| fux3::io("listing", e))? {
-        let shown = name.to_string_lossy().into_owned();
-        if at::remove_file(dir, &name).is_ok() {
-            continue;
-        }
-        let inner = at::open_dir(dir, &name).map_err(|e| fux3::io(&shown, e))?;
-        if !fux3::session::try_lock(&inner)? {
-            return Err(Failure::new(format!("{shown} is a live pane's")));
-        }
-        match depth.checked_sub(1) {
-            Some(depth) => empty(&inner, depth)?,
-            None => return Err(Failure::new(format!("{shown} is too deep to remove"))),
-        }
-        at::remove_dir(dir, &name).map_err(|e| fux3::io(&shown, e))?;
-    }
-    Ok(())
+    at::remove_dir(dir, name).map_err(|e| fux3::io(name, e))
 }
 
 /// Closes `workspace`: ends each of its panes, waits for them to go (a
 /// bounded time), and then, under the session's lock so that no pane can
-/// start in it meanwhile, removes the directory it holds, layout and all,
-/// and never another that has its name. A pane that will not end is
-/// refused out loud and the workspace stays.
+/// start in it meanwhile, removes `.view` and `.recipes` (fux3's own, which
+/// hold only files) and the directory it holds, emptied by that, and never
+/// another that has its name. Nothing else is ever removed: a workspace
+/// that holds anything but its panes and those two is refused before a
+/// pane is ended, saying what is there; so is one whose pane will not end.
 pub fn close_workspace(workspace: &Workspace, cancel: &AtomicBool) -> Result<(), Failure> {
     let begun = Instant::now();
     workspace.check()?;
-    // Every directory a holder has locked, however deep, before anything
-    // is ended: one that is no pane this can end (starting or ending under
-    // a name nothing lists, or moved inside another's) keeps it all.
+    let own = [VIEW, fux3::recipe::DIR];
+    // What the workspace holds that is neither fux3's own nor in `panes`.
+    let others = |panes: &[String]| -> Result<Vec<String>, Failure> {
+        let all = at::names(workspace.held(), 1 << 16).map_err(|e| fux3::io("listing", e))?;
+        let names = all
+            .into_iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned());
+        Ok(names
+            .filter(|n| !own.contains(&n.as_str()) && !panes.contains(n))
+            .collect())
+    };
+    let stays = |what: String| Failure::new(format!("workspace {} stays{what}", workspace.name));
     let live = workspace.live()?;
-    let all = held(workspace.held(), 4, "");
-    if let Some(other) = all.iter().find(|name| !live.contains(name)) {
-        let why = "is a pane starting, ending or inside another's directory";
-        let space = &workspace.name;
-        return Err(Failure::new(format!(
-            "workspace {space} stays, and no pane was ended: {other} {why}"
+    let other = others(&live)?;
+    if !other.is_empty() {
+        let names = other.join(", ");
+        return Err(stays(format!(
+            ", and no pane was ended: it holds {names}, which is no pane of it"
         )));
     }
     for name in live {
@@ -286,21 +268,19 @@ pub fn close_workspace(workspace: &Workspace, cancel: &AtomicBool) -> Result<(),
     loop {
         let lock = workspace.session.lock()?;
         workspace.clear_dead(&lock)?;
-        let live = held(workspace.held(), 4, "");
-        if live.is_empty() {
-            empty(workspace.held(), 4)?;
-            let removed = || Failure::new(format!("workspace {} was removed", workspace.name));
+        // Panes ending are still here, under names nothing lists.
+        let left = others(&[])?;
+        if left.is_empty() {
+            own.iter()
+                .try_for_each(|name| remove_own(workspace.held(), name))?;
+            let removed = || stays(": it was removed".to_owned());
             let (session, name) = fux3::session::place(workspace.held()).ok_or_else(removed)?;
             return at::remove_dir(&session, &name)
                 .map_err(|e| fux3::io(format!("removing workspace {name}"), e));
         }
         drop(lock);
         if begun.elapsed() >= COMMAND_TIME || cancel.load(Ordering::Relaxed) {
-            let names = live.join(", ");
-            return Err(Failure::new(format!(
-                "workspace {} stays: {names} did not end",
-                workspace.name
-            )));
+            return Err(stays(format!(": {} did not end", left.join(", "))));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -359,12 +339,12 @@ mod tests {
         std::fs::remove_dir_all(&root).map_err(|e| fux3::io("removing", e))
     }
 
-    /// Closing a workspace never takes apart a pane it cannot end: one
-    /// starting or ending under a name nothing lists, or a live one moved
-    /// inside another's directory. It is refused, saying which, before any
-    /// pane is ended and with nothing removed.
+    /// Closing a workspace removes nothing but fux3's own: with anything
+    /// else in it (a user's file or directory, a pane starting or ending
+    /// under a name nothing lists, a live pane inside another directory) it
+    /// is refused, saying what is there, before any pane is ended.
     #[test]
-    fn closing_a_workspace_leaves_a_pane_it_cannot_end() -> Result<(), Failure> {
+    fn closing_a_workspace_removes_only_what_fux3_made() -> Result<(), Failure> {
         let scratch = fuxix::file::scratch().map_err(|e| fux3::io("scratch", e))?;
         let root = scratch.join(format!("f3v-close-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -390,26 +370,32 @@ mod tests {
             options.read(true).custom_flags(fuxix::file::NONBLOCK);
             options.open(&ctl).map_err(|e| fux3::io("ctl", e))?
         };
-        for (other, kept) in [(".new-0123456789abcdef", "id"), (".gone-x/inner", "id")] {
+        for (top, other) in [
+            (".new-0123456789abcdef", ".new-0123456789abcdef"),
+            (".gone-x", ".gone-x/inner"),
+            ("notes", "notes/deep"),
+        ] {
             let holder = pane(other)?;
+            std::fs::write(root.join("w").join(other).join("todo"), "mine")
+                .map_err(|e| fux3::io(other, e))?;
             let refused = close_workspace(&workspace, &AtomicBool::new(true)).err();
             let said = refused.map(|f| f.0).unwrap_or_default();
-            assert!(said.contains(other), "{other}: {said:?}");
+            assert!(
+                said.contains(top) && said.contains("no pane was ended"),
+                "{said:?}"
+            );
             let mut sent = [0u8; 8];
             // Nothing was written to it: no bytes, or none to read.
             let told = fuxix::io::read(&reader, &mut sent).is_ok_and(|n| n > 0);
             assert!(!told, "{other}: p was told to end");
-            assert!(
-                root.join("w").join(other).join(kept).exists(),
-                "{other} was taken apart"
-            );
+            let kept = root.join("w").join(other).join("todo");
+            assert!(kept.exists(), "{other} was taken apart");
             assert!(
                 root.join("w/.view/layout").exists(),
                 "{other}: the layout went"
             );
             drop(holder);
-            std::fs::remove_dir_all(root.join("w").join(other)).map_err(|e| fux3::io(other, e))?;
-            let _ = std::fs::remove_dir(root.join("w/.gone-x"));
+            std::fs::remove_dir_all(root.join("w").join(top)).map_err(|e| fux3::io(top, e))?;
         }
         drop((live, reader));
         std::fs::remove_dir_all(root.join("w/p")).map_err(|e| fux3::io("p", e))?;
