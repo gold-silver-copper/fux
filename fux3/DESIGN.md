@@ -91,8 +91,10 @@ read and the read bounded. The bytes go into the input queue in one turn of
 the holder's loop, so typing on `in` and other sends never land inside them.
 `PATH` is the rest of the line, spaces included.
 
-Typed bytes after the program ended are read and dropped, with a line
-`in: N bytes dropped: the program has ended (STATE)`. The holder never removes
+Typed bytes after the program ended, or once it closed its terminal, are read
+and dropped, counted in one line of `errors` replaced each time
+(`in: N bytes dropped in all: WHY`), so they never push a command's refusal out.
+`send` and `paste` are refused then too. The holder never removes
 `in` while the directory stands (a shell's `> in` would make a regular file).
 
 ## The holder

@@ -338,12 +338,14 @@ struct Holder {
     refused: u64,
     errors: VecDeque<String>,
     errors_changed: bool,
+    in_dropped: u64,
     cell: (u16, u16),
     pictures: bool,
     history_end: u64,
     history: Vec<u8>,
     images: Images,
     publisher: Publisher,
+    history_cap: usize,
     dirty: bool,
     published_at: Option<Instant>,
     buffer: Vec<u8>,
@@ -532,6 +534,7 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         refused: 0,
         errors: VecDeque::new(),
         errors_changed: true,
+        in_dropped: 0,
         cell: spec.cell,
         pictures: spec.pictures,
         history_end: 0,
@@ -541,6 +544,7 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
             ..Images::default()
         },
         publisher,
+        history_cap: spec.history,
         dirty: true,
         published_at: None,
         buffer: vec![0; READ],
@@ -689,7 +693,7 @@ impl Holder {
         let ctl = fds.push(PollFd::new(&self.ctl_fifo, Events::IN));
         // Typed bytes are taken only while they have room; once the program
         // has ended they are taken to be dropped.
-        let typing = self.input.room() >= FIFO_READ || !self.running();
+        let typing = self.input.room() >= FIFO_READ || !self.running() || !self.open;
         let fifo_in = fds.push(PollFd::new(
             &self.in_fifo,
             if typing { Events::IN } else { Events::NONE },
@@ -835,6 +839,8 @@ impl Holder {
         let others = !job.members().pids.is_empty();
         if !others && let Some(job) = self.job.take() {
             drop(job.reap());
+            // `status`'s pid says none from now on.
+            self.dirty = true;
         }
     }
 
@@ -844,7 +850,7 @@ impl Holder {
         let mut buffer = [0u8; FIFO_READ];
         let mut dropped = 0usize;
         for _ in 0..16 {
-            if self.running() && self.input.room() < FIFO_READ {
+            if self.running() && self.open && self.input.room() < FIFO_READ {
                 break;
             }
             let n = match fuxix::io::read(&self.in_fifo, &mut buffer) {
@@ -852,7 +858,7 @@ impl Holder {
                 Ok(n) => n,
             };
             let bytes = buffer.get(..n).unwrap_or_default();
-            if self.running() {
+            if self.running() && self.open {
                 // Room was checked: a read never exceeds it.
                 let _ = self.input.admit(bytes.to_vec());
             } else {
@@ -860,11 +866,18 @@ impl Holder {
             }
         }
         if dropped > 0 {
-            let state = self.state.clone();
-            self.refuse(
-                "in",
-                format!("{dropped} bytes dropped: the program has ended ({state})"),
-            );
+            // One line for all of them, kept last: drops never push a
+            // command's refusal out of `errors`.
+            self.in_dropped = self
+                .in_dropped
+                .saturating_add(u64::try_from(dropped).unwrap_or(u64::MAX));
+            let why = match self.running() {
+                true => "the program closed its terminal".to_owned(),
+                false => format!("the program has ended ({})", self.state),
+            };
+            self.errors.retain(|line| !line.starts_with("in: "));
+            let total = self.in_dropped;
+            self.refuse("in", format!("{total} bytes dropped in all: {why}"));
         }
     }
 
@@ -915,12 +928,12 @@ impl Holder {
                 }
             }
             Command::Send(path) => {
-                self.must_run()?;
+                self.takes_input()?;
                 let bytes = read_sent(&path)?;
                 self.input.admit(bytes)?;
             }
             Command::Paste(path) => {
-                self.must_run()?;
+                self.takes_input()?;
                 let bytes = read_sent(&path)?;
                 let text = String::from_utf8(bytes)
                     .map_err(|_| Failure::new(format!("{} is not UTF-8 text", path.display())))?;
@@ -934,6 +947,7 @@ impl Holder {
                 self.signal(&name)?;
             }
             Command::Cell { width, height } => {
+                self.must_run()?;
                 let graphics = graphics((width, height), self.pictures)?;
                 self.parser.set_host_graphics(graphics);
                 self.cell = (width, height);
@@ -956,12 +970,25 @@ impl Holder {
     }
 
     fn must_run(&self) -> Result<(), Failure> {
+        let ended = self
+            .exit
+            .as_ref()
+            .map_or(self.state.as_str(), |e| e.ending.as_str());
         match self.running() {
             true => Ok(()),
-            false => Err(Failure::new(format!(
-                "the program has ended: {}",
-                self.state
-            ))),
+            false => Err(Failure::new(format!("the program has ended: {ended}"))),
+        }
+    }
+
+    /// Refuses input once the program's terminal is closed: its program
+    /// may run on, but nothing written reaches it.
+    fn takes_input(&self) -> Result<(), Failure> {
+        self.must_run()?;
+        match self.open {
+            true => Ok(()),
+            false => Err(Failure::new(
+                "the program closed its terminal: nothing reaches it",
+            )),
         }
     }
 
@@ -1252,7 +1279,10 @@ impl Holder {
         if let Some(alive) = self.members_left(after(Instant::now(), KILL_WAIT)) {
             missed.push(format!("{alive} of its processes are still there"));
         }
-        if let Some(job) = self.job.take()
+        // Reaped only once nothing it started is left: a kill sent again
+        // must still find its session's members (macOS has no subreaper).
+        if missed.is_empty()
+            && let Some(job) = self.job.take()
             && let Err(job) = job.reap()
         {
             missed.push(format!("process {} was not reaped", job.leader()));
@@ -1281,9 +1311,16 @@ impl Holder {
     /// Removes the pane's directory, once everything handed to the
     /// publisher is written.
     fn remove(&mut self, held: &File) -> Result<(), Failure> {
-        self.publisher.stop();
+        // The lock first: a kill that can't remove the directory still has
+        // its publisher, to say so in `status` and `errors`.
         let _lock = self.session.lock()?;
-        session::remove_pane(&self.dir, held)
+        self.publisher.stop();
+        let removed = session::remove_pane(&self.dir, held);
+        if removed.is_err() {
+            self.publisher = Publisher::start(self.dir.clone(), self.history_cap)
+                .map_err(|e| io("the publisher", e))?;
+        }
+        removed
     }
 
     /// How many of the job's other processes outlast `deadline`, if any do.

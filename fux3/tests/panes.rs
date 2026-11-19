@@ -281,7 +281,7 @@ fn an_ended_programs_screen_stays() -> Result {
     );
     s.write("p", "in", b"typed\n")?;
     until("the dropped bytes", || {
-        s.read("p", "errors").contains("in: 6 bytes dropped")
+        s.read("p", "errors").contains("in: 6 bytes dropped in all")
     })
 }
 

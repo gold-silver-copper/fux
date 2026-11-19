@@ -37,8 +37,9 @@ pub fn parse(line: &str) -> Result<Command, Failure> {
         }
     };
     let path = |rest: &[&str]| -> Result<PathBuf, Failure> {
-        // The path is the rest of the line, spaces and all.
-        let text = line.trim_start().split_once(' ').map(|(_, p)| p.trim());
+        // The path is the rest of the line after the verb and one space,
+        // spaces and all (a carriage return a writer added is no part).
+        let text = (line.trim_start().split_once(' ')).map(|(_, p)| p.trim_end_matches('\r'));
         let path = PathBuf::from(text.unwrap_or_default());
         if rest.is_empty() || !path.is_absolute() {
             return Err(Failure::new("it takes an absolute path"));
@@ -56,7 +57,7 @@ pub fn parse(line: &str) -> Result<Command, Failure> {
             width: number(width, 1000, "width")?,
             height: number(height, 1000, "height")?,
         },
-        ("signal", [name]) => Command::Signal(name.trim_start_matches("SIG").to_owned()),
+        ("signal", [name]) => Command::Signal(name.strip_prefix("SIG").unwrap_or(name).to_owned()),
         ("kill", []) => Command::Kill,
         ("resize" | "cell" | "signal" | "kill", _) => {
             return Err(Failure::new("wrong arguments; see the README"));
@@ -93,7 +94,8 @@ impl Lines {
                 }
                 continue;
             }
-            if self.part.len() >= PIPE_BUF {
+            // The newline counts: a line and its newline fit one write.
+            if self.part.len() >= PIPE_BUF.saturating_sub(1) {
                 self.overlong = true;
                 self.part.clear();
             }
@@ -118,8 +120,12 @@ mod tests {
             })
         );
         assert_eq!(
-            parse("send /a b/c"),
-            Ok(Command::Send(PathBuf::from("/a b/c")))
+            parse("send /a b/c "),
+            Ok(Command::Send(PathBuf::from("/a b/c ")))
+        );
+        assert_eq!(
+            parse("signal SIGSIGKILL"),
+            Ok(Command::Signal("SIGKILL".to_owned()))
         );
         assert_eq!(parse("kill"), Ok(Command::Kill));
         assert!(parse("resize 0 30").is_err());

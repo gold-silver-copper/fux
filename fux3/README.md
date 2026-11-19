@@ -195,8 +195,9 @@ end (`yes`) costs about 100 file writes a second (25 publishes of `screen`,
 
 `status` says `state exited CODE` (or `signalled NAME`) and the last screen
 stays readable until you `kill` the pane. Bytes written to `in` afterwards
-are read and dropped, each write noted in `errors`
-(`in: 8 bytes dropped: the program has ended (exited 3)`); `in` itself stays,
+are read and dropped, counted in one line of `errors`, kept last and
+updated (`in: 8 bytes dropped in all: the program has ended (exited 3)`), so
+drops never push a command's refusal out; `in` itself stays,
 so a shell's `> in` never makes a regular file there.
 
 ## Kill

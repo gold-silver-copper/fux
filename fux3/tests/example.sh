@@ -82,7 +82,7 @@ fux3 start short -- sh -c 'echo last words; exit 3' >/dev/null
 until_ok grep -qx 'state exited 3' "$D/main/short/status"
 grep -qx 'last words' "$D/main/short/screen"
 printf 'ignored\n' > "$D/main/short/in"
-until_ok grep -q '^in: 8 bytes dropped' "$D/main/short/errors"
+until_ok grep -q '^in: 8 bytes dropped in all' "$D/main/short/errors"
 echo kill > "$D/main/short/ctl"
 until_ok test ! -e "$D/main/short"
 
