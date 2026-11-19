@@ -7,7 +7,7 @@
 (bind-key "C-b s" "split stacked" "Panes" (lambda! () (split-new "down")))
 (bind-key "C-b x" "close pane" "Panes" (lambda! () (confirm-close-pane (focused))))
 (bind-key "C-b z" "zoom or restore" "Panes" (lambda! () (edit! (join "zoom " (focused)))))
-(bind-key "C-b c" "history in a pager" "Panes" (lambda! () (history)))
+(bind-key "C-b c" "history and screen in your editor" "Panes" (lambda! () (history)))
 (bind-verb "C-b f" "fit pane to its tile" "Panes" "fit")
 
 (bind-verb "C-b h" "focus left" "Focus" "focus-left")

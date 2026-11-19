@@ -2,12 +2,15 @@
 //! into bytes on its own thread; a publisher thread writes them, so a slow
 //! or full disk never stops the holder answering its program or reading
 //! `ctl`. Each screen file is replaced whole (written aside, then
-//! renamed), never torn; `history` is appended.
+//! renamed), never torn; `history` is appended. Every file is named
+//! relative to the pane's directory, held open: the pane may be renamed
+//! or moved while it is written.
 use crate::files::{self, Head, MAX_SCREEN_FILE, Placed};
 use fux_vt::sixel::Picture;
 use fux_vt::{Attributes, Screen};
+use fuxix::file::at;
+use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
 /// The most history text waiting for the publisher; past it the oldest
@@ -90,11 +93,9 @@ pub struct Publish {
 /// What waits for the publisher.
 #[derive(Default)]
 struct Work {
-    files: Option<Files>,
-    history: Vec<u8>,
+    /// Every publish handed over and not yet taken, as one.
+    waiting: Publish,
     history_lost: usize,
-    new_images: Vec<(String, Arc<Picture>)>,
-    gone_images: Vec<String>,
     stop: bool,
     /// Publishes handed over, and how many of them are written.
     handed: u64,
@@ -118,9 +119,9 @@ pub struct Publisher {
 }
 
 impl Publisher {
-    /// Starts publishing into `dir`, `history` kept under `history_cap`
-    /// bytes.
-    pub fn start(dir: PathBuf, history_cap: usize) -> std::io::Result<Publisher> {
+    /// Starts publishing into the directory held open as `dir`, `history`
+    /// kept under `history_cap` bytes.
+    pub fn start(dir: File, history_cap: usize) -> std::io::Result<Publisher> {
         let shared = Arc::new(Shared {
             work: Mutex::new(Work::default()),
             wake: Condvar::new(),
@@ -149,31 +150,32 @@ impl Publisher {
     pub fn hand(&self, publish: Publish) {
         self.with_work(|work| {
             work.handed = work.handed.saturating_add(1);
+            let waiting = &mut work.waiting;
             if let Some(files) = publish.files {
                 // What the replaced publish carried once is carried on.
-                let old = work.files.take();
+                let old = waiting.files.take();
                 let (old_errors, old_exit) = old.map_or((None, None), |f| (f.errors, f.exit));
-                work.files = Some(Files {
+                waiting.files = Some(Files {
                     errors: files.errors.or(old_errors),
                     exit: files.exit.or(old_exit),
                     ..files
                 });
             }
-            work.history.extend_from_slice(&publish.history);
-            let over = work.history.len().saturating_sub(MAX_HISTORY_WAITING);
+            waiting.history.extend_from_slice(&publish.history);
+            let over = waiting.history.len().saturating_sub(MAX_HISTORY_WAITING);
             if over > 0 {
-                let kept = from_a_line(&work.history, over).to_vec();
-                let lost = work.history.len().saturating_sub(kept.len());
-                work.history = kept;
+                let kept = from_a_line(&waiting.history, over).to_vec();
+                let lost = waiting.history.len().saturating_sub(kept.len());
+                waiting.history = kept;
                 work.history_lost = work.history_lost.saturating_add(lost);
             }
-            work.new_images.extend(publish.new_images);
+            waiting.new_images.extend(publish.new_images);
             for name in publish.gone_images {
                 // One never written needs no removal: its write is dropped.
-                let waiting = work.new_images.iter().any(|(n, _)| *n == name);
-                work.new_images.retain(|(n, _)| *n != name);
-                if !waiting {
-                    work.gone_images.push(name);
+                let unwritten = waiting.new_images.iter().any(|(n, _)| *n == name);
+                waiting.new_images.retain(|(n, _)| *n != name);
+                if !unwritten {
+                    waiting.gone_images.push(name);
                 }
             }
         });
@@ -210,38 +212,30 @@ impl Publisher {
     }
 }
 
-fn run(shared: &Shared, dir: &Path, history_cap: usize) {
-    let mut history_len = std::fs::metadata(dir.join(files::HISTORY))
-        .map_or(0, |m| usize::try_from(m.len()).unwrap_or(usize::MAX));
+fn run(shared: &Shared, dir: &File, history_cap: usize) {
+    let mut history_len = history_len(dir, 0);
+    // Pictures not yet on disk: no screen naming one is whole until it is.
+    let mut images_left: Vec<(String, Arc<Picture>)> = Vec::new();
     // What a failed write gives back, tried again with the next publish.
     let (mut errors_left, mut gone_left) = (None, Vec::new());
     loop {
         let Ok(mut work) = shared.work.lock() else {
             return;
         };
-        while work.files.is_none()
-            && work.history.is_empty()
-            && work.new_images.is_empty()
-            && work.gone_images.is_empty()
-            && !work.stop
-        {
+        let idle = |work: &Work| {
+            let waiting = &work.waiting;
+            let images = waiting.new_images.is_empty() && waiting.gone_images.is_empty();
+            waiting.files.is_none() && waiting.history.is_empty() && images && !work.stop
+        };
+        while idle(&work) {
             work = match shared.wake.wait(work) {
                 Ok(work) => work,
                 Err(_) => return,
             };
         }
-        let taken = Work {
-            files: work.files.take(),
-            history: std::mem::take(&mut work.history),
-            history_lost: std::mem::take(&mut work.history_lost),
-            new_images: std::mem::take(&mut work.new_images),
-            gone_images: std::mem::take(&mut work.gone_images),
-            stop: work.stop,
-            handed: work.handed,
-            written: 0,
-            written_ok: false,
-            exit_done: false,
-        };
+        let taken = std::mem::take(&mut work.waiting);
+        let lost = std::mem::take(&mut work.history_lost);
+        let (stop, handed) = (work.stop, work.handed);
         drop(work);
         let mut writer = Writer {
             dir,
@@ -254,25 +248,36 @@ fn run(shared: &Shared, dir: &Path, history_cap: usize) {
         });
         let mut gone = std::mem::take(&mut gone_left);
         gone.extend(taken.gone_images);
-        (errors_left, gone_left) = writer.publish(taken.new_images, files, gone);
-        if !taken.history.is_empty() || taken.history_lost > 0 {
-            history_len =
-                writer.append_history(&taken.history, taken.history_lost, history_len, history_cap);
+        images_left.extend(taken.new_images);
+        images_left.retain(|(name, _)| !gone.contains(name));
+        // History before the screens: a line that scrolled off is in
+        // `history` before a screen without it is, so a reader of `screen`
+        // and then `history` may see it twice and never misses it.
+        if !taken.history.is_empty() || lost > 0 {
+            history_len = writer.append_history(&taken.history, lost, history_len, history_cap);
         }
+        (errors_left, gone_left) = writer.publish(&mut images_left, files, gone);
         if let Ok(mut work) = shared.work.lock() {
-            work.written = taken.handed;
+            work.written = handed;
             work.written_ok = writer.failure.is_none();
             work.exit_done |= writer.exit_done;
             shared.written.notify_all();
         }
-        if taken.stop {
+        if stop {
             return;
         }
     }
 }
 
+/// `history`'s length, or `known` if it can't be asked.
+fn history_len(dir: &File, known: usize) -> usize {
+    at::open(dir, files::HISTORY, at::READ | fuxix::file::NONBLOCK)
+        .and_then(|f| f.metadata())
+        .map_or(known, |m| usize::try_from(m.len()).unwrap_or(usize::MAX))
+}
+
 struct Writer<'a> {
-    dir: &'a Path,
+    dir: &'a File,
     failure: Option<String>,
     exit_done: bool,
 }
@@ -286,21 +291,17 @@ impl Writer<'_> {
 
     /// Writes `name` whole: aside, then renamed over the old one.
     fn replace(&mut self, name: &str, bytes: &[u8]) -> bool {
-        let path = self.dir.join(name);
-        let aside = self.dir.join(format!(".{}.new", name.replace('/', "-")));
+        let aside = format!(".{}.new", name.replace('/', "-"));
         // A stale or planted file aside goes first; ours is made anew, so a
         // FIFO or a link put there can't block or redirect the write.
-        let _ = std::fs::remove_file(&aside);
-        let mut options = std::fs::File::options();
-        options.write(true).create_new(true);
-        let written = fuxix::file::private_file(&mut options)
-            .open(&aside)
+        let _ = at::remove_file(self.dir, &aside);
+        let written = at::open(self.dir, &aside, at::WRITE | at::NEW)
             .and_then(|mut file| file.write_all(bytes))
-            .and_then(|()| std::fs::rename(&aside, &path));
+            .and_then(|()| at::rename(self.dir, &aside, self.dir, name));
         match written {
             Ok(()) => true,
             Err(e) => {
-                let _ = std::fs::remove_file(&aside);
+                let _ = at::remove_file(self.dir, &aside);
                 self.note(&format!("writing {name}"), e);
                 false
             }
@@ -313,16 +314,17 @@ impl Writer<'_> {
     /// and pictures to remove once a styled screen is written.
     fn publish(
         &mut self,
-        images: Vec<(String, Arc<Picture>)>,
+        images: &mut Vec<(String, Arc<Picture>)>,
         files: Option<Files>,
         gone: Vec<String>,
     ) -> (Option<Vec<u8>>, Vec<String>) {
-        // Pictures first, so a screen naming one finds its file.
+        // Pictures first, so a screen naming one finds its file; one not
+        // written is tried again with the next publish.
         let mut pictures_written = true;
-        for (name, picture) in images {
+        images.retain(|(name, picture)| {
             let mut sixel = Vec::new();
             fux_vt::sixel::encode(
-                &picture,
+                picture,
                 (0, 0, picture.width(), picture.height()),
                 &mut sixel,
             );
@@ -335,7 +337,8 @@ impl Writer<'_> {
                 }
             };
             pictures_written &= wrote;
-        }
+            !wrote
+        });
         let mut styled_written = false;
         let mut errors_left = None;
         if let Some(files) = files {
@@ -374,6 +377,12 @@ impl Writer<'_> {
                 && self.failure.is_none()
             {
                 self.exit_done = self.replace(files::EXIT, exit);
+                // `status` was written saying all went well: it is
+                // written again, saying this did not.
+                if let Some(failure) = &self.failure {
+                    let _ = writeln!(status, "publish failed: {failure}");
+                    self.replace(files::STATUS, &status);
+                }
             }
         }
         // Removed only once a styled screen no longer naming them is
@@ -382,19 +391,22 @@ impl Writer<'_> {
             return (errors_left, gone);
         }
         for name in gone {
-            let _ = std::fs::remove_file(self.dir.join(files::IMAGES).join(name));
+            let _ = at::remove_file(self.dir, format!("{}/{name}", files::IMAGES));
         }
         (errors_left, Vec::new())
     }
 
-    /// Appends to `history`. Each file holds at most half of `cap`: past
-    /// it, `history` becomes `history.1` (the older one goes) and a new one
-    /// starts, so a reader following `history` by name (`tail -F`) sees
-    /// every line once, and the two files together stay under `cap`.
+    /// Appends to `history` what the holder hands over: whole records,
+    /// each a line of at most half of `cap` ([`record`]). Each file holds
+    /// at most half of `cap`: a record that does not fit starts a new one,
+    /// `history` becoming `history.1` (the older one goes). So rotation
+    /// happens only between records, a reader following `history` by name
+    /// (`tail -F`) sees every record once, and the two files together
+    /// stay under `cap`.
     fn append_history(&mut self, text: &[u8], lost: usize, len: usize, cap: usize) -> usize {
         let half = cap / 2;
-        // What both files can't hold goes first, from a line on; then a line
-        // saying what a slow disk lost, if anything, goes first of the rest.
+        // What both files can't hold goes first, from a record on; then a
+        // record saying what a slow disk lost, if anything.
         let kept = from_a_line(text, text.len().saturating_sub(cap));
         let mut marked = Vec::new();
         if lost > 0 {
@@ -408,27 +420,16 @@ impl Writer<'_> {
         let mut len = len;
         while !rest.is_empty() {
             let room = half.saturating_sub(len);
-            // The most that fits, to a line's end; a line longer than a
-            // whole file is cut, at a character's start.
             let fits = rest.get(..room.min(rest.len())).unwrap_or_default();
-            let piece = match fits.len() == rest.len() {
-                true => fits,
-                false => match fits.iter().rposition(|b| *b == b'\n') {
-                    Some(at) => fits.get(..=at).unwrap_or(fits),
-                    None if len == 0 => {
-                        let end = (1..=fits.len())
-                            .rev()
-                            .find(|&at| rest.get(at).is_none_or(|b| b & 0xc0 != 0x80));
-                        fits.get(..end.unwrap_or(fits.len())).unwrap_or(fits)
-                    }
-                    None => &[],
-                },
+            // The records that fit whole; into an empty file, whatever
+            // fits (no record is longer, so this cuts none).
+            let piece = match fits.iter().rposition(|b| *b == b'\n') {
+                Some(end) => fits.get(..=end).unwrap_or(fits),
+                None if len == 0 => fits,
+                None => &[],
             };
             if piece.is_empty() {
-                match std::fs::rename(
-                    self.dir.join(files::HISTORY),
-                    self.dir.join(files::HISTORY_OLDER),
-                ) {
+                match at::rename(self.dir, files::HISTORY, self.dir, files::HISTORY_OLDER) {
                     Ok(()) => len = 0,
                     Err(e) => {
                         self.note("rotating history", e);
@@ -439,8 +440,7 @@ impl Writer<'_> {
             }
             if !self.append(piece) {
                 // A part written counts: the file's length says how much.
-                return std::fs::metadata(self.dir.join(files::HISTORY))
-                    .map_or(len, |m| usize::try_from(m.len()).unwrap_or(usize::MAX));
+                return history_len(self.dir, len);
             }
             len = len.saturating_add(piece.len());
             rest = rest.get(piece.len()..).unwrap_or_default();
@@ -449,19 +449,18 @@ impl Writer<'_> {
     }
 
     fn append(&mut self, text: &[u8]) -> bool {
-        let mut options = std::fs::File::options();
         // Without waiting, and only into a regular file: a FIFO put there
         // can't stall the publisher.
-        options.append(true).create(true);
-        let appended = {
-            use std::os::unix::fs::OpenOptionsExt;
-            fuxix::file::private_file(&mut options)
-                .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
-        }
-        .open(self.dir.join(files::HISTORY))
-        .and_then(|mut file| match file.metadata()?.is_file() {
-            true => file.write_all(text),
-            false => Err(std::io::Error::other("history is not a regular file")),
+        let flags = at::WRITE | at::APPEND | at::CREATE | fuxix::file::NONBLOCK;
+        let appended = at::open(self.dir, files::HISTORY, flags).and_then(|mut file| {
+            let meta = file.metadata()?;
+            if !meta.is_file() {
+                return Err(std::io::Error::other("history is not a regular file"));
+            }
+            // A part of a record written before the disk filled is taken
+            // back: the file holds whole records only.
+            file.write_all(text)
+                .inspect_err(|_| drop(file.set_len(meta.len())))
         });
         match appended {
             Ok(()) => true,
@@ -473,10 +472,56 @@ impl Writer<'_> {
     }
 }
 
+/// What ends a piece of a history line too long to be one record.
+pub const CONTINUED: &str = " [fux3: continued]";
+
+/// Adds `fragment` to the history line being gathered in `line`, and
+/// moves every finished record to `out`. A record is a line, its newline
+/// included, of at most `limit` bytes; a line longer than that becomes
+/// pieces, each ending with [`CONTINUED`] before its newline, so taking
+/// that mark and the newline after it out gives the line back. No record
+/// is longer than `limit`, whatever the line holds.
+pub fn record(line: &mut String, out: &mut Vec<u8>, fragment: &str, end: End, limit: usize) {
+    line.push_str(fragment);
+    let most = limit
+        .saturating_sub(CONTINUED.len().saturating_add(1))
+        .max(4);
+    // All of it as pieces: when asked, and for a line that itself ends
+    // with the mark's text, which is then a piece with an empty end, so
+    // that taking marks out gives it back too.
+    let pieces = match end {
+        End::No => false,
+        End::Line => line.ends_with(CONTINUED),
+        End::Piece => true,
+    };
+    while line.len() >= limit || (pieces && !line.is_empty()) {
+        let cut = line.floor_char_boundary(most);
+        let (piece, tail) = line.split_at_checked(cut).unwrap_or((line, ""));
+        out.extend_from_slice(piece.as_bytes());
+        out.extend_from_slice(CONTINUED.as_bytes());
+        out.push(b'\n');
+        *line = tail.to_owned();
+    }
+    if matches!(end, End::Line) {
+        out.extend_from_slice(line.as_bytes());
+        out.push(b'\n');
+        line.clear();
+    }
+}
+
+/// What a fragment given to [`record`] ends: nothing yet, its line, or
+/// what there is of a line whose rest will not come (written as pieces).
+#[derive(Clone, Copy, Debug)]
+pub enum End {
+    No,
+    Line,
+    Piece,
+}
+
 /// `text` from the first line that starts at or after `at`.
 fn from_a_line(text: &[u8], at: usize) -> &[u8] {
-    if at == 0 {
-        return text;
+    if at == 0 || text.get(at.saturating_sub(1)) == Some(&b'\n') {
+        return text.get(at..).unwrap_or_default();
     }
     let start = (text
         .get(at..)
@@ -508,6 +553,27 @@ mod tests {
             cursor_col: 0,
             cursor_shown: true,
         }
+    }
+
+    /// Taking the marks out of history's records gives every line back: a
+    /// long one cut into pieces, and one that itself ends with the mark.
+    #[test]
+    fn history_records_give_their_lines_back() {
+        let long: String = std::iter::repeat_n("é", 300).collect();
+        let literal = format!("alpha{CONTINUED}");
+        let (mut line, mut out) = (String::new(), Vec::new());
+        // One that ends with the mark's text and is as long as a record may be.
+        let pad: String = std::iter::repeat_n('x', 63 - CONTINUED.len()).collect();
+        let full = format!("{pad}{CONTINUED}");
+        for text in [long.as_str(), literal.as_str(), "", full.as_str(), "beta"] {
+            record(&mut line, &mut out, text, End::Line, 64);
+        }
+        // The start of a line whose rest never comes: pieces, and no end.
+        record(&mut line, &mut out, "gamma", End::Piece, 64);
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(text.lines().all(|record| record.len() < 64), "{text}");
+        let back = text.replace(&format!("{CONTINUED}\n"), "");
+        assert_eq!(back, format!("{long}\n{literal}\n\n{full}\nbeta\ngamma"));
     }
 
     /// Whatever a program prints, the styled screen holds no control but

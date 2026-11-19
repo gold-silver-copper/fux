@@ -91,6 +91,16 @@ impl Lab {
         private_dir(&harness)?;
         std::fs::create_dir_all(base.join("config/fux3")).map_err(|e| e.to_string())?;
         std::fs::write(base.join("config/fux3/view.grift"), config).map_err(|e| e.to_string())?;
+        // The viewers' $EDITOR: it keeps a copy of the file it is given.
+        // It stays open while a file `editor.hold` is there.
+        let editor = "#!/bin/sh\ncp \"$1\" \"$0.tmp\" && mv \"$0.tmp\" \"$0.copied\"\n\
+            while [ -e \"$0.hold\" ]; do sleep 0.1; done\n";
+        std::fs::write(base.join("editor"), editor).map_err(|e| e.to_string())?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(base.join("editor"), std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| e.to_string())?;
+        }
         Ok(Lab {
             base,
             view,
@@ -100,9 +110,9 @@ impl Lab {
     }
 
     fn run(&self, session: &Path, args: &[&str]) -> Result<Output, String> {
-        let program = match args.first() {
-            Some(&"--do") => viewer(),
-            _ => self.fux3.clone(),
+        let program = match args.contains(&"--do") {
+            true => viewer(),
+            false => self.fux3.clone(),
         };
         (Command::new(program)
             .args(args)
@@ -128,6 +138,7 @@ impl Lab {
         let env = [
             format!("FUX3_DIR={}", self.view.display()),
             format!("XDG_CONFIG_HOME={}", config.display()),
+            format!("EDITOR={}", self.base.join("editor").display()),
         ];
         let mut args = vec!["start", name, "--size", size, "--", "env"];
         args.extend(env.iter().map(String::as_str));
@@ -386,12 +397,12 @@ fn a_looping_binding_is_stopped_and_detach_always_works() -> Tested {
     Ok(())
 }
 
-/// A layout command written to one workspace's `.view/ctl` changes that
-/// workspace's layout and not another's, with a viewer on each at once;
-/// and a binding that switches workspace can't send to a pane of the same
-/// name in the one it switched to, not even through a chord it runs.
+/// A layout command for one workspace changes that workspace's layout and
+/// not another's, with a viewer on each at once; and a binding that switches
+/// workspace can't send to a pane of the same name in the one it switched
+/// to, not even through a chord it runs.
 #[test]
-fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
+fn a_layout_command_changes_only_the_layout_of_its_workspace() -> Tested {
     let config = "(bind-key \"F6\" \"over\" \"Mine\" \
         (lambda! () (show-workspace \"two\") (send \"a\" \"echo cro''ssed\\r\")))\n\
         (bind-key \"F7\" \"back\" \"Mine\" \
@@ -404,11 +415,9 @@ fn a_ctl_line_changes_only_the_layout_of_its_workspace() -> Tested {
     lab.viewer("v1", "100x30", &["one"])?;
     lab.viewer("v2", "100x30", &["two"])?;
     let space = |name: &str| lab.view.join(name).join(".view");
-    for (name, line) in [("one", "tab new mine\n"), ("two", "tab new theirs\n")] {
-        let ctl = space(name).join("ctl");
-        until(&format!("{name}'s viewer serves its ctl"), || {
-            fifo(&ctl, line.as_bytes()).is_ok()
-        })?;
+    for (name, line) in [("one", "tab new mine"), ("two", "tab new theirs")] {
+        let out = lab.run(&lab.view, &[name, "--do", line])?;
+        assert!(out.status.success(), "{out:?}");
     }
     let layout =
         |name: &str| std::fs::read_to_string(space(name).join("layout")).unwrap_or_default();
@@ -458,32 +467,303 @@ fn a_paste_file_outlives_other_writers_commands() -> Tested {
     Ok(())
 }
 
-/// Two viewers of one workspace split no `.view/ctl` line between them:
-/// one reads it at a time, so a line that crosses a read's end still runs
-/// whole.
+/// A layout command from outside (`--do`) is an edit of the layout file: a
+/// running viewer shows it and fits the panes whose tiles it changed, its
+/// refusal is its own stderr and exit code, and the viewer keeps no
+/// `.view/ctl` or `.view/errors`.
 #[test]
-fn two_viewers_of_a_workspace_split_no_ctl_line() -> Tested {
-    let lab = Lab::new("twoctl", "")?;
-    lab.start("only")?;
-    lab.viewer("v1", "100x30", &[])?;
-    lab.viewer("v2", "100x30", &[])?;
-    let view = lab.view.join("main/.view");
-    let ctl = view.join("ctl");
-    until("a viewer serves ctl", || fifo(&ctl, b"\n").is_ok())?;
-    // Each a line just past a 4096-byte read: a second reader would take
-    // its end alone.
-    for n in 0..8 {
-        let mut bytes = vec![b'\n'; 4094];
-        bytes.extend(format!("tab new kept{n}\n").as_bytes());
-        fifo(&ctl, &bytes)?;
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let layout = || std::fs::read_to_string(view.join("layout")).unwrap_or_default();
-    until("every line ran", || {
-        (0..8).all(|n| layout().contains(&format!("\"kept{n}\"")))
+fn an_edit_from_outside_is_shown_and_fitted_by_a_running_viewer() -> Tested {
+    let lab = Lab::new("outside", "")?;
+    lab.start("a")?;
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "$")?;
+    // The workspace's first edit: a pane it gives a tile to had none.
+    let out = lab.run(&lab.view, &["--do", "split a right"])?;
+    assert!(out.status.success(), "{out:?}");
+    lab.shows("v", "\u{2502}")?;
+    until("both fitted to their tiles", || {
+        lab.size("a") == "49 30" && lab.size("shell-1") == "50 30"
     })
-    .map_err(|e| format!("{e}\n{}", layout()))?;
-    let errors = std::fs::read_to_string(view.join("errors")).unwrap_or_default();
-    assert!(errors.is_empty(), "lines were refused:\n{errors}");
+    .map_err(|e| format!("{e}: a {}, shell-1 {}", lab.size("a"), lab.size("shell-1")))?;
+    let out = lab.run(&lab.view, &["--do", "zoom a"])?;
+    assert!(out.status.success(), "{out:?}");
+    lab.shows("v", "[zoom]")?;
+    until("a fitted to its tile", || lab.size("a") == "100 30")?;
+    assert_eq!(lab.size("shell-1"), "50 30", "its tile did not change");
+    let out = lab.run(&lab.view, &["--do", "zoom nosuch"])?;
+    assert!(!out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("no tile for pane nosuch"), "{said}");
+    let mut kept: Vec<String> = std::fs::read_dir(lab.view.join("main/.view"))
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    kept.sort();
+    assert_eq!(kept, ["layout", "layout.lock"]);
+    Ok(())
+}
+
+/// `C-b c` gives the editor one text, the pane's history and then its
+/// screen as it was when the key was pressed: every row once, the last one
+/// the screen's last that is not blank. Opening the copy disturbs nothing:
+/// a pane whose size is not its tile's keeps it, before and after.
+#[test]
+fn the_history_key_opens_the_history_and_then_the_screen() -> Tested {
+    let lab = Lab::new("copy", "")?;
+    lab.start("only")?;
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "$")?;
+    lab.keys(
+        "v",
+        b"i=0; while [ $i -lt 40 ]; do i=$((i+1)); echo row-$i; done\r",
+    )?;
+    // The prompt after the last row is part of the screen copied.
+    until("the rows are out and the prompt is back", || {
+        let screen = lab.read(&lab.view, "only", "screen");
+        let last = screen.lines().rfind(|row| !row.trim().is_empty());
+        screen.contains("row-40\n") && last.is_some_and(|row| row.trim_end().ends_with('$'))
+    })?;
+    let screen = lab.read(&lab.view, "only", "screen");
+    let last = (screen.lines().skip(1))
+        .filter(|row| !row.trim().is_empty())
+        .last()
+        .ok_or("a blank screen")?;
+    // A FIFO called `id` in a directory that is no pane holds nothing up.
+    private_dir(&lab.view.join("main/zz"))?;
+    fuxix::file::private_fifo(&lab.view.join("main/zz/id")).map_err(|e| e.to_string())?;
+    lab.keys("v", b"\x02c")?;
+    let copied = lab.base.join("editor.copied");
+    until("the editor was given the text", || copied.exists())?;
+    let text = std::fs::read_to_string(&copied).map_err(|e| e.to_string())?;
+    for n in 1..=40 {
+        let row = format!("row-{n}");
+        let times = text.lines().filter(|line| *line == row).count();
+        assert_eq!(times, 1, "{row} is in the text {times} times:\n{text}");
+    }
+    assert_eq!(text.lines().last(), Some(last), "{text:?}");
+    until("the copy's pane went", || {
+        !lab.view.join("main/history-1").exists()
+    })?;
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(lab.size("only"), "80 24", "the copy resized its source");
+    Ok(())
+}
+
+/// A pane is its directory and its id, and a name only where it is listed:
+/// a live pane renamed with `mv` keeps its tile, the focus and its keys,
+/// and the next edit stores its new name; moved to another workspace it
+/// leaves this one's layout as a pane that went, and has a tile in the other.
+#[test]
+fn a_moved_pane_keeps_its_tile_by_its_id() -> Tested {
+    let lab = Lab::new("moved", "")?;
+    lab.start("a")?;
+    lab.start("b")?;
+    let out = lab.run(&lab.view, &["--do", "split a right b"])?;
+    assert!(out.status.success(), "{out:?}");
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "\u{2502}")?;
+    let main = lab.view.join("main");
+    std::fs::rename(main.join("a"), main.join("c")).map_err(|e| e.to_string())?;
+    // Typed once the viewer has looked again: the keys go to the pane it
+    // found under the new name, not through what it held open before.
+    std::thread::sleep(Duration::from_millis(1500));
+    lab.keys("v", b"echo mo''ved\r")?;
+    until("keys reach the renamed pane", || {
+        lab.read(&lab.view, "c", "screen").contains("moved")
+    })?;
+    lab.shows("v", "moved")?;
+    std::thread::sleep(Duration::from_millis(1500));
+    let screen = lab.read(&lab.harness, "v", "screen");
+    assert!(!screen.contains("gone"), "a tile was lost:\n{screen}");
+    let out = lab.run(&lab.view, &["--do", "tab new spare"])?;
+    assert!(out.status.success(), "{out:?}");
+    let layout = std::fs::read_to_string(main.join(".view/layout")).map_err(|e| e.to_string())?;
+    assert!(
+        layout.contains("pane c@") && !layout.contains("pane a@"),
+        "{layout}"
+    );
+    private_dir(&lab.view.join("two"))?;
+    std::fs::rename(main.join("c"), lab.view.join("two/c")).map_err(|e| e.to_string())?;
+    lab.shows("v", "c gone")?;
+    let out = lab.run(&lab.view, &["two", "--do", "zoom c"])?;
+    assert!(out.status.success(), "{out:?}");
+    Ok(())
+}
+
+/// A question is about the workspace it was asked of: once that one was
+/// removed, "close workspace" answered yes never closes the workspace made
+/// again under its name. The viewer says the workspace was removed, and
+/// the answer, typed before or after it noticed, reaches no pane.
+#[test]
+fn a_stale_yes_never_closes_or_types_into_a_workspace_made_again() -> Tested {
+    let lab = Lab::new("stale", "")?;
+    for (space, wait) in [("early", 0), ("late", 1500)] {
+        let pane = format!("{space}/p");
+        lab.start(&pane)?;
+        lab.viewer(space, "100x30", &[space])?;
+        lab.shows(space, "$")?;
+        lab.keys(space, b"\x02wx")?;
+        lab.shows(space, "close workspace")?;
+        let (dir, aside) = (lab.view.join(space), lab.view.join(format!(".old-{space}")));
+        std::fs::rename(&dir, &aside).map_err(|e| e.to_string())?;
+        fifo(&aside.join("p/ctl"), b"kill\n")?;
+        until("the old pane ended", || !aside.join("p").exists())?;
+        std::fs::remove_dir_all(&aside).map_err(|e| e.to_string())?;
+        lab.start(&pane)?;
+        std::thread::sleep(Duration::from_millis(wait));
+        lab.keys(space, b"y")?;
+        lab.shows(space, &format!("workspace {space} was removed"))?;
+        std::thread::sleep(Duration::from_millis(1500));
+        let listed = lab.run(&lab.view, &["ls"])?;
+        let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+        assert!(
+            listed.contains(&pane),
+            "{space}: the new pane was ended: {listed:?}"
+        );
+        let screen = std::fs::read_to_string(dir.join("p/screen")).unwrap_or_default();
+        let typed = screen.lines().any(|row| row.trim_end().ends_with("$ y"));
+        assert!(
+            !typed,
+            "{space}: the answer was typed into the new pane:\n{screen}"
+        );
+    }
+    // Renamed under the question, another made under its old name: yes
+    // closes the one the question was asked about, whatever it is called.
+    lab.start("asked/p")?;
+    lab.viewer("asked", "100x30", &["asked"])?;
+    lab.shows("asked", "$")?;
+    lab.keys("asked", b"\x02wx")?;
+    lab.shows("asked", "close workspace")?;
+    let renamed = lab.view.join("asked2");
+    std::fs::rename(lab.view.join("asked"), &renamed).map_err(|e| e.to_string())?;
+    lab.start("asked/p")?;
+    std::thread::sleep(Duration::from_millis(1500));
+    lab.keys("asked", b"y")?;
+    until("the workspace asked about closed", || !renamed.exists())?;
+    let listed = lab.run(&lab.view, &["ls"])?;
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    assert!(
+        listed.contains("asked/p"),
+        "the new one was closed: {listed:?}"
+    );
+    Ok(())
+}
+
+/// A workspace renamed with `mv` is the same workspace: its viewer names it
+/// as it is called now, starts panes in it, pastes into it and copies from it.
+#[test]
+fn a_viewer_follows_its_workspace_through_a_rename() -> Tested {
+    let lab = Lab::new("renamed", "")?;
+    lab.start("rig/a")?;
+    lab.viewer("v", "100x30", &["rig"])?;
+    lab.shows("v", "$")?;
+    let now = lab.view.join("rig2");
+    std::fs::rename(lab.view.join("rig"), &now).map_err(|e| e.to_string())?;
+    std::thread::sleep(Duration::from_millis(1500));
+    lab.keys("v", b"\x02")?;
+    lab.shows("v", " rig2 ")?;
+    lab.keys("v", b"v")?;
+    let file = |pane: &str, file: &str| {
+        std::fs::read_to_string(now.join(pane).join(file)).unwrap_or_default()
+    };
+    until("a shell started in the renamed workspace", || {
+        file("shell-1", "status").contains("state running")
+    })
+    .map_err(|e| format!("{e}:\n{}", lab.read(&lab.harness, "v", "screen")))?;
+    lab.shows("v", "\u{2502}")?;
+    lab.keys("v", b"\x1b[200~echo pas''ted\x1b[201~\r")?;
+    until("the paste reached the new shell", || {
+        file("shell-1", "screen").contains("pasted")
+    })
+    .map_err(|e| format!("{e}:\n{}", lab.read(&lab.harness, "v", "screen")))?;
+    lab.keys("v", b"\x02c")?;
+    let copied = lab.base.join("editor.copied");
+    until("the editor was given the text", || copied.exists())?;
+    let text = std::fs::read_to_string(&copied).map_err(|e| e.to_string())?;
+    assert!(text.contains("\npasted\n"), "{text:?}");
+    Ok(())
+}
+
+/// The copy's pane writes no recipe and removes none: one saved under
+/// the name it takes is as it was, while the copy is open and after.
+#[test]
+fn the_copy_leaves_a_recipe_under_its_name_alone() -> Tested {
+    let lab = Lab::new("recipes", "")?;
+    lab.start("only")?;
+    let saved = lab.run(&lab.view, &["start", "history-1", "--", "sleep", "60"])?;
+    assert!(saved.status.success(), "{saved:?}");
+    let main = lab.view.join("main");
+    fifo(&main.join("history-1/ctl"), b"kill\n")?;
+    until("the saved pane ended", || !main.join("history-1").exists())?;
+    let recipe = || std::fs::read_to_string(main.join(".recipes/history-1")).unwrap_or_default();
+    let before = recipe();
+    assert!(before.contains("sleep"), "{before:?}");
+    lab.viewer("v", "100x30", &[])?;
+    lab.shows("v", "$")?;
+    let hold = lab.base.join("editor.hold");
+    std::fs::write(&hold, "").map_err(|e| e.to_string())?;
+    lab.keys("v", b"\x02c")?;
+    until("the editor is open", || {
+        lab.base.join("editor.copied").exists()
+    })?;
+    assert!(
+        main.join("history-1").exists(),
+        "the copy took another name"
+    );
+    assert_eq!(recipe(), before, "the copy wrote over the saved recipe");
+    // Renamed while it is open, and another pane started under its old
+    // name: when the editor ends the copy's pane ends itself, wherever it
+    // is, and not the pane that has its name.
+    std::fs::rename(main.join("history-1"), main.join("moved")).map_err(|e| e.to_string())?;
+    let other = lab.run(
+        &lab.view,
+        &["start", "history-1", "--no-recipe", "--", "sleep", "60"],
+    )?;
+    assert!(other.status.success(), "{other:?}");
+    std::fs::remove_file(&hold).map_err(|e| e.to_string())?;
+    until("the copy's pane ended", || !main.join("moved").exists())?;
+    std::thread::sleep(Duration::from_millis(500));
+    let status = lab.read(&lab.view, "history-1", "status");
+    assert!(
+        status.contains("state running"),
+        "the pane of its old name was ended: {status:?}"
+    );
+    assert_eq!(recipe(), before, "the copy removed the saved recipe");
+    Ok(())
+}
+
+/// A close that finds, once its panes have ended, something no pane made
+/// (a file of the user's in a pane's directory) stops at once and says
+/// what is true: the panes were ended, the workspace stays, and what is
+/// left, which is not removed.
+#[test]
+fn a_close_that_ended_panes_says_so_and_names_what_is_left() -> Tested {
+    let lab = Lab::new("left", "")?;
+    lab.start("w/p")?;
+    std::fs::write(lab.view.join("w/p/note"), "mine").map_err(|e| e.to_string())?;
+    lab.viewer("v", "160x30", &["w"])?;
+    lab.shows("v", "$")?;
+    lab.keys("v", b"\x02wx")?;
+    lab.shows("v", "close workspace")?;
+    let asked = Instant::now();
+    lab.keys("v", b"y")?;
+    lab.shows("v", "its panes were ended")?;
+    let took = asked.elapsed();
+    assert!(
+        took < Duration::from_secs(6),
+        "it waited {took:?} on what was not ending"
+    );
+    let screen = lab.read(&lab.harness, "v", "screen");
+    assert!(
+        screen.contains(".gone-"),
+        "what is left is not named:\n{screen}"
+    );
+    let left = std::fs::read_dir(lab.view.join("w")).map_err(|e| e.to_string())?;
+    let notes = left
+        .flatten()
+        .filter(|e| e.path().join("note").exists())
+        .count();
+    assert_eq!(notes, 1, "the user's file went");
     Ok(())
 }

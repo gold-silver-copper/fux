@@ -6,20 +6,21 @@
 use crate::ctl::{self, Command, MAX_SEND};
 use crate::files::{self, Head, Placed};
 use crate::publish::{self, Publisher};
-use crate::session::{self, Session};
+use crate::session::{self, Session, Workspace};
 use crate::{Failure, io};
 use fux_vt::sixel::Picture;
 use fux_vt::{CellSize, Feature, Graphics, Identity, Mode, Options, Parser, Sink, Size, Stop};
 use fuxix::Errno;
+use fuxix::file::at;
 use fuxix::poll::{Events, Poll, PollFd};
 use fuxix::process::{Job, Reach, Scan, Signal, Status};
-use fuxix::pty::Master;
+use fuxix::pty::{Master, Slave};
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{BufRead, Write};
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::os::unix::fs::FileTypeExt;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -73,6 +74,12 @@ const DRAIN_MOST: Duration = Duration::from_secs(1);
 /// kill waits for everything to be gone.
 const HANGUP_GRACE: Duration = Duration::from_millis(200);
 const KILL_WAIT: Duration = Duration::from_secs(2);
+/// How long what a kill asked to end (panes started inside this one
+/// among it) has to end itself before it is killed outright.
+#[cfg(target_os = "linux")]
+const TERM_GRACE: Duration = Duration::from_secs(1);
+/// The longest record `history` holds, whatever its cap.
+const MAX_RECORD: usize = 64 << 10;
 /// The most variables `--env` names.
 pub const MAX_ENV: usize = 64;
 /// The most labels, and their keys' and values' lengths.
@@ -84,11 +91,14 @@ fn after(now: Instant, wait: Duration) -> Instant {
     now.checked_add(wait).unwrap_or(now)
 }
 
-/// What `start` hands the holder.
+/// What a start asks for, as the holder read it from `start`'s arguments.
 #[derive(Debug, Clone)]
 pub struct Spec {
-    pub root: PathBuf,
+    pub session: Session,
     pub workspace: String,
+    /// The directory the workspace must be ([`Workspace::id`]), if the
+    /// starter held one: a workspace removed and made again is another.
+    pub workspace_id: Option<String>,
     pub name: String,
     pub cols: u16,
     pub rows: u16,
@@ -99,8 +109,9 @@ pub struct Spec {
     pub labels: Vec<(String, String)>,
     /// Variables named at start, given to the program after fux3's own.
     pub env: Vec<(String, OsString)>,
-    /// Started from its recipe: the recipe stays as it is.
-    pub keep_recipe: bool,
+    /// The recipe to write once the pane runs; none for a pane started
+    /// from its recipe, which stays as it is.
+    pub recipe: Option<Vec<u8>>,
     pub argv: Vec<OsString>,
 }
 
@@ -135,141 +146,6 @@ pub fn checked_size(cols: u16, rows: u16) -> Result<Size, Failure> {
         return Err(bad());
     }
     Size::new(rows, cols).map_err(|_| bad())
-}
-
-impl Spec {
-    /// As the holder's command line: native strings stay native.
-    pub fn to_args(&self) -> Vec<OsString> {
-        let mut args: Vec<OsString> = vec![
-            "__hold".into(),
-            self.root.clone().into(),
-            self.workspace.clone().into(),
-            self.name.clone().into(),
-            format!("{}x{}", self.cols, self.rows).into(),
-            format!("{}x{}", self.cell.0, self.cell.1).into(),
-            if self.pictures { "on" } else { "off" }.into(),
-            self.history.to_string().into(),
-            self.cwd.clone().into(),
-            self.labels.len().to_string().into(),
-        ];
-        for (key, value) in &self.labels {
-            args.push(format!("{key}={value}").into());
-        }
-        // The variables' values come on the startup pipe (`env_bytes`):
-        // arguments are public, a program's environment is not.
-        args.push(self.env.len().to_string().into());
-        args.push(if self.keep_recipe { "keep" } else { "write" }.into());
-        args.extend(self.argv.iter().cloned());
-        args
-    }
-
-    fn parse(
-        mut args: impl Iterator<Item = OsString>,
-        stdin: &mut impl BufRead,
-    ) -> Result<Spec, Failure> {
-        let bad = |what: &str| Failure::new(format!("holder arguments: {what}"));
-        let mut next = |what: &'static str| args.next().ok_or_else(|| bad(what));
-        let text = |value: OsString, what: &str| value.into_string().map_err(|_| bad(what));
-        let pair = |value: String, what: &str| -> Result<(u16, u16), Failure> {
-            let (a, b) = value.split_once('x').ok_or_else(|| bad(what))?;
-            Ok((
-                a.parse().map_err(|_| bad(what))?,
-                b.parse().map_err(|_| bad(what))?,
-            ))
-        };
-        let root = PathBuf::from(next("root")?);
-        let workspace = text(next("workspace")?, "workspace")?;
-        let name = text(next("name")?, "name")?;
-        let (cols, rows) = pair(text(next("size")?, "size")?, "size")?;
-        let cell = pair(text(next("cell")?, "cell")?, "cell")?;
-        let pictures = text(next("pictures")?, "pictures")? == "on";
-        let history = text(next("history")?, "history")?
-            .parse()
-            .map_err(|_| bad("history"))?;
-        let cwd = PathBuf::from(next("cwd")?);
-        let count: usize = text(next("labels")?, "labels")?
-            .parse()
-            .map_err(|_| bad("labels"))?;
-        let mut labels = Vec::new();
-        if count > MAX_LABELS {
-            return Err(bad("labels"));
-        }
-        for _ in 0..count {
-            labels.push(parse_label(&text(next("label")?, "label")?)?);
-        }
-        let count: usize = text(next("env")?, "env")?.parse().map_err(|_| bad("env"))?;
-        let keep_recipe = text(next("recipe")?, "recipe")? == "keep";
-        let env = read_env(stdin, count)?;
-        let argv: Vec<OsString> = args.collect();
-        if argv.is_empty() {
-            return Err(bad("no program"));
-        }
-        Ok(Spec {
-            root,
-            workspace,
-            name,
-            cols,
-            rows,
-            cell,
-            pictures,
-            history,
-            cwd,
-            labels,
-            env,
-            keep_recipe,
-            argv,
-        })
-    }
-
-    /// The variables as the startup pipe carries them: `NAME=VALUE`, each
-    /// ended by a NUL.
-    pub fn env_bytes(&self) -> Vec<u8> {
-        use std::os::unix::ffi::OsStrExt;
-        let mut out = Vec::new();
-        for (key, value) in &self.env {
-            out.extend_from_slice(key.as_bytes());
-            out.push(b'=');
-            out.extend_from_slice(value.as_bytes());
-            out.push(0);
-        }
-        out
-    }
-}
-
-/// Reads `count` variables from the startup pipe, each at most a recipe's
-/// size.
-fn read_env(input: &mut impl BufRead, count: usize) -> Result<Vec<(String, OsString)>, Failure> {
-    use std::io::Read;
-    use std::os::unix::ffi::OsStringExt;
-    let bad = || Failure::new("holder input: a variable");
-    let mut env = Vec::new();
-    if count > MAX_ENV {
-        return Err(Failure::new(format!(
-            "{count} variables, at most {MAX_ENV}"
-        )));
-    }
-    for _ in 0..count {
-        let mut entry = Vec::new();
-        let limit = u64::try_from(crate::recipe::MAX_RECIPE).unwrap_or(u64::MAX);
-        input
-            .by_ref()
-            .take(limit)
-            .read_until(0, &mut entry)
-            .map_err(|_| bad())?;
-        if entry.pop() != Some(0) {
-            return Err(bad());
-        }
-        let at = entry.iter().position(|b| *b == b'=').ok_or_else(bad)?;
-        let value = entry
-            .get(at.saturating_add(1)..)
-            .unwrap_or_default()
-            .to_vec();
-        let key =
-            String::from_utf8(entry.get(..at).unwrap_or_default().to_vec()).map_err(|_| bad())?;
-        crate::recipe::check_env_name(&key)?;
-        env.push((key, OsString::from_vec(value)));
-    }
-    Ok(env)
 }
 
 /// What waits to be written to the program, in order: typed bytes and the
@@ -380,14 +256,16 @@ struct Images {
     next: u64,
     budget: u64,
     filled_at: Option<Instant>,
+    /// A picture shown is not listed yet: the rate made it wait.
+    waiting: bool,
 }
 
 struct Holder {
     session: Session,
-    dir: PathBuf,
-    held: Option<File>,
-    workspace: String,
-    name: String,
+    /// The pane: its directory, held open and locked for the holder's
+    /// life. Every file is named relative to it; where it is listed is
+    /// looked up only to take its name away.
+    dir: File,
     labels: Vec<(String, String)>,
     id: String,
     version: u64,
@@ -415,6 +293,11 @@ struct Holder {
     cell: (u16, u16),
     pictures: bool,
     history_end: u64,
+    /// A kill ended processes outside the program's session (panes
+    /// started inside it, maybe): dead panes are cleared once it is done.
+    asked_others: bool,
+    /// The history line being gathered, not yet a whole record.
+    history_line: String,
     history: Vec<u8>,
     images: Images,
     publisher: Publisher,
@@ -424,28 +307,16 @@ struct Holder {
     buffer: Vec<u8>,
 }
 
-/// Runs the holder `args` describe; what it says goes to its starter.
-pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
+/// Runs the holder `spec` describes; what it says goes to its starter.
+pub fn main(spec: Result<Spec, Failure>) -> ExitCode {
     let mut stdout = std::io::stdout();
-    let mut stdin = std::io::stdin().lock();
-    let mut go = String::new();
-    if stdin.read_line(&mut go).is_err() || go.trim() != "go" {
-        return ExitCode::FAILURE;
-    }
-    let spec = Spec::parse(args, &mut stdin);
-    drop(stdin);
     match spec.and_then(prepare) {
-        Ok(mut holder) => {
-            holder.publish(Instant::now());
-            // `ok` only once the files are there, whole: a client reading
-            // them at once finds them. Otherwise the pane is ended and
-            // `start` says why.
-            if !holder.publisher.wait_written(START_PUBLISH) {
+        Ok((mut holder, start)) => {
+            // `ok` only once the pane is whole, named and running, and its
+            // files say so. Otherwise it is ended and `start` says why.
+            if let Err(failure) = holder.begin(start) {
                 holder.kill();
-                let _ = writeln!(
-                    stdout,
-                    "err the first files could not be written within 2 s"
-                );
+                let _ = writeln!(stdout, "err {failure}");
                 let _ = stdout.flush();
                 fuxix::process::end_now(1);
                 return ExitCode::FAILURE;
@@ -486,19 +357,14 @@ fn new_id() -> Result<String, Failure> {
 
 /// Makes a FIFO in `dir` and opens it for reading, holding a write end of
 /// its own so that a writer closing is no end of file.
-fn fifo(dir: &Path, name: &str) -> Result<File, Failure> {
-    let path = dir.join(name);
-    fuxix::file::private_fifo(&path).map_err(|e| io(path.display(), e))?;
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
-        .open(&path)
-        .map_err(|e| io(path.display(), e))?;
+fn fifo(dir: &File, name: &str) -> Result<File, Failure> {
+    at::make_fifo(dir, name).map_err(|e| io(name, e))?;
+    let file =
+        at::open(dir, name, at::READ_WRITE | fuxix::file::NONBLOCK).map_err(|e| io(name, e))?;
     let is_fifo = file.metadata().is_ok_and(|m| m.file_type().is_fifo());
     match is_fifo {
         true => Ok(file),
-        false => Err(Failure::new(format!("{} is no FIFO", path.display()))),
+        false => Err(Failure::new(format!("{name} is no FIFO"))),
     }
 }
 
@@ -538,75 +404,78 @@ fn graphics(cell: (u16, u16), pictures: bool) -> Result<Graphics, Failure> {
     })
 }
 
-/// Claims the name, makes the files, opens the terminal and starts the
-/// program. Whatever fails gives the name back.
-fn prepare(spec: Spec) -> Result<Holder, Failure> {
-    session::check_name(&spec.workspace)?;
-    session::check_name(&spec.name)?;
+fn removed(workspace: &str) -> Failure {
+    Failure::new(format!("workspace {workspace} was removed"))
+}
+
+/// What is left to do once the pane's directory is made: give it its
+/// name, start the program, write the recipe.
+struct Start {
+    spec: Spec,
+    workspace: Workspace,
+    slave: Slave,
+}
+
+/// Makes the pane, nameless: its directory under a name nothing lists,
+/// locked, with its marker, FIFOs and history, and its terminal opened.
+/// Whatever fails takes it apart again.
+fn prepare(spec: Spec) -> Result<(Holder, Start), Failure> {
     let size = checked_size(spec.cols, spec.rows)?;
-    if !(MIN_HISTORY..=MAX_HISTORY).contains(&spec.history) {
-        return Err(Failure::new(format!(
-            "history {}: at most {MAX_HISTORY}",
-            spec.history
-        )));
-    }
     let parser = terminal(&spec, size)?;
     let id = new_id()?;
     // Before anything could start: what the program leaves behind stays
     // this process's to find and kill.
     fuxix::process::adopt_orphans().map_err(|e| io("adopting orphans", e))?;
-    let children =
-        fuxix::signal::Pipe::new(&[Signal::Chld]).map_err(|e| io("the signal pipe", e))?;
-    let session = Session {
-        root: spec.root.clone(),
-    };
-    session::check_private(&session.root)?;
-    let (dir, held) = session
-        .workspace(&spec.workspace, true)?
-        .claim(&spec.name)?;
+    // SIGTERM is `kill`: whoever ends a holder politely ends its pane.
+    let children = fuxix::signal::Pipe::new(&[Signal::Chld, Signal::Term])
+        .map_err(|e| io("the signal pipe", e))?;
+    let session = spec.session.clone();
+    // A start given the workspace's directory makes none: a name that
+    // leads nowhere is "removed", not a new workspace.
+    let pinned = spec.workspace_id.is_some();
+    let workspace = (session.workspace(&spec.workspace, !pinned))
+        .map_err(|f| if pinned { removed(&spec.workspace) } else { f })?;
+    if spec
+        .workspace_id
+        .as_ref()
+        .is_some_and(|id| *id != workspace.id())
+    {
+        return Err(removed(&spec.workspace));
+    }
+    let dir = workspace.stage(&id)?;
     let made = (|| {
-        // The recipe, while this holder owns the name: a start that can't
-        // write it fails, and no older start can overwrite a newer one's.
-        if !spec.keep_recipe {
-            let text = crate::recipe::render(&spec.cwd, &spec.env, &spec.argv)?;
-            crate::recipe::write(&spec.root.join(&spec.workspace), &spec.name, &text)?;
-        }
         let in_fifo = fifo(&dir, files::IN)?;
         let ctl_fifo = fifo(&dir, files::CTL)?;
-        let images = dir.join(files::IMAGES);
-        fuxix::file::private_dir(&images).map_err(|e| io(images.display(), e))?;
-        let history = dir.join(files::HISTORY);
-        let mut options = File::options();
-        options.write(true).create_new(true);
-        fuxix::file::private_file(&mut options)
-            .open(&history)
-            .map_err(|e| io(history.display(), e))?;
+        at::make_dir(&dir, files::IMAGES).map_err(|e| io(files::IMAGES, e))?;
+        files::write_new(&dir, files::HISTORY, b"")?;
+        let theirs = dir.try_clone().map_err(|e| io("the pane's directory", e))?;
         let publisher =
-            Publisher::start(dir.clone(), spec.history).map_err(|e| io("the publisher", e))?;
-        let (master, job) = start_program(&spec, size, &id)?;
-        Ok::<_, Failure>((in_fifo, ctl_fifo, publisher, master, job))
+            Publisher::start(theirs, spec.history).map_err(|e| io("the publisher", e))?;
+        let (master, slave) =
+            fuxix::pty::open(size.nonzero().into()).map_err(|e| io("opening a terminal", e))?;
+        Ok::<_, Failure>((in_fifo, ctl_fifo, publisher, master, slave))
     })();
-    let (in_fifo, ctl_fifo, publisher, master, job) = match made {
+    let (in_fifo, ctl_fifo, publisher, master, slave) = match made {
         Ok(made) => made,
         Err(failure) => {
-            if let Ok(_lock) = session.lock() {
-                let _ = session::remove_pane(&dir, &held);
+            // Dead and nameless: taken apart here, else by the next clearing.
+            if let (true, Some((parent, name))) =
+                (session::clear_pane(&dir, true), session::place(&dir))
+            {
+                let _ = at::remove_dir(&parent, &name);
             }
             return Err(failure);
         }
     };
-    Ok(Holder {
+    let holder = Holder {
         session,
         dir,
-        held: Some(held),
-        workspace: spec.workspace,
-        name: spec.name,
-        labels: spec.labels,
+        labels: spec.labels.clone(),
         id,
         version: 1,
         parser,
         master,
-        job: Some(job),
+        job: None,
         children,
         in_fifo,
         ctl_fifo,
@@ -618,7 +487,7 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         quiet: false,
         check_exit: true,
         exit: None,
-        state: "running".to_owned(),
+        state: "starting".to_owned(),
         commands: 0,
         refused: 0,
         errors: VecDeque::new(),
@@ -627,6 +496,8 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         cell: spec.cell,
         pictures: spec.pictures,
         history_end: 0,
+        asked_others: false,
+        history_line: String::new(),
         history: Vec::new(),
         images: Images {
             budget: IMAGE_PIXELS_BURST,
@@ -637,12 +508,18 @@ fn prepare(spec: Spec) -> Result<Holder, Failure> {
         dirty: true,
         published_at: None,
         buffer: vec![0; READ],
-    })
+    };
+    Ok((
+        holder,
+        Start {
+            spec,
+            workspace,
+            slave,
+        },
+    ))
 }
 
-fn start_program(spec: &Spec, size: Size, id: &str) -> Result<(Master, Job), Failure> {
-    let (master, slave) =
-        fuxix::pty::open(size.nonzero().into()).map_err(|e| io("opening a terminal", e))?;
+fn start_program(spec: &Spec, slave: Slave, id: &str) -> Result<Job, Failure> {
     let program = spec
         .argv
         .first()
@@ -651,17 +528,19 @@ fn start_program(spec: &Spec, size: Size, id: &str) -> Result<(Master, Job), Fai
         .spawn(
             &spec.argv,
             |command| {
+                // Where the pane is as it starts: `mv` can change all
+                // three later, and never its id.
                 command
                     .current_dir(&spec.cwd)
                     .env("TERM", "xterm-256color")
                     .env("TERM_PROGRAM", "fux3")
                     .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))
-                    .env("FUX3_DIR", &spec.root)
+                    .env("FUX3_DIR", &spec.session.root)
                     .env("FUX3_WORKSPACE", &spec.workspace)
                     .env("FUX3_PANE", &spec.name)
                     .env(
                         "FUX3_PANE_DIR",
-                        spec.root.join(&spec.workspace).join(&spec.name),
+                        spec.session.root.join(&spec.workspace).join(&spec.name),
                     )
                     .env("FUX3_PANE_ID", id)
                     .envs(spec.env.iter().map(|(k, v)| (k, v)));
@@ -670,7 +549,7 @@ fn start_program(spec: &Spec, size: Size, id: &str) -> Result<(Master, Job), Fai
         )
         .map_err(|e| io(format!("starting {program} in {}", spec.cwd.display()), e))?;
     drop(child);
-    Ok((master, job))
+    Ok(job)
 }
 
 impl Holder {
@@ -678,6 +557,38 @@ impl Holder {
     fn advance(&mut self) {
         self.version = self.version.saturating_add(1);
         self.dirty = true;
+    }
+
+    /// Publishes now and waits until it is on disk, whole.
+    fn publish_whole(&mut self) -> Result<(), Failure> {
+        self.publish(Instant::now());
+        match self.publisher.wait_written(START_PUBLISH) {
+            true => Ok(()),
+            false => Err(Failure::new(
+                "the first files could not be written within 2 s",
+            )),
+        }
+    }
+
+    /// Gives the pane, whole, its name; then starts the program, and once
+    /// the files say it runs, writes the recipe: a start that fails
+    /// leaves the recipe of the last good one.
+    fn begin(&mut self, start: Start) -> Result<(), Failure> {
+        let Start {
+            spec,
+            workspace,
+            slave,
+        } = start;
+        self.publish_whole()?;
+        workspace.name_pane(&self.dir, &spec.name)?;
+        self.job = Some(start_program(&spec, slave, &self.id)?);
+        self.state = "running".to_owned();
+        self.advance();
+        self.publish_whole()?;
+        match &spec.recipe {
+            Some(text) => crate::recipe::write(workspace.held(), &spec.name, text),
+            None => Ok(()),
+        }
     }
 
     fn running(&self) -> bool {
@@ -703,8 +614,13 @@ impl Holder {
             let (master, fifo_in, fifo_ctl, children) = self.wait(&mut poll, timeout);
             let now = Instant::now();
             if children {
+                let mut asked_to_end = false;
                 while let Some(signal) = self.children.next() {
                     self.check_exit |= signal == Signal::Chld;
+                    asked_to_end |= signal == Signal::Term;
+                }
+                if asked_to_end && self.kill() {
+                    return;
                 }
             }
             self.notice_exit(now);
@@ -934,6 +850,12 @@ impl Holder {
             );
         }
         self.input = Input::default();
+        // The start of a line whose rest is still on the screen: a piece.
+        if !self.history_line.is_empty() {
+            let limit = (self.history_cap / 2).min(MAX_RECORD);
+            let (line, out) = (&mut self.history_line, &mut self.history);
+            publish::record(line, out, "", publish::End::Piece, limit);
+        }
         self.advance();
         self.reap_if_alone();
     }
@@ -1045,12 +967,12 @@ impl Holder {
             }
             Command::Send(path) => {
                 self.takes_input()?;
-                let bytes = read_sent(&path)?;
+                let bytes = files::read_own(&path, MAX_SEND)?;
                 self.input.admit(bytes)?;
             }
             Command::Paste(path) => {
                 self.takes_input()?;
-                let bytes = read_sent(&path)?;
+                let bytes = files::read_own(&path, MAX_SEND)?;
                 let text = String::from_utf8(bytes)
                     .map_err(|_| Failure::new(format!("{} is not UTF-8 text", path.display())))?;
                 let mut out = Vec::new();
@@ -1142,23 +1064,24 @@ impl Holder {
         if numbers.end == self.history_end {
             return;
         }
+        let limit = (self.history_cap / 2).min(MAX_RECORD);
         if numbers.start > self.history_end {
             let lost = numbers.start.saturating_sub(self.history_end);
-            let line = format!("[fux3: {lost} lines scrolled off faster than they were kept]\n");
-            self.history.extend_from_slice(line.as_bytes());
+            let line = format!("[fux3: {lost} lines scrolled off faster than they were kept]");
+            let (pending, out) = (&mut self.history_line, &mut self.history);
+            publish::record(pending, out, "", publish::End::Piece, limit);
+            publish::record(pending, out, &line, publish::End::Line, limit);
             self.history_end = numbers.start;
         }
         let skip = usize::try_from(self.history_end.saturating_sub(numbers.start)).unwrap_or(0);
         let count = usize::try_from(numbers.end.saturating_sub(self.history_end)).unwrap_or(0);
         for row in screen.main_rows().skip(skip).take(count) {
             let text = row.text();
-            if row.continues() {
-                self.history.extend_from_slice(text.as_bytes());
-            } else {
-                self.history
-                    .extend_from_slice(text.trim_end_matches(' ').as_bytes());
-                self.history.push(b'\n');
-            }
+            let (text, end) = match row.continues() {
+                true => (text.as_str(), publish::End::No),
+                false => (text.trim_end_matches(' '), publish::End::Line),
+            };
+            publish::record(&mut self.history_line, &mut self.history, text, end, limit);
         }
         self.history_end = numbers.end;
     }
@@ -1199,6 +1122,7 @@ impl Holder {
         }
         let mut placed = Vec::new();
         let mut kept = Vec::new();
+        self.images.waiting = false;
         // Only those with a row on the screen: one scrolled wholly into
         // history shows nothing, and its file goes.
         let shown: Vec<_> = (self.parser.screen().pictures())
@@ -1225,6 +1149,7 @@ impl Holder {
             let Some(name) = name else {
                 // Over the rate: written at a later publish, if still shown.
                 self.dirty = true;
+                self.images.waiting = true;
                 continue;
             };
             kept.push((Arc::clone(picture.picture), name.clone()));
@@ -1251,50 +1176,41 @@ impl Holder {
         let screen = self.parser.screen();
         let size = screen.size();
         let on = |b: bool| if b { "on" } else { "off" };
-        let mut s = String::new();
-        let mut line = |text: String| {
-            s.push_str(&text);
-            s.push('\n');
-        };
-        line(format!("id {}", self.id));
-        line(format!("version {}", self.version));
-        line(format!("workspace {}", self.workspace));
-        line(format!("name {}", self.name));
-        line(format!("size {} {}", size.cols(), size.rows()));
-        line(format!("cell {} {}", self.cell.0, self.cell.1));
-        line(format!("pictures {}", on(self.pictures)));
-        line(format!("state {}", self.state));
-        match &self.job {
-            Some(job) => line(format!("pid {}", job.leader())),
-            None => line("pid none".to_owned()),
-        }
-        line(format!("holder {}", std::process::id()));
-        line(format!("keys {}", key_mode(screen.key_mode())));
-        line(format!(
-            "bracketed-paste {}",
-            on(screen.mode(Mode::BracketedPaste))
-        ));
-        line(format!("newline-mode {}", on(screen.mode(Mode::NewLine))));
-        line(format!(
-            "focus-reports {}",
-            on(screen.mode(Mode::FocusReporting))
-        ));
-        line(format!(
-            "mouse {} {}",
-            format!("{:?}", screen.mouse_protocol_mode()).to_lowercase(),
-            format!("{:?}", screen.mouse_protocol_encoding()).to_lowercase()
-        ));
-        line(format!(
-            "alternate-screen {}",
-            on(screen.mode(Mode::AlternateScreen))
-        ));
-        for (key, value) in &self.labels {
-            line(format!("label {key} {value}"));
-        }
-        line(format!("commands {}", self.commands));
-        line(format!("refused {}", self.refused));
-        line(format!("queued {}", self.input.waiting()));
-        s.into_bytes()
+        let pid =
+            (self.job.as_ref()).map_or_else(|| "none".to_owned(), |job| job.leader().to_string());
+        let lower = |text: String| text.to_lowercase();
+        let mut lines = vec![
+            format!("id {}", self.id),
+            format!("version {}", self.version),
+            format!("size {} {}", size.cols(), size.rows()),
+            format!("cell {} {}", self.cell.0, self.cell.1),
+            format!("pictures {}", on(self.pictures)),
+            format!("state {}", self.state),
+            format!("pid {pid}"),
+            format!("holder {}", std::process::id()),
+            format!("keys {}", key_mode(screen.key_mode())),
+            format!("bracketed-paste {}", on(screen.mode(Mode::BracketedPaste))),
+            format!("newline-mode {}", on(screen.mode(Mode::NewLine))),
+            format!("focus-reports {}", on(screen.mode(Mode::FocusReporting))),
+            format!(
+                "mouse {} {}",
+                lower(format!("{:?}", screen.mouse_protocol_mode())),
+                lower(format!("{:?}", screen.mouse_protocol_encoding()))
+            ),
+            format!(
+                "alternate-screen {}",
+                on(screen.mode(Mode::AlternateScreen))
+            ),
+        ];
+        lines.extend(
+            self.labels
+                .iter()
+                .map(|(key, value)| format!("label {key} {value}")),
+        );
+        lines.push(format!("commands {}", self.commands));
+        lines.push(format!("refused {}", self.refused));
+        lines.push(format!("queued {}\n", self.input.waiting()));
+        lines.join("\n").into_bytes()
     }
 
     /// Whether the program's end has settled.
@@ -1305,7 +1221,9 @@ impl Holder {
     /// The `exit` file's line, with every publish once the end has settled,
     /// until the publisher says it is on disk.
     fn exit_line(&self) -> Option<Vec<u8>> {
-        (self.ended() && !self.publisher.exit_done())
+        // Not while a picture waits to be listed: the screen with it is
+        // the last one, and `exit` comes after the last.
+        (self.ended() && !self.images.waiting && !self.publisher.exit_done())
             .then(|| format!("state {}\n", self.state).into_bytes())
     }
 
@@ -1378,6 +1296,27 @@ impl Holder {
             drop(fuxix::pty::hang_up(&self.master, job));
             self.gone_by(after(Instant::now(), HANGUP_GRACE));
         }
+        // What left the session, a pane started inside this one among it,
+        // is asked to end too: a holder's SIGTERM is its `kill`, so an
+        // inner pane takes itself apart, in a bounded time.
+        #[cfg(target_os = "linux")]
+        if let Some(leader) = self.job.as_ref().map(Job::leader) {
+            let others = || {
+                fuxix::process::tree()
+                    .pids
+                    .into_iter()
+                    .filter(move |pid| *pid != leader)
+            };
+            self.asked_others |= self.outside(&others().collect::<Vec<_>>());
+            let asked = others()
+                .filter(|pid| fuxix::process::kill(*pid, Signal::Term).is_ok())
+                .count();
+            let until = after(Instant::now(), TERM_GRACE);
+            while asked > 0 && Instant::now() < until && others().next().is_some() {
+                fuxix::process::reap_orphans(|pid| pid == leader);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
         if let Some(job) = &self.job {
             let sent = job.kill(Reach::Session);
             let leader = job.leader();
@@ -1404,6 +1343,8 @@ impl Holder {
                     tree.scan
                 ));
             }
+            // One that came since (a pane started inside a moment ago).
+            self.asked_others |= self.outside(&tree.pids);
             for pid in tree.pids {
                 let _ = fuxix::process::kill(pid, Signal::Kill);
             }
@@ -1426,15 +1367,10 @@ impl Holder {
         // What is kept for a second kill is not reaped as an orphan.
         let kept = self.job.as_ref().map(Job::leader);
         fuxix::process::reap_orphans(|pid| Some(pid) == kept);
-        if missed.is_empty()
-            && let Some(held) = self.held.take()
-        {
-            match self.remove(&held) {
+        if missed.is_empty() {
+            match self.remove() {
                 Ok(()) => return true,
-                Err(failure) => {
-                    missed.push(failure.0);
-                    self.held = Some(held);
-                }
+                Err(failure) => missed.push(failure.0),
             }
         }
         self.state = format!("kill-incomplete {}", missed.join("; "));
@@ -1446,19 +1382,42 @@ impl Holder {
         false
     }
 
-    /// Removes the pane's directory, once everything handed to the
-    /// publisher is written.
-    fn remove(&mut self, held: &File) -> Result<(), Failure> {
-        // The lock first: a kill that can't remove the directory still has
-        // its publisher, to say so in `status` and `errors`.
-        let _lock = self.session.lock()?;
+    /// Whether any of `pids` has left the program's session: a pane
+    /// started inside this one is such a process, an ordinary child none.
+    #[cfg(target_os = "linux")]
+    fn outside(&self, pids: &[fuxix::process::Pid]) -> bool {
+        let Some(job) = &self.job else {
+            return false;
+        };
+        let (leader, inside) = (job.leader(), job.members().pids);
+        (pids.iter()).any(|pid| *pid != leader && !inside.contains(pid))
+    }
+
+    /// Takes the pane apart. Under the session's lock only its name goes,
+    /// by one rename, so the name is free at once and nothing waits on a
+    /// disk under the lock; then the publisher writes what it has and
+    /// stops, and the directory is emptied and removed. A holder that
+    /// dies in between leaves a nameless directory the next clearing
+    /// takes. A rename refused leaves the pane whole, to say so.
+    fn remove(&mut self) -> Result<(), Failure> {
+        let listed = {
+            let lock = self.session.lock()?;
+            session::unname(&self.dir, &self.id, &lock)?
+        };
         self.publisher.stop();
-        let removed = session::remove_pane(&self.dir, held);
-        if removed.is_err() {
-            self.publisher = Publisher::start(self.dir.clone(), self.history_cap)
-                .map_err(|e| io("the publisher", e))?;
+        // Listed nowhere, or where it is listed could not be asked: left as
+        // it is, marker and all, for a clearing that finds it.
+        if let Some((parent, name)) = listed
+            && session::clear_pane(&self.dir, true)
+        {
+            let _ = at::remove_dir(&parent, &name);
         }
-        removed
+        // What this kill ended outright (a holder inside it that would
+        // not end itself) is dead now: its directory goes with this one.
+        if std::mem::take(&mut self.asked_others) {
+            let _ = self.session.live();
+        }
+        Ok(())
     }
 
     /// How many of the job's other processes outlast `deadline`, if any do.
@@ -1564,47 +1523,6 @@ pub fn parse_key_mode(text: &str) -> Option<fux_vt::keys::encode::KeyMode> {
         }),
         _ => None,
     }
-}
-
-/// Reads a file `send` names: a regular file of this user's, not a link,
-/// a device or a FIFO, its size checked before it is read, read with a
-/// bound.
-fn read_sent(path: &Path) -> Result<Vec<u8>, Failure> {
-    use std::io::Read;
-    use std::os::unix::fs::MetadataExt;
-    let shown = path.display();
-    let file = File::options()
-        .read(true)
-        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK | fuxix::file::NOCTTY)
-        .open(path)
-        .map_err(|e| io(&shown, e))?;
-    let meta = file.metadata().map_err(|e| io(&shown, e))?;
-    if !meta.is_file() {
-        return Err(Failure::new(format!("{shown} is not a regular file")));
-    }
-    if meta.uid() != fuxix::process::geteuid() {
-        return Err(Failure::new(format!(
-            "{shown} belongs to uid {}",
-            meta.uid()
-        )));
-    }
-    let len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
-    if len > MAX_SEND {
-        return Err(Failure::new(format!(
-            "{shown} is {len} bytes, at most {MAX_SEND}"
-        )));
-    }
-    let mut bytes = Vec::with_capacity(len);
-    let limit = u64::try_from(MAX_SEND)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    file.take(limit)
-        .read_to_end(&mut bytes)
-        .map_err(|e| io(&shown, e))?;
-    if bytes.len() > MAX_SEND {
-        return Err(Failure::new(format!("{shown} grew past {MAX_SEND} bytes")));
-    }
-    Ok(bytes)
 }
 
 #[cfg(test)]

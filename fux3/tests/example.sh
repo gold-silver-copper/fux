@@ -2,7 +2,7 @@
 # The README's example, run for real with sh, printf, echo, cat and ls: what
 # CI does on Linux and macOS. Run from the repository's root after building
 # fux3 (FUX3_BIN may name the directory holding it).
-set -euo pipefail
+set -Eeuo pipefail
 PATH="${FUX3_BIN:-$PWD/target/debug}:$PATH"
 export FUX3_DIR
 FUX3_DIR=$(mktemp -d)
@@ -11,12 +11,24 @@ W=$(mktemp -d)
 V=$(mktemp -d)
 chmod 700 "$V"
 cleanup() {
-    for pane in $(fux3 ls 2>/dev/null); do echo kill > "$FUX3_DIR/$pane/ctl" || true; done
-    for pane in $(FUX3_DIR=$V fux3 ls 2>/dev/null); do echo kill > "$V/$pane/ctl" || true; done
+    for c in "$FUX3_DIR"/*/*/ctl "$V"/*/*/ctl; do [ -p "$c" ] && echo kill 1<>"$c"; done
     sleep 1
     rm -rf "$FUX3_DIR" "$W" "$V"
 }
 trap cleanup EXIT
+# Says where it stopped, and what was there: CI shows nothing else.
+failed() {
+    echo "example.sh: failed at line $1" >&2
+    for d in "$FUX3_DIR" "$V"; do
+        ls -la "$d" "$d"/* >&2 || true
+        for f in "$d"/*/*/status "$d"/*/*/errors "$d"/*/.view/layout; do
+            [ -e "$f" ] && { echo "== $f" >&2; cat "$f" >&2; }
+        done
+    done
+    [ -e "$V/main/viewer/screen" ] && cat "$V/main/viewer/screen" >&2
+    true
+}
+trap 'failed $LINENO' ERR
 # Waits up to five seconds for a command to succeed; until_long, twenty
 # (the viewer loads its grift first; a debug build on a slow runner).
 until_ok() {
@@ -64,10 +76,12 @@ until_ok test -s "$W/count"
 [ "$(ls "$D/main")" = build ]
 
 # The viewer, run in a pane of a session of its own (it needs a terminal),
-# and the layout driven with a plain file while it runs.
+# and a layout command made from outside while it runs: an edit of the
+# layout file, which the viewer shows and fits within its next looks.
 FUX3_DIR=$V fux3 start viewer --size 100x30 -- env FUX3_DIR="$D" fux3 view >/dev/null
-until_long test -p "$D/main/.view/ctl"
-echo "split build right" > "$D/main/.view/ctl"
+printf 'echo viewer-$((1+1))\n' > "$D/main/build/in"
+until_long grep -qs 'viewer-2' "$V/main/viewer/screen"
+fux3 view main --do "split build right" >/dev/null
 until_long grep -qs 'pane shell-1@' "$D/main/.view/layout"
 until_long test -d "$D/main/shell-1"
 # The split fitted build to its half of the viewer, once; the viewer's own
@@ -95,7 +109,34 @@ until_ok grep -q '^in: 8 bytes dropped in all' "$D/main/short/errors"
 echo kill > "$D/main/short/ctl"
 until_ok test ! -e "$D/main/short"
 
-echo kill > "$D/main/build/ctl"
-until_ok test ! -e "$D/main/build"
+# The live pane, moved to another workspace and renamed with mkdir and mv:
+# still the same pane, typed into and read where it is now.
+ID=$(cat "$D/main/build/id")
+mkdir "$D/rig" && mv "$D/main/build" "$D/rig/server"
+printf 'echo moved-$((40+2))\n' > "$D/rig/server/in"
+# (This pane's echo is off since the send above: a shell without its own line
+# editor then prints the answer on its prompt's line.)
+until_ok grep -q moved-42 "$D/rig/server/screen"
+[ "$(cat "$D/rig/server/id")" = "$ID" ]
+[ "$(fux3 ls)" = rig/server ]
+# A layout command with no viewer running is an edit of the layout file.
+fux3 view rig --do 'tab new logs' >/dev/null
+grep -q 'logs' "$D/rig/.view/layout"
+# A pane started inside a pane: on Linux the outer kill ends it too and its
+# folder goes with it, with no further command. macOS has no subreaper, so
+# there the inner pane lives on and is ended through its own ctl.
+fux3 start outer -- sh -c 'fux3 start inner -- sh; exec sh' >/dev/null
+until_ok test -e "$D/main/inner/screen"
+echo kill > "$D/main/outer/ctl"
+until_ok test ! -e "$D/main/outer"
+if [ "$(uname)" = Linux ]; then
+    until_ok test ! -e "$D/main/inner"
+else
+    [ "$(fux3 ls | sort | tr '\n' ' ')" = "main/inner rig/server " ]
+fi
+# Killing every pane left never hangs after the kills above.
+for c in "$D"/*/*/ctl; do echo kill > "$c"; done
+none_left() { [ -z "$(ls "$D/main")$(ls "$D/rig")" ]; }
+until_ok none_left
 [ -z "$(fux3 ls)" ]
 echo "the example ran"

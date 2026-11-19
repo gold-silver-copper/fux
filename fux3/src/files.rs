@@ -24,6 +24,22 @@ pub const EXIT: &str = "exit";
 /// One file per picture shown.
 pub const IMAGES: &str = "images";
 
+/// Every file a holder makes in its pane's directory by these names.
+pub const MADE: [&str; 9] = [
+    IN,
+    CTL,
+    SCREEN,
+    STYLED,
+    STATUS,
+    HISTORY,
+    HISTORY_OLDER,
+    ERRORS,
+    EXIT,
+];
+
+/// Those of them replaced whole, each written first as `.NAME.new`.
+pub const REPLACED: [&str; 5] = [SCREEN, STYLED, STATUS, ERRORS, EXIT];
+
 /// The most columns and rows a pane may have.
 pub const MAX_COLS: u16 = 500;
 pub const MAX_ROWS: u16 = 200;
@@ -224,30 +240,75 @@ pub fn status_value<'a>(status: &'a [(String, String)], key: &str) -> Option<&'a
 /// Reads a regular file of at most `most` bytes, never through a link, a
 /// FIFO or a device: what a client reads a pane's files with.
 pub fn read_small(path: &std::path::Path, most: usize) -> Result<Vec<u8>, Failure> {
-    use std::io::Read;
+    read_whole(open(path), path.display(), most, false)
+}
+
+/// As [`read_small`], and only a file of this user's: what `send` reads.
+pub fn read_own(path: &std::path::Path, most: usize) -> Result<Vec<u8>, Failure> {
+    read_whole(open(path), path.display(), most, true)
+}
+
+/// As [`read_small`], the file `name` in the directory held open as `dir`.
+pub fn read_at(dir: &std::fs::File, name: &str, most: usize) -> Result<Vec<u8>, Failure> {
+    use fuxix::file::at;
+    let file = at::open(dir, name, at::READ | fuxix::file::NONBLOCK);
+    read_whole(file, name, most, false)
+}
+
+/// Opens to read without following a link, waiting on a FIFO, or taking a
+/// terminal as this process's own.
+fn open(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::File::options()
+    let flags = fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK | fuxix::file::NOCTTY;
+    std::fs::File::options()
         .read(true)
-        .custom_flags(fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK)
+        .custom_flags(flags)
         .open(path)
-        .map_err(|e| crate::io(path.display(), e))?;
-    let meta = file.metadata().map_err(|e| crate::io(path.display(), e))?;
+}
+
+fn read_whole(
+    file: std::io::Result<std::fs::File>,
+    shown: impl std::fmt::Display,
+    most: usize,
+    own: bool,
+) -> Result<Vec<u8>, Failure> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let file = file.map_err(|e| crate::io(&shown, e))?;
+    let meta = file.metadata().map_err(|e| crate::io(&shown, e))?;
     if !meta.is_file() {
+        return Err(Failure::new(format!("{shown} is not a regular file")));
+    }
+    if own && meta.uid() != fuxix::process::geteuid() {
         return Err(Failure::new(format!(
-            "{} is not a regular file",
-            path.display()
+            "{shown} belongs to uid {}",
+            meta.uid()
         )));
     }
-    let mut bytes = Vec::new();
+    // The size is asked first, so a huge file is refused unread; the read
+    // is bounded too, as a file can grow.
+    let over = || Failure::new(format!("{shown} is over {most} bytes"));
     let limit = u64::try_from(most).unwrap_or(u64::MAX).saturating_add(1);
+    if meta.len() >= limit {
+        return Err(over());
+    }
+    let mut bytes = Vec::new();
     file.take(limit)
         .read_to_end(&mut bytes)
-        .map_err(|e| crate::io(path.display(), e))?;
-    if bytes.len() > most {
-        let why = format!("{} is over {most} bytes", path.display());
-        return Err(Failure::new(why));
+        .map_err(|e| crate::io(&shown, e))?;
+    match bytes.len() > most {
+        true => Err(over()),
+        false => Ok(bytes),
     }
-    Ok(bytes)
+}
+
+/// Makes the file `name` in `dir`, which must not be there, holding `bytes`.
+pub fn write_new(dir: &std::fs::File, name: &str, bytes: &[u8]) -> Result<(), Failure> {
+    use fuxix::file::at;
+    use std::io::Write;
+    at::open(dir, name, at::WRITE | at::NEW)
+        .and_then(|mut file| file.write_all(bytes))
+        .map_err(|e| crate::io(format!("writing {name}"), e))
 }
 
 #[cfg(test)]

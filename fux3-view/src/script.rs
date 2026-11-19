@@ -2,7 +2,7 @@
 //! viewer's own: a binding that loops or waits holds only this thread, the
 //! viewer stops it when its time is up, and it can detach at any moment.
 //! What a binding does to a pane it does through the pane's files; to the
-//! layout, through the one layout command grammar `.view/ctl` takes.
+//! layout, through the layout command grammar `--do` takes.
 //!
 //! The words here are the primitives. The commands (split, move, zoom,
 //! pickers, prompts) are grift in `library.grift`, and the keys are grift in
@@ -11,10 +11,11 @@
 use crate::keys::{Action, Binding, Group};
 use crate::layout::{Dir, Layout, Rect};
 use crate::panel::{Ask, List, Panel, Row};
-use fux3::session::{Session, Workspace};
+use fux3::session::Workspace;
 use fuxix::poll::Poke;
 use grift::{Answer, Error, Grift, HostCall, HostFunction, Interrupter, Kept, Value};
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +31,9 @@ pub const CONFIG_TIME: Duration = Duration::from_secs(2);
 pub const BINDING_TIME: Duration = Duration::from_secs(5);
 /// The most text a binding run copies out of the language, over all its words.
 const MAX_COPIED: usize = 16 << 20;
+/// The most panes whose going a callback waits for, and the most
+/// workspaces held at once.
+const MAX_WATCHED: usize = 64;
 /// The most keys in one chord.
 const MAX_CHORD_KEYS: usize = 4;
 
@@ -72,6 +76,13 @@ pub enum ToViewer {
     Panel(Panel),
     /// The layout changed: read it now.
     Reread,
+    /// This viewer's close of the workspace whose directory has this id
+    /// (`Workspace::id`) has begun, or (true) has removed it. One that
+    /// failed says `Reread` instead.
+    Closing(String, bool),
+    /// Run `Job::Gone` for this pane (`NAME`, or one life `NAME@ID`) once
+    /// it is gone from the workspace shown.
+    Watch(String),
     /// Resize these panes to their tiles (the layout was just read again).
     Fit(Vec<String>),
     /// A line for the bar's corner.
@@ -88,13 +99,14 @@ pub enum ToViewer {
 }
 
 /// What the viewer shows, as a run sees it.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Context {
     /// The pane focused, as `NAME@ID` (`NAME@`: a bare tile with no pane).
     pub focus: Option<String>,
     pub tab: Option<u32>,
-    /// The workspace shown, by name: every word acts on it.
-    pub workspace: String,
+    /// The workspace shown, its directory held: every word acts on that
+    /// directory, whatever has its name later.
+    pub workspace: Workspace,
     /// The room tiles share, as `COLSxROWS`.
     pub area: Rect,
     pub layout: Arc<Layout>,
@@ -115,8 +127,8 @@ pub enum Job {
     },
     /// Callback `id` is no longer wanted.
     Drop(u64),
-    /// The function the configuration names `name`, with string arguments.
-    Call { name: String, args: Vec<String> },
+    /// The pane `when-gone` named is gone: its callback, once.
+    Gone(String),
 }
 
 pub struct Run {
@@ -139,7 +151,6 @@ struct Host {
     context: Context,
     cancel: Arc<AtomicBool>,
     fux3: PathBuf,
-    session: Session,
     /// Bytes copied out of the language in this run.
     copied: usize,
     /// Chords bound to viewer actions or groups, which count too.
@@ -152,6 +163,10 @@ struct Host {
     /// what each of its keys calls.
     callback: Option<(u64, Vec<Kept>)>,
     next_callback: u64,
+    /// The workspaces `hold-workspace` was asked for, newest last.
+    held: Vec<Workspace>,
+    /// What `when-gone` calls, by pane.
+    gone: HashMap<String, Kept>,
 }
 
 impl Host {
@@ -220,10 +235,6 @@ fn gone(g: &mut HostCall<'_, Host>, pane: &str) -> Error {
     }
 }
 
-fn missing(dir: &std::path::Path) -> bool {
-    matches!(std::fs::symlink_metadata(dir), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-}
-
 /// What a word that failed says, unless the run was stopped.
 fn refused(g: &mut HostCall<'_, Host>, host: &Host, failure: &fux3::Failure) -> Error {
     match host.cancel.load(Ordering::Relaxed) {
@@ -232,30 +243,15 @@ fn refused(g: &mut HostCall<'_, Host>, host: &Host, failure: &fux3::Failure) -> 
     }
 }
 
-/// The workspace named `name`, refused if it is gone.
-fn workspace_of(g: &mut HostCall<'_, Host>, host: &Host, name: &str) -> Result<Workspace, Error> {
-    (host.session.workspace(name, false)).map_err(|f| failed(g, &f.0))
-}
-
-/// The workspace shown.
-fn shown(g: &mut HostCall<'_, Host>, host: &Host) -> Result<Workspace, Error> {
-    workspace_of(g, host, &host.context.workspace)
-}
-
-/// The directory of the pane `NAME` or `NAME@ID` names in the workspace
-/// shown, refused (`pane-gone`) if that life of it is over.
-fn pane_dir(g: &mut HostCall<'_, Host>, host: &Host, pane: &str) -> Result<PathBuf, Error> {
+/// The directory, held open, of the pane `NAME` or `NAME@ID` names in the
+/// workspace shown, refused (`pane-gone`) if that life of it is over.
+fn pane_dir(g: &mut HostCall<'_, Host>, host: &Host, pane: &str) -> Result<File, Error> {
     let target = crate::layout::Target::parse(pane).map_err(|f| failed(g, &f.0))?;
-    let dir = shown(g, host)?.pane_dir(&target.name);
-    if missing(&dir) {
+    let Ok(dir) = host.context.workspace.pane(&target.name) else {
         return Err(gone(g, pane));
-    }
+    };
     if let Some(id) = &target.id {
-        let status = match crate::panes::read_status(&dir) {
-            Ok(status) => status,
-            Err(_) if missing(&dir) => return Err(gone(g, pane)),
-            Err(failure) => return Err(failed(g, &failure.0)),
-        };
+        let status = crate::panes::read_status(&dir).unwrap_or_default();
         if fux3::files::status_value(&status, "id") != Some(id.as_str()) {
             return Err(gone(g, pane));
         }
@@ -327,10 +323,6 @@ fn inert() -> Result<Answer, Error> {
     Ok(Answer::Now(Value::Inert))
 }
 
-fn text_answer(g: &mut HostCall<'_, Host>, text: &str) -> Result<Answer, Error> {
-    g.string(text.trim_end()).map(Answer::Now)
-}
-
 /// A list of strings.
 fn strings(g: &mut HostCall<'_, Host>, items: &[String]) -> Result<Value, Error> {
     let mut values = Vec::with_capacity(items.len());
@@ -395,17 +387,41 @@ fn keep_callbacks(
             }
         }
     }
-    release_callbacks(g, host);
+    for old in (host.callback.take().into_iter()).flat_map(|(_, old)| old) {
+        let _ = g.release(old);
+    }
     host.next_callback = host.next_callback.saturating_add(1);
     host.callback = Some((host.next_callback, kept));
     Ok(host.next_callback)
 }
 
-fn release_callbacks(g: &mut HostCall<'_, Host>, host: &mut Host) {
-    if let Some((_, old)) = host.callback.take() {
-        for one in old {
-            let _ = g.release(one);
-        }
+/// `start-new PREFIX [PROGRAM…]`: a pane named `PREFIX-N`, the first N
+/// free; `start-once` the same with no recipe written, for a pane nobody
+/// starts again.
+fn start_new(
+    g: &mut HostCall<'_, Host>,
+    host: &mut Host,
+    args: &[Value],
+    recipe: bool,
+) -> Result<Answer, Error> {
+    let Some((prefix, rest)) = args.split_first() else {
+        return Err(g.arity_error(args));
+    };
+    let prefix = string_arg(g, host, *prefix)?;
+    let words = program(g, host, rest)?;
+    // `WORKSPACE/PREFIX` starts it in that workspace, made if missing.
+    let (workspace, prefix) = match prefix.split_once('/') {
+        Some((space, prefix)) => (
+            host.context.workspace.session.workspace(space, true),
+            prefix,
+        ),
+        None => (Ok(host.context.workspace.clone()), &*prefix),
+    };
+    let workspace = workspace.map_err(|f| failed(g, &f.0))?;
+    let program = (&*words, recipe);
+    match crate::command::start_new(&host.fux3, &workspace, prefix, program, &host.cancel) {
+        Ok(pane) => g.string(&pane.to_string()).map(Answer::Now),
+        Err(failure) => Err(refused(g, host, &failure)),
     }
 }
 
@@ -503,12 +519,13 @@ const WORDS: &[(&str, Word)] = &[
     }),
     ("shown-workspace", |g, host, args| {
         let [] = *g.exactly(args)?;
-        let name = host.context.workspace.clone();
+        let name = host.context.workspace.name.clone();
         g.string(&name).map(Answer::Now)
     }),
     ("workspaces", |g, host, args| {
         let [] = *g.exactly(args)?;
-        let names = host.session.workspaces().map_err(|f| failed(g, &f.0))?;
+        let session = &host.context.workspace.session;
+        let names = session.workspaces().map_err(|f| failed(g, &f.0))?;
         strings(g, &names).map(Answer::Now)
     }),
     ("tabs", |g, host, args| {
@@ -620,12 +637,11 @@ const WORDS: &[(&str, Word)] = &[
         let [line] = *g.exactly(args)?;
         let line = string_arg(g, host, line)?;
         let area = host.context.area;
-        let workspace = shown(g, host)?;
-        let outcome = crate::command::run_line(&workspace, &line, area, &host.cancel);
+        let outcome = crate::command::run_line(&host.context.workspace, &line, area, &host.cancel);
         // Whatever happened, the layout is read again now.
         host.tell(ToViewer::Reread);
         match outcome {
-            Ok(edited) => text_answer(g, &edited.to_string()),
+            Ok(edited) => g.string(edited.to_string().trim_end()).map(Answer::Now),
             Err(failure) => Err(refused(g, host, &failure)),
         }
     }),
@@ -670,37 +686,66 @@ const WORDS: &[(&str, Word)] = &[
         host.tell(ToViewer::Focus(pane));
         inert()
     }),
+    ("when-gone", |g, host, args| {
+        let [pane, function] = *g.exactly(args)?;
+        let pane = string_arg(g, host, pane)?;
+        let pane = crate::layout::Target::parse(&pane).map_err(|f| failed(g, &f.0))?;
+        let pane = pane.to_string();
+        if host.gone.len() >= MAX_WATCHED && !host.gone.contains_key(&pane) {
+            return Err(failed(g, &format!("more than {MAX_WATCHED} panes watched")));
+        }
+        let kept = g.keep(function)?;
+        if let Some(old) = host.gone.insert(pane.clone(), kept) {
+            let _ = g.release(old);
+        }
+        host.tell(ToViewer::Watch(pane));
+        inert()
+    }),
     ("workspace-dir", |g, host, args| {
         let [] = *g.exactly(args)?;
-        let path = shown(g, host)?.dir.to_string_lossy().into_owned();
+        let now = crate::command::named(&host.context.workspace).map_err(|f| failed(g, &f.0))?;
+        let path = now.dir.to_string_lossy().into_owned();
         g.string(&path).map(Answer::Now)
     }),
-    ("start-new", |g, host, args| {
-        let Some((prefix, rest)) = args.split_first() else {
-            return Err(g.arity_error(args));
-        };
-        let prefix = string_arg(g, host, *prefix)?;
-        let words = program(g, host, rest)?;
-        // `WORKSPACE/PREFIX` starts it in that workspace, made if missing.
-        let (workspace, prefix) = match prefix.split_once('/') {
-            Some((space, prefix)) => (host.session.workspace(space, true), prefix),
-            None => (
-                host.session.workspace(&host.context.workspace, false),
-                &*prefix,
-            ),
-        };
-        let workspace = workspace.map_err(|f| failed(g, &f.0))?;
-        match crate::command::start_new(&host.fux3, &workspace, prefix, &words, &host.cancel) {
-            Ok(pane) => g.string(&pane.to_string()).map(Answer::Now),
-            Err(failure) => Err(refused(g, host, &failure)),
-        }
+    ("start-new", |g, host, args| start_new(g, host, args, true)),
+    ("start-once", |g, host, args| {
+        start_new(g, host, args, false)
     }),
-    ("close-workspace", |g, host, args| {
+    ("hold-workspace", |g, host, args| {
         let [name] = *g.exactly(args)?;
         let name = string_arg(g, host, name)?;
-        let workspace = workspace_of(g, host, &name)?;
+        // The one shown is held already; another is opened now, once.
+        let shown = &host.context.workspace;
+        let workspace = match shown.name == name {
+            true => shown.clone(),
+            false => (shown.session.workspace(&name, false)).map_err(|f| failed(g, &f.0))?,
+        };
+        let id = workspace.id();
+        // The newest last; past the bound the oldest is let go.
+        host.held.retain(|w| w.id() != id);
+        host.held.push(workspace);
+        let extra = host.held.len().saturating_sub(MAX_WATCHED);
+        host.held = std::mem::take(&mut host.held)
+            .into_iter()
+            .skip(extra)
+            .collect();
+        g.string(&id).map(Answer::Now)
+    }),
+    ("close-workspace", |g, host, args| {
+        let [held] = *g.exactly(args)?;
+        let held = string_arg(g, host, held)?;
+        // Only a directory held is closed: a name is never opened here, as
+        // another workspace may have it by now.
+        let Some(workspace) = host.held.iter().find(|w| w.id() == held).cloned() else {
+            let why = format!("{held:?} is no workspace held: (hold-workspace NAME) gives one");
+            return Err(failed(g, &why));
+        };
+        host.tell(ToViewer::Closing(held.clone(), false));
         let outcome = crate::command::close_workspace(&workspace, &host.cancel);
-        host.tell(ToViewer::Reread);
+        host.tell(match outcome {
+            Ok(()) => ToViewer::Closing(held, true),
+            Err(_) => ToViewer::Reread,
+        });
         match outcome {
             Ok(()) => inert(),
             Err(failure) => Err(refused(g, host, &failure)),
@@ -721,7 +766,7 @@ const WORDS: &[(&str, Word)] = &[
         let dir = pane_dir(g, host, &pane)?;
         match crate::panes::ctl_line(&dir, &line) {
             Ok(()) => inert(),
-            Err(_) if missing(&dir) => Err(gone(g, &pane)),
+            Err(_) if fux3::session::place(&dir).is_none() => Err(gone(g, &pane)),
             Err(failure) => Err(failed(g, &failure.0)),
         }
     }),
@@ -733,16 +778,6 @@ fn describe(g: &Grift<Host>, error: &Error) -> String {
         Ok(_) => text.as_str().replace('\n', " "),
         Err(_) => "the program failed".to_owned(),
     }
-}
-
-/// What a primitive said in an error grift describes as
-/// `fux3-error "WHY" in …` (or `pane-gone …`), else the description whole.
-fn said(described: &str) -> String {
-    let quoted = (described.strip_prefix("fux3-error \""))
-        .or_else(|| described.strip_prefix("pane-gone \""))
-        .and_then(|rest| rest.split_once("\" in "))
-        .map(|(why, _)| why.replace("\\\"", "\""));
-    quoted.unwrap_or_else(|| described.to_owned())
 }
 
 fn prepare() -> Result<Grift<Host>, String> {
@@ -824,16 +859,13 @@ fn function_of(
             }
             Ok(None)
         }
-        Job::Call { name, args } => {
-            let symbol = g.symbol(&name).map_err(|e| describe(g, &e))?;
-            let top = g.top_level();
-            let function = g.lookup(&top, &symbol).map_err(|e| describe(g, &e))?;
-            let function = function.ok_or_else(|| format!("nothing is called {name}"))?;
-            let mut values = Vec::with_capacity(args.len());
-            for arg in args {
-                values.push(g.string(&arg).map_err(|e| describe(g, &e))?);
-            }
-            Ok(Some((function, values)))
+        Job::Gone(pane) => {
+            let Some(function) = host.gone.remove(&pane) else {
+                return Ok(None);
+            };
+            let called = kept(g, &function);
+            let _ = g.release(function);
+            Ok(Some((called?, Vec::new())))
         }
     }
 }
@@ -864,11 +896,9 @@ fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
         let (function, args) = function;
         let outcome = g.call(&mut host, &function, &args).err();
         // A run with no label (an answer from a list or prompt) says its
-        // error alone, as fux does; a `.view/ctl` line's refusal is what a
-        // primitive said, if one did, for `.view/errors`.
+        // error alone, as fux does.
         let why = outcome.map(|e| match run.label.as_str() {
             "" => describe(&g, &e),
-            label if label.starts_with("ctl: ") => said(&describe(&g, &e)),
             label => format!("{label}: {}", describe(&g, &e)),
         });
         host.tell(ToViewer::Done(why));
@@ -897,7 +927,7 @@ pub fn load_config() -> Result<Option<String>, String> {
 pub fn start(
     config: Option<String>,
     fux3: PathBuf,
-    session: Session,
+    workspace: Workspace,
     out: SyncSender<ToViewer>,
     poke: Poke,
 ) -> std::io::Result<Script> {
@@ -907,16 +937,24 @@ pub fn start(
         out,
         poke,
         kept: HashMap::new(),
-        context: Context::default(),
+        context: Context {
+            focus: None,
+            tab: None,
+            workspace: workspace.clone(),
+            area: Rect::default(),
+            layout: Arc::default(),
+            keys: Arc::default(),
+        },
         copied: 0,
         others: std::collections::HashSet::new(),
         generations: HashMap::new(),
         next_generation: 0,
         callback: None,
         next_callback: 0,
+        held: Vec::new(),
+        gone: HashMap::new(),
         cancel: Arc::clone(&cancel),
         fux3,
-        session,
     };
     std::thread::Builder::new()
         .name("fux3-grift".to_owned())

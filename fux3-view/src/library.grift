@@ -22,10 +22,6 @@
 (define! made (lambda! (text) (line-of "made" text)))
 (define! started (lambda! (text) (line-of "started" text)))
 
-;; What a line written to a workspace's .view/ctl does: drop the fit
-;; (`arrange` instead of `edit!`) to leave pane sizes alone.
-(define! layout-command (lambda! (line) (edit! line)))
-
 ;; A pane's name, without the `@ID` of its life.
 (define! name-of (lambda! (pane) (first (string-split pane "@"))))
 
@@ -45,28 +41,66 @@
 (define! split-new (lambda! (dir)
   (focus (started (edit! (join "split " (focused) " " dir))))))
 
-;; The focused pane's history in a pager, below it: $PAGER, else less at
-;; the end. When the pager ends, the pane closes its tile (a line to its
-;; workspace's .view/ctl, opened read-write so that it never waits),
-;; removes its recipe (a template never starts a pager) and ends itself.
+;; Takes a pane's tile away, if a tile still has its name, with `change`:
+;; `edit!` to fit the panes that get its room, `arrange` to fit none.
+(define! close-tile (lambda! (pane change)
+  (if! (empty-list? (filter (lambda! (row) (equal? (name-of (first row)) (name-of pane))) (panes)))
+    #inert
+    (change (join "close " pane)))))
+
+;; The focused pane's history and then its screen (as it is when the key
+;; is pressed, without trailing blank rows), as one text in a private file
+;; (in a directory of its own in the session's, so what an editor writes
+;; beside it goes with it), opened at its end in a pane below: $EDITOR, else
+;; $PAGER, else less. The text is a copy: editing it changes nothing in the
+;; pane.
+;; The script enters the pane's directory and checks its id there (the
+;; directory entered is the one read, whatever it is called by then), then
+;; reads the screen, and `history.1` and `history` (opened in the other
+;; order, before either is read): no line is in neither, and one that
+;; scrolled off, or a generation rotated, meanwhile is there twice. With
+;; no `history` (a rotation in progress) `history.1` is still read.
+;; The copy's pane writes no recipe (`start-once`): a template never
+;; starts one, and a recipe saved under its name is left alone. When the
+;; editor ends the pane removes the file, enters its own directory the
+;; same way and ends itself; this viewer then closes its tile. Opening and
+;; closing the copy resize only its own pane: the pane copied keeps its
+;; size (its tile clips it meanwhile), so its screen is what it was when
+;; the key was pressed.
 (define! history-script
-  "if [ -e \"$1.1\" ]; then cat \"$1.1\" \"$1\" | ${PAGER:-less +G}; else ${PAGER:-less +G} \"$1\"; fi; exec 3<>\"$FUX3_DIR/$FUX3_WORKSPACE/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; rm -f \"$FUX3_DIR/$FUX3_WORKSPACE/.recipes/$FUX3_PANE\"; echo kill > \"$FUX3_PANE_DIR/ctl\"")
+  "umask 077; d=\"$FUX3_DIR/.history-$FUX3_PANE_ID\"; f=history-and-screen
+trap 'rm -rf \"$d\"' EXIT; trap 'exit 1' HUP INT TERM; mkdir \"$d\" || exit 1
+enter() { for i in \"$FUX3_DIR\"/*/*/; do if cd \"$i\" 2>/dev/null && [ -f id ] && [ \"$(cat id)\" = \"$1\" ]; then return 0; fi; done; return 1; }
+if enter \"$1\"; then
+  awk 'NR>1{if(/[^ ]/){printf b;print;b=e}else b=b ORS}' screen > \"$d/screen\"
+  { { { cat <&4; cat <&3; } 4<history.1 || cat <&3; } 3<history || cat history.1; } > \"$d/$f\" 2>/dev/null
+  cat \"$d/screen\" >> \"$d/$f\"; rm -f \"$d/screen\"
+fi; cd \"$d\" || exit 1
+e=${EDITOR%% *}; case \"${e##*/}\" in
+  vi|vim|nvim|nano|emacs) $EDITOR \"+$(($(wc -l < \"$f\")))\" \"$f\";;
+  '') ${PAGER:-less +G} \"$f\";;
+  *) $EDITOR \"$f\";;
+esac
+enter \"$FUX3_PANE_ID\" || exit 1; rm -rf \"$d\"; echo kill 1<>ctl")
 (define! history (lambda! ()
   (let! ((target (focused))
-         (file (join (workspace-dir) "/" (name-of target) "/history"))
-         (pane (start-new "history" "sh" "-c" history-script "sh" file)))
-    (place-new! pane (lambda! (p) (edit! (join "split " target " down " p)))))))
+         (pane (start-once "history" "sh" "-c" history-script "sh" (second (string-split target "@")))))
+    (when-gone pane (lambda! () (close-tile pane arrange)))
+    (place-new! pane (lambda! (p)
+      (arrange (join "split " target " down " p))
+      (fit-after (join "changed " p)))))))
 
 ;; Asks, as a list with one row, Yes, and calls `then` only if it is chosen.
 (define! confirm (lambda! (question then)
   (pick question (list (list "yes" "Yes")) (lambda! (answer) (then)))))
 
-;; Ends a pane and takes its tile away; one already gone just loses its
+;; Ends a pane and takes its tile away once it is gone, so the panes that
+;; get its room are fitted to what is left; one already gone just loses its
 ;; tile. A kill that fails otherwise (its ctl full) is said, and the tile
 ;; stays while the program runs.
 (define! close-pane (lambda! (pane)
   (catch-kind! (kill pane) pane-gone gone #inert)
-  (edit! (join "close " pane))))
+  (when-gone pane (lambda! () (close-tile pane edit!)))))
 (define! confirm-close-pane (lambda! (pane)
   (confirm (join "close pane " (name-of pane) "?") (lambda! () (close-pane pane)))))
 
@@ -124,9 +158,12 @@
 (define! confirm-close-tab (lambda! (tab)
   (confirm (join "close tab " tab " " (second (row-of (tabs) tab)) "?")
     (lambda! () (end-panes (panes-of tab)) (arrange (join "tab close " tab))))))
+;; The question holds the workspace's directory from when it is asked: yes
+;; closes that one, whatever is called `space` by then.
 (define! confirm-close-workspace (lambda! (space)
-  (confirm (join "close workspace " space " and end its panes?")
-    (lambda! () (close-workspace space)))))
+  (let! ((held (hold-workspace space)))
+    (confirm (join "close workspace " space " and end its panes?")
+      (lambda! () (close-workspace held))))))
 
 ;; Type grift; the answer shows in the bar's corner.
 (define! command-line (lambda! ()

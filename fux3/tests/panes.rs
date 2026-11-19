@@ -60,6 +60,15 @@ impl Session {
         line.parse().ok()
     }
 
+    /// Writes `kill` to a pane's `ctl` as `echo kill 1<>ctl` does: opened
+    /// to read and write, the open never waits, on a dead pane's either.
+    fn end(&self, name: &str) {
+        let ctl = self.pane(name).join("ctl");
+        if let Ok(mut file) = std::fs::File::options().read(true).write(true).open(ctl) {
+            let _ = file.write_all(b"kill\n");
+        }
+    }
+
     /// Writes `bytes` to a pane's FIFO, as `printf > file` does.
     fn write(&self, name: &str, fifo: &str, bytes: &[u8]) -> Result {
         let mut file = std::fs::File::options()
@@ -73,7 +82,7 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         for name in self.fux3(&["ls"]).unwrap_or_default().lines() {
-            let _ = self.write(name, "ctl", b"kill\n");
+            self.end(name);
         }
         let start = Instant::now();
         while self.fux3(&["ls"]).is_ok_and(|l| !l.is_empty())
@@ -548,6 +557,70 @@ fn a_recipe_starts_the_same_program_again() -> Result {
     let mut lines = text.lines();
     assert_eq!(lines.next(), lines.next(), "the second run differs");
     assert!(text.ends_with(" it's\n"), "{text:?}");
+    // A start that fails leaves the recipe of the last good one; a
+    // variable sh keeps for itself is refused, as its recipe could not run.
+    s.write("p", "ctl", b"kill\n")?;
+    until("the pane gone", || !s.pane("p").exists())?;
+    let good = std::fs::read(&recipe).map_err(|e| e.to_string())?;
+    assert!(s.start("p", &["/no/such/program"]).is_err());
+    let refused = s.fux3(&["start", "p", "--env", "PPID=1", "--", "sh"]);
+    assert!(refused.is_err_and(|e| e.contains("PPID")));
+    assert_eq!(
+        std::fs::read(&recipe).ok(),
+        Some(good),
+        "a failed start's recipe"
+    );
+    // A program whose name starts with `-` runs again, with the size and
+    // labels its first start had.
+    let dash = s.root.join("-odd");
+    std::fs::write(&dash, "#!/bin/sh\necho ran-$((40+2)); exec sleep 100\n")
+        .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&dash, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())?;
+    let out = Command::new(env!("CARGO_BIN_EXE_fux3"))
+        .args([
+            "start", "d", "--size", "50x7", "--label", "role=db", "--", "-odd",
+        ])
+        .env("FUX3_DIR", &s.root)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                s.root.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .current_dir(&s.root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    assert!(out.status.success(), "{out:?}");
+    s.write("d", "ctl", b"kill\n")?;
+    until("the pane gone", || !s.pane("d").exists())?;
+    let again = Command::new(env!("CARGO_BIN_EXE_fux3"))
+        .args(["start", "d"])
+        .env("FUX3_DIR", &s.root)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                s.root.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .output()
+        .map_err(|e| e.to_string())?;
+    assert!(again.status.success(), "{again:?}");
+    until("the second run", || screen_has(&s, "d", "ran-42"))?;
+    // The recipe's own lines are its first: an argument that looks like
+    // one changes nothing.
+    let odd = "#!/bin/sh\n# fux3 size 50x7\ncd -- '/'\nexec 'echo' 'a\n# fux3 size 1x1\n# fux3 label role=x'\n";
+    let kept = fux3::recipe::kept(odd.as_bytes());
+    assert_eq!((kept.size, kept.labels.len()), (Some((50, 7)), 0));
+    let status = s.read("d", "status");
+    assert!(
+        status.contains("\nsize 50 7\n") && status.contains("\nlabel role db\n"),
+        "{status}"
+    );
     Ok(())
 }
 
@@ -577,11 +650,419 @@ fn put_writes_or_refuses_but_never_waits() -> Result {
     for fifo in ["in", "ctl"] {
         fuxix::file::private_fifo(&q.join(fifo)).map_err(|e| e.to_string())?;
     }
+    // What makes a directory a pane's: its marker.
+    std::fs::write(q.join("id"), "0000000000000000\n").map_err(|e| e.to_string())?;
     let lock = std::fs::File::open(&q).map_err(|e| e.to_string())?;
     lock.try_lock().map_err(|e| e.to_string())?;
     let said = refused(&["put", "q", "x"])?;
     assert!(said.contains("dead"), "{said}");
     drop(lock);
     std::fs::remove_dir_all(&q).map_err(|e| e.to_string())?;
+    // A pane whose program has ended takes nothing: put says so, rather
+    // than report success for bytes the holder drops.
+    s.start("over", &["sh", "-c", "exit 3"])?;
+    until("the end", || s.pane("over").join("exit").exists())?;
+    let said = refused(&["put", "over", "x"])?;
+    assert!(said.contains("not running (exited 3)"), "{said}");
+    // Nor to a pane whose `status` cannot be read: what it says is unknown.
+    let status = s.pane("p").join("status");
+    let mode = |mode| std::fs::set_permissions(&status, std::fs::Permissions::from_mode(mode));
+    mode(0o000).map_err(|e| e.to_string())?;
+    let said = refused(&["put", "p", "x"]);
+    mode(0o600).map_err(|e| e.to_string())?;
+    assert!(said?.contains("nothing was written"));
+    Ok(())
+}
+
+/// A live pane renamed and moved to another workspace with `mv` is the
+/// same pane: the same id, every file kept current where it is now, every
+/// `ctl` command done, and its kill frees the name it has now.
+#[test]
+fn a_moved_pane_is_the_same_pane() -> Result {
+    let s = Session::new("mv")?;
+    s.fux3(&[
+        "start",
+        "build",
+        "--size",
+        "80x24",
+        "--history",
+        "8192",
+        "--",
+        "sh",
+    ])?;
+    let id = |name: &str| {
+        let status = s.read(name, "status");
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix("id ").map(str::to_owned))
+    };
+    let first = id("build").ok_or("no id")?;
+    assert_eq!(s.read("build", "id").trim(), first);
+    let stop = s.root.join("stop");
+    let ticker = format!(
+        "while [ ! -e {} ]; do seq 1 40; sleep 0.01; done &\n",
+        stop.display()
+    );
+    s.write("build", "in", ticker.as_bytes())?;
+    // A workspace is a directory: `mkdir` makes one, whatever its mode.
+    let rig = s.root.join("rig");
+    std::fs::create_dir(&rig).map_err(|e| e.to_string())?;
+    let renamed = s.pane("build").with_file_name("made");
+    std::fs::rename(s.pane("build"), &renamed).map_err(|e| e.to_string())?;
+    std::fs::rename(&renamed, rig.join("server")).map_err(|e| e.to_string())?;
+    let p = "rig/server";
+    assert_eq!(s.fux3(&["ls"])?, "rig/server\n");
+    assert!(!s.pane("build").exists(), "the old name came back");
+    // history and its rotation go on where the pane is now; then in,
+    // screen, screen.styled and status.
+    until("history where the pane is now", || {
+        s.read(p, "history").contains("\n40\n") && s.pane(p).join("history.1").exists()
+    })?;
+    std::fs::write(&stop, "").map_err(|e| e.to_string())?;
+    s.write(p, "in", b"clear; echo moved-$((20+3))\n")?;
+    until("the typed line on both screens", || {
+        screen_has(&s, p, "moved-23") && s.read(p, "screen.styled").contains("moved-23")
+    })?;
+    assert_eq!(id(p), Some(first.clone()), "another pane");
+    // resize, cell, signal, send, paste, and a refusal in errors.
+    s.write(p, "ctl", b"resize 60 10\ncell 8 16\nbogus\n")?;
+    until("the resize, the cell and the refusal", || {
+        let status = s.read(p, "status");
+        status.contains("\nsize 60 10\n")
+            && status.contains("\ncell 8 16\n")
+            && s.read(p, "errors").contains("3 bogus: ")
+    })?;
+    let file = s.root.join("sent");
+    std::fs::write(&file, "echo sent-$((30+4))\n").map_err(|e| e.to_string())?;
+    s.write(
+        p,
+        "ctl",
+        format!("send {0}\npaste {0}\n", file.display()).as_bytes(),
+    )?;
+    // The send runs; the paste is there as text (a shell with bracketed
+    // paste waits for Enter).
+    until("the send and the paste", || {
+        let screen = s.read(p, "screen");
+        screen.contains("\nsent-34\n") && screen.matches("echo sent-").count() >= 2
+    })?;
+    s.write(p, "in", b"exec sleep 1000\n")?;
+    until("sleep in front", || screen_has(&s, p, "exec sleep 1000"))?;
+    std::thread::sleep(Duration::from_millis(100));
+    s.write(p, "ctl", b"signal INT\n")?;
+    until("exit, after the signal", || {
+        s.read(p, "exit").starts_with("state ")
+            && s.read(p, "status").contains("\nstate signalled INT\n")
+    })?;
+    // wait follows it too; then the kill takes the name it has now.
+    let waited = s.fux3(&["wait", p, "--ms", "0"]);
+    let waited = waited.err().ok_or("wait saw a change in no time")?;
+    assert!(waited.contains("no change in 0 ms"), "{waited}");
+    s.write(p, "ctl", b"kill\n")?;
+    until("the pane gone, and what it was taken apart in", || {
+        std::fs::read_dir(&rig).is_ok_and(|entries| entries.count() == 0)
+    })?;
+    assert_eq!(s.fux3(&["ls"])?, "");
+    Ok(())
+}
+
+/// A start that names the workspace's directory is refused once that
+/// workspace was removed and made again: it is another workspace.
+#[test]
+fn a_start_goes_to_the_workspace_it_was_given() -> Result {
+    use std::os::unix::fs::MetadataExt;
+    let s = Session::new("wsid")?;
+    s.start("w/first", &["sh"])?;
+    let space = s.root.join("w");
+    let meta = std::fs::metadata(&space).map_err(|e| e.to_string())?;
+    let id = format!("{}:{}", meta.dev(), meta.ino());
+    s.fux3(&["start", "w/second", "--workspace-id", &id, "--", "sh"])?;
+    for pane in ["w/first", "w/second"] {
+        s.write(pane, "ctl", b"kill\n")?;
+        until("the pane gone", || !s.pane(pane).exists())?;
+    }
+    // Kept open, so the new directory cannot get the old one's number.
+    let _old = std::fs::File::open(&space).map_err(|e| e.to_string())?;
+    std::fs::remove_dir_all(&space).map_err(|e| e.to_string())?;
+    std::fs::create_dir(&space).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&space, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())?;
+    let said = s.fux3(&["start", "w/third", "--workspace-id", &id, "--", "sh"]);
+    assert!(said.is_err_and(|e| e.contains("workspace w was removed")));
+    // Nor does it make one where the name leads nowhere.
+    std::fs::remove_dir_all(&space).map_err(|e| e.to_string())?;
+    let said = s.fux3(&["start", "w/third", "--workspace-id", &id, "--", "sh"]);
+    assert!(said.is_err_and(|e| e.contains("workspace w was removed")));
+    assert!(!space.exists(), "a refused start made a workspace");
+    assert_eq!(s.fux3(&["ls"])?, "");
+    Ok(())
+}
+
+/// A pane has its name only while it is whole, and only what a holder
+/// made is ever cleared: what a holder killed outright leaves at any step
+/// (a directory half made, one named, one taken out of its name) goes
+/// with the next command, and anything else in or beside it stays.
+#[test]
+fn a_name_is_given_whole_and_only_a_panes_files_are_cleared() -> Result {
+    use std::os::unix::fs::MetadataExt;
+    let s = Session::new("mark")?;
+    // Whenever the name is there, the pane is whole.
+    let name = s.root.join("main/p");
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let torn = std::thread::scope(|scope| {
+        let watcher = scope.spawn(|| {
+            let mut torn = Vec::new();
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let Ok(dir) = std::fs::File::open(&name) else {
+                    continue;
+                };
+                use fuxix::file::{NONBLOCK, at};
+                let whole = ["id", "in", "ctl", "screen", "screen.styled", "status"];
+                let there = |f: &&str| at::open(&dir, f, at::READ | NONBLOCK).is_ok();
+                let missing = whole.iter().find(|f| !there(f));
+                // Only if it had the name all the while: one taken out of
+                // its name is being taken apart, and may lack anything.
+                let same = |a: &std::fs::Metadata, b: &std::fs::Metadata| a.ino() == b.ino();
+                let named = matches!((dir.metadata(), std::fs::metadata(&name)), (Ok(a), Ok(b)) if same(&a, &b));
+                if let (Some(missing), true) = (missing, named) {
+                    torn.push((*missing).to_owned());
+                }
+            }
+            torn
+        });
+        let mut outcome = Ok(());
+        for _ in 0..15 {
+            outcome = (s.start("p", &["sh"]))
+                .and_then(|()| s.write("p", "ctl", b"kill\n"))
+                .and_then(|()| until("the name free", || !name.exists()));
+            if outcome.is_err() {
+                break;
+            }
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        outcome.map(|()| watcher.join().unwrap_or_default())
+    })?;
+    assert!(torn.is_empty(), "the name was there without {torn:?}");
+    // What a holder killed outright leaves, at each step.
+    let main = s.root.join("main");
+    let dead = |dir: &str, files: &[&str]| -> Result {
+        let dir = main.join(dir);
+        std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+        for file in files {
+            match *file {
+                "in" | "ctl" => fuxix::file::private_fifo(&dir.join(file)),
+                "images" => std::fs::create_dir(dir.join(file))
+                    .and_then(|()| std::fs::write(dir.join("images/1.sixel"), "x")),
+                // A marker as a holder writes it; `ID` as a user might.
+                "id" => std::fs::write(dir.join(file), "00000000000000aa\n"),
+                "ID" => std::fs::write(dir.join("id"), "invoice-17\n"),
+                _ => std::fs::write(dir.join(file), "x\n"),
+            }
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    };
+    let made = [
+        "id",
+        "in",
+        "ctl",
+        "images",
+        "history",
+        "history.1",
+        "screen",
+        ".screen.new",
+        ".images-1.sixel.new",
+    ];
+    dead(".new-aaaa", &[])?;
+    dead(".new-bbbb", &["id", "in"])?;
+    dead(".gone-cccc", &made)?;
+    assert_eq!(s.fux3(&["ls"])?, "");
+    dead("named", &made)?;
+    // Not a pane's: no marker, or a file that is only called `id`; and a
+    // pane's holding what no holder made.
+    dead("notes", &["in", "ctl", "todo"])?;
+    dead("ledger", &["ID", "history"])?;
+    dead("empty", &[])?;
+    dead(".new-dddd", &["todo"])?;
+    assert_eq!(s.fux3(&["ls"])?, "");
+    dead(
+        "mixed",
+        &[
+            "id",
+            "in",
+            "screen",
+            "todo",
+            ".images-draft.new",
+            ".ctl.new",
+        ],
+    )?;
+    // The name it would lose its name to is taken, by a link to nothing.
+    std::os::unix::fs::symlink("nowhere", main.join(".gone-00000000000000aa"))
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir(main.join("mixed/inner")).map_err(|e| e.to_string())?;
+    std::fs::write(main.join("mixed/inner/id"), "00000000000000bb\n").map_err(|e| e.to_string())?;
+    assert_eq!(s.fux3(&["ls"])?, "");
+    let mut left: Vec<String> = std::fs::read_dir(&main)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n != ".recipes")
+        .collect();
+    left.sort();
+    // The pane holding other things lost its name (to `.gone-ID`), its own
+    // files and nothing else; nothing inside a directory in it was touched.
+    let (link, kept) = (".gone-00000000000000aa", ".gone-00000000000000aa-1");
+    assert_eq!(left, [link, kept, ".new-dddd", "empty", "ledger", "notes"]);
+    assert!(main.join("notes/todo").exists() && main.join("notes/in").exists());
+    assert!(main.join("ledger/history").exists() && main.join("ledger/id").exists());
+    let kept = main.join(kept);
+    for stays in ["todo", "inner/id", ".images-draft.new", ".ctl.new", "id"] {
+        assert!(kept.join(stays).exists(), "{stays} was removed");
+    }
+    assert!(!kept.join("in").exists() && !kept.join("screen").exists());
+    // A name with something no pane made at it is refused and left alone.
+    let said = s
+        .start("notes", &["sh"])
+        .err()
+        .ok_or("it took a name in use")?;
+    assert!(said.contains("left alone"), "{said}");
+    assert!(main.join("notes/todo").exists());
+    Ok(())
+}
+
+/// History is records: a line, or a marked piece of a line too long to be
+/// one. Each file holds whole records, so rotation never cuts one, and
+/// taking the marks out gives the line back.
+#[test]
+fn history_is_whole_records() -> Result {
+    let s = Session::new("records")?;
+    s.fux3(&[
+        "start",
+        "p",
+        "--size",
+        "80x4",
+        "--history",
+        "8192",
+        "--",
+        "sh",
+    ])?;
+    // One line of 45,000 bytes, printed at once: longer than a whole file
+    // (4,096), and more than both files hold.
+    let line = "awk 'BEGIN { for (i = 0; i < 5000; i++) printf \"%08d,\", i; print \"\" }'";
+    s.write(
+        "p",
+        "in",
+        format!("stty -echo; {line}; seq 1 5; echo done-$((1+1))\n").as_bytes(),
+    )?;
+    until("the end of output", || screen_has(&s, "p", "done-2"))?;
+    let read = |file: &str| s.read("p", file);
+    until("the line's end in history", || {
+        read("history").contains("00004999,")
+    })?;
+    let (older, newer) = (read("history.1"), read("history"));
+    for file in [&older, &newer] {
+        assert!(file.len() <= 4096, "a file of {} bytes", file.len());
+        assert!(file.is_empty() || file.ends_with('\n'), "a record was cut");
+        assert!(file.lines().all(|l| l.len() < 4096));
+    }
+    // Both files are in use: what is kept is the cap's worth, not half.
+    let (old, new) = (older.len(), newer.len());
+    assert!(old > 2048 && new > 9, "{old} and {new} bytes kept");
+    let joined = format!("{older}{newer}").replace(" [fux3: continued]\n", "");
+    let whole = joined
+        .lines()
+        .find(|l| l.ends_with("00004999,"))
+        .ok_or("no end")?;
+    // The newest part of the line, in order, nothing missing or doubled.
+    let numbers: Vec<u32> = whole.split(',').filter_map(|n| n.parse().ok()).collect();
+    assert!(numbers.len() > 100, "{} numbers kept", numbers.len());
+    let next = numbers.iter().skip(1);
+    assert!(
+        numbers
+            .iter()
+            .zip(next)
+            .all(|(a, b)| a.saturating_add(1) == *b)
+    );
+    Ok(())
+}
+
+/// A kill ends the panes started inside its pane the way their own kill
+/// does, so their directories go with it and no later command is needed;
+/// and a holder told to end (SIGTERM) does the same. After it, writing
+/// `kill` to every `ctl` left cannot wait on a dead pane's FIFO.
+#[test]
+fn a_kill_takes_the_panes_inside_apart_too() -> Result {
+    let s = Session::new("inner")?;
+    s.start("outer", &["sh"])?;
+    s.start("beside", &["sh"])?;
+    let fux3 = env!("CARGO_BIN_EXE_fux3");
+    let inner = format!("for n in 1 2 3; do {fux3} start in$n -- sh; done\n");
+    s.write("outer", "in", inner.as_bytes())?;
+    until("the inner panes", || s.pane("in3").join("screen").exists())?;
+    let holder = s.holder("outer").ok_or("no holder pid")?;
+    let ended = Command::new("kill").arg(holder.to_string()).status();
+    assert!(ended.is_ok_and(|s| s.success()));
+    let names = || -> Vec<String> {
+        let entries = std::fs::read_dir(s.root.join("main")).into_iter().flatten();
+        let mut names: Vec<_> = entries
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != ".recipes")
+            .collect();
+        names.sort();
+        names
+    };
+    // With no fux3 command run: the directories went by themselves.
+    #[cfg(target_os = "linux")]
+    until("only the pane beside left", || names() == ["beside"])?;
+    // macOS has no subreaper: the inner panes left the outer one for good.
+    #[cfg(target_os = "macos")]
+    until("the outer pane gone", || {
+        names() == ["beside", "in1", "in2", "in3"]
+    })?;
+    let (said, hears) = std::sync::mpsc::channel();
+    let ctls: Vec<_> = names().iter().map(|n| s.pane(n).join("ctl")).collect();
+    std::thread::spawn(move || {
+        for ctl in ctls {
+            let _ = std::fs::File::options()
+                .write(true)
+                .open(ctl)
+                .map(|mut f| f.write_all(b"kill\n"));
+        }
+        let _ = said.send(());
+    });
+    let done = hears.recv_timeout(Duration::from_secs(5));
+    assert!(done.is_ok(), "a kill written to every ctl waited");
+    until("every pane gone", || names().is_empty())?;
+    Ok(())
+}
+
+/// `exit` appears only beside screens whose pictures are all on disk, and
+/// a publish that failed is in `status`.
+#[test]
+fn exit_waits_for_every_picture_the_screen_names() -> Result {
+    let s = Session::new("late")?;
+    let draw = "printf '\\033Pq#0;2;100;0;0#0!6~-#0!6~\\033\\\\'; echo";
+    s.start("p", &["sh", "-c", &format!("read go; {draw}")])?;
+    let images = s.pane("p").join("images");
+    let mode = |mode| std::fs::set_permissions(&images, std::fs::Permissions::from_mode(mode));
+    mode(0o500).map_err(|e| e.to_string())?;
+    s.write("p", "in", b"\n")?;
+    until("the failed publish in status", || {
+        s.read("p", "status").contains("\npublish failed: ")
+    })?;
+    // Past the next try, a second later: still no picture, so no exit.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!s.pane("p").join("exit").exists(), "exit, and no picture");
+    mode(0o700).map_err(|e| e.to_string())?;
+    until("exit", || s.pane("p").join("exit").exists())?;
+    let styled = s.read("p", "screen.styled");
+    let named = styled
+        .lines()
+        .find_map(|l| l.strip_prefix("picture ")?.split(' ').next());
+    let named = named.ok_or("the last screen names no picture")?;
+    assert!(
+        images.join(named).exists(),
+        "{named} is named and not there"
+    );
     Ok(())
 }

@@ -160,3 +160,242 @@ Append-only: one short entry per decision, newest last.
       the old workspace into the new run would have given it the old workspace's name with the
       new one's layout snapshot.
     - Lines: production 5,999 → 5,999 (comments tightened to fit).
+19. **`.view/ctl` and `.view/errors` are gone; a layout command is an edit of the layout file
+    (the panel's decision 3, 2026-11-19).** `fux3 view WS --do LINE` edits the file under its lock
+    with or without a viewer; a refusal is its stderr and exit 1. Deleted: the FIFO, its reader and
+    hand-off (`ctl.lock`), the lines a regular file there held, the refusal queue, the run kind
+    that called a function by name, and the library's `layout-command`.
+    - **A running viewer fits what an edit from outside changed.** `--do` knows no viewer's size
+      and fits nothing. A viewer that finds the layout file changed at its once-a-second look
+      (not at the read its own edit asks for) fits the panes whose tiles differ between the old
+      file and the new one, with the same panes live. With no viewer nothing is fitted. Cost,
+      accepted: of two viewers of one workspace with different sizes, the one that did not make
+      the edit also fits, so the last to look sets the size. A viewer's own `arrange` (no fit) read
+      by the once-a-second look before its own read would be fitted too: a window of microseconds.
+    - **A bare zoom is resolved after routing** (decision 7): when what is shown is derived, a
+      bare `zoom NAME` whose tab holds a live pane of that name, routed or placed, zooms it. The
+      file keeps `zoom NAME`. `zoom` toggles on what is shown, so it restores a bare zoom too.
+    - **`C-b c` gives `$EDITOR` the history and then the screen** (owner, 2026-11-19): the older
+      generation, the history, then `screen` without line 1 and without trailing blank rows, in
+      `$FUX3_DIR/.history-PANEID/history-and-screen` (a directory of its own, 0700, so an
+      editor's swap file goes with it; removed when the editor ends or the pane is killed). The
+      editor: `$EDITOR`, else `$PAGER`, else `less +G`; `vi`, `vim`, `nvim`, `nano` and `emacs` are
+      given `+LASTLINE` (a number, not a bare `+`: all five take it), any other editor the file
+      alone. The directory is in the session's, not the pane's: the core removes nothing it does
+      not know from a pane's directory, and a pane's own path goes stale after `mv`.
+    - **`(when-gone PANE FUNCTION)`: the tile closes once the pane is gone.** The pager's script
+      used to close its own tile through `.view/ctl` and then end itself. A tile closed while
+      its pane still lives is routed straight back for a moment, and the neighbours were fitted
+      to that moment's layout (driven: after `C-b x` on the pager, its neighbour stayed 39
+      columns wide in a 59-column tile; after `C-b x` on one of two panes the other stayed 59 of
+      120). Now the script only ends itself, and the viewer that opened it runs the callback at
+      its next look after the pane's name is gone (or another life has it): `close-tile`, which
+      edits and fits. `close-pane` (`C-b x`) does the same: kill, then close the tile when the
+      pane is gone. Chosen over `--do "close …"` from the script, which needs the workspace's and
+      the pane's names (stale after `mv`) and closes the tile while the pane is alive. Cost: a
+      viewer detached while a pager is open leaves its tile, marked gone, to be closed by hand;
+      at most 64 panes are watched.
+    - Tests deleted with `.view/ctl`: `two_viewers_of_a_workspace_split_no_ctl_line` (there is no
+      FIFO to split). `a_ctl_line_changes_only_the_layout_of_its_workspace` kept its property and
+      its second half; it sends its lines with `--do` and is now
+      `a_layout_command_changes_only_the_layout_of_its_workspace`.
+    - Lines: production 5,999 → 5,850.
+20. **Handles and ids (the panel's decisions 1 and 2, 2026-11-19).** A pane is its directory and
+    its id, a workspace is its directory, a name is only where one is listed now.
+    - **Every operation holds the workspace's directory from when it is first named**: a viewer
+      (at its start and at each switch), a run (its context carries the `Workspace`, not a name,
+      so a queued confirmation acts on the directory shown when it was asked), a `--do`. The
+      `.view` directory, the layout, its lock, a paste's file, every pane's files and pictures
+      are opened relative to a held directory (`fuxix::file::at`); nothing looks a path up
+      twice. `view_dir` begins with `Workspace::check`, so a command for a removed workspace
+      fails with "workspace W was removed" and never lands on a workspace made again under the
+      name. A pane a layout command starts is started with `--workspace-id`.
+    - **Paths that remain**: the one `paste PATH` hands to a holder and the one `C-b c` hands to
+      `sh` (the workspace's path as it was named: for other programs, as the core says).
+    - **A viewer whose workspace was removed shows the directory that has its name now**, if
+      there is one, else the first workspace, else a new `main`.
+    - **A watch (`when-gone`) belongs to the directory it was made in** (`Workspace::id`), and a
+      life is gone when no pane there has its id. Driven: before this, a close confirmed for a
+      workspace then removed and made again ran against the new one (refused: "no tile").
+      Cost: a watch whose workspace is removed from outside never fires and keeps its place
+      among the 64.
+    - **A tile is found by its pane's id.** When what is shown is derived, and in every edit, a
+      tile whose id a live pane has takes that pane's name: `mv a c` keeps the tile, the focus
+      and the keys. The file is not written for it: the next edit stores the new name. Until
+      then a tile of a renamed pane that then ended says the old name. `NAME@ID` in a command
+      finds the tile by its id, whatever it is called now. A bare tile stays a name: it shows
+      whichever pane has the name.
+    - **A pane moved to another workspace** is gone here (its tile stays, marked gone, as any
+      pane's that went) and has no tile there (it is routed, as any pane that came).
+    - **Closing a workspace** removes what is in the directory held, through it (files and links
+      themselves, directories four levels down at most), then that directory by the name it is
+      listed under now, under the session's lock; never another directory of the same name.
+    - **The history pane ends itself by its id**: `grep -lx "$FUX3_PANE_ID" "$FUX3_DIR"/*/*/id`
+      finds its directory wherever it was moved, and `echo kill 1<>ctl` never waits. Its recipe
+      is removed under the name it started with, where the core keeps it.
+    - `fux3::session::check_private` is no longer called from here.
+    - Not changed, found while driving: a tile closed in a split of its own direction does not
+      give its share back (after `C-b c` below a pane stacked in rows, that pane keeps half its
+      old share). It was so before this work.
+    - Lines: production 5,850 → 5,892.
+21. **A question is about the object it was asked of (the testers' findings, 2026-11-19).**
+    - **`close-workspace NAME` closes the directory the name was given for**: the workspace shown
+      (the run's context holds it), or one the last `(workspaces)` list named (the script thread
+      holds each directory that list gave, 64 at most), and only for a name it got from neither
+      does it open the name now. Before, it opened the name when the question was answered: a
+      "close workspace" answered yes after the workspace was replaced ended the new one's panes
+      and removed it. A directory still there under another name is the one closed; one removed
+      is refused, "workspace W was removed". Pane questions were already held: they act through
+      the run's workspace, and a pane by its id.
+    - **A layout command that fails on a removed workspace says so**, whatever the edit met first
+      (one that waited for the layout's lock found the file gone and advised `reset`).
+    - **A viewer whose workspace was removed says "workspace W was removed"** in the bar's corner
+      and drops the next key with the notice still up: that key was typed at what was shown
+      before (an answer to a question the switch dismissed went into the new workspace's pane).
+      The key after it takes the notice away and acts as usual. Pastes and clicks are not dropped.
+    - **Where a refusal shows**: the bar's right corner is drawn for a notice even when no bar is
+      (one tab, no menu), on the last row over the panes. A tester saw none because none was
+      said: the question was dropped silently, which is the case above.
+    - Left as it is: a close-pane answered yes after the pane ended and another took its name in
+      the same workspace says `no tile for pane NAME@OLDID` (true, and nothing is done to the
+      new pane), in grift's error form rather than a plain sentence.
+    - Lines: production 5,861 → 5,883 (28 added, 6 paid by folding `release_callbacks`).
+22. **Opening the copy resizes nothing but its own pane (a tester's finding, 2026-11-19).** `C-b c`
+    split the pane and fitted both halves, so the pane copied was resized before, or while, the
+    script read its `screen`: a shrink pushed rows off that the core does not add to `history`
+    (a row seen when the key was pressed was missing from the text), a grow pulled rows back
+    (eleven rows twice). Now the split is an `arrange` and only the new pane is fitted; the pane
+    copied keeps its size and its tile clips it while the editor is open, as a tile does. Closing
+    the copy fits nothing either (`close-tile` takes the word to change the layout with:
+    `arrange` here, `edit!` for `C-b x`), so a pane fitted before is the size of its tile again
+    without having been touched, and one never fitted stays as it was.
+    - Chosen over making the text before the split: the script starts with the pane, and the
+      viewer has no way to wait for it but a new word; and a resize would still disturb the
+      program copied (a redraw, a reflow) for a copy the user only reads.
+    - **What changes while a binding runs is its own edit**: the once-a-second look fits a layout
+      change only when no binding is running. It closes the window entry 19 named (an `arrange`
+      seen by that look before its own read was fitted), which this now depends on. Cost: an
+      edit from outside landing while a binding runs is shown and not fitted.
+    - With two viewers of one workspace, the other one still fits the pane copied to its own
+      tile when it sees the split (entry 19's cost).
+    - Lines: production 5,883 → 5,889.
+23. **Review round 1 (2026-11-19): what changed in the viewer, and why.**
+    - **A workspace renamed with `mv` is followed.** `command::named` gives a workspace as it is
+      called now (`place` of the directory held): the viewer takes it at each look (the bar, the
+      names it remembers), and a start, a paste's path and `(workspace-dir)` take it when they are
+      used. Before, a split was refused "workspace rig was removed", and a paste named a path the
+      holder could not read and was lost without a word. A rename between that look and the
+      start is still refused by `--workspace-id`: refused, never misdirected.
+    - **`C-b c` finds the pane by its id and reads `screen` first.** The script is given the
+      pane's id, not a path, and finds its directory as it finds its own; it takes the screen,
+      then the history files, and writes history then that screen. With the core appending to
+      `history` before it replaces the screens, no line is in neither; one that scrolled off
+      between the reads is there twice.
+    - **The copy's pane removes a recipe only if it is a copy's**: the one under the name it
+      started with, and only while that file still holds the copy's own script (after the pane
+      was renamed, another program may have started under the name). Removing it when the pane
+      starts was the other way: the holder writes the recipe after the program runs, so the
+      script would race it.
+    - **A pane renamed keeps what the viewer holds for it**: the same `Pane`, with the keys
+      waiting for its `in`, is carried to the new name (the viewer made a new one and dropped
+      the queue). No test: filling a pane's `in` and renaming it between two looks of a real
+      viewer is not something the harness can time; read in source.
+    - **`NAME@ID` names a pane by its id everywhere a command resolves one**: the pane a split
+      places (`split b right a@ID`), the pane routing leaves out during an edit, and the tile a
+      new shell is split from (`split a@ID right` now uses the layout's own `resolve`).
+    - **Closing a workspace waits for every directory a holder has locked**, named or not: a
+      pane starting (`.new-ID`) or ending (`.gone-ID`) counts as one that has not ended, and the
+      workspace stays, saying which, with nothing removed. Checked under the session's lock,
+      under which such a directory is made and renamed, so none appears after the check.
+    - **A watch is held back only by a pane of its own name** whose `status` is not read yet,
+      not by any such pane in the workspace.
+    - Tests made to mean what they say: the depth test gives its panes distinct ids and checks
+      the refusal says "deep"; the moved-pane test types after the viewer has looked again; the
+      copy test waits for the prompt after the last row.
+    - Lines: production 5,897 at the merge (the core's branch brought 8 in `view_dir`) → 5,924.
+      Over the 5,900 band by 24. Paid: `resolve_live` folded into its caller. Nothing else here
+      is redundant; each addition is one of the fixes above.
+24. **Review round 2 (2026-11-19, the last round): what changed in the viewer, and why.**
+    - **A workspace is closed only through a directory held.** `(hold-workspace NAME)` opens the
+      name once (the workspace shown is held already) and gives the directory's id;
+      `(close-workspace HELD)` takes only that, and never opens a name. `confirm-close-workspace`
+      holds when it asks, so yes closes the directory the question was about: renamed since, it
+      is that one that goes; removed since, it is refused. Entry 21's rule (a name from the last
+      list, else the name now) fell back to opening the name: with the workspace renamed under
+      the question and another made under the old name, the new one was closed; and only the
+      first 64 of a list were held. The list holds nothing now. 64 are held at once; past that
+      the oldest is let go, and closing it is refused.
+      Before/after for a config: `(close-workspace "x")` → `(close-workspace (hold-workspace "x"))`.
+    - **The copy's recipe is removed by the viewer, as soon as the pane has started**
+      (`(forget-recipe PANE)`: the pane by its id, then the recipe under its name, through the
+      workspace's directory). The script no longer removes one: by content, a program that
+      merely printed the copy's words matched; and the script cannot write its recipe's whole
+      text to compare. `fux3 start` returns after the recipe is written, so nothing is raced, and
+      a copy closed with `C-b x` leaves none either. The script now uses no start-time name.
+    - **The copy's script enters the pane's directory once** and reads `screen`, `history` and
+      `history.1` relative to it (a rename is followed; another pane under the old name is never
+      read); it looks for the id only in regular files (a FIFO called `id` held it up for good);
+      and it opens `history`, then `history.1`, before reading either, so a rotation in between
+      doubles a generation and misses none.
+    - **Closing a workspace looks before it ends anything.** Every directory a holder has locked,
+      four levels down, is listed without being entered; one that is no pane the close can end
+      (starting or ending under a name nothing lists, or a live pane inside another's
+      directory) refuses the close with no pane ended and nothing removed. `empty` itself
+      neither enters nor removes a locked directory.
+    - **A viewer closing its own workspace says nothing and drops no key**: the notice and the
+      dropped key (entry 21) are for a workspace removed from outside, known by no binding of
+      this viewer running when it is found gone. Driven: after `C-b w x`, yes, the next keys
+      went to the workspace shown next.
+    - Notes, not changed: a paste handed to a holder that reads it only after its workspace was
+      renamed names the old path and is lost (the file is where it was; a path that survives a
+      rename would be one in the session's directory, a change to where pastes live). Seat 4's
+      later notes: its 2 (the copy's recipe after a workspace rename) and 4 (a stale list) are
+      closed by the above; its 1 (an outside edit landing while a binding runs is not fitted),
+      3 (a workspace moved to a name that is none) and 5 (`.view.new-*` left after a rename
+      error, in the core's `view_dir`) are as they were.
+    - Lines: production 5,924 → 5,986. Over the 5,900 band by 86: the two words, the listing of
+      held directories and the script are the fixes themselves; nothing was found to pay with.
+25. **Round 3's two must-fixes (2026-11-19; eight seats, both 8 of 8 "now").**
+    - **Closing a workspace removes only what fux3 made.** It ends the panes the workspace
+      lists, removes `.view` and `.recipes` (their files, never a directory in them) and then
+      the directory it holds, which must be empty by then. Anything else in the workspace (a
+      user's file or directory, a pane starting or ending under a name nothing lists, a
+      directory it cannot read) refuses the close before any pane is ended, naming what is
+      there: "workspace W stays, and no pane was ended: it holds NAMES, which is no pane of
+      it". Gone: `empty` (the recursive delete, which removed a user's `notes/` with the
+      workspace) and `held` (the lock scan by depth, which a directory it could not read
+      defeated). A pane that does not end in 12 s still refuses, after the others ended.
+    - **The notice and the dropped key after a workspace went** are skipped only for this
+      viewer's own close of that workspace: `close-workspace` tells the viewer which directory
+      it is closing before it starts, and the next `Reread` ends that. Entry 24's test (any
+      binding running) let a key through to a replacement workspace's program while an
+      unrelated binding ran.
+    - **The copy's pane writes no recipe**: `(start-once PREFIX PROGRAM…)` is `start-new` with
+      `fux3 start --no-recipe`. `forget-recipe` is gone: it removed a recipe the user had saved
+      as `history-1`, after the copy had written over it.
+    - **The copy's script checks the id in the directory it has entered**: `enter ID` goes into
+      each pane directory and reads `id` there, so the directory read (and, at the end, the
+      one whose `ctl` gets the kill) is the one verified, whatever it is called by then. With
+      no `history` (a rotation between rename and create) it reads `history.1`.
+    - Lines: production 5,986 → 5,984. The close lost `empty` and `held`; `remove_own`, the
+      listing of what else is there, `start-once` and the viewer's "closing" took most of it back.
+26. **The fix check (2026-11-19, the last pass): four changes.**
+    - **The copy's pane ends itself, tested again.** `the_copy_leaves_a_recipe_under_its_name_alone`
+      renames the open copy's pane, starts another under its old name, ends the editor: the
+      renamed one goes, the other still runs. The check went with the test entry 25 replaced.
+    - **A close that has ended panes says so, at once.** What only shows after the panes end (a
+      file of the user's in a pane's directory, another pane inside one: the holder leaves them
+      in `.gone-ID`) cannot be seen before without entering pane directories, so this close does
+      end the panes. It then stops as soon as what is left is held by nobody (looked at under
+      the session's lock, after clearing once more), instead of waiting 12 s for it "to end",
+      and says "workspace W stays: its panes were ended, and NAME is left, holding what its
+      pane did not make". Nothing is removed. A pane that really does not end still gets its
+      12 s and "did not end".
+    - **`view_dir` removes the staging directory it lost through the handle it holds**, then the
+      name: `remove_own` takes the open directory and never looks the name up again.
+    - **"My own close" means the close removed the directory.** `close-workspace` says when it
+      begins and, only on success, that it is done. While it runs, a viewer that finds the
+      workspace gone waits for that word; a failure (someone else took the workspace away
+      meanwhile) leaves the going an outside one: the notice, and the next key dropped.
+    - Lines: production 5,984 → 6,015 (over the 5,900 band by 115, and 16 over where the viewer
+      started). The leftover check and its message are most of it.

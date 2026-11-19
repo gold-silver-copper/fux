@@ -33,20 +33,32 @@ echo "send $HOME/paste.txt" > "$D/main/build/ctl" # a send of any size up to 16 
 ls "$D"                                     # the workspaces: main
 ls "$D/main"                                # its panes: build
 fux3 view                                   # workspace main as fux shows it (see "The viewer"); C-b d detaches
-D=$(fux3 dir); echo "split build right" > "$D/main/.view/ctl" # in another terminal, while the viewer runs
-echo kill > "$D/main/build/ctl"             # ends the program and all it started; the directory goes
+fux3 view main --do "split build right"     # a layout command: an edit of the layout file, viewer or no viewer
+mkdir "$D/rig" && mv "$D/main/build" "$D/rig/server"  # the live pane, moved and renamed: still the same pane
+printf 'echo hi\n' > "$D/rig/server/in" && cat "$D/rig/server/screen"
+echo kill > "$D/rig/server/ctl"             # ends the program and all it started; the directory goes
 ```
+
+(Typed by hand, each `cat` shows what the line before did. A script is faster
+than the program: the screen follows a write to `in` by a few milliseconds,
+so wait for it with `fux3 wait` or a short poll.)
+
+**The rule.** A pane is its directory and its id; a workspace is its
+directory; a name is only where one is listed right now. Whoever acts on one
+opens it once and stays on that object. A pane gets its name by one rename
+once it is whole, and loses it by one rename before it is taken apart. A
+layout command is an edit of the layout file, not a message to a process.
 
 ## The commands
 
 | Command | What |
 |---|---|
 | `fux3 dir` | prints the session directory, making it if missing |
-| `fux3 start [WORKSPACE/]NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane in WORKSPACE (default `main`, made if missing); prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, 4096 bytes to 256 MiB), `--label KEY=VALUE` (up to 16), `--env NAME=VALUE` (a variable for the program, kept in its recipe). With no program, the workspace's recipe of that name runs if there is one (see "Recipes"), else `$SHELL` |
+| `fux3 start [WORKSPACE/]NAME [OPTIONS] [-- PROGRAM ARGS...]` | starts a pane in WORKSPACE (default `main`, made if missing); prints its directory. The program defaults to `$SHELL`. Options: `--size COLSxROWS` (default: the terminal it is run in, else 80x24; at most 500x200), `--cell WxH` (a cell's size in pixels for pictures; default: the terminal's, else 10x20), `--no-pictures`, `--history BYTES` (default 4 MiB, 4096 bytes to 256 MiB), `--label KEY=VALUE` (up to 16), `--env NAME=VALUE` (a variable for the program, kept in its recipe), `--no-recipe` (write none), `--workspace-id DEV:INO` (refused with "workspace W was removed" unless the workspace's directory is that one, as `stat` numbers it: for a caller that named the workspace earlier, as the viewer does). With no program, the workspace's recipe of that name runs if there is one (see "Recipes"), else `$SHELL` |
 | `fux3 ls` | lists the live panes, as `WORKSPACE/NAME` |
 | `fux3 wait [WORKSPACE/]NAME [--ms N]` | waits until the pane's screen changes (default 10000 ms), prints its new line 1; exit 1 if nothing changed in time |
-| `fux3 put [WORKSPACE/]NAME [TEXT]` | writes TEXT (else stdin; at most 512 bytes) to the pane's `in`: whole, or refused saying why (no pane, a dead holder, input full), never waiting |
-| `fux3 view [WORKSPACE] [--do LINE]` | the viewer of a workspace (below); with `--do`, one layout command applied with no viewer running |
+| `fux3 put [WORKSPACE/]NAME [TEXT]` | writes TEXT (else stdin; at most 512 bytes) to the pane's `in`: whole, or refused saying why (no pane, a dead holder, a program that is not running or a `status` that cannot be read, input full), never waiting |
+| `fux3 view [WORKSPACE] [--do LINE]` | the viewer of a workspace (below); with `--do`, one layout command's edit of the layout file, with or without a viewer running |
 
 Every `fux3` command but `put` first clears the leftovers of panes whose holder is gone,
 in every workspace. Pane and workspace names are 1 to 32 of `a-z 0-9 _ -`,
@@ -56,32 +68,78 @@ starting with a letter or digit; a pane's name is unique in its workspace.
 
 A workspace is a directory of the session, and a pane a directory of its
 workspace: `$D/rig/build/`. `ls "$D"` lists the workspaces, `ls "$D/rig"` a
-workspace's panes. A workspace is made when its first pane starts (or by
-`mkdir -m 700 "$D/rig"`) and has no file, process or state of its own but the
-viewer's `.view/` (its layout). An empty workspace stays until you remove it
-(`rm -r "$D/rig/.view" "$D/rig/.recipes"; rmdir "$D/rig"`: a viewer makes `.view`, a start `.recipes`). A pane's
-workspace is fixed when it starts.
+workspace's panes. A workspace is made when its first pane starts, or by
+`mkdir "$D/rig"`, and has no file, process or state of its own but the
+viewer's `.view/` (its layout) and `.recipes/`. An empty workspace stays until
+you remove it (`rm -r "$D/rig/.view" "$D/rig/.recipes"; rmdir "$D/rig"`).
 
 Ending a workspace is ending each pane in it:
 
 ```sh
-fux3 ls >/dev/null; for p in "$D/rig"/*/; do echo kill > "${p}ctl"; done
+for c in "$D/rig"/*/ctl; do echo kill 1<>"$c"; done
 ```
 
-(`fux3 ls` first clears dead panes, whose `ctl` would block the writer.)
+(`1<>` opens the FIFO to read and write, so the open never waits, even on a
+dead pane's: see "Two hazards".)
+
+### Moving and renaming a pane
+
+`mv` moves or renames a live pane, within a workspace or between workspaces
+of one session:
+
+```sh
+mv "$D/main/build" "$D/main/server"         # renamed
+mv "$D/main/server" "$D/rig/"               # moved to workspace rig
+```
+
+A workspace is renamed the same way (`mv "$D/rig" "$D/rig2"`): its panes run
+on, its recipes go with it, and a viewer showing it follows.
+
+A moved pane is the same pane: the same id, the same program, every file kept current
+where it is now, `in` and `ctl` still read, and `fux3 ls` lists it under its
+new name. The holder works through its directory, never through a path. What
+follows from "a name is only where it is listed":
+
+- **The id is the pane.** `id` in its directory and line 1 of `screen` hold
+  it; `status` names no workspace and no pane. A program finds its own pane,
+  wherever it was moved, with `grep -lx "$FUX3_PANE_ID" "$FUX3_DIR"/*/*/id`.
+  `FUX3_WORKSPACE`, `FUX3_PANE` and `FUX3_PANE_DIR` say where the pane was
+  **when it started**, and are not changed by a move.
+- **The recipe stays** under the name the pane started with: move it too if
+  you want `fux3 start` to find it (`mkdir -p "$D/rig/.recipes" && mv
+  "$D/main/.recipes/build" "$D/rig/.recipes/server"`).
+- **Names are not checked on a move.** A pane moved to a name outside the
+  rule (`Build`, `.x`) lives on but is not listed by `fux3 ls` or the viewer
+  and is never cleared when it dies: move it back. The 128-pane limit is
+  checked when a pane starts, not when one is moved in.
+- **`mv a b` onto an existing pane `b` nests**: `a` becomes `b/a`, as `mv`
+  does with any directory. `a` lives on, unlisted; `mv "$D/main/b/a"
+  "$D/main/a"` brings it back. A kill of `b` removes only what `b`'s holder
+  made, never `a`: `b`'s directory then stays, without its name
+  (`.gone-ID`), until `a` is moved out or ended and a `fux3` command runs.
+- **`mv` to another filesystem is a copy and a delete.** The copy is dead
+  files: nothing reads its `in`, and `fux3 put` refuses it. The delete
+  removes the live pane's directory while its holder and program run on,
+  listed nowhere: end them with `kill "$(sed -n 's/^holder //p'
+  COPY/status)"` (a holder's SIGTERM is its `kill`). A session directory is
+  one filesystem; this happens only when moving a pane out of the session.
+- **The viewer** finds a tile's pane by id: see "The viewer".
 
 A program in a pane finds itself in its environment: `FUX3_DIR` (the
-session), `FUX3_WORKSPACE`, `FUX3_PANE` (its name), `FUX3_PANE_ID` (the id
-on line 1) and `FUX3_PANE_DIR` (its directory).
+session) and `FUX3_PANE_ID` (the id on line 1), which stay true; and
+`FUX3_WORKSPACE`, `FUX3_PANE` (its name) and `FUX3_PANE_DIR` (its
+directory), true when it started.
 
 The session directory is `$FUX3_DIR` if set (an absolute path), else
 `$XDG_RUNTIME_DIR/fux3` on Linux and `~/Library/Caches/fux3` on macOS. It and
 everything fux3 makes in it are private to you (0700 and 0600); fux3 refuses
-a session directory anyone else can open. Keep it under directories only you
+a session directory anyone else can open (what is in it, a workspace made
+with `mkdir` among it, is behind that directory whatever its own mode). Keep it under directories only you
 can change (as `$XDG_RUNTIME_DIR` and your home are): fux3 checks the
 directory itself, not its parents, and not ACLs on macOS. A holder's command
-line (`ps`) shows the session's path, the pane's name and labels, and its
-program, as any program's arguments are shown; `--env` values are not on it.
+line (`ps`) is `start`'s own: the pane's name, its options (labels among
+them) and its program, as any program's arguments are shown; `--env` values
+are not on it.
 
 ## The pane directory
 
@@ -97,6 +155,7 @@ program, as any program's arguments are shown; `--env` values are not on it.
 | `errors` | the last 32 refusals, a line each |
 | `images/N.sixel` | one picture the program drew, as sixel: `cat` shows it in a sixel terminal |
 | `exit` | there once the program has ended: its state line (`state exited 3`) |
+| `id` | the pane's id (16 hex digits) and a newline, there from before the pane has its name: what makes a directory a pane's |
 
 **Line 1** of `screen` and `screen.styled` is the same in both:
 
@@ -125,8 +184,6 @@ Writing text over any cell of a picture removes the whole picture.
 ```
 id 3f9a04c2b18e7d65
 version 42
-workspace main
-name build
 size 80 24
 cell 10 20
 pictures on
@@ -145,8 +202,8 @@ refused 1
 queued 0
 ```
 
-`state` is `running`, `exited CODE`, `signalled NAME`, or `kill-incomplete
-WHAT`. `pid` is the program's (`none` once it is gone), `holder` the holder's.
+`state` is `running` (`starting` for an instant before the program is
+started), `exited CODE`, `signalled NAME`, or `kill-incomplete WHAT`. `pid` is the program's (`none` once it is gone), `holder` the holder's.
 `keys` and the mode lines say how the program asked for its input. `commands`
 counts the lines `ctl` has taken, refused ones included; `refused` those
 refused; `queued` the bytes waiting for the program. When writing the files
@@ -156,7 +213,32 @@ files stay.
 **`history`** is plain text, never the program's raw bytes: raw bytes shown in
 a terminal replay escape codes, make that terminal answer the program's
 queries into your shell, and let a pane's program attack whoever tails it. A
-soft-wrapped line is one line. `less +G` or `tail -F` reads it. It is appended to, so a read while output pours in may end in the middle of a line; the next read has the rest. Each file holds at most half the cap (`--history`, default 4 MiB): past it, `history` is renamed `history.1` (the older `history.1` goes) and a new `history` starts. `tail -F history` follows the new file and repeats nothing; it sees every line once as long as it looks again before the new file fills too (it looks once a second): under a flood with a small cap a whole generation can come and go between two looks, and is then only in `history.1`, or gone. `tail -f` stops at the old file. `cat history.1 history` is everything kept, in order, under the cap; what neither holds is gone. A resize takes what scrolled off before it; lines the resize itself pushes off the screen are not added.
+soft-wrapped line is one line. `less +G` or `tail -F` reads it.
+
+`history` is **records**: a record is a line with its newline, at most
+min(cap/2, 64 KiB) bytes (`--history` sets the cap, default 4 MiB, so 64 KiB
+unless the cap is under 128 KiB). A line longer than that comes as pieces,
+each a record ending ` [fux3: continued]`; taking that mark and the newline
+after it out gives the line back:
+
+```sh
+cat history.1 history | perl -pe 's/ \[fux3: continued\]\n//'
+```
+
+Only whole records are written, so a read never ends inside one, and a line
+still being printed (no newline yet) appears once it ends or once it is long
+enough for a piece. Each file holds at most half the cap: a record that does
+not fit starts a new file, `history` being renamed `history.1` (the older
+`history.1` goes). So rotation falls only between records. `tail -F history`
+follows the new file and repeats nothing; it sees every record once as long
+as it looks again before the new file fills too (it looks once a second):
+under a flood with a small cap a whole generation can come and go between
+two looks, and is then only in `history.1`, or gone. `tail -f` stops at the
+old file. `cat history.1 history` is everything kept, in order, under the
+cap; what neither holds is gone. When the program ends with the start of a
+wrapped line scrolled off and its rest still on the screen, that start is
+written as a piece. A resize takes what scrolled off before it; lines the
+resize itself pushes off the screen are not added.
 
 ## `ctl`
 
@@ -235,10 +317,22 @@ the first start inherited `start`'s:
 
 ```sh
 #!/bin/sh
+# fux3 size 120x40
+# fux3 label role=tests
 cd -- '/home/me/src' || exit 126
 RUST_LOG='debug'; export RUST_LOG
 exec 'cargo' 'watch' '-x' 'test'
 ```
+
+The two comment lines keep the start's size and labels: a start from the
+recipe has them again unless `--size` or `--label` say otherwise, so a
+template's tab that matches on a label finds the pane it started. A program
+whose name starts with `-` is run through `env` (`exec env -- '-x'`), as
+`exec` would read it as an option: such a program replays only where `env`
+is on `PATH`, and not if its name holds `=`. A name `sh` keeps for itself
+(`PPID`, `UID`, `EUID`, `BASHOPTS`, `SHELLOPTS`, `BASH_VERSINFO`) is refused
+by `--env`, as its recipe could not run. The recipe is written last, once the
+pane runs: a start that fails leaves the recipe of the last good one.
 
 It is written aside and renamed in, at most 64 KiB (a start whose recipe would
 be larger is refused), and it lives outside the pane's directory, so a kill
@@ -264,31 +358,81 @@ Linux the holder is the subreaper of everything the program started, so a
 
 **Panes started inside a pane are part of it.** One kill ends a task and
 everything it started, panes included: on Linux, a `fux3 start` run inside a
-pane makes a holder that pane's holder adopts, so killing the outer pane ends
-the inner one too. Its holder is killed outright, so its folder stays, with `status` still saying `running`, until the next `fux3` command clears it (as with any holder killed outright, below). A viewer
-run inside a pane starts its shells inside that pane, so killing that pane
-ends them. On macOS the inner pane's holder left the outer pane's session and
-cannot be found, so it outlives the outer pane: end it with
-`echo kill > "$D/WORKSPACE/NAME/ctl"`. When
-everything is gone the directory is removed and the holder exits. When
-something could not be killed, the directory stays, `state` says
-`kill-incomplete` and what is left, and you may send `kill` again. On macOS a
-process that left the program's session and was re-parented away cannot be
-found, and is not reported.
+pane makes a holder that pane's holder adopts, and the outer pane's kill asks
+it to end (SIGTERM, which to a holder is its own `kill`), so the inner pane
+takes itself apart: its program ends, its directory goes. An inner holder
+that has not ended in a second is killed outright, and the outer kill then
+clears its directory itself. Either way no inner directory outlives the
+outer kill, and no later command is needed. A viewer run inside a pane
+starts its shells inside that pane, so killing that pane ends them. On macOS
+the inner pane's holder left the outer pane's session and cannot be found,
+so it outlives the outer pane: end it with its own `ctl`.
+
+`kill HOLDER` (SIGTERM to the holder, whose pid is `holder` in `status`) is
+the same as `kill` written to `ctl`.
+
+Once the processes are gone (which takes up to a second when a pane
+started inside does not end at once: until then the pane keeps its name and
+its `state`), the kill takes the pane's name away, by one rename (to
+`.gone-ID` in its workspace; `.gone-ID-N` if a copy of the pane has that),
+and only then stops writing and removes the
+files: the name is free for a new pane from that rename on, however slow
+the disk, and a holder that dies in between leaves a nameless directory the
+next `fux3` command clears.
+Only the files a holder makes are removed: anything else you put in a
+pane's directory stays, in that nameless directory. When something could not
+be killed, the directory keeps its name, `state` says `kill-incomplete` and
+what is left, and you may send `kill` again. On macOS a process that left
+the program's session and was re-parented away cannot be found, and is not
+reported.
+
+An inner holder that had to be killed outright leaves, for the moment until
+the outer kill clears it, a FIFO nobody reads; and one whose pane is in
+another session, or was moved into another pane's directory, is not found
+by that clearing at all (the other session's next `fux3` command clears the
+first; the second waits to be moved back). Ending every pane, without ever
+waiting on a dead one:
+
+```sh
+for c in "$D"/*/*/ctl; do echo kill 1<>"$c"; done
+```
 
 ## Two hazards of plain files
 
-**A holder killed outright** (`kill -9`, a crash) leaves its directory until
-the next `fux3` command clears it. Until then `ls "$D/main"` shows it, its `status`
-still says `running`, and **`printf … > in` blocks for ever**: a FIFO with no
-reader blocks its writer in `open`. `fux3 ls` tells live panes from dead ones
-(and clears the dead), but checking first is no guard: a holder killed
-between the check and the write still hangs the writer. A write that cannot
-hang opens `in` without waiting: `fux3 put`, or with plain tools the same in
-one line of Perl, which Linux and macOS both ship:
+**A holder killed outright from outside** (`kill -9`, the kernel out of
+memory) can clean nothing up: its directory stays, with its name, until the
+next `fux3` command clears it. Until then `ls "$D/main"` shows it, its
+`status` still says `running`, it has no `exit`, its program runs on if it
+ignores the hangup it gets when its terminal goes, and **a plain write to its
+`in` or `ctl` blocks for ever**: a FIFO with no reader blocks its writer in
+`open`. Checking first is no guard: a holder killed between the check and
+the write still hangs the writer. Two ways are safe:
+
+- **`fux3 put`** for `in`: it opens without waiting and refuses at once,
+  saying why (no pane, a dead holder, a program that is not running, input
+  full).
+  It opens the pane once and asks everything of that directory, so a new
+  pane that takes the name meanwhile is never typed into.
+- **Any `fux3` command first** (`fux3 ls`): it clears the dead, so their
+  FIFOs are gone and a write fails ("No such file") rather than blocks. A
+  holder killed after it still blocks: for a script that must never hang,
+  open the FIFO to read and write, which never waits:
 
 ```sh
-printf 'echo hi\n' | fux3 put main/build
+printf 'echo hi\n' | fux3 put main/build              # in: whole, or refused
+echo kill 1<>"$D/main/build/ctl"                       # ctl: the open never waits; a dead pane takes nothing
+for c in "$D"/*/*/ctl; do echo kill 1<>"$c"; done      # kill every pane; waits on no dead one
+```
+
+`1<>` on a dead pane's FIFO succeeds and the line goes nowhere: right for
+`kill`, and the reason `in` wants `fux3 put`, which says so. What never
+waits is the open. The write of a line waits only while the FIFO is full
+(64 KiB of commands nobody has read), which a live holder does not leave
+and a dead pane's FIFO cannot reach with a few kills. With plain
+tools only, the same open as `put`'s in one line of Perl, which Linux and
+macOS both ship:
+
+```sh
 printf 'echo hi\n' | perl -e 'use Fcntl; read(STDIN, my $t, 513); length $t <= 512 or die "over 512 bytes\n"; sysopen(F, shift, O_WRONLY|O_NONBLOCK) or die "$!\n"; syswrite(F, $t) == length $t or die "$!\n"' "$D/main/build/in"
 ```
 
@@ -296,6 +440,9 @@ Both refuse at once when nobody reads `in` ("No such device or address") or
 the pane is gone, and write at most 512 bytes whole. Both read their text from
 stdin to its end first, so they wait for whatever writes it. `fux3 put` takes
 no lock and clears no dead pane: it never waits.
+
+A holder ended any other way (its `kill`, SIGTERM, an outer pane's kill)
+takes its directory with it.
 
 **A write over 512 bytes to `in`** may arrive in pieces, mixed with another
 writer's. Use `send` for anything long.
@@ -313,9 +460,10 @@ Things fux3 needs no code for, each with its limit:
   frame, even after the pane is gone (the next publish replaces the name, not
   the file). A hard link stays on one filesystem (the session is a tmpfs on
   Linux): elsewhere, `cp` to a temporary file beside the destination, then `mv`.
-- **Staying on one pane.** `cd "$D/main/build"` and use relative paths: after a
-  kill and a new pane under the same name, the old directory's files are gone
-  and nothing you write reaches the newcomer.
+- **Staying on one pane.** `cd "$D/main/build"` and use relative paths: they
+  follow the pane when it is renamed or moved, and after a kill and a new pane
+  under the same name, the old directory's files are gone and nothing you
+  write reaches the newcomer.
 - **Write-protecting a pane.** `chmod u-w "$D/main/build/in" "$D/main/build/ctl"`
   refuses every new open for writing at once; a writer that already has one
   open (a viewer that has typed) keeps it until it closes it. `chmod u+w` gives
@@ -373,27 +521,51 @@ tab.
 D=$(fux3 dir)
 fux3 start build -- sh
 fux3 view                                       # workspace main; runs fux3-view with FUX3_DIR set
-fux3 view main --do 'zoom build'                # a layout command with no viewer running
+fux3 view main --do 'zoom build'                # a layout command: an edit of main's layout file
 fux3 view rig                                   # workspace rig, made if missing
 ```
 
-From another terminal, while a viewer of `main` runs:
+From another terminal, with or without a viewer of `main` running:
 
 ```sh
-D=$(fux3 dir)
-echo "split build right" > "$D/main/.view/ctl"  # every viewer of main changes
+fux3 view main --do "split build right"         # every viewer of main shows it within a second
 ```
 
 `fux3 view [WORKSPACE]` shows WORKSPACE (default `main`, made if missing, as
 `fux3 start` does). The workspace keys go over the session's workspaces, the
 directories of `$D`, by name: next, previous, a list, new (a name at a prompt:
 the directory is made and a shell started in it) and close (asks, then ends
-each pane, waits for them to go, and removes the directory, `.view` and all).
+each pane, waits for them to go, and removes `.view`, `.recipes` and then the
+directory; it never removes what fux3 did not make).
+
+Closing a workspace stops **before ending any pane** when the workspace
+itself holds something that is not one of its panes, `.view` or `.recipes`: a
+file or directory of yours, or a pane that is still starting or ending. It
+**ends the panes and then stops** when what is in the way only shows once
+they have ended: something no pane made inside a pane's own directory (a
+file you put there, or another pane you moved into it), which the pane leaves
+behind as `.gone-ID`; or a pane that does not end within 12 s. Either way it
+says which: move it out and close again.
+
 A viewer whose workspace's directory goes shows the first one left, else a new
 `main`. Each viewer remembers, for each workspace it has shown, the tab and
-focus it left there. Workspaces have no rename (a directory renamed under live
-holders moves their files away from them) and no order but their names'; a
-pane stays in the workspace it started in.
+focus it left there. Workspaces have no order but their names'.
+
+**A tile belongs to a pane's id.** Rename a pane (`mv "$D/rig/a" "$D/rig/c"`)
+and its tile, the focus and your keys stay with it; the layout file takes the
+new name at the next layout command (until then a renamed pane that ends
+shows its old name on its `gone` tile). `NAME@ID` in a layout command finds
+the pane by its id, whatever it is called now. A bare tile (`pane NAME`) is a
+name: it shows whichever pane has that name. Move a pane to another workspace
+and its tile here stays, marked `NAME gone`, until you close it; in the other
+workspace it is placed like any pane with no tile.
+
+**A removed workspace.** A viewer, a `--do` and a confirmation each act on
+the workspace's directory as it was when they began. If it was removed
+meanwhile they fail with `workspace W was removed`, even when another
+workspace has the name by then (nothing meant for the old one lands in the
+new one); a viewer then shows the workspace that has the name now, else the
+first one. A pane a layout command starts goes to that same directory.
 
 ### What it reads and writes
 
@@ -406,10 +578,9 @@ Paths are in the workspace shown, `$D/WORKSPACE/`.
 | `NAME/images/N.sixel` | the pictures the screen names: one whole in its tile is written as it is, at its place, when this terminal's DA1 says it draws sixel, if the file is one sixel alone (it starts with `ESC P` and holds no `ESC` but its closing `ESC \`); else its cells stay blank |
 | `NAME/in` | your keys, encoded for the mode `status` gives (`keys`); Enter is CR LF under `newline-mode on`; at most 512 bytes a write, queued (64 KiB at most) while the pipe is full |
 | `NAME/ctl` | `resize COLS ROWS` (only the fit step below), `paste PATH`, and whatever your grift sends (`kill`, `signal NAME`) |
-| `NAME/history` | paged in a pane of its own by `C-b c` |
+| `NAME/history.1`, `NAME/history`, `NAME/screen` | copied into one text for `C-b c` (below) |
+| `NAME/id` | which pane a directory is: a tile's pane is found by it after a rename |
 | `.view/layout`, `.view/layout.lock` | the workspace's layout, shared by every viewer of it (below) |
-| `.view/ctl`, `.view/ctl.lock` | a FIFO of layout commands for this workspace. One viewer showing the workspace reads it at a time, the one holding the lock on `ctl.lock`, so no two split a line; the others try again every second. The reader makes it, and removes it when it shows another workspace or leaves; another viewer of the workspace takes over within a second. So with no viewer, `echo LINE > .view/ctl` makes a regular file, whose lines the next viewer of the workspace runs when it comes. A viewer killed outright leaves the FIFO, and a writer then waits for a reader (guard it as for `in`, below, or use `--do`) |
-| `.view/errors` | the last 32 refused `.view/ctl` lines, `LINE: WHY`, replaced whole |
 | `.view/paste-PID-N` | a paste's text, 0600, removed 10 s after the `paste` command, or when the viewer leaves (a paste under 1 s old gets the rest of that second first) |
 
 The workspace's directory is listed again once a second and whenever the
@@ -458,10 +629,22 @@ one command that does.
 
 ### Layout commands
 
-One line each, acting on one workspace's layout: written to its `.view/ctl` (a
-viewer of it takes it), run with `fux3 view [WORKSPACE] --do 'LINE'` (prints
-what it did; a refusal goes to stderr, exit 1), or from grift with `(arrange
-LINE)` (the workspace shown). `PANE` is `NAME` or `NAME@ID`, a pane of that
+One line each. A layout command is an edit of one workspace's layout file,
+made under its lock, not a message to a viewer: run it with `fux3 view
+[WORKSPACE] --do 'LINE'` (with or without a viewer running; it prints what it
+did; a refusal goes to stderr, exit 1), or from grift with `(arrange LINE)`
+(the workspace shown). Every viewer of the workspace shows the edit within a
+second.
+
+Before this, a line was written to a FIFO a viewer read; now:
+
+```sh
+# before: echo "split build right" > "$D/main/.view/ctl"   (needed a viewer reading; refusals in .view/errors)
+fux3 view main --do "split build right"          # now: an edit of the file; the refusal is stderr and exit 1
+```
+
+`.view/ctl`, `.view/ctl.lock` and `.view/errors` are gone, and so is the grift
+`layout-command`. `PANE` is `NAME` or `NAME@ID`, a pane of that
 workspace, or `NAME@`, a bare tile no pane has (closing it takes only that tile); `TAB` is `tN` (the tab with that id, if there is one) or a title no
 other tab has; `DIR` is `left`, `right`, `up` or `down`; a title with spaces is
 quoted, `"like this"`. A quoted word is never a keyword: `tab new "match"` makes
@@ -490,9 +673,14 @@ moved to another tab where its tile has the same place and size is not listed.
 terminal resize no pane: a tile clips or pads it. The shipped commands end by fitting the
 panes they changed, once (`resize COLS ROWS` on each one's `ctl`, the size of
 its tile in the viewer that ran the command): that step is the library's
-`edit!`; `.view/ctl` lines go through `layout-command`, which is `edit!`.
-Define `layout-command` as `arrange` in your config to leave sizes alone. `C-b
-f` fits the focused pane by hand. `--do` fits nothing.
+`edit!`. `C-b f` fits the focused pane by hand.
+
+`--do` knows no viewer's size, so it fits no pane to its tile. A running
+viewer that sees an edit from outside (at its once-a-second look) fits the
+panes whose tiles the edit changed; with no viewer running nothing is fitted:
+send `resize` to the `changed` panes yourself, or press `C-b f` later. With
+two viewers of different sizes on one workspace, each fits, and the last one
+to look sets the size.
 
 ### Templates
 
@@ -502,8 +690,7 @@ turn the running workspace `rig` into a template `$T`:
 
 - A recipe stays after its pane is gone, so starting every recipe starts
   closed panes again too. Remove the recipes of panes the template should not
-  start, among them any history pager's (`history-N`; a pager that ends by
-  itself removes its own).
+  start (a `C-b c` copy's pane, `history-N`, leaves no recipe).
 - The layout may hold two tiles of one name (an ended life's beside the new
   one's). Close the one you don't want (`fux3 view rig --do 'close NAME@ID'`)
   before stripping the ids: the reader refuses two `pane NAME`.
@@ -511,7 +698,7 @@ turn the running workspace `rig` into a template `$T`:
 Then copy the recipes and strip the ids from the layout:
 
 ```sh
-T=~/templates/rig; mkdir -p -m 700 "$T" && mkdir -m 700 "$T/.view"
+T=~/templates/rig; mkdir -p "$T/.view"
 cp -Rp "$D/rig/.recipes" "$T/" && rm -f "$T/.recipes"/history-*
 sed -E 's/^( +([0-9]+ )?(pane|zoom) [^@ ]+)@[0-9a-f]{16}$/\1/' "$D/rig/.view/layout" > "$T/.view/layout"
 ```
@@ -520,12 +707,14 @@ To start it as the workspace `new`, copy the skeleton in and start every
 recipe (`fux3 start NAME` with no program runs the recipe of that name):
 
 ```sh
-mkdir -m 700 "$D/new" && cp -Rp "$T/.recipes" "$T/.view" "$D/new/"
+mkdir "$D/new" && cp -Rp "$T/.recipes" "$T/.view" "$D/new/"
 for r in "$D/new/.recipes"/*; do fux3 start "new/${r##*/}"; done
 ```
 
-Each pane takes its tile as it starts; no rebinding step. The directories are
-made 0700 because fux3 refuses a `.view` anyone else can open.
+Each pane takes its tile as it starts; no rebinding step. A recipe keeps its
+start's size and labels, so a pane started again from it passes the same
+tab filters (a tab with no filter takes every pane: put tabs that `match`
+before it).
 
 ### Keys
 
@@ -536,7 +725,7 @@ group opens that group's menu, and Escape closes it. `C-b` twice sends `C-b`.
 | Keys | |
 |---|---|
 | `C-b v` / `C-b s` | split side by side / stacked (a new shell) |
-| `C-b x`, `C-b z`, `C-b c`, `C-b f` | close pane (asks; ends it), zoom or restore, history in a pager, fit the pane to its tile |
+| `C-b x`, `C-b z`, `C-b c`, `C-b f` | close pane (asks; ends it, and its tile goes once it is gone), zoom or restore, history and screen in your editor, fit the pane to its tile |
 | `C-b h j k l`, `C-b o`, `C-b q` | focus left/down/up/right, next pane, last pane |
 | `C-b n`, `C-b b` | next / previous tab |
 | `C-b t n h l g r x`, `C-b t m h l` | tabs: new, previous, next, choose, rename, close; reorder |
@@ -548,6 +737,23 @@ group opens that group's menu, and Escape closes it. `C-b` twice sends `C-b`.
 
 Mouse: a click focuses a pane. Mouse events are never sent to programs. A paste goes to the focused pane through
 `paste` (bracketed if the program asked).
+
+**Copying.** `C-b c` opens the focused pane's history and then its screen as
+one text, at its end, in a pane below: `$EDITOR` if set, else `$PAGER`, else
+`less +G` (`vi`, `vim`, `nvim`, `nano` and `emacs` are opened on the last
+line; any other editor is given the file alone). Search and copy with the
+editor's own keys. The text is a copy, in a private file under the session
+directory (`.history-PANEID/`, removed when the editor ends): editing it
+changes nothing in the pane, and opening it resizes nothing (the pane copied
+keeps its size; its tile clips it while the editor is open; a second viewer
+of the workspace, seeing the layout change, does fit it). The pane is
+found by its id, and its screen is read once, when the key is pressed,
+before its history: no line is missing between them, and a line that
+scrolled off between the two reads can appear twice. When the editor ends,
+the pane ends itself and the viewer that opened it closes its tile; if that
+viewer was detached meanwhile, the tile stays, marked gone, until you close
+it (`C-b x`). `history` is a command in the library: define your own in
+`view.grift` to change any of this.
 
 ### Configuration: grift
 
@@ -572,18 +778,20 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 | `(arrange LINE)` | one layout command; its result lines |
 | `(fit-after RESULT)`, `(line-of KEY RESULT)` | fit the panes a result changed; a result line's value |
 | `(start-new PREFIX PROGRAM ARG…)` | starts `PREFIX-N` in the workspace shown, or in WORKSPACE (made if missing) for `WORKSPACE/PREFIX` (your shell if no program): `NAME@ID` |
-| `(close-workspace NAME)` | ends its panes, then removes its directory (refused, saying which, if a pane will not end within 12 s) |
+| `(hold-workspace NAME)` | holds the workspace's directory, as it is now, and gives its id: what a question about a workspace keeps while it waits for its answer |
+| `(close-workspace HELD)` | ends the panes of a workspace held and removes `.view`, `.recipes` and its directory, whatever it is called by then. Refused, with no pane ended, if the workspace holds anything else (it says what): nothing of yours is ever removed. Refused, saying which, if a pane will not end within 12 s |
+| `(start-once PREFIX PROGRAM ARG…)` | as `start-new`, but the pane writes no recipe (`fux3 start --no-recipe`): for a pane nobody starts again, as the copy's |
 | `(send PANE TEXT)` | to the pane's `in`, after keys typed before |
 | `(ctl PANE LINE)` | one line to the pane's `ctl` (`kill`, `signal INT`, …). A pane that is gone (its directory went, or another life has its name) raises `pane-gone`, any other failure `fux3-error`: closing a pane or a tab ignores only the first, and keeps the tile otherwise |
 | `(pick TITLE ROWS FUNCTION [KEYS])`, `(read-line PROMPT INITIAL FUNCTION)` | a list or a line to type; what is chosen goes to FUNCTION |
-| `(focus PANE)`, `(say TEXT)`, `(workspace-dir)`, `(quote TEXT)` | `workspace-dir`: the shown workspace's directory |
+| `(focus PANE)`, `(say TEXT)`, `(workspace-dir)`, `(quote TEXT)` | `workspace-dir`: the shown workspace's directory, as it is called now |
+| `(when-gone PANE FUNCTION)` | calls FUNCTION, once, when PANE (`NAME`, or one life `NAME@ID`) is gone from the workspace shown; at most 64 at a time |
 
 ```lisp
 ;; ~/.config/fux3/view.grift
 (bind-key "F7" "run the tests" "Mine"
   (lambda! () (send (focused) "cargo test\r")))
 (unbind-key "C-b n")
-(define! layout-command (lambda! (line) (arrange line)))   ; .view/ctl resizes nothing
 ```
 
 ### Where fux3's viewer differs from fux
@@ -608,9 +816,9 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 - **Keys typed while the keys load wait** in the terminal until the library,
   the default keys and your config have loaded (each part within its time).
 - **Workspaces are directories.** One viewer shows one workspace; there is
-  no workspace rename (`C-b w r`), reorder (`C-b w m`), or moving a pane to
-  another workspace (`C-b a w`, `C-b a W`): a pane's workspace is where it
-  started. The list and next/previous go by name.
+  no key for a workspace rename (`C-b w r`), reorder (`C-b w m`), or moving a
+  pane to another workspace (`C-b a w`, `C-b a W`): `mv` moves a pane (see
+  "Moving and renaming a pane"). The list and next/previous go by name.
 - **No swap.** `C-b a s` is gone; `move PANE DIR` swaps with a neighbour.
 - **No border dragging with the mouse.** A click focuses; borders move with
   `C-b r h j k l` or `border PANE DIR CELLS`.
@@ -619,13 +827,14 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
   in a pane of a session starts its new panes from inside that pane, so
   killing that pane ends them too. Run the viewer in your own terminal, or
   start panes with `fux3 start` from outside.
-- **Scrollback is a pager.** `C-b c` pages the pane's `history` in a pane of
-  its own (`$PAGER`, else `less +G`), which ends itself with the pager. There
-  is no copy mode and no editor history.
+- **Scrollback and copying are your editor.** `C-b c` opens the pane's history
+  and screen as one text in `$EDITOR` (else `$PAGER`, else `less +G`), in a
+  pane of its own, which ends itself with the editor (see "Copying"). There
+  is no copy mode.
 - **The cursor's shape** is not in the pane files: the viewer shows the
   terminal's default.
-- **Pane names, not titles.** Panes are not renamed (`C-b a r` is gone); tabs
-  are; workspaces are not (see above).
+- **Pane names, not titles.** There is no key to rename a pane (`C-b a r` is
+  gone): `mv` renames one, and its tile follows. Tabs are renamed.
 - **A new shell starts where the viewer runs**, not in the focused pane's
   directory, which the files do not say.
 - **Layout filters are set when a tab is made** (`tab new … match KEY=VALUE`).
@@ -641,7 +850,7 @@ loops freezes nothing, and detach (`C-b d`, a verb) works while it runs.
 | a server (fux) or a socket per pane (fux2) answering requests | files and two FIFOs; no request gets an answer, a client reads the effect |
 | a guarded send (refused if the screen changed) | not yet: line 1's id and version leave room for one |
 | screen patches and a blocking wait in the protocol | whole files; `fux3 wait` or `inotifywait` |
-| a copy mode | `history` in a pager |
+| a copy mode | history and screen as one text in your editor (`C-b c`) |
 | mouse reporting to programs | the viewer takes the mouse for itself |
 | respawn, dump and replay, crash takeover | none |
 | Windows (fux) | Linux and macOS only |

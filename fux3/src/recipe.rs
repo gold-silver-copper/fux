@@ -7,7 +7,7 @@ use crate::{Failure, io};
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The recipes' directory in a workspace.
 pub const DIR: &str = ".recipes";
@@ -29,29 +29,57 @@ pub fn quote(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Whether `name` may name an environment variable in a recipe.
+/// Names `sh` owns and will not take a value for (`bash`, which is
+/// `/bin/sh` on macOS, makes them read-only): a recipe setting one would
+/// not run, so a start naming one is refused.
+const OWNED: [&str; 6] = [
+    "PPID",
+    "UID",
+    "EUID",
+    "BASHOPTS",
+    "SHELLOPTS",
+    "BASH_VERSINFO",
+];
+
+/// Whether `name` may name an environment variable in a recipe: a
+/// variable's name, and none `sh` owns.
 pub fn check_env_name(name: &str) -> Result<(), Failure> {
     let mut chars = name.chars();
     let good = chars
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    match good {
-        true => Ok(()),
-        false => Err(Failure::new(format!(
+    match (good, OWNED.contains(&name)) {
+        (true, false) => Ok(()),
+        (true, true) => Err(Failure::new(format!(
+            "--env {name}: sh keeps that variable for itself, so the recipe could not run"
+        ))),
+        (false, _) => Err(Failure::new(format!(
             "bad variable name {name:?}: [A-Za-z_][A-Za-z0-9_]*"
         ))),
     }
 }
 
-/// The recipe of a program started in `cwd` with `env` and `argv`, or why
-/// not: past [`MAX_RECIPE`].
+/// Where a recipe keeps the start's size and labels: comment lines, which
+/// `sh` skips and a start with no program reads back ([`Kept`]).
+const SIZE: &str = "# fux3 size ";
+const LABEL: &str = "# fux3 label ";
+
+/// The recipe of a program started in `cwd` with `env` and `argv`, and
+/// what it keeps besides; or why not: past [`MAX_RECIPE`].
 pub fn render(
     cwd: &Path,
     env: &[(String, OsString)],
     argv: &[OsString],
+    kept: &Kept,
 ) -> Result<Vec<u8>, Failure> {
     let mut out = b"#!/bin/sh\n".to_vec();
+    if let Some((cols, rows)) = kept.size {
+        let _ = writeln!(out, "{SIZE}{cols}x{rows}");
+    }
+    for (key, value) in &kept.labels {
+        let _ = writeln!(out, "{LABEL}{key}={value}");
+    }
     out.extend_from_slice(b"cd -- ");
     out.extend_from_slice(&quote(cwd.as_os_str().as_bytes()));
     out.extend_from_slice(b" || exit 126\n");
@@ -60,7 +88,13 @@ pub fn render(
         out.extend_from_slice(&quote(value.as_bytes()));
         let _ = writeln!(out, "; export {name}");
     }
+    // A program whose name starts with `-` would be read as an option of
+    // `exec`'s by bash, and `exec --` is not every `sh`'s (dash runs `--`):
+    // `env --` runs it, in both.
     out.extend_from_slice(b"exec");
+    if argv.first().is_some_and(|p| p.as_bytes().starts_with(b"-")) {
+        out.extend_from_slice(b" env --");
+    }
     for word in argv {
         out.push(b' ');
         out.extend_from_slice(&quote(word.as_bytes()));
@@ -75,40 +109,53 @@ pub fn render(
     }
 }
 
-/// Where the recipe of `name` in the workspace directory `workspace` is.
-pub fn path(workspace: &Path, name: &str) -> PathBuf {
-    workspace.join(DIR).join(name)
+/// What a recipe keeps of its start besides the program: the size and
+/// the labels, so a pane started again from it is sized and found (by a
+/// template's tab that matches on a label) as it was.
+#[derive(Default)]
+pub struct Kept {
+    pub size: Option<(u16, u16)>,
+    pub labels: Vec<(String, String)>,
 }
 
-/// Writes the recipe of `name`, whole: aside, then renamed in, mode 0700.
-pub fn write(workspace: &Path, name: &str, text: &[u8]) -> Result<(), Failure> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let dir = workspace.join(DIR);
-    match fuxix::file::private_dir(&dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(io(dir.display(), e)),
+/// Reads back what `text`, a recipe, keeps. Lines it does not know are
+/// the script's.
+pub fn kept(text: &[u8]) -> Kept {
+    let mut kept = Kept::default();
+    // Its lines come before the script's, which may hold anything.
+    let text = String::from_utf8_lossy(text);
+    for line in text
+        .lines()
+        .skip(1)
+        .take_while(|l| l.starts_with("# fux3 "))
+    {
+        if let Some((cols, rows)) = line.strip_prefix(SIZE).and_then(|s| s.split_once('x')) {
+            kept.size = cols.parse().ok().zip(rows.parse().ok());
+        } else if let Some(Ok(label)) = line.strip_prefix(LABEL).map(crate::holder::parse_label) {
+            kept.labels.push(label);
+        }
     }
-    crate::session::check_private(&dir)?;
-    let aside = dir.join(format!(".{name}.new"));
-    let _ = std::fs::remove_file(&aside);
-    let written = std::fs::File::options()
-        .write(true)
-        .create_new(true)
-        .mode(0o700)
-        .custom_flags(fuxix::file::NOFOLLOW)
-        .open(&aside)
+    kept
+}
+
+/// Writes the recipe of `name` in the workspace held open as `workspace`,
+/// whole: aside, then renamed in, mode 0700.
+pub fn write(workspace: &std::fs::File, name: &str, text: &[u8]) -> Result<(), Failure> {
+    use fuxix::file::at;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = crate::session::private_dir(workspace, DIR, true)?;
+    // Its writer's own, so that two starts never share it.
+    let aside = format!(".{name}.{}.new", std::process::id());
+    let _ = at::remove_file(&dir, &aside);
+    let written = at::open(&dir, &aside, at::WRITE | at::NEW)
         .and_then(|mut file| {
             file.write_all(text)?;
             file.set_permissions(std::fs::Permissions::from_mode(0o700))
         })
-        .and_then(|()| std::fs::rename(&aside, dir.join(name)));
+        .and_then(|()| at::rename(&dir, &aside, &dir, name));
     written.map_err(|e| {
-        let _ = std::fs::remove_file(&aside);
-        io(
-            format!("writing the recipe {}", dir.join(name).display()),
-            e,
-        )
+        let _ = at::remove_file(&dir, &aside);
+        io(format!("writing the recipe {DIR}/{name}"), e)
     })
 }
 
@@ -136,7 +183,7 @@ mod tests {
         let odd = dir.join(format!("fux3 it's\nodd-{}", std::process::id()));
         std::fs::create_dir_all(&odd).map_err(|e| e.to_string())?;
         let env = vec![("FUX3_T".to_owned(), OsString::from("a'b"))];
-        let text = render(&odd, &env, &words).map_err(|e| e.0)?;
+        let text = render(&odd, &env, &words, &Kept::default()).map_err(|e| e.0)?;
         let out = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(OsString::from_vec(text))
