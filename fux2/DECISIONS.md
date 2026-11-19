@@ -225,3 +225,26 @@ a version every write advances, and every edit takes `--if VERSION`.
   not make.
 - **`fux2 page --close-pane` removes its tile** before ending its pane: the
   pane was made for the pager, so its tile has nothing to keep.
+
+## D-22: the viewer looks like fux (the owner, 2026-11-18)
+
+The owner: "I want the ux to be almost exactly that of fux as it is, in terms of
+how the UI looks that is". This settles the look; D-20's architecture stands.
+It supersedes the keys line of D-21 and #462's status line and title bars.
+
+- Drawn as fux draws: no titles, no status line, one-cell borders (stacked
+  tiles now have a border row, not a title row), green around the focused
+  pane; the bar hidden until the prefix, a repeating group, a list or a
+  prompt is open, then drawn over the last row (fux's D-49); notices in its
+  corner; the prefix menu, lists and prompts at the bottom right with fux's
+  lines, hints and colours (`bar`, `tab`, `keys`, `notice`, `error`, `panel`,
+  `border`, `border-focus`).
+- fux's default keys wherever fux2 has the command; fux2's own `C-b f` (fit)
+  and `C-b ?` (the key list) take keys fux leaves free.
+- Where fux has nothing to copy, fux2 differs and says so in its README: a
+  tile smaller than its pane shows `[cut NAME]` in the bar's corner, as fux
+  names a cut pane; an ended or missing pane's tile is marked in its corner;
+  layout refusals are error notices.
+- fux2 holds no code that knows fux: the look is reimplemented in the viewer
+  and its grift library. No screenshot tests: the PR shows fux's and fux2's
+  screens side by side as evidence.
