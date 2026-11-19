@@ -565,3 +565,43 @@ fn a_moved_pane_keeps_its_tile_by_its_id() -> Tested {
     assert!(out.status.success(), "{out:?}");
     Ok(())
 }
+
+/// A question is about the workspace it was asked of: once that one was
+/// removed, "close workspace" answered yes never closes the workspace made
+/// again under its name. The viewer says the workspace was removed, and
+/// the answer, typed before or after it noticed, reaches no pane.
+#[test]
+fn a_stale_yes_never_closes_or_types_into_a_workspace_made_again() -> Tested {
+    let lab = Lab::new("stale", "")?;
+    for (space, wait) in [("early", 0), ("late", 1500)] {
+        let pane = format!("{space}/p");
+        lab.start(&pane)?;
+        lab.viewer(space, "100x30", &[space])?;
+        lab.shows(space, "$")?;
+        lab.keys(space, b"\x02wx")?;
+        lab.shows(space, "close workspace")?;
+        let (dir, aside) = (lab.view.join(space), lab.view.join(format!(".old-{space}")));
+        std::fs::rename(&dir, &aside).map_err(|e| e.to_string())?;
+        fifo(&aside.join("p/ctl"), b"kill\n")?;
+        until("the old pane ended", || !aside.join("p").exists())?;
+        std::fs::remove_dir_all(&aside).map_err(|e| e.to_string())?;
+        lab.start(&pane)?;
+        std::thread::sleep(Duration::from_millis(wait));
+        lab.keys(space, b"y")?;
+        lab.shows(space, &format!("workspace {space} was removed"))?;
+        std::thread::sleep(Duration::from_millis(1500));
+        let listed = lab.run(&lab.view, &["ls"])?;
+        let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+        assert!(
+            listed.contains(&pane),
+            "{space}: the new pane was ended: {listed:?}"
+        );
+        let screen = std::fs::read_to_string(dir.join("p/screen")).unwrap_or_default();
+        let typed = screen.lines().any(|row| row.trim_end().ends_with("$ y"));
+        assert!(
+            !typed,
+            "{space}: the answer was typed into the new pane:\n{screen}"
+        );
+    }
+    Ok(())
+}

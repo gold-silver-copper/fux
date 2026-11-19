@@ -31,7 +31,8 @@ pub const CONFIG_TIME: Duration = Duration::from_secs(2);
 pub const BINDING_TIME: Duration = Duration::from_secs(5);
 /// The most text a binding run copies out of the language, over all its words.
 const MAX_COPIED: usize = 16 << 20;
-/// The most panes whose going a callback waits for.
+/// The most panes whose going a callback waits for, and the most
+/// workspaces a list holds.
 const MAX_WATCHED: usize = 64;
 /// The most keys in one chord.
 const MAX_CHORD_KEYS: usize = 4;
@@ -158,6 +159,8 @@ struct Host {
     /// what each of its keys calls.
     callback: Option<(u64, Vec<Kept>)>,
     next_callback: u64,
+    /// The workspaces `workspaces` last listed, each directory held.
+    named: Vec<Workspace>,
     /// What `when-gone` calls, by pane.
     gone: HashMap<String, Kept>,
 }
@@ -495,6 +498,11 @@ const WORDS: &[(&str, Word)] = &[
         let [] = *g.exactly(args)?;
         let session = &host.context.workspace.session;
         let names = session.workspaces().map_err(|f| failed(g, &f.0))?;
+        // Each is held from here: a name this list gave is that directory.
+        let held = names.iter().take(MAX_WATCHED);
+        host.named = held
+            .filter_map(|n| session.workspace(n, false).ok())
+            .collect();
         strings(g, &names).map(Answer::Now)
     }),
     ("tabs", |g, host, args| {
@@ -698,10 +706,17 @@ const WORDS: &[(&str, Word)] = &[
     ("close-workspace", |g, host, args| {
         let [name] = *g.exactly(args)?;
         let name = string_arg(g, host, name)?;
-        let session = &host.context.workspace.session;
-        let workspace = session
-            .workspace(&name, false)
-            .map_err(|f| failed(g, &f.0))?;
+        // The directory the name was given for (the one shown, or one the
+        // last list held), never whatever has the name by now.
+        let shown = &host.context.workspace;
+        let held = [shown]
+            .into_iter()
+            .chain(&host.named)
+            .find(|w| w.name == name);
+        let workspace = match held {
+            Some(held) => held.clone(),
+            None => (shown.session.workspace(&name, false)).map_err(|f| failed(g, &f.0))?,
+        };
         let outcome = crate::command::close_workspace(&workspace, &host.cancel);
         host.tell(ToViewer::Reread);
         match outcome {
@@ -909,6 +924,7 @@ pub fn start(
         next_generation: 0,
         callback: None,
         next_callback: 0,
+        named: Vec::new(),
         gone: HashMap::new(),
         cancel: Arc::clone(&cancel),
         fux3,
