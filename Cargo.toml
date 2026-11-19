@@ -1,0 +1,23 @@
+[package]
+name = "fux3"
+version = "0.0.0"
+edition = "2024"
+description = "A terminal multiplexer that is a view over directories: a pane is a directory kept by one small process"
+license = "MIT"
+publish = false
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"

@@ -1,0 +1,21 @@
+name: ci
+on:
+  push:
+    branches: [fux3-clean]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable && rustup component add clippy
+      - run: cargo build --release --locked
+      - name: no dependencies
+        run: test "$(grep -c '^name = ' Cargo.lock)" = 1
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked -- --test-threads 4
+      - run: ./example.sh
