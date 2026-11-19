@@ -38,7 +38,8 @@ waits, expire deadlines.
   subreaper of what its program leaves.
 - **Connections** have a five-second stall limit, and an answer has 30 seconds in
   all. At most 12 may be parked in a wait, and a newcomer at the limit displaces
-  the longest-idle connection, so a read or kill always gets a slot. A connection
+  a connection idle for over a second, so a read or kill gets a slot within 5 s,
+  or within 30 s when the others are slow readers of large answers (D-18). A connection
   given up on has its Windows write cancelled, so no thread stays behind.
 
 ## Versions and reads
