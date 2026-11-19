@@ -421,8 +421,11 @@ jobs:
             $failed += [int]($run.ExitCode -ne 0)
           }
           # fux2's viewer runs the user's key bindings only when not elevated.
-          # The test inherits this job's TEMP, so that user must be able to use it.
-          icacls $env:TEMP /grant '*S-1-5-32-545:(OI)(CI)M' /Q | Out-Null
+          # It gets a temporary folder of its own, which only it may change.
+          $own = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\fuxclient-temp"
+          icacls $own.FullName /grant 'fuxclient:(OI)(CI)M' /Q | Out-Null
+          $saved = $env:TEMP, $env:TMP
+          $env:TEMP = $env:TMP = $own.FullName
           $view = Get-ChildItem target\debug\deps\view-*.exe | Sort-Object LastWriteTime | Select-Object -Last 1
           "=== $($view.Name)"
           $log = "$env:RUNNER_TEMP\view.txt"
@@ -432,6 +435,7 @@ jobs:
           $null = $run.Handle
           $finished = $run.WaitForExit(180000)
           if (-not $finished) { Stop-Process -Id $run.Id -Force; "the viewer tests timed out" }
+          $env:TEMP, $env:TMP = $saved
           Get-Content $log, "$log.err"
           "exit $(if ($finished) { $run.ExitCode } else { 'timeout' })"
           # Every pane was killed: none may still be running.

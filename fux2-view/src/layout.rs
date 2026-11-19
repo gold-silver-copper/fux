@@ -2,6 +2,8 @@
 //! TOML file. Each `[[tab]]` has a `title`, exact `match` tests on labels and
 //! an `axis`.
 pub const MAX_LAYOUT: usize = 64 << 10;
+/// The same, as a file's size.
+pub const MAX_LAYOUT_BYTES: u64 = 64 << 10;
 const MAX_TABS: usize = 32;
 const MAX_WORKSPACES: usize = 32;
 

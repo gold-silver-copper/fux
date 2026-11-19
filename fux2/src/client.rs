@@ -166,6 +166,27 @@ impl Client {
         Ok(())
     }
 
+    /// Waits for the answer to what [`Client::send_only`] sent.
+    pub fn receive(&mut self, wait: Duration) -> Result<Answer, Failure> {
+        let until = deadline(wait);
+        loop {
+            self.conn.flush().map_err(Failure::from)?;
+            if let Some(body) = self.conn.receive().map_err(Failure::from)? {
+                return Answer::decode(&body)?.accepted();
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                self.spent = true;
+                return Err(Failure::new(
+                    Code::Indeterminate,
+                    format!("no answer within {wait:?}"),
+                ));
+            }
+            let mut fds = [PollFd::new(&self.conn.stream, self.conn.events())];
+            let _ = poll(&mut fds, Some(left));
+        }
+    }
+
     /// As [`Client::call`], with a refusal as an error.
     pub fn ask(&mut self, request: &Request, wait: Duration) -> Result<Answer, Failure> {
         self.call(request, wait)?.accepted()

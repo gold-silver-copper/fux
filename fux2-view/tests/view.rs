@@ -4,6 +4,7 @@ use fuxix::Errno;
 use fuxix::poll::{Events, PollFd, poll};
 use fuxix::process::{Job, Reach};
 use fuxix::pty::Master;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -87,18 +88,48 @@ impl Lab {
 }
 
 impl Drop for Lab {
+    /// Ends every pane, by its daemon's pid if `kill` fails, and removes the
+    /// session only once none answers.
     fn drop(&mut self) {
-        for entry in std::fs::read_dir(&self.root)
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            let file = entry.file_name().to_string_lossy().into_owned();
-            if let Some(name) = file.strip_prefix("p-") {
-                let _ = self.fux2(&["kill", name]);
+        let names = || -> Vec<String> {
+            let entries = std::fs::read_dir(&self.root)
+                .into_iter()
+                .flatten()
+                .flatten();
+            entries
+                .filter_map(|entry| {
+                    let file = entry.file_name().to_string_lossy().into_owned();
+                    file.strip_prefix("p-").map(str::to_owned)
+                })
+                .collect()
+        };
+        for name in names() {
+            let pid = self.fux2(&["ls", "--long"]).ok().and_then(|out| {
+                let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                let line = text
+                    .lines()
+                    .find(|line| line.split('\t').next() == Some(&name))?;
+                line.split('\t').nth(2).map(str::to_owned)
+            });
+            let killed = self
+                .fux2(&["kill", &name])
+                .is_ok_and(|out| out.status.success());
+            if !killed && let Some(pid) = pid {
+                let _ = if cfg!(windows) {
+                    Command::new("taskkill").args(["/F", "/PID", &pid]).output()
+                } else {
+                    Command::new("kill").args(["-9", &pid]).output()
+                };
             }
         }
-        let _ = std::fs::remove_dir_all(&self.root);
+        let listed = self.fux2(&["ls"]).map(|out| out.stdout).unwrap_or_default();
+        if listed.is_empty() {
+            let _ = std::fs::remove_dir_all(&self.root);
+        } else {
+            let mut err = std::io::stderr();
+            let left = String::from_utf8_lossy(&listed).into_owned();
+            let _ = writeln!(err, "panes outlived the test: {left}");
+        }
         let _ = std::fs::remove_dir_all(&self.config);
     }
 }
@@ -355,8 +386,14 @@ fn a_layout_makes_tabs_and_only_fit_resizes() -> Tested {
     Ok(())
 }
 
-fn pager() -> &'static str {
-    if cfg!(windows) { "findstr ." } else { "cat" }
+/// A pager that shows what it is given and stays until a key is pressed.
+fn pager(lab: &Lab) -> Result<String, std::io::Error> {
+    if cfg!(windows) {
+        return Ok("cmd /d /c findstr . & set /p line=<CON".to_owned());
+    }
+    let script = lab.config.join("pager.sh");
+    std::fs::write(&script, "cat\nread line < /dev/tty\n")?;
+    Ok(format!("sh {}", script.display()))
 }
 
 /// Workspaces and tabs change what is shown and who gets the keys; a pane
@@ -409,25 +446,30 @@ fn workspaces_and_tabs_choose_what_is_shown() -> Tested {
 fn the_history_pane_goes_away_and_gives_the_focus_back() -> Tested {
     let lab = Lab::new("")?;
     lab.start("work")?;
-    let mut viewer = Viewer::with_env(&lab, &[], &[("PAGER", pager())])?;
+    let pager = pager(&lab)?;
+    let mut viewer = Viewer::with_env(&lab, &[], &[("PAGER", &pager)])?;
     viewer.shows(" work ")?;
-    viewer.keys(b"echo before\r")?;
-    lab.pane_shows("work", "before")?;
+    viewer.keys(b"echo marker-line\r")?;
+    lab.pane_shows("work", "marker-line")?;
     viewer.keys(b"\x02[")?;
+    // The pager's pane, showing the history, and holding the focus.
+    viewer.shows(" history-1 ")?;
+    lab.pane_shows("history-1", "marker-line")?;
+    viewer.keys(b"\r")?;
     let until = soon(PATIENCE);
-    let mut saw_it_end = false;
-    while Instant::now() < until {
+    loop {
         viewer.pump(Duration::from_millis(20))?;
         let listed = lab.fux2(&["ls"])?;
-        if String::from_utf8_lossy(&listed.stdout).trim() == "work"
-            && viewer.text().contains(" work ")
-            && !viewer.text().contains("history-1")
-        {
-            saw_it_end = true;
+        let gone = String::from_utf8_lossy(&listed.stdout).trim() == "work";
+        if gone && !viewer.text().contains("history-1") {
             break;
         }
+        assert!(
+            Instant::now() < until,
+            "the history pane stayed:\n{}",
+            viewer.text()
+        );
     }
-    assert!(saw_it_end, "the history pane stayed:\n{}", viewer.text());
     viewer.keys(b"echo after\r")?;
     lab.pane_shows("work", "after")?;
     Ok(())

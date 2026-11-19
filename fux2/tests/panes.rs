@@ -4,6 +4,7 @@ use fux2::client::{ANSWER_WAIT, Client};
 use fux2::conn::Conn;
 use fux2::dir::Session;
 use fux2::wire::{Answer, Code, Failure, MAX_ANSWER, Part, REVISION, Request, Token};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -66,37 +67,88 @@ impl Lab {
 }
 
 impl Drop for Lab {
+    /// Ends every pane it finds, by its daemon's pid if `kill` fails, and
+    /// removes the session only once none is left, saying so if one is.
     fn drop(&mut self) {
         for name in self.session.names().unwrap_or_default() {
-            let _ = self.fux2(&["kill", &name]);
+            let pid = self.client(&name).map(|client| client.hello.pid);
+            let killed = self
+                .fux2(&["kill", &name])
+                .is_ok_and(|out| out.status.success());
+            if !killed && let Ok(pid) = pid {
+                kill_process(pid);
+            }
         }
-        let _ = std::fs::remove_dir_all(&self.session.root);
+        let left = self.session.names().unwrap_or_default();
+        let reachable: Vec<_> = left
+            .iter()
+            .filter(|name| self.client(name).is_ok())
+            .collect();
+        if reachable.is_empty() {
+            let _ = std::fs::remove_dir_all(&self.session.root);
+        } else {
+            let mut err = std::io::stderr();
+            let root = self.session.root.display();
+            let _ = writeln!(err, "panes {reachable:?} outlived the test; {root} is kept");
+        }
     }
 }
 
-/// Output racing a wait's registration never leaves the wait asleep.
+fn kill_process(pid: u32) {
+    let pid = pid.to_string();
+    let _ = if cfg!(windows) {
+        Command::new("taskkill").args(["/F", "/PID", &pid]).output()
+    } else {
+        Command::new("kill").args(["-9", &pid]).output()
+    };
+}
+
+/// A wait wakes for one change followed by silence, whether the change
+/// came before the wait arrived or after: nothing later can mask a lost one.
 #[test]
-fn a_wait_always_wakes_for_output_that_races_it() -> Tested {
+fn a_wait_wakes_for_a_single_change() -> Tested {
     let lab = Lab::new()?;
-    let noisy = program(
-        "while :; do echo x; done",
-        "for /L %i in (1,0,2) do @echo x",
-    );
-    lab.start("noisy", &noisy)?;
-    let mut client = lab.client("noisy")?;
-    for _ in 0..200 {
-        let answer = client.ask(&Request::Screen { since: None }, ANSWER_WAIT)?;
-        let Answer::Screen { token, .. } = answer else {
+    let quiet = program("exec cat", "findstr x");
+    lab.start("quiet", &quiet)?;
+    let mut waiter = lab.client("quiet")?;
+    let mut typist = lab.client("quiet")?;
+    // Echo settles; then each change is one key and then nothing.
+    std::thread::sleep(Duration::from_millis(300));
+    for round in 0..40 {
+        let Answer::Screen { token, .. } =
+            waiter.ask(&Request::Screen { since: None }, ANSWER_WAIT)?
+        else {
             return Err("not a screen".into());
         };
+        let key = Request::Send {
+            parts: vec![Part::Bytes(b"x".to_vec())],
+            expected: None,
+        };
+        let before = round % 2 == 0;
+        if before {
+            typist.ask(&key, ANSWER_WAIT)?;
+            std::thread::sleep(Duration::from_millis(30));
+        }
         let wait = Request::Wait {
             after: token,
-            ms: 10_000,
+            ms: 5_000,
         };
-        let Answer::Waited { token: woken, .. } = client.ask(&wait, ANSWER_WAIT)? else {
+        waiter.send_only(&wait)?;
+        if !before {
+            std::thread::sleep(Duration::from_millis(30));
+            typist.ask(&key, ANSWER_WAIT)?;
+        }
+        let asked = Instant::now();
+        let Answer::Waited { token: woken, .. } = waiter.receive(ANSWER_WAIT)? else {
             return Err("not a wait's answer".into());
         };
-        assert!(woken.version > token.version);
+        assert!(woken.version > token.version, "round {round}");
+        assert!(
+            asked.elapsed() < Duration::from_secs(4),
+            "round {round} slept"
+        );
+        // The echo is all the change there is: let it end before the next.
+        std::thread::sleep(Duration::from_millis(60));
     }
     Ok(())
 }
@@ -178,15 +230,21 @@ fn an_old_token_never_reaches_the_replacement() -> Tested {
     }
     // The crashed pane's claim is free, so its leftovers are cleared; of
     // several starting at once, exactly one gets the name.
-    let racers: Vec<_> = (0..6)
+    // All started before any is waited for: they really race.
+    let started: Vec<_> = (0..6)
         .map(|_| {
-            let mut command = Command::new(env!("CARGO_BIN_EXE_fux2"));
-            command
+            Command::new(env!("CARGO_BIN_EXE_fux2"))
                 .args(["start", "--name", "job", "--"])
                 .args(idle())
-                .env("FUX2_DIR", &lab.session.root);
-            command.output()
+                .env("FUX2_DIR", &lab.session.root)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
         })
+        .collect::<Result<_, _>>()?;
+    let racers: Vec<Output> = started
+        .into_iter()
+        .map(std::process::Child::wait_with_output)
         .collect::<Result<_, _>>()?;
     let winners = racers.iter().filter(|out| out.status.success()).count();
     assert_eq!(winners, 1, "{racers:?}");

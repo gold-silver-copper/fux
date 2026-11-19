@@ -26,7 +26,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
@@ -48,7 +48,13 @@ const LEAVE_WAIT: Duration = Duration::from_millis(500);
 const MAX_QUEUED_PARTS: usize = 1024;
 /// Bindings waiting behind the one running.
 const MAX_WAITING_RUNS: usize = 16;
-/// Keys held while the configuration loads.
+/// How long leaving waits for a binding to be stopped.
+const END_RUN_WAIT: Duration = Duration::from_secs(1);
+/// How long a focus asked for waits for its pane.
+const FOCUS_WAIT: Duration = Duration::from_secs(10);
+/// How many messages from the language are taken in one turn.
+const SCRIPT_TURN: usize = 64;
+/// Input held while the configuration loads.
 const MAX_HELD_KEYS: usize = 256;
 /// The longest paste passed on.
 const MAX_PASTE: usize = 60 << 10;
@@ -60,7 +66,7 @@ const FILES_PER_PANE: u64 = 2;
 const TIMING: Timing = Timing::new(50, 1000);
 
 const ENTER: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?25l\x1b[2J";
-const LEAVE: &[u8] = b"\x1b[0m\x1b[0 q\x1b[?25h\x1b[?2004l\x1b[?1049l";
+const LEAVE: &str = "\x1b[0m\x1b[0 q\x1b[?25h\x1b[?2004l\x1b[?1049l";
 
 /// Where a pane's watching connection is in its round.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -107,22 +113,24 @@ fn io_failure(what: &str, error: impl std::fmt::Display) -> Failure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Action {
     Verb(Verb),
-    /// Runs the configuration's function.
-    Script,
+    /// Runs the configuration's function bound under this number.
+    Script(u64),
 }
 
 /// Writes frames on a thread of its own, so that a terminal that stopped
 /// reading holds up no key: while it is busy, frames are merged.
 struct Painter {
     frames: SyncSender<Vec<u8>>,
-    idle: Arc<AtomicBool>,
+    /// How many frames were handed over, and how many are written.
+    sent: std::cell::Cell<u64>,
+    written: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Painter {
     fn start(poke: Poke) -> std::io::Result<Painter> {
         let (frames, incoming): (_, Receiver<Vec<u8>>) = std::sync::mpsc::sync_channel(1);
-        let idle = Arc::new(AtomicBool::new(true));
-        let flag = Arc::clone(&idle);
+        let written = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let count = Arc::clone(&written);
         std::thread::Builder::new()
             .name("fux2-paint".to_owned())
             .spawn(move || {
@@ -131,35 +139,43 @@ impl Painter {
                     if out.write_all(&frame).and_then(|()| out.flush()).is_err() {
                         return;
                     }
-                    flag.store(true, Ordering::SeqCst);
+                    count.fetch_add(1, Ordering::SeqCst);
                     poke.poke();
                 }
             })?;
-        Ok(Painter { frames, idle })
+        Ok(Painter {
+            frames,
+            sent: std::cell::Cell::new(0),
+            written,
+        })
     }
 
     fn is_idle(&self) -> bool {
-        self.idle.load(Ordering::SeqCst)
+        self.written.load(Ordering::SeqCst) >= self.sent.get()
     }
 
     fn send(&self, bytes: Vec<u8>) -> bool {
-        self.idle.store(false, Ordering::SeqCst);
         match self.frames.try_send(bytes) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.sent.set(self.sent.get().saturating_add(1));
+                true
+            }
             Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
         }
     }
 
-    /// Hands over the last bytes and waits, a bounded time, for them to go.
+    /// Hands over the last bytes once the frame in progress is out, and
+    /// waits for them to be written: each step has its own time.
     fn finish(&self, bytes: Vec<u8>) {
-        let until = after(Instant::now(), LEAVE_WAIT);
-        while !self.is_idle() && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        if self.send(bytes) {
+        let wait_idle = |budget: Duration| {
+            let until = after(Instant::now(), budget);
             while !self.is_idle() && Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(2));
             }
+        };
+        wait_idle(LEAVE_WAIT);
+        if self.send(bytes) {
+            wait_idle(LEAVE_WAIT);
         }
     }
 }
@@ -191,8 +207,9 @@ struct View {
     panes: BTreeMap<String, Pane>,
     focus: Option<PaneId>,
     focus_name: Option<String>,
-    /// A pane to focus as soon as it is there.
-    wanted: Option<String>,
+    /// A pane to focus as soon as it is there: its name, its id if known,
+    /// and until when it is waited for.
+    wanted: Option<(String, Option<PaneId>, Instant)>,
     /// That pane, and what had the focus before it: it comes back there.
     back: Option<(String, PaneId)>,
     term: (u16, u16),
@@ -206,10 +223,11 @@ struct View {
     waiting_runs: VecDeque<Run>,
     /// The configuration is still being read: keys it might bind wait.
     loading: bool,
-    held_keys: Vec<KeyPress>,
+    held: Vec<Input>,
+    /// A run was handed to the language and has not finished.
+    run_sent: bool,
     painter: Painter,
     shown: Frame,
-    cursor_shown: Option<(u16, u16)>,
     tiles: Vec<(String, Tile)>,
     dirty: bool,
     next_paint: Instant,
@@ -414,7 +432,6 @@ impl View {
     }
 
     fn tab_changed(&mut self) {
-        self.focus = None;
         self.dirty = true;
         self.settle_focus();
     }
@@ -444,7 +461,11 @@ impl View {
             let visible = self.visible();
             let named = |name: &str| visible.iter().find(|p| p.name == name);
             let by_id = |id: PaneId| visible.iter().find(|p| p.hello.id == id);
-            let wanted = self.wanted.as_deref().and_then(named);
+            let wanted = (self.wanted.as_ref())
+                .filter(|(_, _, until)| Instant::now() < *until)
+                .and_then(|(name, id, _)| {
+                    named(name).filter(|pane| id.is_none_or(|id| pane.hello.id == id))
+                });
             if wanted.is_none() && self.focus.and_then(by_id).is_some() {
                 return;
             }
@@ -459,7 +480,7 @@ impl View {
                 .map(|p| (p.hello.id, p.name.clone()))
         };
         if let Some((_, name)) = &chosen
-            && self.wanted.as_deref() == Some(name.as_str())
+            && self.wanted.as_ref().is_some_and(|w| w.0 == *name)
         {
             self.wanted = None;
         } else if chosen.is_some() {
@@ -543,7 +564,7 @@ impl View {
         let Some(path) = self.layout_path.clone() else {
             return;
         };
-        let text = match std::fs::read_to_string(&path) {
+        let text = match script::read_small_file(&path, layout::MAX_LAYOUT_BYTES) {
             Ok(text) => text,
             Err(e) => return self.say(format!("{}: {e}", path.display())),
         };
@@ -592,6 +613,11 @@ impl View {
         };
         if let Err(failure) = opened {
             return self.say(format!("keys not delivered: {failure}"));
+        }
+        let full = (pane.inlet.as_ref()).is_some_and(|inlet| inlet.parts.len() >= MAX_QUEUED_PARTS);
+        if full {
+            let name = pane.name.clone();
+            return self.say(format!("{name} is not taking keys: they are dropped"));
         }
         let advanced = pane.inlet.as_mut().map_or(Ok(()), |inlet| {
             inlet.parts.extend(parts);
@@ -696,10 +722,6 @@ impl View {
             return match self.bindings.get(&chord).cloned() {
                 Some(action) => self.perform(chord, action),
                 // The keys are still loading: this chord may be among them.
-                None if self.loading && self.held_keys.len() < MAX_HELD_KEYS => {
-                    self.held_keys.extend(prefix.parse::<KeyPress>());
-                    self.held_keys.push(press);
-                }
                 None => self.say(format!("no binding for {chord}")),
             };
         }
@@ -710,12 +732,6 @@ impl View {
         if self.bindings.keys().any(|key| key.starts_with(&opens)) {
             self.prefix = Some(name);
             self.dirty = true;
-            return;
-        }
-        // The configuration may be about to bind this key. The wait is the
-        // load's own time bound; the built-in keys above do not wait.
-        if self.loading && self.held_keys.len() < MAX_HELD_KEYS {
-            self.held_keys.push(press);
             return;
         }
         self.type_key(press);
@@ -731,12 +747,13 @@ impl View {
                 }
             }
             Action::Verb(verb) => self.apply_verb(verb),
-            Action::Script => {
+            Action::Script(generation) => {
                 // The pane focused now, whatever the binding does later.
                 let focus = self.focus_label();
                 let labels = self.labels_for_new_pane();
                 self.dispatch(Run {
                     chord,
+                    generation,
                     focus,
                     labels,
                 });
@@ -745,7 +762,7 @@ impl View {
     }
 
     fn dispatch(&mut self, run: Run) {
-        if self.running.is_none() && self.waiting_runs.is_empty() {
+        if !self.run_sent && self.waiting_runs.is_empty() {
             self.start_run(run);
         } else if self.waiting_runs.len() < MAX_WAITING_RUNS {
             self.waiting_runs.push_back(run);
@@ -755,6 +772,7 @@ impl View {
     }
 
     fn start_run(&mut self, run: Run) {
+        self.run_sent = true;
         let sent = self
             .script
             .as_ref()
@@ -766,17 +784,21 @@ impl View {
 
     fn on_script(&mut self, message: ToViewer, now: Instant) {
         match message {
-            ToViewer::Bind(chord) => {
-                self.bindings.insert(chord, Action::Script);
+            ToViewer::Bind(chord, generation) => {
+                self.bindings.insert(chord, Action::Script(generation));
             }
             ToViewer::BindVerb(chord, verb) => {
                 self.bindings.insert(chord, Action::Verb(verb));
             }
-            ToViewer::Focus(name) => {
+            ToViewer::Focus(pane) => {
+                let (name, id) = match pane.split_once('@') {
+                    Some((name, id)) => (name.to_owned(), PaneId::parse(id)),
+                    None => (pane, None),
+                };
                 if let Some(id) = self.focus {
                     self.back = Some((name.clone(), id));
                 }
-                self.wanted = Some(name);
+                self.wanted = Some((name, id, after(now, FOCUS_WAIT)));
                 // It has just been started: look now, not at the next scan.
                 self.next_scan = now;
             }
@@ -793,17 +815,43 @@ impl View {
             }
             ToViewer::Done(why) => {
                 self.running = None;
+                self.run_sent = false;
                 if let Some(why) = why {
                     self.say(why);
                 }
                 if std::mem::take(&mut self.loading) {
-                    for press in std::mem::take(&mut self.held_keys) {
-                        self.on_key(press);
-                    }
+                    let held = std::mem::take(&mut self.held);
+                    self.on_inputs(held);
                 }
                 if let Some(run) = self.waiting_runs.pop_front() {
                     self.start_run(run);
                 }
+            }
+        }
+    }
+
+    /// Leaving: a binding still running is stopped, and what it started is
+    /// ended with it, a bounded time, so no `fux2` it ran outlives the viewer.
+    fn end_run(&mut self) {
+        if !self.run_sent {
+            return;
+        }
+        if let Some(script) = &self.script {
+            script.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(running) = &self.running {
+            running.stop.force();
+        }
+        let until = after(Instant::now(), END_RUN_WAIT);
+        while Instant::now() < until {
+            match self.from_script.recv_timeout(Duration::from_millis(20)) {
+                Ok(ToViewer::Done(_)) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return;
+                }
+                Ok(ToViewer::Started { stop, .. }) => {
+                    stop.force();
+                }
+                Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
     }
@@ -832,6 +880,20 @@ impl View {
 
     fn on_inputs(&mut self, inputs: Vec<Input>) {
         for input in inputs {
+            // The keys are still loading, and may bind what was typed: it
+            // waits, in order, the load's own time at most. The way out
+            // does not wait.
+            if self.loading {
+                let named = |input: Option<&Input>, name: &str| matches!(input, Some(Input::Key(k)) if k.press.to_string() == name);
+                if named(Some(&input), "d") && named(self.held.last(), "C-b") {
+                    self.quit = true;
+                } else if self.held.len() < MAX_HELD_KEYS {
+                    self.held.push(input);
+                } else {
+                    self.say("keys typed while the keys load were dropped");
+                }
+                continue;
+            }
             match input {
                 Input::Key(stroke) => self.on_key(stroke.press),
                 Input::Paste(text) if text.len() <= MAX_PASTE => {
@@ -881,7 +943,11 @@ impl View {
                             // typed for this one may reach it.
                             Ok(Answer::Hello(_)) => lost = true,
                             Ok(_) => {}
-                            Err(failure) => said = Some(format!("{name}: {failure}")),
+                            Err(failure) => {
+                                // Refused before it was greeted, it never will be.
+                                lost |= !inlet.greeted;
+                                said = Some(format!("{name}: {failure}"));
+                            }
                         }
                         lost = lost || inlet.advance().is_err();
                     }
@@ -982,7 +1048,6 @@ impl View {
             let shape = if shape == 7 { 0 } else { shape };
             bytes.extend_from_slice(format!("\x1b[{shape} q\x1b[{row};{col}H\x1b[?25h").as_bytes());
         }
-        self.cursor_shown = cursor.map(|c| c.0);
         if self.painter.send(bytes) {
             self.shown = frame;
         } else {
@@ -1099,14 +1164,23 @@ fn run() -> Result<(), Failure> {
     let workspaces = match &layout_path {
         None => layout::everything(),
         Some(path) => {
-            let text = std::fs::read_to_string(path)
+            let text = script::read_small_file(path, layout::MAX_LAYOUT_BYTES)
                 .map_err(|e| Failure::new(Code::Invalid, format!("{}: {e}", path.display())))?;
             layout::parse(&text)
                 .map_err(|why| Failure::new(Code::Invalid, format!("{}: {why}", path.display())))?
         }
     };
-    let signals = fuxix::signal::Pipe::new(&[Signal::Winch, Signal::Term, Signal::Hup])
-        .map_err(|e| io_failure("signals", e))?;
+    #[cfg(unix)]
+    let stops = [
+        Signal::Winch,
+        Signal::Term,
+        Signal::Hup,
+        Signal::Int,
+        Signal::Quit,
+    ];
+    #[cfg(windows)]
+    let stops = [Signal::Winch, Signal::Term, Signal::Hup, Signal::Int];
+    let signals = fuxix::signal::Pipe::new(&stops).map_err(|e| io_failure("signals", e))?;
     let (paint_wake, paint_poke) = waker().map_err(|e| io_failure("a waker", e))?;
     let (script_wake, script_poke) = waker().map_err(|e| io_failure("a waker", e))?;
     let painter = Painter::start(paint_poke).map_err(|e| io_failure("a thread", e))?;
@@ -1119,6 +1193,8 @@ fn run() -> Result<(), Failure> {
         .map_err(|e| io_failure("a thread", e))?;
     let raw =
         fuxix::terminal::Raw::enter(std::io::stdin()).map_err(|e| io_failure("raw mode", e))?;
+    // An abort still leaves the screen it found.
+    fuxix::terminal::leaving_on_abort(LEAVE);
     let now = Instant::now();
     let mut view = View {
         session,
@@ -1143,10 +1219,10 @@ fn run() -> Result<(), Failure> {
         running: None,
         waiting_runs: VecDeque::new(),
         loading: true,
-        held_keys: Vec::new(),
+        held: Vec::new(),
+        run_sent: false,
         painter,
         shown: Frame::default(),
-        cursor_shown: None,
         tiles: Vec::new(),
         dirty: true,
         next_paint: now,
@@ -1158,7 +1234,8 @@ fn run() -> Result<(), Failure> {
     }
     view.painter.send(ENTER.to_vec());
     let ended = serve(&mut view, &signals, &paint_wake, &script_wake);
-    view.painter.finish(LEAVE.to_vec());
+    view.end_run();
+    view.painter.finish(LEAVE.as_bytes().to_vec());
     drop(raw);
     ended
 }
@@ -1231,10 +1308,18 @@ fn serve(
         }
         view.retry_rested(now);
         view.police_run(now);
+        if view
+            .message
+            .as_ref()
+            .is_some_and(|(_, until)| now >= *until)
+        {
+            view.message = None;
+            view.dirty = true;
+        }
         if view.dirty && view.painter.is_idle() && now >= view.next_paint {
             view.paint(now);
         }
-        let read_keys = !view.input_pressure();
+        let read_keys = true;
         let timeout = view.timeout(Instant::now(), &decoder);
         let sources = (signals, paint_wake, script_wake);
         let ready = wait(view, &mut poll, timeout, sources, read_keys)?;
@@ -1245,7 +1330,12 @@ fn serve(
         if ready.script {
             script_wake.drain();
         }
-        while let Ok(message) = view.from_script.try_recv() {
+        // A turn's worth: a binding that keeps asking cannot hold off keys,
+        // painting or its own time limit.
+        for _ in 0..SCRIPT_TURN {
+            let Ok(message) = view.from_script.try_recv() else {
+                break;
+            };
             view.on_script(message, now);
         }
         if ready.signals {

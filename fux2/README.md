@@ -40,8 +40,8 @@ the pane has moved on.
 | `wait` | `fux2 wait build --after "$t" --ms 5000` | `<token> <state>` |
 | `resize` | `fux2 resize build 100 30` | `100 30` |
 | `signal` | `fux2 signal build INT` | `foreground-group`, or `console-input` on Windows |
-| `kill` | `fux2 kill build`, or a group: `fux2 kill --label project=x` | nothing, when everything it started is gone |
-| `page` | `fux2 page build` | shows the pane's scrollback in a pager |
+| `kill` | `fux2 kill build`, or a group: `fux2 kill --label project=x` | nothing, when everything it started is gone (see below) |
+| `page` | `fux2 page build` | shows the pane's scrollback in a pager (`--close-pane`: then removes the pane it runs in; the viewer's `C-b [` uses this) |
 | `view` | `fux2 view --layout tabs.toml` | the viewer |
 
 With no program after `--`, `start` runs `$SHELL` (`%COMSPEC%` on Windows). The
@@ -57,6 +57,12 @@ refused whole (`busy`, at most 64 KiB waiting):
 - `--key NAME`: a key, such as `Enter`, `C-c`, `Up`, `F5`
 - `--paste TEXT`: a paste, bracketed if the program asked for that
 - `--stdin`: standard input, byte for byte
+
+**`kill`** hangs the program up, then kills its session (Windows: its job) and
+waits for all of it. On Linux it also kills anything the program started that
+left its session (`setsid`), since every such process stays the pane's. On macOS
+a process that left the session can't be found, and is not killed. `kill` exits
+1 and names what it could not end; exit 0 means nothing it found is left.
 
 **`read`** alone is a snapshot, so right after a `send` it may not show the
 result yet. To wait in one command, give it the token `send` printed:
@@ -114,12 +120,15 @@ fux2 read build --history-text | less
 fux2 read build --history-text | wl-copy     # or pbcopy, or clip on Windows
 ```
 
-That prints everything the pane still retains, then its screen. A line the
-terminal wrapped comes out as the one line the program wrote. If a resize
-interrupts the read it starts again, and after three tries it says so
-(`stale`). Above 256 MiB of text it refuses (`limit`).
+That prints everything the pane still retains, then its screen, each line once
+and in order, however the program scrolls meanwhile. A line the terminal
+wrapped comes out as the one line the program wrote. A resize or a terminal
+reset during the read starts it again; after three tries it says so (`stale`).
+Above 256 MiB of text it refuses (`limit`).
 
-In the viewer, `C-b [` opens the focused pane's history in a new pane running
+In the viewer, `C-b [` opens the focused pane's history in a new pane (in the
+shown tab, so not in a tab that matches `name=`; the stored layout of the next
+release lifts that) running
 `$PAGER`, else `less`, else `more` (`more.com` on Windows). Search and scroll
 there, and select with your terminal to copy. The new pane is 80x24 like any other;
 `C-b f` fits it to its tile. When the pager ends, the pane removes itself and the
@@ -215,7 +224,8 @@ keys still work.
 
 The session directory is `$XDG_RUNTIME_DIR/fux2/default` on Linux (else
 `~/.cache/fux2/default`), `~/Library/Caches/fux2/default` on macOS and
-`%LOCALAPPDATA%\fux2\run\default` on Windows, or the absolute private directory
+`%LOCALAPPDATA%\fux2\run\default` on Windows (`fux2-elevated` instead of
+`fux2` for an elevated process), or the absolute private directory
 `FUX2_DIR` names. A session holds at most 128 panes. It is refused unless it is a
 real directory, yours and closed to others.
 

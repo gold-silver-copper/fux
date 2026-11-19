@@ -24,7 +24,10 @@ pub const CONFIG_TIME: Duration = Duration::from_secs(2);
 pub const BINDING_TIME: Duration = Duration::from_secs(5);
 /// The longest one `fux2` command of a binding may take.
 const COMMAND_TIME: Duration = Duration::from_secs(4);
-const MAX_OUTPUT: u64 = 1 << 20;
+/// The most output one command gives a binding: a whole screen's text fits.
+const MAX_OUTPUT: u64 = 8 << 20;
+/// The most text a binding run copies out of the language, over all its words.
+const MAX_COPIED: usize = 16 << 20;
 /// How many numbers a new pane's name is tried with.
 const MAX_NEW_NAMES: u32 = 128;
 
@@ -52,8 +55,8 @@ pub enum Verb {
 const DEFAULTS: &str = include_str!("defaults.grift");
 
 pub enum ToViewer {
-    /// The chord runs its function on this thread.
-    Bind(String),
+    /// The chord runs its function on this thread, under this number.
+    Bind(String, u64),
     /// The chord does this at once on the viewer's own thread, so it works
     /// while a binding runs.
     BindVerb(String, Verb),
@@ -72,6 +75,8 @@ pub enum ToViewer {
 
 pub struct Run {
     pub chord: String,
+    /// The binding's number when its key was pressed.
+    pub generation: u64,
     /// The pane focused when the key was pressed, as `name@id`.
     pub focus: Option<String>,
     /// The labels a new pane needs to appear in the shown tab, or why no
@@ -93,9 +98,29 @@ struct Host {
     labels: Result<Vec<(String, String)>, String>,
     cancel: Arc<AtomicBool>,
     fux2: PathBuf,
+    /// Bytes copied out of the language in this run.
+    copied: usize,
+    /// Chords bound to viewer actions, which count toward the limit too.
+    verbs: std::collections::HashSet<String>,
+    /// Each chord's binding, numbered: a run queued for an older one is
+    /// refused out loud, never run with whatever replaced it.
+    generations: HashMap<String, u64>,
+    next_generation: u64,
 }
 
 impl Host {
+    /// Room for a binding on `chord`, and the number its new binding gets.
+    fn rebind(&mut self, chord: &str) -> Result<u64, String> {
+        let known = self.kept.contains_key(chord) || self.verbs.contains(chord);
+        if !known && self.kept.len().saturating_add(self.verbs.len()) >= MAX_BINDINGS {
+            return Err(format!("more than {MAX_BINDINGS} bindings"));
+        }
+        self.next_generation = self.next_generation.saturating_add(1);
+        self.generations
+            .insert(chord.to_owned(), self.next_generation);
+        Ok(self.next_generation)
+    }
+
     fn tell(&self, message: ToViewer) {
         let _ = self.out.send(message);
         self.poke.poke();
@@ -123,11 +148,16 @@ pub fn chord(text: &str) -> Result<String, String> {
     Ok(names?.join(" "))
 }
 
-fn string_arg(g: &mut HostCall<'_, Host>, value: Value) -> Result<String, Error> {
-    match g.as_str(&value)? {
-        Some(text) => Ok(text.to_owned()),
-        None => Err(g.type_error(value)),
+/// A string argument, copied out within the run's one byte budget.
+fn string_arg(g: &mut HostCall<'_, Host>, host: &mut Host, value: Value) -> Result<String, Error> {
+    let Some(len) = g.as_str(&value)?.map(str::len) else {
+        return Err(g.type_error(value));
+    };
+    host.copied = host.copied.saturating_add(len);
+    if host.copied > MAX_COPIED {
+        return Err(g.limit("too-much-text", &[]));
     }
+    Ok(g.as_str(&value)?.unwrap_or_default().to_owned())
 }
 
 fn number_arg(g: &mut HostCall<'_, Host>, value: Value) -> Result<String, Error> {
@@ -144,8 +174,19 @@ fn failed(g: &mut HostCall<'_, Host>, why: &str) -> Error {
     }
 }
 
+/// Reads all of `pipe`, at most [`MAX_OUTPUT`] bytes: past that, `None`.
+fn read_all(pipe: Option<impl Read>) -> Option<String> {
+    let mut text = Vec::new();
+    if let Some(pipe) = pipe {
+        let most = MAX_OUTPUT.saturating_add(1);
+        let _ = pipe.take(most).read_to_end(&mut text);
+    }
+    let fits = u64::try_from(text.len()).is_ok_and(|len| len <= MAX_OUTPUT);
+    fits.then(|| String::from_utf8_lossy(&text).into_owned())
+}
+
 /// Runs `fux2` with `args`, `input` on its stdin: its output. The viewer's
-/// stop ends it.
+/// stop ends it, and so does running out of time.
 fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<String, String> {
     let mut child = Command::new(&host.fux2)
         .args(args)
@@ -158,32 +199,27 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{}: {e}", host.fux2.display()))?;
-    if let (Some(mut stdin), Some(input)) = (child.stdin.take(), input) {
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(&input);
-        });
-    }
-    let drain = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut text = Vec::new();
-            if let Some(pipe) = pipe {
-                let _ = pipe.take(MAX_OUTPUT).read_to_end(&mut text);
-            }
-            String::from_utf8_lossy(&text).into_owned()
-        })
+    let stdin = child.stdin.take();
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let helpers = (|| -> std::io::Result<_> {
+        let thread = || std::thread::Builder::new().name("fux2-pipe".to_owned());
+        if let (Some(mut stdin), Some(input)) = (stdin, input) {
+            thread().spawn(move || {
+                let _ = stdin.write_all(&input);
+            })?;
+        }
+        let out = thread().spawn(move || read_all(stdout))?;
+        let err = thread().spawn(move || read_all(stderr))?;
+        Ok((out, err))
+    })();
+    let (out, err) = match helpers {
+        Ok(helpers) => helpers,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("a thread: {e}"));
+        }
     };
-    let out = drain(
-        child
-            .stdout
-            .take()
-            .map(|p| Box::new(p) as Box<dyn Read + Send>),
-    );
-    let err = drain(
-        child
-            .stderr
-            .take()
-            .map(|p| Box::new(p) as Box<dyn Read + Send>),
-    );
     let start = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -199,10 +235,12 @@ fn command(host: &Host, args: &[OsString], input: Option<Vec<u8>>) -> Result<Str
         }
         std::thread::sleep(Duration::from_millis(2));
     };
-    let out = out.join().unwrap_or_default();
-    match status.success() {
-        true => Ok(out),
-        false => Err(err.join().unwrap_or_default().trim().to_owned()),
+    let out = out.join().ok().flatten();
+    let err = err.join().ok().flatten().unwrap_or_default();
+    match (status.success(), out) {
+        (true, Some(out)) => Ok(out),
+        (true, None) => Err(format!("its output passed {MAX_OUTPUT} bytes")),
+        (false, _) => Err(err.trim().to_owned()),
     }
 }
 
@@ -263,25 +301,26 @@ fn verb(host: &Host, verb: Verb) -> Result<Answer, Error> {
 const WORDS: &[(&str, Word)] = &[
     ("bind-key", |g, host, args| {
         let [key, function] = *g.exactly(args)?;
-        let text = string_arg(g, key)?;
+        let text = string_arg(g, host, key)?;
         let name = chord(&text).map_err(|why| failed(g, &why))?;
-        if host.kept.len() >= MAX_BINDINGS && !host.kept.contains_key(&name) {
-            return Err(failed(g, &format!("more than {MAX_BINDINGS} bindings")));
-        }
+        let generation = host.rebind(&name).map_err(|why| failed(g, &why))?;
         let kept = g.keep(function)?;
+        host.verbs.remove(&name);
         if let Some(old) = host.kept.insert(name.clone(), kept) {
             let _ = g.release(old);
         }
-        host.tell(ToViewer::Bind(name));
+        host.tell(ToViewer::Bind(name, generation));
         inert()
     }),
     ("unbind-key", |g, host, args| {
         let [key] = *g.exactly(args)?;
-        let text = string_arg(g, key)?;
+        let text = string_arg(g, host, key)?;
         let name = chord(&text).map_err(|why| failed(g, &why))?;
         if let Some(old) = host.kept.remove(&name) {
             let _ = g.release(old);
         }
+        host.verbs.remove(&name);
+        host.generations.remove(&name);
         host.tell(ToViewer::Unbind(name));
         inert()
     }),
@@ -343,9 +382,9 @@ const WORDS: &[(&str, Word)] = &[
             [key, word, number] => (*key, *word, Some(*number)),
             _ => return Err(g.arity_error(args)),
         };
-        let chord_text = string_arg(g, key)?;
+        let chord_text = string_arg(g, host, key)?;
         let name = chord(&chord_text).map_err(|why| failed(g, &why))?;
-        let word = string_arg(g, word)?;
+        let word = string_arg(g, host, word)?;
         let verb = match (word.as_str(), number) {
             ("go-to-tab", Some(number)) => Verb::GoToTab(tab_number(g, number)?),
             (word, None) => match named_verb(word) {
@@ -354,17 +393,18 @@ const WORDS: &[(&str, Word)] = &[
             },
             (_, Some(_)) => return Err(g.arity_error(args)),
         };
+        host.rebind(&name).map_err(|why| failed(g, &why))?;
         if let Some(old) = host.kept.remove(&name) {
             let _ = g.release(old);
         }
+        host.verbs.insert(name.clone());
         host.tell(ToViewer::BindVerb(name, verb));
         inert()
     }),
     ("focus", |g, host, args| {
         let [pane] = *g.exactly(args)?;
-        let pane = string_arg(g, pane)?;
-        let name = pane.split(['@', ' ']).next().unwrap_or_default().to_owned();
-        host.tell(ToViewer::Focus(name));
+        let pane = string_arg(g, host, pane)?;
+        host.tell(ToViewer::Focus(pane));
         inert()
     }),
     ("fux2-program", |g, host, args| {
@@ -376,7 +416,7 @@ const WORDS: &[(&str, Word)] = &[
         let Some((prefix, program)) = args.split_first() else {
             return Err(g.arity_error(args));
         };
-        let prefix = string_arg(g, *prefix)?;
+        let prefix = string_arg(g, host, *prefix)?;
         let labels = host.labels.clone().map_err(|why| failed(g, &why))?;
         let mut tail = Vec::new();
         for (key, value) in labels {
@@ -387,7 +427,7 @@ const WORDS: &[(&str, Word)] = &[
             tail.push("--".to_owned());
         }
         for word in program {
-            tail.push(string_arg(g, *word)?);
+            tail.push(string_arg(g, host, *word)?);
         }
         for number in 1..=MAX_NEW_NAMES {
             let name = format!("{prefix}-{number}");
@@ -395,7 +435,15 @@ const WORDS: &[(&str, Word)] = &[
             words.extend(tail.iter().cloned());
             let os: Vec<OsString> = words.into_iter().map(Into::into).collect();
             match command(host, &os, None) {
-                Ok(_) => return g.string(&name).map(Answer::Now),
+                // `NAME ID@VERSION`: the pane as this one life of it.
+                Ok(out) => {
+                    let id = out
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|t| t.split('@').next());
+                    let pane = id.map_or_else(|| name.clone(), |id| format!("{name}@{id}"));
+                    return g.string(&pane).map(Answer::Now);
+                }
                 Err(why) if why.contains("exists:") => {}
                 Err(_) if host.cancel.load(Ordering::Relaxed) => {
                     return Err(g.limit("interrupted", &[]));
@@ -407,8 +455,8 @@ const WORDS: &[(&str, Word)] = &[
     }),
     ("send", |g, host, args| {
         let [pane, text] = *g.exactly(args)?;
-        let pane = string_arg(g, pane)?;
-        let text = string_arg(g, text)?;
+        let pane = string_arg(g, host, pane)?;
+        let text = string_arg(g, host, text)?;
         let args = vec!["send".to_owned(), pane, "--stdin".to_owned()];
         run_word(g, host, args, Some(text.into_bytes()))?;
         inert()
@@ -417,16 +465,16 @@ const WORDS: &[(&str, Word)] = &[
         let [pane, key] = *g.exactly(args)?;
         let args = vec![
             "send".to_owned(),
-            string_arg(g, pane)?,
+            string_arg(g, host, pane)?,
             "--key".to_owned(),
-            string_arg(g, key)?,
+            string_arg(g, host, key)?,
         ];
         run_word(g, host, args, None)?;
         inert()
     }),
     ("read", |g, host, args| {
         let [pane] = *g.exactly(args)?;
-        let args = vec!["read".to_owned(), string_arg(g, pane)?];
+        let args = vec!["read".to_owned(), string_arg(g, host, pane)?];
         let out = run_word(g, host, args, None)?;
         text_answer(g, &out)
     }),
@@ -446,13 +494,13 @@ const WORDS: &[(&str, Word)] = &[
         let mut words = vec![
             "start".to_owned(),
             "--name".to_owned(),
-            string_arg(g, *name)?,
+            string_arg(g, host, *name)?,
         ];
         if !program.is_empty() {
             words.push("--".to_owned());
         }
         for word in program {
-            words.push(string_arg(g, *word)?);
+            words.push(string_arg(g, host, *word)?);
         }
         let out = run_word(g, host, words, None)?;
         text_answer(g, &out)
@@ -461,7 +509,7 @@ const WORDS: &[(&str, Word)] = &[
         let [pane, cols, rows] = *g.exactly(args)?;
         let args = vec![
             "resize".to_owned(),
-            string_arg(g, pane)?,
+            string_arg(g, host, pane)?,
             number_arg(g, cols)?,
             number_arg(g, rows)?,
         ];
@@ -472,8 +520,8 @@ const WORDS: &[(&str, Word)] = &[
         let [pane, name] = *g.exactly(args)?;
         let args = vec![
             "signal".to_owned(),
-            string_arg(g, pane)?,
-            string_arg(g, name)?,
+            string_arg(g, host, pane)?,
+            string_arg(g, host, name)?,
         ];
         run_word(g, host, args, None)?;
         inert()
@@ -482,9 +530,9 @@ const WORDS: &[(&str, Word)] = &[
         let [pane, token, ms] = *g.exactly(args)?;
         let args = vec![
             "wait".to_owned(),
-            string_arg(g, pane)?,
+            string_arg(g, host, pane)?,
             "--after".to_owned(),
-            string_arg(g, token)?,
+            string_arg(g, host, token)?,
             "--ms".to_owned(),
             number_arg(g, ms)?,
         ];
@@ -493,7 +541,7 @@ const WORDS: &[(&str, Word)] = &[
     }),
     ("kill", |g, host, args| {
         let [pane] = *g.exactly(args)?;
-        let pane = string_arg(g, pane)?;
+        let pane = string_arg(g, host, pane)?;
         run_word(g, host, vec!["kill".to_owned(), pane], None)?;
         inert()
     }),
@@ -548,6 +596,13 @@ fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
         host.cancel.store(false, Ordering::Relaxed);
         host.focus = run.focus;
         host.labels = run.labels;
+        host.copied = 0;
+        let current = host.generations.get(&run.chord) == Some(&run.generation);
+        if !current {
+            let why = format!("{} was rebound before it ran, and did not run", run.chord);
+            host.tell(ToViewer::Done(Some(why)));
+            continue;
+        }
         let function = host.kept.get(&run.chord).map(|kept| g.kept(kept));
         host.tell(ToViewer::Started {
             stop: g.interrupter(),
@@ -561,6 +616,30 @@ fn thread(mut host: Host, config: Option<String>, runs: Receiver<Run>) {
         let why = outcome.map(|e| format!("{}: {}", run.chord, describe(&g, &e)));
         host.tell(ToViewer::Done(why));
     }
+}
+
+/// Reads `path` if it is a regular file of at most `most` bytes. It is
+/// opened without waiting, so a FIFO put in its place cannot hold the
+/// viewer, and refused unless it is a file.
+pub fn read_small_file(path: &std::path::Path, most: u64) -> std::io::Result<String> {
+    let mut options = std::fs::File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(fuxix::file::NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut text = String::new();
+    file.take(most.saturating_add(1))
+        .read_to_string(&mut text)?;
+    if u64::try_from(text.len()).unwrap_or(u64::MAX) > most {
+        return Err(std::io::Error::other(format!("more than {most} bytes")));
+    }
+    Ok(text)
 }
 
 /// Reads the user's configuration, if there is one to run: `Err` says why
@@ -579,19 +658,11 @@ pub fn load_config() -> Result<Option<String>, String> {
         return Ok(None);
     };
     let path = dir.join("fux2").join("view.grift");
-    let file = match std::fs::File::open(&path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("{}: {e}", path.display())),
-    };
-    let mut text = String::new();
-    file.take(MAX_CONFIG.saturating_add(1))
-        .read_to_string(&mut text)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_CONFIG {
-        return Err(format!("{}: more than {MAX_CONFIG} bytes", path.display()));
+    match read_small_file(&path, MAX_CONFIG) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
     }
-    Ok(Some(text))
 }
 
 /// Starts the thread.
@@ -609,6 +680,10 @@ pub fn start(
         kept: HashMap::new(),
         focus: None,
         labels: Ok(Vec::new()),
+        copied: 0,
+        verbs: std::collections::HashSet::new(),
+        generations: HashMap::new(),
+        next_generation: 0,
         cancel: Arc::clone(&cancel),
         fux2,
     };

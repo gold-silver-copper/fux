@@ -126,7 +126,9 @@ impl Frame {
             let at = x.saturating_add(column);
             self.put(at, y, clean_glyph(text), sgr, false);
             for extra in 1..width {
-                let tail = wide && scale == 1;
+                // A wide glyph is drawn once, two columns wide; on a double
+                // line the two columns after it are room.
+                let tail = wide && extra == 1;
                 let text = if tail { "" } else { " " };
                 self.put(at.saturating_add(extra), y, text, sgr, tail);
             }
@@ -285,6 +287,21 @@ mod tests {
         let out = String::from_utf8_lossy(&frame.diff(&Frame::new(10, 1))).into_owned();
         assert!(!out.contains("2J"), "{out:?}");
         assert_eq!(out.matches('\x1b').count(), 2, "{out:?}");
+    }
+
+    /// D6: on a double-width line a wide glyph is still drawn.
+    #[test]
+    fn a_wide_glyph_shows_on_a_double_line() {
+        let row = Row {
+            rendition: 1,
+            ..wide_row()
+        };
+        let mut frame = Frame::new(12, 1);
+        frame.row(0, 0, 12, &row);
+        let out = String::from_utf8_lossy(&frame.diff(&Frame::new(12, 1))).into_owned();
+        let after = out.split('\u{4e16}').nth(1).unwrap_or("missing");
+        assert!(!after.starts_with('\x1b'), "drawn over: {out:?}");
+        assert!(out.contains('\u{4e16}'), "{out:?}");
     }
 
     #[test]
