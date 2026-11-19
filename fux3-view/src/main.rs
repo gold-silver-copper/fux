@@ -941,13 +941,18 @@ impl View {
             None => return,
         };
         let got = match read {
-            Ok(n) => buffer.get(..n).unwrap_or_default(),
+            Ok(n) => buffer.get(..n).unwrap_or_default().to_vec(),
             Err(Errno::AGAIN | Errno::INTR) => return,
             Err(errno) => {
                 self.ctl = None;
                 return self.say(format!(".view/ctl: {errno}; no longer read"));
             }
         };
+        self.take_ctl(&got);
+    }
+
+    /// Runs the whole lines in `got`, keeping a part line for later.
+    fn take_ctl(&mut self, got: &[u8]) {
         for &byte in got {
             if byte != b'\n' {
                 if self.ctl_part.len() <= MAX_CTL_LINE {
@@ -1552,10 +1557,18 @@ fn do_line(line: &str) -> Result<(), Failure> {
 }
 
 /// `.view/ctl`, made if missing, opened to read without waiting (and to
-/// write, so it never reads as ended while no writer has it open).
-fn open_ctl(view: &std::path::Path) -> Result<File, Failure> {
+/// write, so it never reads as ended while no writer has it open). A
+/// regular file there was written with no viewer running (a shell's `>`
+/// makes one): its lines are given back to be run, and the FIFO takes its
+/// place.
+fn open_ctl(view: &std::path::Path) -> Result<(File, Vec<u8>), Failure> {
     use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
     let path = view.join("ctl");
+    let mut written = Vec::new();
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+        written = fux3::files::read_small(&path, 64 << 10)?;
+        std::fs::remove_file(&path).map_err(|e| io_failure(&path.display().to_string(), e))?;
+    }
     match fuxix::file::private_fifo(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -1568,7 +1581,7 @@ fn open_ctl(view: &std::path::Path) -> Result<File, Failure> {
         .open(&path)
         .map_err(|e| io_failure(&path.display().to_string(), e))?;
     match file.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
-        true => Ok(file),
+        true => Ok((file, written)),
         false => Err(Failure::new(format!("{} is not a FIFO", path.display()))),
     }
 }
@@ -1591,7 +1604,7 @@ fn run() -> Result<(), Failure> {
     }
     let session = Session::open()?;
     let view = command::view_dir(&session)?;
-    let ctl = open_ctl(&view)?;
+    let (ctl, written) = open_ctl(&view)?;
     let stops = [
         Signal::Winch,
         Signal::Term,
@@ -1667,6 +1680,7 @@ fn run() -> Result<(), Failure> {
         quit: false,
     };
     view.refresh(true);
+    view.take_ctl(&written);
     if let Some(note) = note {
         view.say(note);
     }
