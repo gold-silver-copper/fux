@@ -225,3 +225,34 @@ Decided while fixing (by the implementer, with why):
 - **D52. `echo kill 1<>ctl` is the write that cannot hang**: opened to read
   and write, a FIFO's open never waits. On a dead pane the line goes
   nowhere, which is right for `kill`; `in` keeps `fux3 put`, which says so.
+
+Decided in review round 1 (six reviewers; 2 Opus, 2 gpt-6.2-sol, 2 gpt-6.2-astra) and from the
+two real-use testers, each with the sequence that showed it:
+
+- **D53. A rename by a looked-up name is checked afterwards and undone if it
+  moved another directory.** `mv` takes no lock: between finding a pane's
+  name and renaming it, another pane could be moved to that name.
+- **D54. A dead pane loses its name before the sweep takes it apart**, as in
+  its own kill. A sweep that died half-way left a name with half its files.
+  So a dead pane holding other things ends as `.gone-ID` with those things,
+  and its name is free.
+- **D55. The marker is `id` holding 16 hex digits and a newline.** A user's
+  directory with a file called `id` was cleared as a pane.
+- **D56. `history` is appended before the screens are replaced.** Otherwise
+  a line could be in neither for an instant, and `C-b c` could miss it.
+- **D57. A history line that ends with the mark's own text is written as a
+  piece followed by an empty end**, so taking marks out is exact.
+- **D58. `exit` waits while a picture shown is not yet listed** (the write
+  rate made it wait): the screen with it is the last one.
+- **D59. A kill clears dead panes at its end only if it asked something
+  outside the program's session to end.** An ordinary kill takes the
+  session's lock for its one rename and nothing else (D36).
+- **D60. A program named `-x` replays as `exec env -- '-x'`.** `exec --`,
+  which the panel suggested, is not dash's (`/bin/sh` on Ubuntu): CI said so.
+- **D61. Not fixed, with why**: the instant between an identity check and
+  `rmdir` (only an empty directory can be lost); a recipe run by `sh` from
+  its path (passing its text would put `--env` values on a command line);
+  a publisher that never returns from a stalled write; `put` when `exit`
+  cannot be written; the plain `echo kill > ctl` loop in the moment after an
+  inner holder had to be killed outright (the README gives `1<>`). All are
+  in DESIGN.md, "Left open".

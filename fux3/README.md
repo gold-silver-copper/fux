@@ -106,8 +106,8 @@ follows from "a name is only where it is listed":
   `FUX3_WORKSPACE`, `FUX3_PANE` and `FUX3_PANE_DIR` say where the pane was
   **when it started**, and are not changed by a move.
 - **The recipe stays** under the name the pane started with: move it too if
-  you want `fux3 start` to find it (`mv "$D/main/.recipes/build"
-  "$D/rig/.recipes/server"`).
+  you want `fux3 start` to find it (`mkdir -p "$D/rig/.recipes" && mv
+  "$D/main/.recipes/build" "$D/rig/.recipes/server"`).
 - **Names are not checked on a move.** A pane moved to a name outside the
   rule (`Build`, `.x`) lives on but is not listed by `fux3 ls` or the viewer
   and is never cleared when it dies: move it back. The 128-pane limit is
@@ -155,7 +155,7 @@ are not on it.
 | `errors` | the last 32 refusals, a line each |
 | `images/N.sixel` | one picture the program drew, as sixel: `cat` shows it in a sixel terminal |
 | `exit` | there once the program has ended: its state line (`state exited 3`) |
-| `id` | the pane's id and a newline, there from before the pane has its name: what makes a directory a pane's |
+| `id` | the pane's id (16 hex digits) and a newline, there from before the pane has its name: what makes a directory a pane's |
 
 **Line 1** of `screen` and `screen.styled` is the same in both:
 
@@ -328,7 +328,8 @@ The two comment lines keep the start's size and labels: a start from the
 recipe has them again unless `--size` or `--label` say otherwise, so a
 template's tab that matches on a label finds the pane it started. A program
 whose name starts with `-` is run through `env` (`exec env -- '-x'`), as
-`exec` would read it as an option. A name `sh` keeps for itself
+`exec` would read it as an option: such a program replays only where `env`
+is on `PATH`, and not if its name holds `=`. A name `sh` keeps for itself
 (`PPID`, `UID`, `EUID`, `BASHOPTS`, `SHELLOPTS`, `BASH_VERSINFO`) is refused
 by `--env`, as its recipe could not run. The recipe is written last, once the
 pane runs: a start that fails leaves the recipe of the last good one.
@@ -384,7 +385,12 @@ what is left, and you may send `kill` again. On macOS a process that left
 the program's session and was re-parented away cannot be found, and is not
 reported.
 
-Ending every pane, without ever waiting on a dead one:
+An inner holder that had to be killed outright leaves, for the moment until
+the outer kill clears it, a FIFO nobody reads; and one whose pane is in
+another session, or was moved into another pane's directory, is not found
+by that clearing at all (the other session's next `fux3` command clears the
+first; the second waits to be moved back). Ending every pane, without ever
+waiting on a dead one:
 
 ```sh
 for c in "$D"/*/*/ctl; do echo kill 1<>"$c"; done
@@ -413,11 +419,14 @@ the write still hangs the writer. Two ways are safe:
 ```sh
 printf 'echo hi\n' | fux3 put main/build              # in: whole, or refused
 echo kill 1<>"$D/main/build/ctl"                       # ctl: never waits; a dead pane takes nothing
-for c in "$D"/*/*/ctl; do echo kill 1<>"$c"; done      # kill every pane; cannot hang
+for c in "$D"/*/*/ctl; do echo kill 1<>"$c"; done      # kill every pane; waits on no dead one
 ```
 
 `1<>` on a dead pane's FIFO succeeds and the line goes nowhere: right for
-`kill`, and the reason `in` wants `fux3 put`, which says so. With plain
+`kill`, and the reason `in` wants `fux3 put`, which says so. What never
+waits is the open. The write of a line waits only while the FIFO is full
+(64 KiB of commands nobody has read), which a live holder does not leave
+and a dead pane's FIFO cannot reach with a few kills. With plain
 tools only, the same open as `put`'s in one line of Perl, which Linux and
 macOS both ship:
 
@@ -617,7 +626,7 @@ second.
 Before this, a line was written to a FIFO a viewer read; now:
 
 ```sh
-echo "split build right" > "$D/main/.view/ctl"   # before: needed a viewer reading; refusals in .view/errors
+# before: echo "split build right" > "$D/main/.view/ctl"   (needed a viewer reading; refusals in .view/errors)
 fux3 view main --do "split build right"          # now: an edit of the file; the refusal is stderr and exit 1
 ```
 

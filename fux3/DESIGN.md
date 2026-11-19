@@ -29,12 +29,16 @@ What follows in the code:
   with its inode, check it is the same directory. Not found is "removed".
 - **Naming is one rename that replaces nothing** (`renameat2` with
   `RENAME_NOREPLACE` on Linux, `renameatx_np` with `RENAME_EXCL` on macOS),
-  under the session's lock.
+  under the session's lock. A plain `mv` takes no lock, so the name a
+  directory was found under may hold another by the time it is renamed:
+  after every such rename, what has the new name is checked to be the
+  directory held, and given its name back if it is not.
 - **A command that names a workspace holds its directory from then on.**
   `Workspace::check` says "workspace W was removed" once that directory is
   no longer listed in the session, whatever has its name; `fux3 start
   --workspace-id` lets a caller that named the workspace earlier (the
-  viewer) start a pane in that directory or not at all.
+  viewer) start a pane in that directory or not at all (such a start makes
+  no workspace).
 
 ## The session directory
 
@@ -164,16 +168,21 @@ stdin and stdout at `/dev/null`.
 
 **Clearing dead panes.** Under the session's lock, in every workspace, every
 directory named as a pane, or `.new-*`, or `.gone-*`, whose lock can be
-taken is dead: a holder killed outright left it, at whichever step. It is
-cleared through its handle (`clear_pane`): only with the marker (or, a
+taken is dead: a holder killed outright left it, at whichever step. One with
+a pane's name first loses it, renamed `.gone-ID` as in its own kill, so no
+reader finds a name half empty and a clearing that dies leaves what the next
+one takes. Then it is
+cleared through its handle (`clear_pane`): only with the marker (`id`
+holding 16 hex digits and a newline, as a holder writes it: a file that is
+only called `id` makes no directory a pane's; or, a
 `.new-*`/`.gone-*` with nothing in it), and only the files a holder makes,
 by name (`in`, `ctl`, the screens, `status`, `history`, `history.1`,
 `errors`, `exit`, their `.NAME.new`, `images/N.sixel`, and last `id`). No
 directory but `images/` is entered, so a pane moved into another's
 directory, its lock held or not, is never touched. With anything else in it,
-that and the marker stay (a later clearing tries again) and the directory
-keeps its name; emptied, it is removed, if the name still holds the
-directory that was locked. Every `fux3` command but `put` clears this way. A
+that and the marker stay, in `.gone-ID` (a later clearing tries again);
+emptied, it is removed, if the name still holds the directory that was
+locked. Every `fux3` command but `put` clears this way. A
 plain `ls "$D"` can show a directory whose holder was killed outright until
 the next `fux3` command; its `status` then still says `running`.
 
@@ -222,8 +231,12 @@ and `kill` may be sent again. Complete:
 2. the publisher writes what waits and stops;
 3. the directory is cleared through its handle, as a dead pane's is, and
    removed if that emptied it;
-4. dead panes are cleared once more, for what this kill ended outright (an
-   inner holder that did not end itself), and the holder exits.
+4. if the kill asked anything outside the program's session to end, dead
+   panes are cleared once more, for what it ended outright (an inner
+   holder that did not end itself); and the holder exits.
+
+A pane listed nowhere, or whose listing cannot be asked (its parent
+unreadable), is left as it is for a clearing that finds it.
 
 A holder that dies between 1 and 3 leaves `.gone-ID`, which the next
 clearing takes. A rename refused leaves the pane whole, to say so. On macOS
@@ -235,7 +248,10 @@ reported.
 
 Rendering happens on the loop's thread; writing on a publisher thread, so a
 slow or full disk never stops the holder answering its program or reading
-`ctl`. The loop hands over the newest screens (replacing ones not yet
+`ctl`. Each hand-over is written history first, then pictures, the
+screens, `errors`, `status` and `exit`: a line that scrolled off is in
+`history` before a screen without it is, so a reader of `screen` and then
+`history` may see a line twice and never misses one. The loop hands over the newest screens (replacing ones not yet
 written), history text (kept in order; past 4 MiB waiting, the oldest goes and
 `history` says how much), and pictures to write or remove. A failed write
 leaves the last good file in place and puts `publish failed: WHY` in the next
@@ -309,7 +325,17 @@ never waits.
   rule and the pane limit are not checked; `mv` onto a pane nests; `mv` to
   another filesystem copies and deletes. Each is in the README.
 - **The kill lock**: a filesystem that stalls inside the one rename still
-  holds the session's lock for that long.
+  holds the session's lock for that long; one that stalls a pending write
+  keeps the holder (its name already free) from exiting.
+- **Windows of a `mv` nobody takes a lock for**: an empty directory moved to
+  a name in the instant between its check and its `rmdir` is removed; a
+  recipe is run by `sh` from its path, so a workspace renamed and another
+  made under its name between a start's naming and its `sh` runs the other's
+  recipe. Review round 1 named both; neither loses a file.
+- **An inner holder killed outright** whose pane is in another session, or
+  under another pane's directory, is not cleared by the outer kill.
+- **`put` and a program whose `exit` cannot be written** (a full disk):
+  `put` writes, and the holder drops it with a line in `errors`.
 - **macOS**: an inner pane's holder is not found by the outer kill.
 
 ## Ideas not built
