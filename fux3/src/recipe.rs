@@ -122,7 +122,13 @@ pub struct Kept {
 /// the script's.
 pub fn kept(text: &[u8]) -> Kept {
     let mut kept = Kept::default();
-    for line in String::from_utf8_lossy(text).lines() {
+    // Its lines come before the script's, which may hold anything.
+    let text = String::from_utf8_lossy(text);
+    for line in text
+        .lines()
+        .skip(1)
+        .take_while(|l| l.starts_with("# fux3 "))
+    {
         if let Some((cols, rows)) = line.strip_prefix(SIZE).and_then(|s| s.split_once('x')) {
             kept.size = cols.parse().ok().zip(rows.parse().ok());
         } else if let Some(Ok(label)) = line.strip_prefix(LABEL).map(crate::holder::parse_label) {
@@ -138,7 +144,8 @@ pub fn write(workspace: &std::fs::File, name: &str, text: &[u8]) -> Result<(), F
     use fuxix::file::at;
     use std::os::unix::fs::PermissionsExt;
     let dir = crate::session::private_dir(workspace, DIR, true)?;
-    let aside = format!(".{name}.new");
+    // Its writer's own, so that two starts never share it.
+    let aside = format!(".{name}.{}.new", std::process::id());
     let _ = at::remove_file(&dir, &aside);
     let written = at::open(&dir, &aside, at::WRITE | at::NEW)
         .and_then(|mut file| {

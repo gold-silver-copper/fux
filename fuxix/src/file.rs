@@ -234,12 +234,13 @@ pub mod at {
     /// Makes the directory `name` in `dir`, its user's alone (mode 0700,
     /// the umask not asked). One there already fails.
     pub fn make_dir(dir: &File, name: impl AsRef<Path>) -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        let path = name.as_ref();
-        let name = c(path)?;
+        let name = c(name.as_ref())?;
         // SAFETY: as in `open`.
         done(unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o700) })?;
-        open_dir(dir, path)?.set_permissions(std::fs::Permissions::from_mode(0o700))
+        // By name, not through an open: a umask that took the owner's bits
+        // leaves a directory that cannot be opened to be repaired.
+        // SAFETY: as in `open`.
+        done(unsafe { libc::fchmodat(dir.as_raw_fd(), name.as_ptr(), 0o700, 0) })
     }
 
     /// Makes the FIFO `name` in `dir`, its user's alone (mode 0600, the
@@ -307,6 +308,11 @@ pub mod at {
                 to.as_ptr(),
                 libc::RENAME_EXCL,
             )
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+        let returned = {
+            let _ = (from, to, from_fd, to_fd);
+            return Err(Error::from(ErrorKind::Unsupported));
         };
         match returned {
             0 => Ok(()),

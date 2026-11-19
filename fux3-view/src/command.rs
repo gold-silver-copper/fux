@@ -33,13 +33,21 @@ pub fn view_dir(workspace: &Workspace) -> Result<File, Failure> {
     if let Ok(dir) = fux3::session::private_dir(held, VIEW, false) {
         return Ok(dir);
     }
-    let aside = format!("{VIEW}.new-{}", std::process::id());
-    let dir = fux3::session::private_dir(held, &aside, true)?;
+    // A name no other maker has: this process's, and this moment's.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    let nanos = now.map_or(0, |d| d.subsec_nanos());
+    let aside = format!("{VIEW}.new-{}-{nanos}", std::process::id());
+    at::make_dir(held, &aside).map_err(|e| fux3::io(&aside, e))?;
+    let dir = at::open_dir(held, &aside).map_err(|e| fux3::io(&aside, e))?;
     layout::write_first(&dir)?;
-    // Another got there first: theirs is the one, and ours goes.
-    if at::rename_new(held, &aside, held, VIEW).is_err() {
-        empty(&dir, 0)?;
-        at::remove_dir(held, &aside).map_err(|e| fux3::io(&aside, e))?;
+    match at::rename_new(held, &aside, held, VIEW) {
+        Ok(()) => {}
+        // Another got there first: theirs is the one, and ours goes.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            empty(&dir, 0)?;
+            at::remove_dir(held, &aside).map_err(|e| fux3::io(&aside, e))?;
+        }
+        Err(e) => return Err(fux3::io(VIEW, e)),
     }
     fux3::session::private_dir(held, VIEW, false)
 }

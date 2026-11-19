@@ -60,6 +60,15 @@ impl Session {
         line.parse().ok()
     }
 
+    /// Writes `kill` to a pane's `ctl` as `echo kill 1<>ctl` does: opened
+    /// to read and write, the open never waits, on a dead pane's either.
+    fn end(&self, name: &str) {
+        let ctl = self.pane(name).join("ctl");
+        if let Ok(mut file) = std::fs::File::options().read(true).write(true).open(ctl) {
+            let _ = file.write_all(b"kill\n");
+        }
+    }
+
     /// Writes `bytes` to a pane's FIFO, as `printf > file` does.
     fn write(&self, name: &str, fifo: &str, bytes: &[u8]) -> Result {
         let mut file = std::fs::File::options()
@@ -73,7 +82,7 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         for name in self.fux3(&["ls"]).unwrap_or_default().lines() {
-            let _ = self.write(name, "ctl", b"kill\n");
+            self.end(name);
         }
         let start = Instant::now();
         while self.fux3(&["ls"]).is_ok_and(|l| !l.is_empty())
@@ -602,6 +611,11 @@ fn a_recipe_starts_the_same_program_again() -> Result {
         .map_err(|e| e.to_string())?;
     assert!(again.status.success(), "{again:?}");
     until("the second run", || screen_has(&s, "d", "ran-42"))?;
+    // The recipe's own lines are its first: an argument that looks like
+    // one changes nothing.
+    let odd = "#!/bin/sh\n# fux3 size 50x7\ncd -- '/'\nexec 'echo' 'a\n# fux3 size 1x1\n# fux3 label role=x'\n";
+    let kept = fux3::recipe::kept(odd.as_bytes());
+    assert_eq!((kept.size, kept.labels.len()), (Some((50, 7)), 0));
     let status = s.read("d", "status");
     assert!(
         status.contains("\nsize 50 7\n") && status.contains("\nlabel role db\n"),
@@ -733,15 +747,13 @@ fn a_moved_pane_is_the_same_pane() -> Result {
             && s.read(p, "status").contains("\nstate signalled INT\n")
     })?;
     // wait follows it too; then the kill takes the name it has now.
-    s.fux3(&["wait", p, "--ms", "0"])
-        .err()
-        .ok_or("wait saw a change in no time")?;
+    let waited = s.fux3(&["wait", p, "--ms", "0"]);
+    let waited = waited.err().ok_or("wait saw a change in no time")?;
+    assert!(waited.contains("no change in 0 ms"), "{waited}");
     s.write(p, "ctl", b"kill\n")?;
-    until("the pane gone", || !s.pane(p).exists())?;
-    assert_eq!(
-        std::fs::read_dir(&rig).map_err(|e| e.to_string())?.count(),
-        0
-    );
+    until("the pane gone, and what it was taken apart in", || {
+        std::fs::read_dir(&rig).is_ok_and(|entries| entries.count() == 0)
+    })?;
     assert_eq!(s.fux3(&["ls"])?, "");
     Ok(())
 }
@@ -769,6 +781,11 @@ fn a_start_goes_to_the_workspace_it_was_given() -> Result {
         .map_err(|e| e.to_string())?;
     let said = s.fux3(&["start", "w/third", "--workspace-id", &id, "--", "sh"]);
     assert!(said.is_err_and(|e| e.contains("workspace w was removed")));
+    // Nor does it make one where the name leads nowhere.
+    std::fs::remove_dir_all(&space).map_err(|e| e.to_string())?;
+    let said = s.fux3(&["start", "w/third", "--workspace-id", &id, "--", "sh"]);
+    assert!(said.is_err_and(|e| e.contains("workspace w was removed")));
+    assert!(!space.exists(), "a refused start made a workspace");
     assert_eq!(s.fux3(&["ls"])?, "");
     Ok(())
 }
@@ -828,6 +845,9 @@ fn a_name_is_given_whole_and_only_a_panes_files_are_cleared() -> Result {
                 "in" | "ctl" => fuxix::file::private_fifo(&dir.join(file)),
                 "images" => std::fs::create_dir(dir.join(file))
                     .and_then(|()| std::fs::write(dir.join("images/1.sixel"), "x")),
+                // A marker as a holder writes it; `ID` as a user might.
+                "id" => std::fs::write(dir.join(file), "00000000000000aa\n"),
+                "ID" => std::fs::write(dir.join("id"), "invoice-17\n"),
                 _ => std::fs::write(dir.join(file), "x\n"),
             }
             .map_err(|e| e.to_string())?;
@@ -843,17 +863,25 @@ fn a_name_is_given_whole_and_only_a_panes_files_are_cleared() -> Result {
         "history.1",
         "screen",
         ".screen.new",
+        ".images-1.sixel.new",
     ];
     dead(".new-aaaa", &[])?;
     dead(".new-bbbb", &["id", "in"])?;
     dead(".gone-cccc", &made)?;
+    assert_eq!(s.fux3(&["ls"])?, "");
     dead("named", &made)?;
-    // Not a pane's: no marker; and a pane's holding what no holder made.
+    // Not a pane's: no marker, or a file that is only called `id`; and a
+    // pane's holding what no holder made.
     dead("notes", &["in", "ctl", "todo"])?;
+    dead("ledger", &["ID", "history"])?;
     dead(".new-dddd", &["todo"])?;
-    dead("mixed", &["id", "in", "screen", "todo"])?;
+    assert_eq!(s.fux3(&["ls"])?, "");
+    dead(
+        "mixed",
+        &["id", "in", "screen", "todo", ".images-draft.new"],
+    )?;
     std::fs::create_dir(main.join("mixed/inner")).map_err(|e| e.to_string())?;
-    std::fs::write(main.join("mixed/inner/id"), "x\n").map_err(|e| e.to_string())?;
+    std::fs::write(main.join("mixed/inner/id"), "00000000000000bb\n").map_err(|e| e.to_string())?;
     assert_eq!(s.fux3(&["ls"])?, "");
     let mut left: Vec<String> = std::fs::read_dir(&main)
         .map_err(|e| e.to_string())?
@@ -862,18 +890,24 @@ fn a_name_is_given_whole_and_only_a_panes_files_are_cleared() -> Result {
         .filter(|n| n != ".recipes")
         .collect();
     left.sort();
-    assert_eq!(left, [".new-dddd", "mixed", "notes"]);
+    // The pane holding other things lost its name (to `.gone-ID`), its own
+    // files and nothing else; nothing inside a directory in it was touched.
+    let kept = ".gone-00000000000000aa";
+    assert_eq!(left, [kept, ".new-dddd", "ledger", "notes"]);
     assert!(main.join("notes/todo").exists() && main.join("notes/in").exists());
-    // Its own files went, the rest and the marker stay, nothing inside a
-    // directory in it was touched; a start says why the name is taken.
-    assert!(main.join("mixed/todo").exists() && main.join("mixed/inner/id").exists());
-    assert!(main.join("mixed/id").exists() && !main.join("mixed/in").exists());
+    assert!(main.join("ledger/history").exists() && main.join("ledger/id").exists());
+    let kept = main.join(kept);
+    for stays in ["todo", "inner/id", ".images-draft.new", "id"] {
+        assert!(kept.join(stays).exists(), "{stays} was removed");
+    }
+    assert!(!kept.join("in").exists() && !kept.join("screen").exists());
+    // A name with something no pane made at it is refused and left alone.
     let said = s
-        .start("mixed", &["sh"])
+        .start("notes", &["sh"])
         .err()
         .ok_or("it took a name in use")?;
     assert!(said.contains("left alone"), "{said}");
-    assert!(main.join("mixed/todo").exists());
+    assert!(main.join("notes/todo").exists());
     Ok(())
 }
 

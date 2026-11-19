@@ -256,6 +256,8 @@ struct Images {
     next: u64,
     budget: u64,
     filled_at: Option<Instant>,
+    /// A picture shown is not listed yet: the rate made it wait.
+    waiting: bool,
 }
 
 struct Holder {
@@ -291,6 +293,9 @@ struct Holder {
     cell: (u16, u16),
     pictures: bool,
     history_end: u64,
+    /// A kill asked processes outside the program's session to end: dead
+    /// panes are cleared once it is done.
+    asked_others: bool,
     /// The history line being gathered, not yet a whole record.
     history_line: String,
     history: Vec<u8>,
@@ -399,6 +404,10 @@ fn graphics(cell: (u16, u16), pictures: bool) -> Result<Graphics, Failure> {
     })
 }
 
+fn removed(workspace: &str) -> Failure {
+    Failure::new(format!("workspace {workspace} was removed"))
+}
+
 /// What is left to do once the pane's directory is made: give it its
 /// name, start the program, write the recipe.
 struct Start {
@@ -421,16 +430,17 @@ fn prepare(spec: Spec) -> Result<(Holder, Start), Failure> {
     let children = fuxix::signal::Pipe::new(&[Signal::Chld, Signal::Term])
         .map_err(|e| io("the signal pipe", e))?;
     let session = spec.session.clone();
-    let workspace = session.workspace(&spec.workspace, true)?;
+    // A start given the workspace's directory makes none: a name that
+    // leads nowhere is "removed", not a new workspace.
+    let pinned = spec.workspace_id.is_some();
+    let workspace = (session.workspace(&spec.workspace, !pinned))
+        .map_err(|f| if pinned { removed(&spec.workspace) } else { f })?;
     if spec
         .workspace_id
         .as_ref()
         .is_some_and(|id| *id != workspace.id())
     {
-        return Err(Failure::new(format!(
-            "workspace {} was removed",
-            spec.workspace
-        )));
+        return Err(removed(&spec.workspace));
     }
     let dir = workspace.stage(&id)?;
     let made = (|| {
@@ -486,6 +496,7 @@ fn prepare(spec: Spec) -> Result<(Holder, Start), Failure> {
         cell: spec.cell,
         pictures: spec.pictures,
         history_end: 0,
+        asked_others: false,
         history_line: String::new(),
         history: Vec::new(),
         images: Images {
@@ -1118,6 +1129,7 @@ impl Holder {
         }
         let mut placed = Vec::new();
         let mut kept = Vec::new();
+        self.images.waiting = false;
         // Only those with a row on the screen: one scrolled wholly into
         // history shows nothing, and its file goes.
         let shown: Vec<_> = (self.parser.screen().pictures())
@@ -1144,6 +1156,7 @@ impl Holder {
             let Some(name) = name else {
                 // Over the rate: written at a later publish, if still shown.
                 self.dirty = true;
+                self.images.waiting = true;
                 continue;
             };
             kept.push((Arc::clone(picture.picture), name.clone()));
@@ -1215,7 +1228,9 @@ impl Holder {
     /// The `exit` file's line, with every publish once the end has settled,
     /// until the publisher says it is on disk.
     fn exit_line(&self) -> Option<Vec<u8>> {
-        (self.ended() && !self.publisher.exit_done())
+        // Not while a picture waits to be listed: the screen with it is
+        // the last one, and `exit` comes after the last.
+        (self.ended() && !self.images.waiting && !self.publisher.exit_done())
             .then(|| format!("state {}\n", self.state).into_bytes())
     }
 
@@ -1302,6 +1317,7 @@ impl Holder {
             let asked = others()
                 .filter(|pid| fuxix::process::kill(*pid, Signal::Term).is_ok())
                 .count();
+            self.asked_others |= asked > 0;
             let until = after(Instant::now(), TERM_GRACE);
             while asked > 0 && Instant::now() < until && others().next().is_some() {
                 fuxix::process::reap_orphans(|pid| pid == leader);
@@ -1383,12 +1399,18 @@ impl Holder {
             session::unname(&self.dir, &self.id, &lock)?
         };
         self.publisher.stop();
-        if let (true, Some((parent, name))) = (session::clear_pane(&self.dir, true), listed) {
+        // Listed nowhere, or where it is listed could not be asked: left as
+        // it is, marker and all, for a clearing that finds it.
+        if let Some((parent, name)) = listed
+            && session::clear_pane(&self.dir, true)
+        {
             let _ = at::remove_dir(&parent, &name);
         }
         // What this kill ended outright (a holder inside it that would
         // not end itself) is dead now: its directory goes with this one.
-        let _ = self.session.live();
+        if std::mem::take(&mut self.asked_others) {
+            let _ = self.session.live();
+        }
         Ok(())
     }
 

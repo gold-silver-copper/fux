@@ -121,10 +121,34 @@ pub fn place(dir: &File) -> Option<(File, String)> {
     let parent = at::open_dir(dir, "..").ok()?;
     let inode = dir.metadata().ok()?.ino();
     let names = at::names(&parent, MAX_SIBLINGS).ok()?;
-    let (name, _) = (names.into_iter()).find(|(name, i)| {
-        *i == inode && at::open_dir(&parent, name).is_ok_and(|d| same(&d, dir))
-    })?;
-    Some((parent, name.into_string().ok()?))
+    let is = |name: &std::ffi::OsString| at::open_dir(&parent, name).is_ok_and(|d| same(&d, dir));
+    // By the entry's inode number first; where a filesystem gives entries
+    // other numbers than its files have (some overlays), by looking at each.
+    let found = (names.iter().find(|(name, i)| *i == inode && is(name)))
+        .or_else(|| names.iter().find(|(name, _)| is(name)))?;
+    let name = found.0.clone().into_string().ok()?;
+    Some((parent, name))
+}
+
+/// Renames the directory held as `dir` from `from` in `parent` to `to` in
+/// `to_parent`, onto nothing. `from` was looked up a moment ago and a
+/// `mv` may have put another directory there since: if what got the new
+/// name is not `dir`, it is given its name back and the rename refused.
+fn rename_held(
+    dir: &File,
+    parent: &File,
+    from: &str,
+    to_parent: &File,
+    to: &str,
+) -> Result<(), Failure> {
+    at::rename_new(parent, from, to_parent, to).map_err(|e| io(format!("renaming {from}"), e))?;
+    if at::open_dir(to_parent, to).is_ok_and(|there| same(&there, dir)) {
+        return Ok(());
+    }
+    let _ = at::rename_new(to_parent, to, parent, from);
+    Err(Failure::new(format!(
+        "{from} was moved meanwhile; nothing was changed"
+    )))
 }
 
 /// The session directory when `FUX3_DIR` does not name one: in memory on
@@ -349,8 +373,21 @@ impl Workspace {
             };
             match try_lock(&dir) {
                 Ok(true) => {
-                    // Still the one locked, and empty now: the name goes.
-                    let emptied = clear_pane(&dir, !named);
+                    // A pane loses its name before it is taken apart, as
+                    // in its own kill: no reader finds a name half empty,
+                    // and a clearing that dies leaves what the next takes.
+                    let gone = marker(&dir).map(|id| format!("{GONE}{id}"));
+                    let name = match gone {
+                        Some(gone) if named => {
+                            match rename_held(&dir, &self.held, &name, &self.held, &gone) {
+                                Ok(()) => gone,
+                                Err(_) => continue,
+                            }
+                        }
+                        _ => name,
+                    };
+                    // Still the one locked, and empty now: it goes.
+                    let emptied = clear_pane(&dir, true);
                     if emptied && at::open_dir(&self.held, &name).is_ok_and(|d| same(&d, &dir)) {
                         let _ = at::remove_dir(&self.held, &name);
                     }
@@ -402,17 +439,16 @@ impl Workspace {
                 self.name
             )));
         }
+        self.check()?;
+        if at::open(&self.held, name, at::READ | fuxix::file::NONBLOCK).is_ok() {
+            let there = self.dir.join(name);
+            let why = "is there and holds what no pane made: it was left alone";
+            return Err(Failure::new(format!("{} {why}", there.display())));
+        }
         let (parent, staged) =
             place(dir).ok_or_else(|| Failure::new("the pane's directory went"))?;
-        at::rename_new(&parent, &staged, &self.held, name).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                let there = self.dir.join(name);
-                let why = "is there and holds what no pane made: it was left alone";
-                return Failure::new(format!("{} {why}", there.display()));
-            }
-            let removed = self.check().err();
-            removed.unwrap_or_else(|| io(format!("naming pane {shown}"), e))
-        })
+        rename_held(dir, &parent, &staged, &self.held, name)
+            .map_err(|f| Failure::new(format!("naming pane {shown}: {f}")))
     }
 }
 
@@ -420,9 +456,17 @@ impl Workspace {
 /// wrote. Nothing else is ever cleared as a dead pane, so a session
 /// directory pointed at a place holding other files loses none.
 pub fn is_pane(dir: &File) -> bool {
-    at::open(dir, MARKER, at::READ | fuxix::file::NONBLOCK)
-        .and_then(|f| f.metadata())
-        .is_ok_and(|m| m.is_file())
+    marker(dir).is_some()
+}
+
+/// The id in the marker of the directory `dir`, if it holds one as a
+/// holder writes it: sixteen hex digits and a newline, nothing else. A
+/// file that happens to be called `id` makes no directory a pane's.
+fn marker(dir: &File) -> Option<String> {
+    let text = String::from_utf8(files::read_at(dir, MARKER, 17).ok()?).ok()?;
+    let id = text.strip_suffix('\n')?;
+    let hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+    (id.len() == 16 && id.bytes().all(hex)).then(|| id.to_owned())
 }
 
 /// Takes the pane in `dir` out of its name, by one rename, to a name
@@ -438,10 +482,15 @@ pub fn unname(
     };
     let gone = format!("{GONE}{id}");
     if name != gone {
-        at::rename_new(&parent, &name, &parent, &gone)
-            .map_err(|e| io(format!("renaming {name}"), e))?;
+        rename_held(dir, &parent, &name, &parent, &gone)?;
     }
     Ok(Some((parent, gone)))
+}
+
+/// Whether `name` is a picture's file name, `N.sixel`.
+fn sixel(name: &str) -> bool {
+    let number = name.strip_suffix(".sixel");
+    number.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Takes a dead pane's directory apart, through its handle and with its
@@ -465,18 +514,17 @@ pub fn clear_pane(dir: &File, unnamed: bool) -> bool {
                 let all = at::names(&images, MAX_ENTRIES).unwrap_or_default();
                 let mut emptied = true;
                 for (image, _) in all {
-                    let sixel = image
-                        .to_string_lossy()
-                        .strip_suffix(".sixel")
-                        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-                    emptied &= sixel && at::remove_file(&images, &image).is_ok();
+                    let ours = sixel(&image.to_string_lossy());
+                    emptied &= ours && at::remove_file(&images, &image).is_ok();
                 }
                 emptied
             }) && at::remove_dir(dir, files::IMAGES).is_ok();
         } else if name != MARKER {
             let aside = name.strip_prefix('.').and_then(|n| n.strip_suffix(".new"));
             let made = files::MADE.contains(&&*name)
-                || aside.is_some_and(|n| files::MADE.contains(&n) || n.starts_with("images-"));
+                || aside.is_some_and(|n| {
+                    files::MADE.contains(&n) || n.strip_prefix("images-").is_some_and(sixel)
+                });
             known &= made && at::remove_file(dir, &*name).is_ok();
         }
     }

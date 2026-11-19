@@ -2,7 +2,7 @@
 # The README's example, run for real with sh, printf, echo, cat and ls: what
 # CI does on Linux and macOS. Run from the repository's root after building
 # fux3 (FUX3_BIN may name the directory holding it).
-set -euo pipefail
+set -Eeuo pipefail
 PATH="${FUX3_BIN:-$PWD/target/debug}:$PATH"
 export FUX3_DIR
 FUX3_DIR=$(mktemp -d)
@@ -11,8 +11,7 @@ W=$(mktemp -d)
 V=$(mktemp -d)
 chmod 700 "$V"
 cleanup() {
-    for pane in $(fux3 ls 2>/dev/null); do echo kill > "$FUX3_DIR/$pane/ctl" || true; done
-    for pane in $(FUX3_DIR=$V fux3 ls 2>/dev/null); do echo kill > "$V/$pane/ctl" || true; done
+    for c in "$FUX3_DIR"/*/*/ctl "$V"/*/*/ctl; do [ -p "$c" ] && echo kill 1<>"$c"; done
     sleep 1
     rm -rf "$FUX3_DIR" "$W" "$V"
 }
@@ -87,7 +86,7 @@ until_long grep -qs 'pane shell-1@' "$D/main/.view/layout"
 until_long test -d "$D/main/shell-1"
 # The split fitted build to its half of the viewer, once; the viewer's own
 # pane stays the size it was started at.
-until_long grep -qx 'size 49 30' "$D/main/build/status"
+until_ok grep -qx 'size 49 30' "$D/main/build/status"
 grep -qx 'size 100 30' "$V/main/viewer/status"
 # Killing the viewer outright leaves every pane running and typable.
 kill -9 "$(sed -n 's/^pid //p' "$V/main/viewer/status")"
@@ -115,7 +114,9 @@ until_ok test ! -e "$D/main/short"
 ID=$(cat "$D/main/build/id")
 mkdir "$D/rig" && mv "$D/main/build" "$D/rig/server"
 printf 'echo moved-$((40+2))\n' > "$D/rig/server/in"
-until_ok grep -qx moved-42 "$D/rig/server/screen"
+# (This pane's echo is off since the send above: a shell without its own line
+# editor then prints the answer on its prompt's line.)
+until_ok grep -q moved-42 "$D/rig/server/screen"
 [ "$(cat "$D/rig/server/id")" = "$ID" ]
 [ "$(fux3 ls)" = rig/server ]
 # A layout command with no viewer running is an edit of the layout file.

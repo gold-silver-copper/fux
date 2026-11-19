@@ -250,10 +250,13 @@ fn run(shared: &Shared, dir: &File, history_cap: usize) {
         gone.extend(taken.gone_images);
         images_left.extend(taken.new_images);
         images_left.retain(|(name, _)| !gone.contains(name));
-        (errors_left, gone_left) = writer.publish(&mut images_left, files, gone);
+        // History before the screens: a line that scrolled off is in
+        // `history` before a screen without it is, so a reader of `screen`
+        // and then `history` may see it twice and never misses it.
         if !taken.history.is_empty() || lost > 0 {
             history_len = writer.append_history(&taken.history, lost, history_len, history_cap);
         }
+        (errors_left, gone_left) = writer.publish(&mut images_left, files, gone);
         if let Ok(mut work) = shared.work.lock() {
             work.written = handed;
             work.written_ok = writer.failure.is_none();
@@ -450,10 +453,14 @@ impl Writer<'_> {
         // can't stall the publisher.
         let flags = at::WRITE | at::APPEND | at::CREATE | fuxix::file::NONBLOCK;
         let appended = at::open(self.dir, files::HISTORY, flags).and_then(|mut file| {
-            match file.metadata()?.is_file() {
-                true => file.write_all(text),
-                false => Err(std::io::Error::other("history is not a regular file")),
+            let meta = file.metadata()?;
+            if !meta.is_file() {
+                return Err(std::io::Error::other("history is not a regular file"));
             }
+            // A part of a record written before the disk filled is taken
+            // back: the file holds whole records only.
+            file.write_all(text)
+                .inspect_err(|_| drop(file.set_len(meta.len())))
         });
         match appended {
             Ok(()) => true,
@@ -489,6 +496,13 @@ pub fn record(line: &mut String, out: &mut Vec<u8>, fragment: &str, end: bool, l
     }
     if end {
         out.extend_from_slice(line.as_bytes());
+        // A line that itself ends with the mark's text is written as a
+        // piece with nothing after it, so that taking marks out gives it
+        // back too.
+        if line.ends_with(CONTINUED) {
+            out.extend_from_slice(CONTINUED.as_bytes());
+            out.push(b'\n');
+        }
         out.push(b'\n');
         line.clear();
     }
@@ -529,6 +543,22 @@ mod tests {
             cursor_col: 0,
             cursor_shown: true,
         }
+    }
+
+    /// Taking the marks out of history's records gives every line back: a
+    /// long one cut into pieces, and one that itself ends with the mark.
+    #[test]
+    fn history_records_give_their_lines_back() {
+        let long: String = std::iter::repeat_n("é", 300).collect();
+        let literal = format!("alpha{CONTINUED}");
+        let (mut line, mut out) = (String::new(), Vec::new());
+        for text in [long.as_str(), literal.as_str(), "", "beta"] {
+            record(&mut line, &mut out, text, true, 64);
+        }
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(text.lines().all(|record| record.len() < 64), "{text}");
+        let back = text.replace(&format!("{CONTINUED}\n"), "");
+        assert_eq!(back, format!("{long}\n{literal}\n\nbeta\n"));
     }
 
     /// Whatever a program prints, the styled screen holds no control but

@@ -178,8 +178,12 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
     let or_none = |text: Option<String>| OsString::from(text.unwrap_or_else(|| "-".to_owned()));
     let mut public = vec![or_none(size), or_none(cell), pane];
     let mut private = Vec::new();
+    // As the holder reads them: an option's value is never an option, so
+    // nothing after a `--` that is a value is taken for the program.
+    const VALUED: [&str; 5] = ["--size", "--cell", "--history", "--label", "--workspace-id"];
     while let Some(arg) = args.next() {
         let (env, program) = (arg == "--env", arg == "--");
+        let valued = VALUED.iter().any(|option| arg == *option);
         public.push(arg);
         if program {
             public.extend(args);
@@ -189,6 +193,8 @@ fn start(mut args: impl Iterator<Item = OsString>) -> Outcome {
             let value = (args.next()).ok_or_else(|| Failure::new("--env needs NAME=VALUE"))?;
             private.extend_from_slice(value.as_bytes());
             private.push(0);
+        } else if valued {
+            public.extend(args.next());
         }
     }
     let shown = format!("{workspace}/{name}");
