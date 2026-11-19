@@ -1111,11 +1111,20 @@ pub fn write_first(view: &Path) -> Result<(), Failure> {
 }
 
 /// Replaces `name` in `dir` with `text`, whole: written beside it, then
-/// renamed over it.
+/// renamed over it. The file beside it is made new (a stale one, or
+/// whatever was planted there, a FIFO or a link, is removed first, never
+/// opened), so the write can neither wait nor land outside `dir`.
 pub fn replace(dir: &Path, name: &str, temp: &str, text: &str) -> Result<(), Failure> {
     let (temp, path) = (dir.join(temp), dir.join(name));
+    match std::fs::remove_file(&temp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(fux3::io(temp.display(), e));
+        }
+        _ => {}
+    }
     let mut options = File::options();
-    options.write(true).create(true).truncate(true);
+    // Exclusive: made here or refused, never a file already there opened.
+    options.write(true).create_new(true);
     let mut file = (fuxix::file::private_file(&mut options).open(&temp))
         .map_err(|e| fux3::io(temp.display(), e))?;
     file.write_all(text.as_bytes())
@@ -1171,14 +1180,14 @@ pub fn edit(view: &Path, live: &[Live], area: Rect, op: &Op) -> Result<Edited, F
         });
     }
     layout.version = old.version.saturating_add(1);
-    check(&layout).map_err(bad)?;
+    // Written only as the reader takes it (its bounds: size, depth, tabs,
+    // tiles), so no edit leaves a file every later read refuses.
     let text = layout.to_string();
-    if text.len() > MAX_BYTES {
-        return Err(bad(format!(
-            "the layout would be {} bytes, at most {MAX_BYTES}",
-            text.len()
-        )));
-    }
+    parse(&text).map_err(|why| {
+        bad(format!(
+            "the change would make a layout that is refused: {why}"
+        ))
+    })?;
     replace(view, FILE, TEMP, &text)?;
     drop(lock);
     Ok(Edited {
@@ -1773,6 +1782,32 @@ mod tests {
             .collect();
         moved.sort();
         assert_eq!(moved, ["b", "c"]);
+        Ok(())
+    }
+
+    /// Every edit leaves a file the reader takes: one that would nest too
+    /// deep is refused, and the last good file stays; and none waits on a
+    /// FIFO planted where it writes.
+    #[test]
+    fn an_edit_never_writes_a_layout_the_reader_refuses() -> Result<(), Failure> {
+        let scratch = fuxix::file::scratch().map_err(|e| bad(e.to_string()))?;
+        let view = scratch.join(format!("f3v-deep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&view);
+        std::fs::create_dir_all(&view).map_err(|e| bad(e.to_string()))?;
+        write_first(&view)?;
+        // A FIFO planted where the new file is written holds no edit up.
+        fuxix::file::private_fifo(&view.join(TEMP)).map_err(|e| bad(e.to_string()))?;
+        let names: Vec<String> = (0..12).map(|n| format!("p{n}")).collect();
+        let panes: Vec<Live> = (names.iter()).map(|name| live(name, 'a', &[])).collect();
+        let mut refused = 0;
+        for (n, (old, new)) in names.iter().zip(names.iter().skip(1)).enumerate() {
+            let way = if n % 2 == 0 { "right" } else { "down" };
+            let op = parse_command(&format!("split {old} {way} {new}"))?;
+            refused += usize::from(edit(&view, &panes, AREA, &op).is_err());
+            read(&view)?;
+        }
+        let _ = std::fs::remove_dir_all(&view);
+        assert!(refused > 0, "no split was too deep");
         Ok(())
     }
 }
