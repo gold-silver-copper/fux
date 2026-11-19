@@ -50,7 +50,7 @@
 ;; workspace's .view/ctl, opened read-write so that it never waits) and
 ;; ends itself.
 (define! history-script
-  "${PAGER:-less +G} \"$1\"; exec 3<>\"$FUX3_DIR/$FUX3_WORKSPACE/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; echo kill > \"$FUX3_PANE_DIR/ctl\"")
+  "cat \"$1.1\" \"$1\" 2>/dev/null | ${PAGER:-less +G}; exec 3<>\"$FUX3_DIR/$FUX3_WORKSPACE/.view/ctl\"; echo \"close $FUX3_PANE@$FUX3_PANE_ID\" >&3; echo kill > \"$FUX3_PANE_DIR/ctl\"")
 (define! history (lambda! ()
   (let! ((target (focused))
          (file (join (workspace-dir) "/" (name-of target) "/history"))
