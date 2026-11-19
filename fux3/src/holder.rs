@@ -808,9 +808,7 @@ impl Holder {
         #[cfg(target_os = "linux")]
         let others = {
             let leader = job.leader();
-            ours(fuxix::process::tree().pids)
-                .iter()
-                .any(|pid| *pid != leader)
+            (fuxix::process::tree().pids.iter()).any(|pid| *pid != leader)
         };
         #[cfg(not(target_os = "linux"))]
         let others = !job.members().pids.is_empty();
@@ -1222,7 +1220,7 @@ impl Holder {
                     tree.scan
                 ));
             }
-            for pid in ours(tree.pids) {
+            for pid in tree.pids {
                 let _ = fuxix::process::kill(pid, Signal::Kill);
             }
         }
@@ -1274,7 +1272,7 @@ impl Holder {
             fuxix::process::reap_orphans(|pid| pid == leader);
             #[cfg(target_os = "linux")]
             let alive = {
-                let left: Vec<_> = (ours(fuxix::process::tree().pids).into_iter())
+                let left: Vec<_> = (fuxix::process::tree().pids.into_iter())
                     .filter(|pid| *pid != leader)
                     .collect();
                 for pid in &left {
@@ -1369,53 +1367,6 @@ pub fn parse_key_mode(text: &str) -> Option<fux_vt::keys::encode::KeyMode> {
         }),
         _ => None,
     }
-}
-
-/// What this holder may kill of the processes it found (Linux, where it
-/// is the subreaper of all its program started): all but other panes'
-/// holders and what runs under them. A pane started from inside this one
-/// is adopted when its starter exits, yet is a pane of its own, killed only
-/// through its own `ctl`.
-#[cfg(target_os = "linux")]
-fn ours(pids: Vec<fuxix::process::Pid>) -> Vec<fuxix::process::Pid> {
-    let proc = |pid: fuxix::process::Pid, file: &str| {
-        std::fs::read(format!("/proc/{}/{file}", pid.as_raw())).unwrap_or_default()
-    };
-    // A holder's command line is `fux3 __hold …`.
-    let holder = |pid| proc(pid, "cmdline").split(|b| *b == 0).nth(1) == Some(b"__hold".as_slice());
-    let parent = |pid| {
-        let stat = String::from_utf8_lossy(&proc(pid, "stat")).into_owned();
-        // `pid (name) state ppid …`: the name may hold spaces and parentheses.
-        let after = stat
-            .rsplit_once(')')
-            .map(|(_, rest)| rest.to_owned())
-            .unwrap_or_default();
-        after
-            .split_whitespace()
-            .nth(1)
-            .and_then(|p| p.parse::<i32>().ok())
-    };
-    let parents: Vec<_> = pids.iter().map(|pid| (*pid, parent(*pid))).collect();
-    let mut spared: Vec<i32> = (pids.iter())
-        .filter(|pid| holder(**pid))
-        .map(|p| p.as_raw())
-        .collect();
-    // What runs under a spared process is spared, to any depth.
-    for _ in 0..pids.len() {
-        let more: Vec<i32> = (parents.iter())
-            .filter(|(pid, ppid)| {
-                !spared.contains(&pid.as_raw()) && ppid.is_some_and(|p| spared.contains(&p))
-            })
-            .map(|(pid, _)| pid.as_raw())
-            .collect();
-        if more.is_empty() {
-            break;
-        }
-        spared.extend(more);
-    }
-    pids.into_iter()
-        .filter(|pid| !spared.contains(&pid.as_raw()))
-        .collect()
 }
 
 /// Reads a file `send` names: a regular file of this user's, not a link,
