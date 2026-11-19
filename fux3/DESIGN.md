@@ -309,12 +309,12 @@ With no program, `start` runs a recipe only if it is a plain file of at most
 `fux3 put` takes no lock and clears nothing. It opens the workspace and then
 the pane's directory, once, and asks everything of that handle: the marker
 (else "no pane"), the lock (taken: a dead holder; an error asking: a
-refusal, never success), `status` (it must be readable and say `state
-running`: a write to `in` only queues, and the holder drops what no program
-will read, so an ended program, a `kill-incomplete` and a `status` that
-cannot be read are all refused), then `in`, opened relative to the handle with
+refusal, never success), then `in`, opened relative to the handle with
 `O_WRONLY|O_NONBLOCK|O_NOFOLLOW` and no create: no file is "no pane",
-`ENXIO` (nobody reads) is "a dead holder". So a new pane that took the name
+`ENXIO` (nobody reads) is "a dead holder". Before it writes it reads `status`, which must be readable and say
+`state running`: a write to `in` only queues, and the holder drops what no
+program will read, so an ended program, a `kill-incomplete` and a `status`
+that cannot be read are all refused. So a new pane that took the name
 after the lookup is never typed into. It writes at most `PIPE_BUF` (512)
 bytes in one call, so the write is whole or `EAGAIN` ("input full"). It
 never waits.
