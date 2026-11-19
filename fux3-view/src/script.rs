@@ -11,7 +11,7 @@
 use crate::keys::{Action, Binding, Group};
 use crate::layout::{Dir, Layout, Rect};
 use crate::panel::{Ask, List, Panel, Row};
-use fux3::session::{Session, Workspace};
+use fux3::session::Workspace;
 use fuxix::poll::Poke;
 use grift::{Answer, Error, Grift, HostCall, HostFunction, Interrupter, Kept, Value};
 use std::collections::HashMap;
@@ -146,7 +146,6 @@ struct Host {
     context: Context,
     cancel: Arc<AtomicBool>,
     fux3: PathBuf,
-    session: Session,
     /// Bytes copied out of the language in this run.
     copied: usize,
     /// Chords bound to viewer actions or groups, which count too.
@@ -237,11 +236,6 @@ fn refused(g: &mut HostCall<'_, Host>, host: &Host, failure: &fux3::Failure) -> 
     }
 }
 
-/// The workspace named `name`, refused if it is gone.
-fn workspace_of(g: &mut HostCall<'_, Host>, host: &Host, name: &str) -> Result<Workspace, Error> {
-    (host.session.workspace(name, false)).map_err(|f| failed(g, &f.0))
-}
-
 /// The directory, held open, of the pane `NAME` or `NAME@ID` names in the
 /// workspace shown, refused (`pane-gone`) if that life of it is over.
 fn pane_dir(g: &mut HostCall<'_, Host>, host: &Host, pane: &str) -> Result<File, Error> {
@@ -320,10 +314,6 @@ fn verb_of(g: &mut HostCall<'_, Host>, host: &mut Host, args: &[Value]) -> Resul
 
 fn inert() -> Result<Answer, Error> {
     Ok(Answer::Now(Value::Inert))
-}
-
-fn text_answer(g: &mut HostCall<'_, Host>, text: &str) -> Result<Answer, Error> {
-    g.string(text.trim_end()).map(Answer::Now)
 }
 
 /// A list of strings.
@@ -503,7 +493,8 @@ const WORDS: &[(&str, Word)] = &[
     }),
     ("workspaces", |g, host, args| {
         let [] = *g.exactly(args)?;
-        let names = host.session.workspaces().map_err(|f| failed(g, &f.0))?;
+        let session = &host.context.workspace.session;
+        let names = session.workspaces().map_err(|f| failed(g, &f.0))?;
         strings(g, &names).map(Answer::Now)
     }),
     ("tabs", |g, host, args| {
@@ -619,7 +610,7 @@ const WORDS: &[(&str, Word)] = &[
         // Whatever happened, the layout is read again now.
         host.tell(ToViewer::Reread);
         match outcome {
-            Ok(edited) => text_answer(g, &edited.to_string()),
+            Ok(edited) => g.string(edited.to_string().trim_end()).map(Answer::Now),
             Err(failure) => Err(refused(g, host, &failure)),
         }
     }),
@@ -692,7 +683,10 @@ const WORDS: &[(&str, Word)] = &[
         let words = program(g, host, rest)?;
         // `WORKSPACE/PREFIX` starts it in that workspace, made if missing.
         let (workspace, prefix) = match prefix.split_once('/') {
-            Some((space, prefix)) => (host.session.workspace(space, true), prefix),
+            Some((space, prefix)) => (
+                host.context.workspace.session.workspace(space, true),
+                prefix,
+            ),
             None => (Ok(host.context.workspace.clone()), &*prefix),
         };
         let workspace = workspace.map_err(|f| failed(g, &f.0))?;
@@ -704,7 +698,10 @@ const WORDS: &[(&str, Word)] = &[
     ("close-workspace", |g, host, args| {
         let [name] = *g.exactly(args)?;
         let name = string_arg(g, host, name)?;
-        let workspace = workspace_of(g, host, &name)?;
+        let session = &host.context.workspace.session;
+        let workspace = session
+            .workspace(&name, false)
+            .map_err(|f| failed(g, &f.0))?;
         let outcome = crate::command::close_workspace(&workspace, &host.cancel);
         host.tell(ToViewer::Reread);
         match outcome {
@@ -915,7 +912,6 @@ pub fn start(
         gone: HashMap::new(),
         cancel: Arc::clone(&cancel),
         fux3,
-        session: workspace.session.clone(),
     };
     std::thread::Builder::new()
         .name("fux3-grift".to_owned())

@@ -163,7 +163,6 @@ struct Running {
 }
 
 struct View {
-    session: Session,
     /// The workspace shown, and its `.view`: the layout and its lock.
     workspace: Workspace,
     view: File,
@@ -300,10 +299,6 @@ impl View {
         (self.panes.get(&pane.name)).filter(|p| p.id() == Some(pane.id.as_str()))
     }
 
-    fn live_pane_mut(&mut self, pane: &PaneRef) -> Option<&mut Pane> {
-        (self.panes.get_mut(&pane.name)).filter(|p| p.id() == Some(pane.id.as_str()))
-    }
-
     fn show_tab(&mut self, id: u32) {
         if self.arranged.tab(id).is_none() {
             return self.say(format!("no tab t{id}"));
@@ -322,10 +317,12 @@ impl View {
         if name == self.workspace.name {
             return;
         }
-        let opened = self.session.workspace(name, true).and_then(|workspace| {
-            let view = command::view_dir(&workspace)?;
-            Ok((workspace, view))
-        });
+        let opened = (self.workspace.session)
+            .workspace(name, true)
+            .and_then(|workspace| {
+                let view = command::view_dir(&workspace)?;
+                Ok((workspace, view))
+            });
         let (workspace, view) = match opened {
             Ok(opened) => opened,
             Err(failure) => return self.say(format!("workspace {name}: {failure}")),
@@ -354,7 +351,7 @@ impl View {
     /// The workspace `step` places from the one shown, among the session's
     /// by name, wrapping.
     fn step_workspace(&mut self, forward: bool, now: Instant) {
-        let names = match self.session.workspaces() {
+        let names = match self.workspace.session.workspaces() {
             Ok(names) => names,
             Err(failure) => return self.say(failure.to_string()),
         };
@@ -428,7 +425,7 @@ impl View {
         self.next_scan = after(now, RESCAN);
         if self.workspace.check().is_err() {
             // Another directory may have its name now: that one is shown.
-            let left = self.session.workspaces().unwrap_or_default();
+            let left = (self.workspace.session.workspaces()).unwrap_or_default();
             let name = std::mem::take(&mut self.workspace.name);
             let next = match left.contains(&name) {
                 true => &name,
@@ -556,7 +553,8 @@ impl View {
     fn focused_pane(&mut self) -> Result<&mut Pane, String> {
         let focus = self.focus.clone().ok_or("no pane has the focus")?;
         let gone = format!("pane {} is gone: it takes no keys", focus.name);
-        self.live_pane_mut(&focus).ok_or(gone)
+        let live = (self.panes.get_mut(&focus.name)).filter(|p| p.id() == Some(&focus.id));
+        live.ok_or(gone)
     }
 
     fn type_key(&mut self, stroke: Keystroke) {
@@ -616,7 +614,14 @@ impl View {
             Verb::NextWorkspace => self.step_workspace(true, now),
             Verb::PreviousWorkspace => self.step_workspace(false, now),
             Verb::ShowWorkspace(name) => self.show_workspace(&name, now),
-            Verb::NextPane => self.step_pane(),
+            Verb::NextPane => {
+                let visible = self.visible();
+                let at = (visible.iter()).position(|p| Some(p) == self.focus.as_ref());
+                let next = at.map_or(0, |at| stepped(at, visible.len(), true));
+                if let Some(pane) = visible.get(next).cloned() {
+                    self.focus_on(pane);
+                }
+            }
             Verb::LastPane => match self
                 .last_focus
                 .clone()
@@ -639,15 +644,6 @@ impl View {
                 None => self.say("no pane has the focus"),
             },
             Verb::Chord(chord) => self.perform_chord(chord, hops.saturating_add(1)),
-        }
-    }
-
-    fn step_pane(&mut self) {
-        let visible = self.visible();
-        let at = (visible.iter()).position(|p| Some(p) == self.focus.as_ref());
-        let next = at.map_or(0, |at| stepped(at, visible.len(), true));
-        if let Some(pane) = visible.get(next).cloned() {
-            self.focus_on(pane);
         }
     }
 
@@ -761,7 +757,16 @@ impl View {
         }
         if let Some(binding) = self.keys.bindings.get(&chord).cloned() {
             self.column = None;
-            return self.perform(chord, binding.action, hops);
+            return match binding.action {
+                Action::Verb(verb) => self.apply_verb(verb, Instant::now(), hops),
+                Action::Script(generation) => {
+                    let job = Job::Binding {
+                        chord: chord.clone(),
+                        generation,
+                    };
+                    self.dispatch_job(chord, job, hops)
+                }
+            };
         }
         if self.keys.opens(&chord) {
             self.column = Some(Column {
@@ -771,19 +776,6 @@ impl View {
             return;
         }
         self.say(format!("{chord} is not bound"));
-    }
-
-    fn perform(&mut self, chord: String, action: Action, hops: u8) {
-        match action {
-            Action::Verb(verb) => self.apply_verb(verb, Instant::now(), hops),
-            Action::Script(generation) => {
-                let job = Job::Binding {
-                    chord: chord.clone(),
-                    generation,
-                };
-                self.dispatch_job(chord, job, hops);
-            }
-        }
     }
 
     /// Runs `job` with what this viewer shows now, `hops` chords after the
@@ -908,7 +900,7 @@ impl View {
                 // A notice that is no error.
                 (self.notice, self.dirty) = (Some((text, NOTICE)), true);
             }
-            ToViewer::Type(pane, bytes) => self.type_into(&pane, |_| bytes),
+            ToViewer::Type(pane, bytes) => self.type_into(&pane, &bytes),
             ToViewer::Started(stop, limit) => {
                 self.running = Some(Running {
                     stop,
@@ -944,7 +936,7 @@ impl View {
     }
 
     /// Bytes from a binding for pane `NAME` or `NAME@ID`, made for it.
-    fn type_into(&mut self, pane: &str, bytes: impl FnOnce(&Pane) -> Vec<u8>) {
+    fn type_into(&mut self, pane: &str, bytes: &[u8]) {
         let target = match Target::parse(pane) {
             Ok(target) => target,
             Err(failure) => return self.say(failure.0),
@@ -952,10 +944,7 @@ impl View {
         let found = (self.panes.get_mut(&target.name))
             .filter(|p| target.id.as_deref().is_none_or(|id| p.id() == Some(id)));
         let typed = match found {
-            Some(found) => {
-                let bytes = bytes(found);
-                found.type_bytes(&bytes).map_err(|f| f.0)
-            }
+            Some(found) => found.type_bytes(bytes).map_err(|f| f.0),
             None => Err(format!("pane {pane} is gone")),
         };
         if let Err(why) = typed {
@@ -1027,7 +1016,7 @@ impl View {
                 Input::Paste(_) | Input::PasteTooLong => {
                     self.say(format!("a paste over {MAX_PASTE} bytes was dropped"));
                 }
-                Input::Mouse(event) if self.panel.is_none() => self.on_mouse(event),
+                Input::Mouse(event) if self.panel.is_none() => self.click(event),
                 Input::Reply(Reply::Attributes { sixel }) => {
                     self.sixel = sixel;
                     self.dirty = true;
@@ -1038,17 +1027,10 @@ impl View {
     }
 
     /// A click focuses the tile under it.
-    fn on_mouse(&mut self, event: MouseEvent) {
-        if event.action == MouseAction::Press(MouseButton::Left) {
-            self.click((event.col, event.row));
-        }
-    }
-
-    fn click(&mut self, (x, y): (u16, u16)) {
-        let hit = (self.tiles().into_iter())
-            .find(|(_, rect)| rect.contains(u32::from(x), u32::from(y)))
-            .map(|(pane, _)| pane);
-        if let Some(pane) = hit {
+    fn click(&mut self, event: MouseEvent) {
+        let (x, y) = (u32::from(event.col), u32::from(event.row));
+        let hit = (self.tiles().into_iter()).find(|(_, rect)| rect.contains(x, y));
+        if let (MouseAction::Press(MouseButton::Left), Some((pane, _))) = (event.action, hit) {
             self.focus_on(pane);
         }
     }
@@ -1184,8 +1166,8 @@ impl View {
             if zoomed {
                 text.push_str("[zoom] ");
             }
-            if whole {
-                text.push_str(&self.pane_label());
+            if let (true, Some(focus)) = (whole, &self.focus) {
+                text.push_str(&focus.name);
             }
             if !text.is_empty() {
                 right.push((text, BAR));
@@ -1250,12 +1232,17 @@ impl View {
         parts
     }
 
-    /// The focused pane, as the bar names it.
-    fn pane_label(&self) -> String {
-        self.focus
-            .as_ref()
-            .map(|pane| pane.name.clone())
-            .unwrap_or_default()
+    /// Leaving: a paste just made gets the rest of `PASTE_LEAVE_WAIT` to
+    /// be taken, then every paste file goes.
+    fn leave_pastes(&mut self) {
+        if let Some((_, _, newest)) = self.pastes.last() {
+            std::thread::sleep(
+                after(*newest, PASTE_LEAVE_WAIT).saturating_duration_since(Instant::now()),
+            );
+        }
+        for (view, name, _) in std::mem::take(&mut self.pastes) {
+            let _ = fuxix::file::at::remove_file(&view, &name);
+        }
     }
 
     fn timeout(&self, now: Instant, decoder: &Decoder) -> Duration {
@@ -1397,7 +1384,6 @@ fn run() -> Result<(), Failure> {
     fuxix::terminal::leaving_on_abort(LEAVE);
     let now = Instant::now();
     let mut view = View {
-        session,
         workspace,
         view,
         stored: Layout::default(),
@@ -1447,21 +1433,6 @@ fn run() -> Result<(), Failure> {
     view.painter.finish(LEAVE.as_bytes().to_vec());
     drop(raw);
     ended
-}
-
-impl View {
-    /// Leaving: a paste just made gets the rest of `PASTE_LEAVE_WAIT` to
-    /// be taken, then every paste file goes.
-    fn leave_pastes(&mut self) {
-        if let Some((_, _, newest)) = self.pastes.last() {
-            std::thread::sleep(
-                after(*newest, PASTE_LEAVE_WAIT).saturating_duration_since(Instant::now()),
-            );
-        }
-        for (view, name, _) in std::mem::take(&mut self.pastes) {
-            let _ = fuxix::file::at::remove_file(&view, &name);
-        }
-    }
 }
 
 /// What one poll found.

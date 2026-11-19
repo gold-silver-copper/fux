@@ -118,23 +118,15 @@ impl Pane {
         self.value("id").filter(|id| crate::layout::is_id(id))
     }
 
-    pub fn pane_ref(&self) -> Option<PaneRef> {
-        Some(PaneRef {
-            name: self.name.clone(),
-            id: self.id()?.to_owned(),
-        })
-    }
-
     pub fn live(&self) -> Option<Live> {
         let labels = (self.status.iter())
             .filter(|(key, _)| key == "label")
             .filter_map(|(_, rest)| rest.split_once(' '))
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
-        Some(Live {
-            pane: self.pane_ref()?,
-            labels,
-        })
+        let (name, id) = (self.name.clone(), self.id()?.to_owned());
+        let pane = PaneRef { name, id };
+        Some(Live { pane, labels })
     }
 
     /// `running`, `exited CODE`, `signalled NAME` or `kill-incomplete WHAT`.
