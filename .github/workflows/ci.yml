@@ -426,11 +426,17 @@ jobs:
           $view = Get-ChildItem target\debug\deps\view-*.exe | Sort-Object LastWriteTime | Select-Object -Last 1
           "=== $($view.Name)"
           $log = "$env:RUNNER_TEMP\view.txt"
+          # Not -Wait, which also waits for every process the test left.
           $run = Start-Process -FilePath $view.FullName -ArgumentList '--test-threads', '1' -Credential $user -WorkingDirectory "$PWD\fux2-view" `
-            -RedirectStandardError "$log.err" -RedirectStandardOutput $log -PassThru -Wait
+            -RedirectStandardError "$log.err" -RedirectStandardOutput $log -PassThru
+          $null = $run.Handle
+          $finished = $run.WaitForExit(180000)
+          if (-not $finished) { Stop-Process -Id $run.Id -Force; "the viewer tests timed out" }
           Get-Content $log, "$log.err"
-          "exit $($run.ExitCode)"
-          $failed += [int]($run.ExitCode -ne 0)
+          "exit $(if ($finished) { $run.ExitCode } else { 'timeout' })"
+          Get-Process fux2* -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, StartTime
+          Get-Process fux2* -ErrorAction SilentlyContinue | Stop-Process -Force
+          $failed += [int](-not $finished -or $run.ExitCode -ne 0)
           exit $failed
 
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured
