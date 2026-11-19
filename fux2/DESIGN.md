@@ -113,6 +113,13 @@ runs it as a new run, so a person's thinking time is never a binding's. Panes
 and the layout are reached by running the `fux2` command, which can be killed
 when a binding is stopped, and a pane is named as `NAME@ID`.
 
+The screen is drawn as fux draws its own: no titles and no status line, a
+one-cell border between tiles (stacked tiles have a border row, so a tile is
+all pane), green where it touches the focused tile; the bar over the last row
+only while a menu, a repeating group, a list or a prompt is open, or in its
+corner for a notice or cut and hidden panes; every panel at the bottom right
+above the bar. A pane never moves or resizes because a panel or the bar opens.
+
 A mouse drag previews on a copy of the stored layout, with the same `Op` the
 command line runs, and on release calls the library's `drag-border`, which
 edits with `--if` the version the drag began at. Screens are composed as

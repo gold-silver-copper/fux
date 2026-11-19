@@ -41,7 +41,7 @@ the pane has moved on.
 | `resize` | `fux2 resize build 100 30` | `100 30` |
 | `signal` | `fux2 signal build INT` | `foreground-group` |
 | `kill` | `fux2 kill build`, or a group: `fux2 kill --label project=x` | nothing, when everything it started is gone (see below) |
-| `page` | `fux2 page build` | shows the pane's scrollback in a pager (`--close-pane`: then removes the pane it runs in; the viewer's `C-b [` uses this) |
+| `page` | `fux2 page build` | shows the pane's scrollback in a pager (`--close-pane`: then removes the pane it runs in; the viewer's `C-b c` uses this) |
 | `layout` | `fux2 layout split build tests --rows` | `version N`, then `changed NAME@ID` for each pane whose tile changed (see [The layout](#the-layout)) |
 | `view` | `fux2 view` | the viewer |
 
@@ -148,9 +148,9 @@ labels it carries all (a tab without `match` takes any pane); if no tab takes
 it, a tab `other` appears at the end of the first workspace. Such *routed*
 panes are added to their tab's tree as a grid, and get a tile of their own
 the first time an edit touches that tab's tree. A pane that has ended keeps
-its tile, shown `[ended]`, or `[missing]` once its daemon is gone, until the
-tile is closed (`fux2 layout remove`) or given to another pane
-(`fux2 layout replace`).
+its tile, marked `NAME ended` in its corner, or `NAME missing` once its daemon
+is gone, until the tile is closed (`fux2 layout remove`) or given to another
+pane (`fux2 layout replace`).
 
 Each edit takes the layout's own lock, for at most two seconds (then `busy`,
 exit 6), applies to the file as it is then, and replaces it whole: a reader
@@ -178,7 +178,7 @@ between. Without `--if`, an edit applies to the layout as it is now.
 | `fux2 layout move PANE --workspace WS\|new` | moves `PANE` to a workspace's first tab, or a new workspace |
 | `fux2 layout border PANE DIRECTION N%\|CELLS` | moves the border on that side of `PANE` that way (the other side's if it has none there) |
 | `fux2 layout zoom PANE` | shows `PANE` alone in its tab, or restores the tab |
-| `fux2 layout title PANE TEXT` | shows `TEXT` in `PANE`'s title bar (`""` clears it) |
+| `fux2 layout title PANE TEXT` | names the pane `TEXT` beside its name in the bar and in lists (`""` clears it) |
 | `fux2 layout tab new [--after TAB \| --workspace WS] [--title T] [--match K=V]..` | a new tab (prints `made tN`) |
 | `fux2 layout tab rename TAB TITLE` | |
 | `fux2 layout tab close TAB` | the tab goes; its live panes are routed again |
@@ -203,8 +203,8 @@ fux2 layout split build tests --rows
 
 **Sizes.** Viewing never resizes a pane: opening a viewer, moving the focus,
 resizing the viewer's terminal and a `fux2 layout` edit leave every pane's
-size alone; a tile smaller than its pane clips it (the title says
-`[clipped 80x24]`) and a larger one leaves blank room. The viewer's split,
+size alone; a tile smaller than its pane cuts it off (the bar's corner says
+`[cut NAME]`) and a larger one leaves blank room. The viewer's split,
 move, zoom and border keys end by resizing the panes whose tiles they
 changed, once, to those tiles, in that viewer only (for a mouse drag, when it
 is let go). That step is `fit-after` in the command library, so a
@@ -215,69 +215,76 @@ change. `C-b f` fits the focused pane by hand.
 
 ## The viewer
 
-`fux2 view` shows the stored layout and types into the focused pane. It sees
-new panes and layout changes within a second, and its own edits at once. It
-starts with the first tile focused, and keeps that until you move the focus.
-The focused pane's title bar is drawn in reverse video; the others are dim.
-The status line says which workspace and tab are shown and how many there
-are, such as `main 1/2 | build 1/3`. Each viewer keeps its own focus and its
-own place in the workspaces and tabs.
+`fux2 view` shows the stored layout and types into the focused pane. It looks
+and is used as fux is: no titles and no status line, a one-cell line between
+panes, drawn green around the focused pane, and the bar only while you are
+using it. It sees new panes and layout changes within a second, and its own
+edits at once. It starts with the first tile focused, and keeps that until you
+move the focus. Each viewer keeps its own focus and its own place in the
+workspaces and tabs; zoom is stored, so every viewer of a tab shows it.
 
-**Keys.** Press `C-b` and a menu of the keys after it appears, under their
-headings; a key marked `…` opens its own menu. Escape closes a menu. `C-b r`
-and `C-b m` (and the reorder menus) repeat: their keys act again without
-`C-b` until another key. `C-b ?` lists every key; type to narrow it, and
-Enter runs the one chosen. These are the default keys, all after `C-b`:
+**The bar** is drawn over the last row while the prefix's menu, a repeating
+group, a list or a prompt is open, and the panes take that row back when it
+closes. It shows the workspace, its tabs with the shown one in green, and on
+the right the keys typed (`C-b …`), a repeating group's keys
+(`RESIZE  h j k l · Esc`), or `[hidden …] [cut …] [zoom]` and the focused
+pane's name. With nothing open, only its right corner is drawn, and only for a
+notice or for panes cut off or with no room. Notices (errors in red, others in
+yellow) stay until the next key; one saying a pane ended goes after five
+seconds.
+
+**Keys.** Press `C-b` and the menu of the keys after it opens at the bottom
+right, under their headings; a key marked `…` opens its own. A key runs its
+entry, the arrows move and Enter runs the one selected, Escape closes, and
+`C-b` again sends `C-b` to the pane. `C-b r`, `C-b m` and the `m` menus
+repeat: their keys act again without `C-b` until Escape or Enter. The default
+keys are fux's, after `C-b`:
 
 | Heading | Key | Caption |
 |---|---|---|
 | Panes | `v` / `s` | split side by side / split stacked (a new shell beside the focused pane) |
-| | `c` | new shell in this tab |
-| | `x` | close pane (Enter or `yes` closes, Escape keeps it) |
+| | `x` | close pane (Enter or `y` closes, Escape, `q` or `n` keeps it) |
 | | `z` | zoom or restore |
-| | `[` | history in a pager |
-| | `f` | fit pane to its tile |
-| | `a` … | pane actions |
-| Pane actions | `a r` | rename pane (its title) |
-| | `a x` | close pane |
-| | `a k` | terminate its program (`TERM`) |
-| | `a s` | swap with… |
-| | `a t` / `a n` | move to tab… / move to a new tab |
-| | `a w` / `a W` | move to workspace… / move to a new workspace |
-| | `a m h` / `a m l` | move pane earlier / later (repeats) |
-| Focus | `o` / `O` | next pane / previous pane |
-| | `;` | last pane |
-| | `Left` `Down` `Up` `Right` | focus left / down / up / right |
-| | `g` | go to a pane… |
-| Layout | `r h` `r j` `r k` `r l` | border left / down / up / right, a cell (repeats) |
-| | `m h` `m j` `m k` `m l` | move left / down / up / right (repeats) |
-| Tabs | `n` / `p` / `l` | next tab / previous tab / last tab |
-| | `1` … `9` | tab 1 … tab 9 |
-| | `t n` / `t g` | new tab / choose a tab… |
-| | `t r` / `t x` | rename tab / close tab (ends its panes) |
-| | `t m h` / `t m l` | move tab earlier / later (repeats) |
-| Workspaces | `)` / `(` / `L` | next workspace / previous workspace / last workspace |
-| | `w n` / `w g` | new workspace / choose a workspace… |
-| | `w r` / `w x` | rename workspace / close workspace (ends its panes) |
-| | `w h` / `w l` | previous workspace / next workspace |
-| | `w m h` / `w m l` | move workspace earlier / later (repeats) |
-| Session | `:` | command line: type grift, the answer shows on the status line |
-| | `?` | list every key |
+| | `c` | history in a pager |
+| | `f` | fit pane to its tile (fux2's own: fux has no such size) |
+| Focus | `h` `j` `k` `l` | focus left / down / up / right |
+| | `o` / `q` | next pane / last pane |
+| Tabs | `n` / `b` | next tab / previous tab |
+| | `t` … | Tabs: `n` new tab, `h` / `l` previous / next tab, `g` choose a tab, `r` rename tab, `x` close tab (ends its panes), `m h` / `m l` move tab earlier / later |
+| Workspaces | `w` … | Workspaces: `n` new, `h` / `l` previous / next, `g` choose, `r` rename, `x` close (ends its panes), `m h` / `m l` move earlier / later |
+| Session | `e` | command prompt: type grift; the answer shows in the bar's corner |
 | | `d` | detach |
-| | `C-b` | send C-b to the pane |
+| | `?` | list every key (fux2's own); Enter runs the one chosen |
+| Resize | `r` … | `h` `j` `k` `l`: shrink or grow left / down / up / right, a cell |
+| Pane actions | `a` … | `r` rename pane (its title), `x` close pane, `k` terminate the running command, `s` swap with…, `t` / `n` move to tab… / a new tab, `w` / `W` move to workspace… / a new workspace, `m h` / `m l` move pane earlier / later |
+| Move | `m` … | `h` `j` `k` `l`: move left / down / up / right (swaps with the pane that way) |
 
-**Lists and prompts** take every key while open, pastes too, so nothing
-typed there reaches a pane. In a list, type to narrow it, `Up`/`Down`
-(`C-p`/`C-n`), `PageUp`/`PageDown`, `Home`/`End` move, Enter chooses, Escape
-cancels. A prompt edits one line: `Left`/`Right`, `Home`/`End` (`C-a`/`C-e`),
-`BSpace`, `Delete`, `C-u`; Enter accepts, Escape cancels.
+**Lists and prompts** open at the bottom right and take every key while
+open, pastes too, so nothing typed there reaches a pane. A list marks where
+you are with `*`: `j`/`k` or the arrows, `PageUp`/`PageDown`, `Home`/`End`
+move, Enter or `y` chooses, `q`, `n` or Escape cancels, and the tab and
+workspace lists rename with `r` and close with `x`. A prompt edits one line:
+`Left`/`Right`, `Home`/`End` (`C-a`/`C-e`), `BSpace`, `Delete`, `C-u`; Enter
+accepts, Escape cancels.
 
-**Mouse.** A click focuses the tile under it. Dragging a border (the line
-between tiles side by side, or a tile's title bar for tiles stacked) moves it;
-it is stored, and the panes beside it fitted, when let go. The drag is made
-with `--if` the version it began at, so if the layout changed meanwhile it is
+**Mouse.** A click focuses the tile under it. Dragging a border moves it; it
+is stored, and the panes beside it fitted, when let go. The drag is made with
+`--if` the version it began at, so if the layout changed meanwhile it is
 refused as stale and nothing moves. The mouse is not forwarded to programs:
 while the viewer runs, most terminals select text with Shift held.
+
+**Where fux2 looks different from fux,** because fux has nothing to copy:
+
+- a tile larger than its pane leaves blank room, and one smaller cuts it off
+  (`[cut NAME]` in the bar's corner, as fux names cut panes): fux2 never
+  resizes a pane to fit by itself;
+- a pane whose program ended keeps its last screen with `NAME ended` in the
+  tile's corner, and a tile whose pane is gone shows `NAME missing`;
+- a layout edit refused (`stale`, `busy`) or a layout file that cannot be
+  read shows its message as an error notice;
+- the tab and workspace lists name a tab or workspace by its id in the
+  layout (`t2 all — build, logs`, `* w1 main — 1 tab, 2 panes`);
+- `C-b f` and `C-b ?` are fux2's own keys.
 
 ## Scrollback and copying
 
@@ -295,7 +302,7 @@ wrapped comes out as the one line the program wrote. A resize or a terminal
 reset during the read starts it again; after three tries it says so (`stale`).
 Above 256 MiB of text it refuses (`limit`).
 
-In the viewer, `C-b [` opens the focused pane's history in a new pane below
+In the viewer, `C-b c` opens the focused pane's history in a new pane below
 it, running `$PAGER`, else `less`, else `more`. Search and scroll there, and
 select with your terminal to copy. If the pager can't run or fails, the pane
 shows why and waits for Enter. When the pager ends, the pane removes itself
@@ -311,6 +318,7 @@ a heading, and that is all the menu is made of:
 ```lisp
 (unbind-key "C-b o")
 (bind-key "F6" "next pane" "Mine" next-pane)
+(bind-key "C-b g" "go to a pane" "Mine" choose-pane)
 
 (define! run-tests
   (lambda! () (send (focused) "cargo test\r")))
@@ -341,9 +349,9 @@ instance, and no key resizes a pane. These are the primitives they stand on:
 | `(arrange WORD ...)` | runs `fux2 layout WORD ... --area (area)` and gives what it printed |
 | `(fit-after TEXT)` | resizes the panes `TEXT` (what `arrange` printed) names as changed, once this viewer has that version; gives `TEXT` |
 | `(made TEXT)` | the tab or workspace an edit made |
-| `(pick TITLE ITEMS f)` | a list of `(VALUE LABEL)`; `f` is called with the value chosen, as a run of its own |
+| `(pick TITLE ROWS f [KEYS])` | a list of rows `(VALUE LABEL)`, with `#true` after where you are (marked `*` and selected) or `"selected"`; `f` is called with the value chosen, as a run of its own; `KEYS` are `(KEY CAPTION g)`, `g` called with the row selected |
 | `(read-line PROMPT INITIAL f)` | a prompt; `f` is called with the line |
-| `(say TEXT)` | a message on the status line |
+| `(say TEXT)` | a notice in the bar's corner |
 | `(focus PANE)` | focus that pane (`NAME` or `NAME@ID`) when it appears within 10 s, showing its tab, and come back when it goes |
 | `(start-new PREFIX [PROGRAM ARG ...])` | a new pane named `PREFIX-N`; gives `NAME@ID` |
 | `(fux2-program)` | the path of the `fux2` command |
@@ -364,13 +372,13 @@ mouse drag does when let go), and a word for each viewer action.
 once more, and if that fails too it raises `not-placed`, saying the pane is
 running and has no tile. It never starts a second one or kills the first.
 
-A word that fails raises an error that names what went wrong, shown on the
-status line. A binding copies at most 16 MiB of text out of the language in
+A word that fails raises an error that names what went wrong, shown as an
+error notice. A binding copies at most 16 MiB of text out of the language in
 all, and a command's output is at most 8 MiB. Loading gets 2 seconds for each
 of the library, the default keys and your file, and each binding or answer
 from a list or prompt gets 5, on a thread of its own: the viewer keeps drawing
 and taking keys, and `C-b d` works, while one runs. One that overruns is
-stopped and the status line says so. A list or prompt waits for you without
+stopped and a notice says so. A list or prompt waits for you without
 using a binding's time.
 
 ## Where panes live, and who may connect
@@ -396,7 +404,7 @@ attached.
 
 Left out of the viewer, on purpose for now:
 
-- **a copy mode**: history is text in a pager (`C-b [`), and your terminal
+- **a copy mode**: history is text in a pager (`C-b c`), and your terminal
   selects;
 - **the mouse forwarded to programs**: the viewer keeps it for focus and
   borders;
