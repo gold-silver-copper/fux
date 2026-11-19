@@ -195,6 +195,8 @@ struct View {
     /// A notice for the bar's corner, until the next key: its text and
     /// colours.
     notice: Option<(String, &'static str)>,
+    /// The next key is dropped: the workspace it was typed at was removed.
+    swallow: bool,
     /// The panes `when-gone` waits for the going of, each with its
     /// workspace's directory (`Workspace::id`).
     watched: Vec<(String, Target)>,
@@ -431,7 +433,11 @@ impl View {
                 true => &name,
                 false => left.first().map_or(DEFAULT_WORKSPACE, String::as_str),
             };
-            return self.show_workspace(next, now);
+            self.show_workspace(next, now);
+            // Said where it is seen; the next key was meant for what was
+            // shown before, and is dropped with the notice still up.
+            self.swallow = true;
+            return self.say(format!("workspace {name} was removed"));
         }
         let old = (fit && self.layout_seen).then(|| self.stored.clone());
         let changed = self.reread_layout();
@@ -693,6 +699,9 @@ impl View {
     fn on_key(&mut self, stroke: Keystroke) {
         let press = stroke.press;
         let name = press.to_string();
+        if std::mem::take(&mut self.swallow) {
+            return;
+        }
         // A notice lasts until the next key.
         if self.notice.take().is_some() {
             self.dirty = true;
@@ -1402,6 +1411,7 @@ fn run() -> Result<(), Failure> {
         column: None,
         panel: None,
         notice: None,
+        swallow: false,
         watched: Vec::new(),
         in_flight: None,
         pasted: 0,

@@ -191,7 +191,9 @@ pub fn run_line(
     } else {
         (command.clone(), None)
     };
-    let edited = layout::edit(&view, &live_panes(workspace), area, &op);
+    // One removed while this waited for the lock is said, not its lost file.
+    let edited = layout::edit(&view, &live_panes(workspace), area, &op)
+        .map_err(|failure| workspace.check().err().unwrap_or(failure));
     match (edited, started) {
         (Ok(edited), started) => Ok(Edited { started, ..edited }),
         (Err(failure), Some(pane)) => Err(Failure::new(format!(
@@ -281,6 +283,23 @@ mod tests {
                 Some("workspace w was removed")
             );
         }
+        // One that waited for the layout's lock meanwhile says the same.
+        let third = session.workspace("w", false)?;
+        let lock = layout::lock(&view_dir(&third)?)?;
+        let late = std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| run_line(&third, "tab new late", area, &cancel));
+            std::thread::sleep(Duration::from_millis(200));
+            let removed = std::fs::remove_dir_all(root.join("w"));
+            let second = removed.map(|()| session.workspace("w", true));
+            drop(lock);
+            (waiting.join(), second.is_ok_and(|w| w.is_ok()))
+        });
+        let (Ok(Err(late)), true) = late else {
+            return Err(Failure::new("the late command was not refused"));
+        };
+        assert_eq!(late.0, "workspace w was removed");
+        let second = session.workspace("w", false)?;
+        run_line(&second, "tab new theirs", area, &cancel)?;
         let layout = layout::read(&view_dir(&second)?)?.to_string();
         assert!(
             layout.contains("theirs") && !layout.contains("stale"),
