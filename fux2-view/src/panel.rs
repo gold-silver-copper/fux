@@ -1,20 +1,39 @@
-//! What is drawn over the panes: the prefix menu, a list to pick from and a
-//! line to type. They take every key while open, pastes included, so
-//! nothing typed into them reaches a pane; the panes keep drawing beneath.
+//! What is drawn over the panes, as fux draws it: one panel at the bottom
+//! right, flush against the edge and the row above the bar, a cell of room
+//! each side and no frame: the prefix's menu of keys, a list to choose from,
+//! or a line to type. A panel takes every key while open, pastes included,
+//! so nothing typed into it reaches a pane; the panes keep drawing beneath.
 use crate::keys::Line;
 use crate::render::{Frame, Tile};
 use fux_vt::keys::{Key, KeyPress};
 
-/// The most items a list holds, and the longest line typed.
+/// The most rows a list holds, and the longest line typed.
 pub const MAX_ITEMS: usize = 1024;
 pub const MAX_LINE: usize = 4096;
 
-/// A list to pick from: values and the labels shown for them.
-pub struct Pick {
+/// The panel's colours, and its title, selected and hint lines'.
+const PANEL: &str = ";38;5;255;48;5;238";
+const BOLD: &str = ";1;38;5;255;48;5;238";
+const SELECTED: &str = ";7;38;5;255;48;5;238";
+const DIM: &str = ";2;38;5;255;48;5;238";
+/// The line typed's cursor, a cell of its own.
+const CURSOR: char = '\u{258f}';
+
+/// One row of a list.
+pub struct Row {
+    pub value: String,
+    pub label: String,
+    /// Marked `*`: where you are now.
+    pub current: bool,
+}
+
+/// A list to choose from, with the keys it offers besides choosing.
+pub struct List {
     pub id: u64,
     pub title: String,
-    pub items: Vec<(String, String)>,
-    pub filter: String,
+    pub rows: Vec<Row>,
+    /// A key and what it does to the row selected, by number.
+    pub actions: Vec<(String, String)>,
     pub selected: usize,
 }
 
@@ -27,7 +46,7 @@ pub struct Ask {
 }
 
 pub enum Panel {
-    Pick(Pick),
+    List(List),
     Ask(Ask),
 }
 
@@ -39,39 +58,37 @@ pub enum Outcome {
     Cancel,
     /// Closed with this value.
     Chosen(String),
+    /// Closed with action number `n` on this value.
+    Action(usize, String),
 }
 
 impl Panel {
     pub fn id(&self) -> u64 {
         match self {
-            Panel::Pick(pick) => pick.id,
+            Panel::List(list) => list.id,
             Panel::Ask(ask) => ask.id,
         }
     }
 
     pub fn key(&mut self, press: KeyPress) -> Outcome {
         match self {
-            Panel::Pick(pick) => pick.key(press),
+            Panel::List(list) => list.key(press),
             Panel::Ask(ask) => ask.key(press),
         }
     }
 
-    /// Text pasted while open: into the filter or the line, never a pane.
+    /// Text pasted while open: into the line, never a pane.
     pub fn paste(&mut self, text: &str) {
-        let text: String = text.chars().filter(|c| !c.is_control()).collect();
-        match self {
-            Panel::Pick(pick) => {
-                for c in text.chars() {
-                    pick.type_char(c);
-                }
-            }
-            Panel::Ask(ask) => text.chars().for_each(|c| ask.insert(c)),
+        if let Panel::Ask(ask) = self {
+            text.chars()
+                .filter(|c| !c.is_control())
+                .for_each(|c| ask.insert(c));
         }
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Tile) {
         match self {
-            Panel::Pick(pick) => pick.draw(frame, area),
+            Panel::List(list) => list.draw(frame, area),
             Panel::Ask(ask) => ask.draw(frame, area),
         }
     }
@@ -85,116 +102,107 @@ fn plain(press: KeyPress) -> Option<char> {
     }
 }
 
-impl Pick {
-    /// The items the filter lets through: their indices.
-    pub fn shown(&self) -> Vec<usize> {
-        let filter = self.filter.to_lowercase();
-        (self.items.iter().enumerate())
-            .filter(|(_, (_, label))| label.to_lowercase().contains(&filter))
-            .map(|(index, _)| index)
-            .collect()
-    }
+/// Where a selection moves for a moving key, among `len` rows.
+fn moved(name: &str, selected: usize, len: usize, page: usize) -> Option<usize> {
+    let last = len.saturating_sub(1);
+    Some(match name {
+        "Up" | "k" => selected.saturating_sub(1),
+        "Down" | "j" => selected.saturating_add(1).min(last),
+        "PageUp" => selected.saturating_sub(page.max(1)),
+        "PageDown" => selected.saturating_add(page.max(1)).min(last),
+        "Home" => 0,
+        "End" => last,
+        _ => return None,
+    })
+}
 
-    fn type_char(&mut self, c: char) {
-        if self.filter.len() < MAX_LINE {
-            self.filter.push(c);
-            self.selected = 0;
-        }
-    }
-
+impl List {
     fn key(&mut self, press: KeyPress) -> Outcome {
-        let shown = self.shown();
-        let last = shown.len().saturating_sub(1);
         let name = press.to_string();
-        match name.as_str() {
-            "Escape" | "C-c" | "C-g" => return Outcome::Cancel,
-            "Enter" => {
-                let chosen = shown.get(self.selected).and_then(|i| self.items.get(*i));
-                return match chosen {
-                    Some((value, _)) => Outcome::Chosen(value.clone()),
-                    None => Outcome::Stay,
-                };
-            }
-            "Up" | "C-p" => self.selected = self.selected.saturating_sub(1),
-            "Down" | "C-n" => self.selected = self.selected.saturating_add(1).min(last),
-            "PageUp" => self.selected = self.selected.saturating_sub(10),
-            "PageDown" => self.selected = self.selected.saturating_add(10).min(last),
-            "Home" => self.selected = 0,
-            "End" => self.selected = last,
-            "BSpace" => {
-                self.filter.pop();
-                self.selected = 0;
-            }
-            _ => {
-                if let Some(c) = plain(press) {
-                    self.type_char(c);
-                }
-            }
+        if let Some(at) = moved(&name, self.selected, self.rows.len(), 10) {
+            self.selected = at;
+            return Outcome::Stay;
         }
-        Outcome::Stay
+        let value = || self.rows.get(self.selected).map(|row| row.value.clone());
+        match name.as_str() {
+            "Escape" | "q" | "n" => return Outcome::Cancel,
+            "Enter" | "y" => return value().map_or(Outcome::Stay, Outcome::Chosen),
+            _ => {}
+        }
+        let action = (self.actions.iter()).position(|(key, _)| *key == name);
+        match (action, value()) {
+            (Some(n), Some(value)) => Outcome::Action(n, value),
+            _ => Outcome::Stay,
+        }
+    }
+
+    fn hints(&self) -> String {
+        let mut hints = vec!["Enter y select".to_owned()];
+        hints.extend(
+            self.actions
+                .iter()
+                .map(|(key, label)| format!("{key} {label}")),
+        );
+        hints.push("q n Escape cancel".to_owned());
+        hints.join(" \u{b7} ")
     }
 
     fn draw(&self, frame: &mut Frame, area: Tile) {
-        let shown = self.shown();
-        let room = usize::from(area.h.saturating_sub(4)).max(1);
-        let rows = shown.len().min(room);
-        let widest = (self.items.iter())
-            .map(|(_, label)| fux_vt::str_width(label))
-            .max()
-            .unwrap_or(0)
-            .max(fux_vt::str_width(&self.title))
-            .saturating_add(4);
-        let w = u16::try_from(widest)
-            .unwrap_or(u16::MAX)
-            .clamp(24, area.w.max(1));
-        let h = u16::try_from(rows).unwrap_or(0).saturating_add(3);
-        let tile = centered(area, w, h);
-        let title = format!(" {} ", self.title);
-        frame.boxed(tile, &title);
-        let filter = format!(" > {}", self.filter);
-        frame.label(
-            tile.x.saturating_add(1),
-            tile.y.saturating_add(1),
-            w.saturating_sub(2),
-            &filter,
-            "",
-        );
-        // Scrolled to keep the selection in view.
-        let first = self.selected.saturating_add(1).saturating_sub(rows);
-        for (row, index) in shown.iter().skip(first).take(rows).enumerate() {
-            let Some((_, label)) = self.items.get(*index) else {
-                continue;
-            };
-            let y = tile
-                .y
-                .saturating_add(2)
-                .saturating_add(u16::try_from(row).unwrap_or(0));
-            let picked = row.saturating_add(first) == self.selected;
-            let sgr = if picked { ";7" } else { "" };
-            frame.fill(tile.x.saturating_add(1), y, w.saturating_sub(2), " ", sgr);
-            frame.label(tile.x.saturating_add(2), y, w.saturating_sub(4), label, sgr);
-        }
-        if shown.is_empty() {
-            let y = tile.y.saturating_add(2);
-            frame.label(
-                tile.x.saturating_add(2),
-                y,
-                w.saturating_sub(4),
-                "nothing matches",
-                ";2",
-            );
-        }
+        let mut lines = vec![(self.title.clone(), BOLD)];
+        let rows: Vec<(String, &str)> = (self.rows.iter().enumerate())
+            .map(|(index, row)| {
+                let marker = if row.current { '*' } else { ' ' };
+                let sgr = if index == self.selected {
+                    SELECTED
+                } else {
+                    PANEL
+                };
+                (format!("{marker} {}", row.label), sgr)
+            })
+            .collect();
+        let room = usize::from(area.h).saturating_sub(4).max(1);
+        lines.extend(window(rows, self.selected, room));
+        lines.push((self.hints(), DIM));
+        draw_block(frame, area, &lines);
     }
+}
+
+/// The lines of `rows` that fit in `room`, ending at the selection or the
+/// last, with `▲ N more` and `▼ N more` for those left out.
+fn window(rows: Vec<(String, &str)>, selected: usize, room: usize) -> Vec<(String, &str)> {
+    if rows.len() <= room {
+        return rows;
+    }
+    let shown = room.saturating_sub(2).max(1);
+    let end = selected.saturating_add(1).max(shown).min(rows.len());
+    let start = end.saturating_sub(shown);
+    let after = rows.len().saturating_sub(end);
+    let mut out = Vec::with_capacity(room);
+    if start > 0 {
+        out.push((format!("\u{25b2} {start} more"), DIM));
+    }
+    out.extend(rows.into_iter().skip(start).take(shown));
+    if after > 0 {
+        out.push((format!("\u{25bc} {after} more"), DIM));
+    }
+    out
 }
 
 impl Ask {
     fn insert(&mut self, c: char) {
         if self.text.len() < MAX_LINE {
             let at = self.cursor.min(self.text.len());
-            let tail = self.text.split_off_checked(at);
+            let tail = split_off(&mut self.text, at);
             self.text.push(c);
             self.text.extend(tail);
             self.cursor = at.saturating_add(1);
+        }
+    }
+
+    fn remove(&mut self, at: usize) {
+        if at < self.text.len() {
+            let tail = split_off(&mut self.text, at);
+            self.text.extend(tail.into_iter().skip(1));
         }
     }
 
@@ -208,8 +216,7 @@ impl Ask {
             "Home" | "C-a" => self.cursor = 0,
             "End" | "C-e" => self.cursor = self.text.len(),
             "C-u" => {
-                let tail = self.text.split_off_checked(self.cursor);
-                self.text = tail;
+                self.text = split_off(&mut self.text, self.cursor);
                 self.cursor = 0;
             }
             "BSpace" => {
@@ -228,133 +235,176 @@ impl Ask {
         Outcome::Stay
     }
 
-    fn remove(&mut self, at: usize) {
-        if at < self.text.len() {
-            let mut tail = self.text.split_off_checked(at);
-            if !tail.is_empty() {
-                tail = tail.into_iter().skip(1).collect();
-            }
-            self.text.extend(tail);
+    /// The line with its cursor, cut to `room` cells around the cursor, a
+    /// `…` on each side cut off.
+    fn shown(&self, room: usize) -> String {
+        let cursor = self.cursor.min(self.text.len());
+        let mut all: Vec<char> = self.text.iter().take(cursor).copied().collect();
+        all.push(CURSOR);
+        all.extend(self.text.iter().skip(cursor));
+        if all.len() <= room {
+            return all.into_iter().collect();
         }
+        let after = room.saturating_sub(2) / 4;
+        let end = cursor
+            .saturating_add(1)
+            .saturating_add(after)
+            .min(all.len());
+        let start = end.saturating_sub(room.saturating_sub(2));
+        let mut out = String::new();
+        if start > 0 {
+            out.push('\u{2026}');
+        }
+        out.extend(all.iter().skip(start).take(end.saturating_sub(start)));
+        if end < all.len() {
+            out.push('\u{2026}');
+        }
+        out
     }
 
     fn draw(&self, frame: &mut Frame, area: Tile) {
-        let w = area.w.clamp(1, 100);
-        let tile = centered(area, w, 3);
-        frame.boxed(tile, &format!(" {} ", self.prompt));
-        let room = usize::from(w.saturating_sub(4)).max(1);
-        // Scrolled to keep the cursor in view.
-        let first = self.cursor.saturating_add(1).saturating_sub(room);
-        let shown: String = self.text.iter().skip(first).take(room).collect();
-        let y = tile.y.saturating_add(1);
-        frame.label(tile.x.saturating_add(2), y, w.saturating_sub(4), &shown, "");
-        let at = self.cursor.saturating_sub(first);
-        let x = tile
-            .x
-            .saturating_add(2)
-            .saturating_add(u16::try_from(at).unwrap_or(0));
-        let under: String = self
-            .text
-            .get(self.cursor)
-            .map_or(" ".to_owned(), |c| c.to_string());
-        frame.label(x, y, 1, &under, ";7");
+        let hints = "Enter accept \u{b7} Escape cancel".to_owned();
+        let room = usize::from(area.w).saturating_sub(2);
+        let lines = [
+            (self.prompt.clone(), BOLD),
+            (self.shown(room), PANEL),
+            (hints, DIM),
+        ];
+        draw_block(frame, area, &lines);
     }
 }
 
-/// A box `w` by `h` in the middle of `area`.
-fn centered(area: Tile, w: u16, h: u16) -> Tile {
-    let w = w.min(area.w);
-    let h = h.min(area.h);
-    Tile {
-        x: area.x.saturating_add(area.w.saturating_sub(w) / 2),
-        y: area.y.saturating_add(area.h.saturating_sub(h) / 2),
-        w,
-        h,
-    }
-}
-
-/// Draws the menu of `prefix`: its lines in columns, in a box at the bottom
-/// right of `area`.
-pub fn draw_menu(frame: &mut Frame, area: Tile, prefix: &str, lines: &[Line]) {
-    let text: Vec<(String, bool)> = lines
+/// Draws `lines` as a block at the bottom right of `area`, a cell of room
+/// each side, each line filling its row in its own colours; a line too wide
+/// is cut with `…`. If the block is taller than `area`, its first lines go.
+pub fn draw_block(frame: &mut Frame, area: Tile, lines: &[(String, &str)]) {
+    let widest = lines
         .iter()
-        .map(|line| match line {
-            Line::Heading(heading) => (heading.clone(), true),
-            Line::Key(key, caption, group) => {
-                let more = if *group { " …" } else { "" };
-                (format!("{key:>7}  {caption}{more}"), false)
-            }
-        })
-        .collect();
-    let room = usize::from(area.h.saturating_sub(2)).max(1);
-    let columns: Vec<&[(String, bool)]> = {
-        let mut out = Vec::new();
-        let mut rest = text.as_slice();
-        while !rest.is_empty() {
-            let (column, after) = rest.split_at_checked(room).unwrap_or((rest, &[]));
-            out.push(column);
-            rest = after;
-        }
-        out
-    };
-    let widths: Vec<u16> = columns
-        .iter()
-        .map(|column| {
-            let widest = column
-                .iter()
-                .map(|(t, _)| fux_vt::str_width(t))
-                .max()
-                .unwrap_or(0);
-            u16::try_from(widest).unwrap_or(u16::MAX).saturating_add(2)
-        })
-        .collect();
-    let w = widths
-        .iter()
-        .fold(0u16, |sum, w| sum.saturating_add(*w))
-        .saturating_add(2)
-        .max(u16::try_from(prefix.len()).unwrap_or(0).saturating_add(6))
+        .map(|(text, _)| fux_vt::str_width(text))
+        .max()
+        .unwrap_or(0);
+    let w = u16::try_from(widest.saturating_add(2))
+        .unwrap_or(u16::MAX)
         .min(area.w);
-    let tallest = columns.iter().map(|c| c.len()).max().unwrap_or(0);
-    let h = u16::try_from(tallest)
-        .unwrap_or(0)
-        .saturating_add(2)
-        .min(area.h);
-    let tile = Tile {
-        x: area.x.saturating_add(area.w.saturating_sub(w)),
-        y: area.y.saturating_add(area.h.saturating_sub(h)),
-        w,
-        h,
-    };
-    frame.boxed(tile, &format!(" {prefix} "));
-    let mut x = tile.x.saturating_add(1);
-    for (column, width) in columns.iter().zip(&widths) {
-        for (row, (line, heading)) in column.iter().enumerate() {
-            let y = tile
-                .y
-                .saturating_add(1)
-                .saturating_add(u16::try_from(row).unwrap_or(0));
-            let sgr = if *heading { ";1" } else { "" };
-            let room = tile.x.saturating_add(w).saturating_sub(x).saturating_sub(1);
-            frame.label(x.saturating_add(1), y, room.min(*width), line, sgr);
-        }
-        x = x.saturating_add(*width);
+    let skip = lines.len().saturating_sub(usize::from(area.h));
+    let h = u16::try_from(lines.len().saturating_sub(skip)).unwrap_or(0);
+    let x = area.x.saturating_add(area.w.saturating_sub(w));
+    let top = area.y.saturating_add(area.h.saturating_sub(h));
+    for (row, (text, sgr)) in lines.iter().skip(skip).enumerate() {
+        let y = top.saturating_add(u16::try_from(row).unwrap_or(0));
+        frame.fill(x, y, w, " ", sgr);
+        let room = w.saturating_sub(2);
+        frame.label(x.saturating_add(1), y, room, &cut(text, room), sgr);
     }
 }
 
-trait SplitOffChecked<T> {
-    fn split_off_checked(&mut self, at: usize) -> Vec<T>;
+/// `text` in `room` cells, its last a `…` if it had to be cut.
+pub fn cut(text: &str, room: u16) -> String {
+    if fux_vt::str_width(text) <= usize::from(room) {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for (glyph, width) in fux_vt::clusters(text) {
+        let width = usize::from(width);
+        if used.saturating_add(width) >= usize::from(room) {
+            break;
+        }
+        out.push_str(glyph);
+        used = used.saturating_add(width);
+    }
+    out.push('\u{2026}');
+    out
 }
 
-impl<T> SplitOffChecked<T> for Vec<T> {
-    /// The items from `at` on, taken out; none if `at` is past the end.
-    fn split_off_checked(&mut self, at: usize) -> Vec<T> {
-        let mut tail = Vec::new();
-        while self.len() > at {
-            tail.extend(self.pop());
-        }
-        tail.reverse();
-        tail
+/// The prefix's menu: the keys typed so far, the keys after them under their
+/// headings, one selected.
+pub struct Column {
+    pub keys: String,
+    pub selected: usize,
+}
+
+impl Column {
+    /// The entries' keys, in order: what the arrows move between.
+    pub fn entries(lines: &[Line]) -> Vec<String> {
+        (lines.iter())
+            .filter_map(|line| match line {
+                Line::Key(key, _, _) => Some(key.clone()),
+                Line::Heading(_) => None,
+            })
+            .collect()
     }
+
+    /// Moves the selection for a moving key that is not a letter: true if
+    /// it was one.
+    pub fn moves(&mut self, press: KeyPress, count: usize) -> bool {
+        let name = press.to_string();
+        if name.chars().count() == 1 {
+            return false;
+        }
+        match moved(&name, self.selected, count, 10) {
+            Some(at) => {
+                self.selected = at;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn draw(&self, frame: &mut Frame, area: Tile, lines: &[Line]) {
+        let pad = (lines.iter())
+            .filter_map(|line| match line {
+                Line::Key(key, _, _) => Some(fux_vt::str_width(key)),
+                Line::Heading(_) => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let mut out: Vec<(String, &str)> = Vec::new();
+        let header = area.h.saturating_sub(1) >= 4;
+        if header {
+            out.push((self.keys.clone(), BOLD));
+        }
+        let mut entry = 0usize;
+        let mut selected_line = 0usize;
+        let mut body: Vec<(String, &str)> = Vec::new();
+        for line in lines {
+            match line {
+                Line::Heading(heading) => body.push((heading.clone(), BOLD)),
+                Line::Key(key, caption, group) => {
+                    let more = if *group { "\u{2026}" } else { "" };
+                    let lead = pad.saturating_sub(fux_vt::str_width(key));
+                    let text = format!("{:lead$}{key}  {caption}{more}", "");
+                    let sgr = if entry == self.selected {
+                        selected_line = body.len();
+                        SELECTED
+                    } else {
+                        PANEL
+                    };
+                    body.push((text, sgr));
+                    entry = entry.saturating_add(1);
+                }
+            }
+        }
+        if body.is_empty() {
+            body.push(("no bindings".to_owned(), DIM));
+        }
+        let room = usize::from(area.h.saturating_sub(1))
+            .saturating_sub(usize::from(header))
+            .saturating_sub(2)
+            .max(1);
+        out.extend(window(body, selected_line, room));
+        draw_block(frame, area, &out);
+    }
+}
+
+/// The items from `at` on, taken out of `items`.
+fn split_off<T>(items: &mut Vec<T>, at: usize) -> Vec<T> {
+    let mut tail = Vec::new();
+    while items.len() > at {
+        tail.extend(items.pop());
+    }
+    tail.reverse();
+    tail
 }
 
 #[cfg(test)]
@@ -366,26 +416,30 @@ mod tests {
     }
 
     #[test]
-    fn a_pick_filters_and_a_line_edits_where_the_cursor_is() {
-        let mut pick = Panel::Pick(Pick {
+    fn a_list_offers_its_keys_and_a_line_edits_where_the_cursor_is() {
+        let row = |value: &str, current| Row {
+            value: value.to_owned(),
+            label: value.to_owned(),
+            current,
+        };
+        let mut list = Panel::List(List {
             id: 1,
             title: "tabs".to_owned(),
-            items: vec![
-                ("t1".to_owned(), "build".to_owned()),
-                ("t2".to_owned(), "logs".to_owned()),
-            ],
-            filter: String::new(),
-            selected: 0,
+            rows: vec![row("t1", false), row("t2", true)],
+            actions: vec![("r".to_owned(), "rename".to_owned())],
+            selected: 1,
         });
-        pick.paste("lo\x1b");
-        assert_eq!(pick.key(press("Enter")), Outcome::Chosen("t2".to_owned()));
+        assert_eq!(list.key(press("r")), Outcome::Action(0, "t2".to_owned()));
+        assert_eq!(list.key(press("k")), Outcome::Stay);
+        assert_eq!(list.key(press("y")), Outcome::Chosen("t1".to_owned()));
+        assert_eq!(list.key(press("q")), Outcome::Cancel);
         let mut ask = Panel::Ask(Ask {
             id: 2,
             prompt: "rename".to_owned(),
             text: "ac".chars().collect(),
             cursor: 1,
         });
-        ask.key(press("b"));
+        ask.paste("b\x1b");
         ask.key(press("End"));
         ask.key(press("BSpace"));
         assert_eq!(ask.key(press("Enter")), Outcome::Chosen("ab".to_owned()));

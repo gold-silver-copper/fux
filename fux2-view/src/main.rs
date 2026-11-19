@@ -27,9 +27,9 @@ use fuxix::Errno;
 use fuxix::poll::{Events, Poke, Poll, PollFd, Wake, waker};
 use fuxix::process::Signal;
 use keys::{Action, Binding, Group, Keys};
-use panel::{Ask, Outcome, Panel, Pick};
+use panel::{Ask, Column, List, Outcome, Panel};
 use render::{Frame, Tile};
-use script::{Context, Job, Run, Script, ToViewer, Verb};
+use script::{Context, Job, Run, Script, Start, ToViewer, Verb};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
@@ -47,8 +47,19 @@ const WAIT_MS: u32 = 10_000;
 const RETRY: Duration = Duration::from_secs(1);
 /// The least time between paints.
 const PAINT: Duration = Duration::from_millis(16);
-/// How long a message stays on the status line.
-const MESSAGE: Duration = Duration::from_secs(5);
+/// How long a notice of a pane's ending stays; other notices stay until
+/// the next key.
+const ALERT: Duration = Duration::from_secs(5);
+/// The bar's colours, as fux's: the bar, the tab shown, the keys typed, a
+/// notice and an error.
+const BAR: &str = ";38;5;250;48;5;236";
+const BAR_BOLD: &str = ";1;38;5;250;48;5;236";
+const TAB: &str = ";1;30;42";
+const KEYS: &str = ";1;30;103";
+const NOTICE: &str = ";93;48;5;236";
+/// What an empty tab says, in the borders' colour.
+const BORDER_TEXT: &str = render::BORDER;
+const ERROR: &str = ";91;48;5;236";
 /// How long past its time a stopped binding gets before it is forced.
 const FORCE_AFTER: Duration = Duration::from_secs(1);
 /// How long leaving waits for the terminal to take the last bytes.
@@ -249,14 +260,18 @@ struct View {
     back: Option<(String, PaneRef)>,
     term: (u16, u16),
     keys: Keys,
-    /// The keys typed so far of a chord: its menu is shown.
-    prefix: Option<String>,
+    /// The keys typed so far of a chord: their menu is shown.
+    column: Option<Column>,
+    /// The group whose keys act again without the keys before them.
+    repeat: Option<String>,
     panel: Option<Panel>,
     drag: Option<Drag>,
     /// Panes to fit once the layout reaches a version and they are seen,
     /// until when.
     fits: Vec<(u64, PaneRef, Instant)>,
-    message: Option<(String, Instant)>,
+    /// A notice for the bar's corner: its text, its colours, and until when
+    /// if it is an alert (else until the next key).
+    notice: Option<(String, &'static str, Option<Instant>)>,
     file_limit: Option<u64>,
     script: Option<Script>,
     from_script: Receiver<ToViewer>,
@@ -439,42 +454,30 @@ impl Pane {
             _ => Err(Failure::new(Code::Protocol, "an answer out of turn")),
         }
     }
-
-    /// Its title bar: the title given in the layout, if any, and its name.
-    fn title(&self, tile: Tile, own: &str) -> String {
-        let mut title = match own {
-            "" => format!(" {} ", self.name),
-            own => format!(" {own} ({}) ", self.name),
-        };
-        if let Some(meta) = &self.meta {
-            if meta.state != State::Running {
-                title.push_str(&format!("[{}] ", meta.state));
-            }
-            if meta.cols > tile.w || meta.rows > tile.h.saturating_sub(1) {
-                title.push_str(&format!("[clipped {}x{}] ", meta.cols, meta.rows));
-            }
-            if let Some(limit) = meta.limitations.last() {
-                title.push_str(&format!("[{limit}] "));
-            }
-        }
-        title
-    }
 }
 
 impl View {
+    /// An error, in the bar's corner until the next key.
     fn say(&mut self, text: impl Into<String>) {
-        self.message = Some((text.into(), after(Instant::now(), MESSAGE)));
+        self.notice = Some((text.into(), ERROR, None));
         self.dirty = true;
     }
 
-    /// The room tiles share: the screen above the status line.
+    /// A notice that is no error.
+    fn note(&mut self, text: impl Into<String>, until: Option<Instant>) {
+        self.notice = Some((text.into(), NOTICE, until));
+        self.dirty = true;
+    }
+
+    /// The room tiles share: the whole screen. The bar, when it shows, is
+    /// drawn over its last row and takes no room.
     fn area(&self) -> Rect {
         let (cols, rows) = self.term;
         Rect {
             x: 0,
             y: 0,
             w: u32::from(cols.min(render::MAX_COLS)),
-            h: u32::from(rows.min(render::MAX_ROWS).saturating_sub(1)),
+            h: u32::from(rows.min(render::MAX_ROWS)),
         }
     }
 
@@ -494,14 +497,14 @@ impl View {
         self.space()?.tabs.iter().find(|t| t.id == tab)
     }
 
-    /// The tiles drawn: those of the shown tab with room for a title and a row.
+    /// The tiles drawn: those of the shown tab with room for a cell.
     fn tiles(&self) -> Vec<(PaneRef, Rect)> {
         let area = self.area();
         (self.shown_tab())
             .map(|tab| tab.tiles(area))
             .unwrap_or_default()
             .into_iter()
-            .filter(|(_, rect)| rect.w > 0 && rect.h >= 2)
+            .filter(|(_, rect)| rect.w > 0 && rect.h > 0)
             .collect()
     }
 
@@ -755,9 +758,12 @@ impl View {
             Ok(stored) => {
                 // The file is good again: what it said wrong is no longer so.
                 if let Some(said) = self.layout_failed.take()
-                    && self.message.as_ref().is_some_and(|(text, _)| *text == said)
+                    && self
+                        .notice
+                        .as_ref()
+                        .is_some_and(|(text, _, _)| *text == said)
                 {
-                    self.message = None;
+                    self.notice = None;
                 }
                 self.layout_text = text;
                 // A drag in progress was made against the old one.
@@ -823,12 +829,6 @@ impl View {
             (false, _) => return self.say(format!("the key {name} cannot be sent")),
         };
         self.type_parts(vec![part]);
-    }
-
-    fn input_pressure(&self) -> bool {
-        (self.panes.values())
-            .filter_map(|pane| pane.inlet.as_ref())
-            .any(|inlet| inlet.parts.len() >= MAX_QUEUED_PARTS)
     }
 
     fn apply_verb(&mut self, verb: Verb) {
@@ -918,7 +918,7 @@ impl View {
         let rect = (self.arranged.tab_of(pane))
             .and_then(|tab| tab.tiles(area).into_iter().find(|(p, _)| p == pane))
             .map(|(_, rect)| rect);
-        let Some(rect) = rect.filter(|r| r.w > 0 && r.h >= 2) else {
+        let Some(rect) = rect.filter(|r| r.w > 0 && r.h > 0) else {
             return self.say(format!("{} has no room on the screen", pane.name));
         };
         if self.live_pane(pane).is_none() {
@@ -926,7 +926,7 @@ impl View {
         }
         let tile = tile_of(rect);
         let cols = tile.w.clamp(1, MAX_COLS);
-        let rows = tile.h.saturating_sub(1).clamp(1, MAX_ROWS);
+        let rows = tile.h.clamp(1, MAX_ROWS);
         let advanced = self.inlet(&pane.name).and_then(|inlet| {
             inlet.resize = Some((cols, rows));
             inlet.advance()
@@ -968,55 +968,90 @@ impl View {
 
     fn on_key(&mut self, press: KeyPress) {
         let name = press.to_string();
+        // A notice lasts until the next key.
+        if self.notice.take().is_some() {
+            self.dirty = true;
+        }
         if let Some(panel) = &mut self.panel {
             self.dirty = true;
             let id = panel.id();
-            match panel.key(press) {
-                Outcome::Stay => {}
+            let (value, action) = match panel.key(press) {
+                Outcome::Stay => return,
                 Outcome::Cancel => {
                     self.panel = None;
-                    self.dispatch_job("the panel".to_owned(), Job::Drop(id));
+                    return self.dispatch_job("the panel".to_owned(), Job::Drop(id));
                 }
-                Outcome::Chosen(value) => {
-                    self.panel = None;
-                    self.dispatch_job("the panel".to_owned(), Job::Answer { id, value });
-                }
+                Outcome::Chosen(value) => (value, None),
+                Outcome::Action(n, value) => (value, Some(n)),
+            };
+            self.panel = None;
+            let job = Job::Answer { id, value, action };
+            return self.dispatch_job("the panel".to_owned(), job);
+        }
+        if let Some(group) = self.repeat.clone() {
+            self.dirty = true;
+            if name == "Escape" || name == "Enter" {
+                self.repeat = None;
+                return;
             }
-            return;
-        }
-        let chord = match self.prefix.take() {
-            Some(prefix) => {
-                self.dirty = true;
-                if name == "Escape" {
-                    return;
-                }
-                format!("{prefix} {name}")
+            let chord = format!("{group} {name}");
+            if self.keys.bindings.contains_key(&chord) {
+                return self.perform_chord(chord);
             }
-            None => name,
-        };
-        let had_prefix = chord.contains(' ');
-        if self.keys.bindings.contains_key(&chord) || self.keys.opens(&chord) {
-            return self.perform_chord(chord);
+            self.repeat = None;
+            return self.say(format!("{name} is not one of this mode's keys"));
         }
-        match had_prefix {
-            // The keys are still loading: this chord may be among them.
-            true => self.say(format!("no binding for {chord}")),
-            false => self.type_key(press),
+        if let Some(mut column) = self.column.take() {
+            self.dirty = true;
+            let lines = self.keys.menu(&column.keys);
+            let entries = Column::entries(&lines);
+            if column.moves(press, entries.len()) {
+                self.column = Some(column);
+                return;
+            }
+            let chord = match name.as_str() {
+                "Escape" => return,
+                "Enter" => match entries.get(column.selected) {
+                    Some(key) => format!("{} {key}", column.keys),
+                    None => return,
+                },
+                _ => format!("{} {name}", column.keys),
+            };
+            if self.keys.bindings.contains_key(&chord) || self.keys.opens(&chord) {
+                return self.perform_chord(chord);
+            }
+            // The prefix again, where its map does not bind it, goes to the pane.
+            let first = column.keys.split(' ').next().unwrap_or_default();
+            if name == first {
+                return self.type_key(press);
+            }
+            self.column = Some(column);
+            return self.say(format!("{chord} is not bound"));
         }
+        if self.keys.bindings.contains_key(&name) || self.keys.opens(&name) {
+            return self.perform_chord(name);
+        }
+        self.type_key(press);
     }
 
-    /// Does what `chord` is bound to; a chord that holds keys opens them.
+    /// Does what `chord` is bound to; a chord that holds keys opens their
+    /// menu. A key of a repeating group stays in that group's mode.
     fn perform_chord(&mut self, chord: String) {
+        self.dirty = true;
         if let Some(binding) = self.keys.bindings.get(&chord).cloned() {
-            self.prefix = self.keys.repeating_parent(&chord);
+            self.column = None;
+            self.repeat = self.keys.repeating_parent(&chord);
             return self.perform(chord, binding.action);
         }
         if self.keys.opens(&chord) {
-            self.prefix = Some(chord);
-            self.dirty = true;
+            self.repeat = None;
+            self.column = Some(Column {
+                keys: chord,
+                selected: 0,
+            });
             return;
         }
-        self.say(format!("no binding for {chord}"));
+        self.say(format!("{chord} is not bound"));
     }
 
     fn perform(&mut self, chord: String, action: Action) {
@@ -1135,14 +1170,31 @@ impl View {
                 self.next_scan = now;
             }
             ToViewer::Verb(verb) => self.apply_verb(verb),
-            ToViewer::Pick { id, title, items } => {
-                self.prefix = None;
-                self.panel = Some(Panel::Pick(Pick {
+            ToViewer::Pick {
+                id,
+                title,
+                rows,
+                actions,
+            } => {
+                self.column = None;
+                self.repeat = None;
+                self.notice = None;
+                let selected = (rows.iter())
+                    .position(|row| row.2 != Start::Plain)
+                    .unwrap_or(0);
+                let rows = (rows.into_iter())
+                    .map(|(value, label, start)| panel::Row {
+                        value,
+                        label,
+                        current: start == Start::Current,
+                    })
+                    .collect();
+                self.panel = Some(Panel::List(List {
                     id,
                     title,
-                    items,
-                    filter: String::new(),
-                    selected: 0,
+                    rows,
+                    actions,
+                    selected,
                 }));
             }
             ToViewer::Ask {
@@ -1150,7 +1202,9 @@ impl View {
                 prompt,
                 initial,
             } => {
-                self.prefix = None;
+                self.column = None;
+                self.repeat = None;
+                self.notice = None;
                 let text: Vec<char> = initial.chars().collect();
                 self.panel = Some(Panel::Ask(Ask {
                     id,
@@ -1171,7 +1225,7 @@ impl View {
                 }
                 self.next_scan = now;
             }
-            ToViewer::Say(text) => self.say(text),
+            ToViewer::Say(text) => self.note(text, None),
             ToViewer::Started { stop, limit } => {
                 self.running = Some(Running {
                     stop,
@@ -1385,6 +1439,7 @@ impl View {
         let mut said = None;
         let mut changed = false;
         let mut greeted = false;
+        let mut ended = None;
         let Some(pane) = self.panes.get_mut(name) else {
             return true;
         };
@@ -1393,6 +1448,7 @@ impl View {
             match pane.conn.receive() {
                 Ok(Some(body)) => {
                     let was_greeting = pane.phase == Phase::Greeting;
+                    let was_running = pane.meta.as_ref().is_none_or(|m| m.state == State::Running);
                     match pane.answered(&body, now) {
                         Ok(screen) => changed |= screen,
                         Err(failure) => {
@@ -1401,6 +1457,10 @@ impl View {
                         }
                     }
                     greeted |= was_greeting && pane.phase != Phase::Greeting;
+                    let state = pane.meta.as_ref().map(|m| &m.state);
+                    if was_running && let Some(state) = state.filter(|s| **s != State::Running) {
+                        ended = Some(format!("{name} {state}"));
+                    }
                 }
                 Ok(None) => break,
                 Err(_) => alive = false,
@@ -1448,6 +1508,9 @@ impl View {
             self.refresh(false);
             self.fit_due();
         }
+        if let Some(text) = ended {
+            self.note(text, Some(after(now, ALERT)));
+        }
         if let Some(text) = said {
             self.say(text);
         }
@@ -1472,77 +1535,69 @@ impl View {
     fn paint(&mut self, now: Instant) {
         self.dirty = false;
         self.next_paint = after(now, PAINT);
-        if self
-            .message
-            .as_ref()
-            .is_some_and(|(_, until)| now >= *until)
-        {
-            self.message = None;
+        if (self.notice.as_ref()).is_some_and(|(_, _, until)| until.is_some_and(|u| now >= u)) {
+            self.notice = None;
         }
         let (cols, rows) = self.term;
         let mut frame = Frame::new(cols, rows);
-        let area = tile_of(self.area());
-        let titles: Vec<(PaneRef, String)> = (self.shown_tab())
-            .map(|tab| {
-                tab.leaves()
-                    .into_iter()
-                    .map(|l| (l.pane.clone(), l.title.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let area = self.area();
         let tiles = self.tiles();
+        let focused_tile = (tiles.iter())
+            .find(|(pane, _)| Some(pane) == self.focus.as_ref())
+            .map(|(_, rect)| tile_of(*rect));
         let mut cursor = None;
         for (pane, rect) in &tiles {
             let tile = tile_of(*rect);
-            let focused = Some(pane) == self.focus.as_ref();
-            let sgr = if focused { ";7" } else { ";2" };
-            let own = (titles.iter())
-                .find(|(p, _)| p == pane)
-                .map(|(_, title)| title.as_str())
-                .unwrap_or_default();
-            let title = match self.live_pane(pane) {
-                Some(live) => live.title(tile, own),
-                None => format!(" {} [missing] ", pane.name),
+            let Some(live) = self.live_pane(pane) else {
+                let text = format!(" {} missing ", pane.name);
+                frame.label(tile.x, tile.y, tile.w, &text, NOTICE);
+                continue;
             };
-            frame.fill(tile.x, tile.y, tile.w, "\u{2500}", sgr);
-            frame.label(tile.x, tile.y, tile.w, &title, sgr);
-            if tile.x > 0 {
-                let border = tile.x.saturating_sub(1);
-                for y in tile.y..tile.y.saturating_add(tile.h) {
-                    frame.fill(border, y, 1, "\u{2502}", ";2");
-                }
+            let Some(meta) = &live.meta else {
+                continue;
+            };
+            let at = frame.pane(tile, &live.rows, meta);
+            if Some(pane) == self.focus.as_ref() {
+                cursor = at.map(|at| (at, meta.cursor_shape));
             }
-            if let Some(live) = self.live_pane(pane)
-                && let Some(meta) = &live.meta
-            {
-                let at = frame.pane(tile, &live.rows, meta);
-                if focused {
-                    cursor = at.map(|at| (at, meta.cursor_shape));
-                }
+            if meta.state != State::Running {
+                let text = format!(" {} ended ", pane.name);
+                let width = u16::try_from(fux_vt::str_width(&text)).unwrap_or(u16::MAX);
+                let x = tile.x.saturating_add(tile.w.saturating_sub(width));
+                let y = tile.y.saturating_add(tile.h.saturating_sub(1));
+                frame.label(x, y, tile.w, &text, NOTICE);
             }
         }
-        let all = self
-            .shown_tab()
-            .map_or(0, |tab| tab.tiles(self.area()).len());
+        if let Some(tab) = self.shown_tab() {
+            frame.borders(&edges(&tab.borders(area)), focused_tile);
+        }
+        let all = self.shown_tab().map_or(0, |tab| tab.tiles(area).len());
         if all == 0 {
-            let text = "no panes here: fux2 start --name NAME, or C-b c";
-            frame.label(1, area.h.checked_div(2).unwrap_or(0), area.w, text, ";2");
+            let text = "no panes here: fux2 start --name NAME, or C-b t n";
+            let middle = u16::try_from(area.h / 2).unwrap_or(0);
+            frame.label(1, middle, tile_of(area).w, text, BORDER_TEXT);
         }
-        if let Some(prefix) = &self.prefix {
-            let lines = self.keys.menu(prefix);
-            panel::draw_menu(&mut frame, area, prefix, &lines);
+        // Panels and the bar cover the panes; the cursor hides beneath them.
+        let above_bar = Tile {
+            h: tile_of(area).h.saturating_sub(1),
+            ..tile_of(area)
+        };
+        if let Some(column) = &self.column {
+            let lines = self.keys.menu(&column.keys);
+            column.draw(&mut frame, above_bar, &lines);
             cursor = None;
         }
         if let Some(open) = &self.panel {
-            open.draw(&mut frame, area);
+            open.draw(&mut frame, above_bar);
             cursor = None;
         }
-        let hidden = all.saturating_sub(tiles.len());
-        let status = self.status_line(hidden);
-        let last = rows.saturating_sub(1);
-        frame.fill(0, last, area.w, " ", ";7");
-        frame.label(0, last, area.w, &status, ";7");
-        let mut bytes = b"\x1b[?25l".to_vec();
+        if self.draw_bar(&mut frame, &tiles) {
+            let last = rows.saturating_sub(1);
+            if cursor.is_some_and(|((_, y), _)| y >= last) {
+                cursor = None;
+            }
+        }
+        let mut bytes = b"\x1b[?2026h\x1b[?25l".to_vec();
         bytes.extend(frame.diff(&self.drawn));
         bytes.extend_from_slice(b"\x1b[0m");
         if let Some(((x, y), shape)) = cursor {
@@ -1550,6 +1605,7 @@ impl View {
             let shape = if shape == 7 { 0 } else { shape };
             bytes.extend_from_slice(format!("\x1b[{shape} q\x1b[{row};{col}H\x1b[?25h").as_bytes());
         }
+        bytes.extend_from_slice(b"\x1b[?2026l");
         if self.painter.send(bytes) {
             self.drawn = frame;
         } else {
@@ -1557,49 +1613,157 @@ impl View {
         }
     }
 
-    fn status_line(&self, hidden: usize) -> String {
-        let mut line = String::new();
-        let spaces = &self.arranged.workspaces;
-        let space_at = spaces
-            .iter()
-            .position(|s| s.id == self.workspace)
-            .unwrap_or(0);
-        let tabs = self.space().map_or(&[][..], |space| space.tabs.as_slice());
-        let tab_at = tabs
-            .iter()
-            .position(|t| t.id == self.place().tab)
-            .unwrap_or(0);
-        line.push_str(&format!(
-            " {} {}/{} | {} {}/{} ",
-            self.space().map_or("", |space| space.title.as_str()),
-            space_at.saturating_add(1),
-            spaces.len(),
-            self.shown_tab().map_or("", |tab| tab.title.as_str()),
-            tab_at.saturating_add(1),
-            tabs.len(),
-        ));
-        let zoomed =
-            (self.shown_tab()).is_some_and(|tab| tab.zoom.as_ref().is_some_and(|z| tab.holds(z)));
-        if zoomed {
-            line.push_str("| zoomed ");
+    /// The bar, on the last row, as fux draws it: all of it while a menu,
+    /// a repeating group, a list or a prompt is open; else only its right
+    /// corner, and only for a notice or panes hidden or cut. True if drawn.
+    fn draw_bar(&self, frame: &mut Frame, tiles: &[(PaneRef, Rect)]) -> bool {
+        let (cols, rows) = (frame_cols(self.term), self.term.1);
+        let y = rows.saturating_sub(1);
+        let whole = self.column.is_some() || self.repeat.is_some() || self.panel.is_some();
+        let unseen = self.unseen(tiles);
+        let mut right: Vec<(String, &str)> = Vec::new();
+        if let Some((text, sgr, _)) = &self.notice {
+            right.push((text.replace('\n', "  "), sgr));
+        } else if let Some(column) = &self.column {
+            right.push((format!("{} \u{2026}", column.keys), KEYS));
+        } else if let Some(group) = &self.repeat {
+            right.push((self.repeat_text(group), KEYS));
+        } else {
+            let zoomed = (self.shown_tab())
+                .is_some_and(|tab| tab.zoom.as_ref().is_some_and(|z| tab.holds(z)));
+            let mut text = unseen.clone();
+            if zoomed {
+                text.push_str("[zoom] ");
+            }
+            if whole {
+                text.push_str(&self.pane_label());
+            }
+            if !text.is_empty() {
+                right.push((text, BAR));
+            }
         }
-        if let Some(prefix) = &self.prefix {
-            line.push_str(&format!("| {prefix} … "));
+        if !whole && right.is_empty() {
+            return false;
         }
-        if hidden > 0 {
-            line.push_str(&format!("| {hidden} panes do not fit "));
+        let width = |parts: &[(String, &str)]| {
+            parts
+                .iter()
+                .map(|(t, _)| fux_vt::str_width(t))
+                .sum::<usize>()
+        };
+        let cols_n = usize::from(cols);
+        let share = match whole && cols >= 4 {
+            true => (cols_n / 2).saturating_add(cols_n / 4),
+            false => cols_n,
+        };
+        let right_width = width(&right)
+            .min(share.max(fux_vt::str_width(&unseen)))
+            .min(cols_n);
+        let start = cols_n.saturating_sub(right_width).saturating_sub(1);
+        let left_limit = cols_n
+            .saturating_sub(right_width)
+            .saturating_sub(usize::from(right_width > 0));
+        let small = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+        if whole {
+            frame.fill(0, y, cols, " ", BAR);
+            let mut x = 0usize;
+            for (text, sgr) in self.bar_left() {
+                let room = left_limit.saturating_sub(x);
+                if room == 0 {
+                    break;
+                }
+                let shown = panel::cut(&text, small(room));
+                frame.label(small(x), y, small(room), &shown, sgr);
+                x = x.saturating_add(fux_vt::str_width(&shown));
+            }
+        } else {
+            let from = start.saturating_sub(1);
+            frame.fill(small(from), y, small(cols_n.saturating_sub(from)), " ", BAR);
         }
-        if self.input_pressure() {
-            line.push_str("| keys are waiting for a pane ");
+        let mut x = start;
+        for (text, sgr) in right {
+            let room = start.saturating_add(right_width).saturating_sub(x);
+            if room == 0 {
+                break;
+            }
+            let shown = panel::cut(&text, small(room));
+            frame.label(small(x), y, small(room), &shown, sgr);
+            x = x.saturating_add(fux_vt::str_width(&shown));
         }
-        if self.running.is_some() {
-            line.push_str("| a binding is running ");
+        true
+    }
+
+    /// The workspace shown, then its tabs, the shown one marked.
+    fn bar_left(&self) -> Vec<(String, &'static str)> {
+        let mut parts = Vec::new();
+        let Some(space) = self.space() else {
+            return parts;
+        };
+        parts.push((format!(" {} ", space.title), BAR_BOLD));
+        let shown = self.place().tab;
+        for tab in &space.tabs {
+            let sgr = if tab.id == shown { TAB } else { BAR };
+            parts.push((format!(" {} ", tab.title), sgr));
         }
-        if let Some((text, _)) = &self.message {
-            line.push_str("| ");
-            line.push_str(text);
+        parts
+    }
+
+    /// The focused pane, as the bar names it: its name, then its title.
+    fn pane_label(&self) -> String {
+        let Some(pane) = &self.focus else {
+            return String::new();
+        };
+        let title = (self.arranged.tab_of(pane))
+            .and_then(|tab| {
+                tab.leaves()
+                    .into_iter()
+                    .find(|l| l.pane == *pane)
+                    .map(|l| l.title.clone())
+            })
+            .unwrap_or_default();
+        match title.is_empty() {
+            true => pane.name.clone(),
+            false => format!("{} {title}", pane.name),
         }
-        line
+    }
+
+    /// `[hidden …] [cut …] `: panes of this tab with no room, and panes
+    /// larger than their tiles.
+    fn unseen(&self, tiles: &[(PaneRef, Rect)]) -> String {
+        let all = (self.shown_tab())
+            .map(|tab| tab.tiles(self.area()))
+            .unwrap_or_default();
+        let hidden: Vec<&str> = (all.iter())
+            .filter(|(pane, _)| !tiles.iter().any(|(p, _)| p == pane))
+            .map(|(pane, _)| pane.name.as_str())
+            .collect();
+        let cut: Vec<&str> = (tiles.iter())
+            .filter(|(pane, rect)| {
+                let meta = self.live_pane(pane).and_then(|p| p.meta.as_ref());
+                meta.is_some_and(|m| u32::from(m.cols) > rect.w || u32::from(m.rows) > rect.h)
+            })
+            .map(|(pane, _)| pane.name.as_str())
+            .collect();
+        let mut out = String::new();
+        if !hidden.is_empty() {
+            out.push_str(&format!("[hidden {}] ", hidden.join(" ")));
+        }
+        if !cut.is_empty() {
+            out.push_str(&format!("[cut {}] ", cut.join(" ")));
+        }
+        out
+    }
+
+    /// A repeating group's mode, as `RESIZE  h j k l · Esc`.
+    fn repeat_text(&self, group: &str) -> String {
+        let name = (self.keys.groups.get(group))
+            .map_or_else(|| group.to_owned(), |g| g.caption.to_uppercase());
+        let below = format!("{group} ");
+        let keys: Vec<&str> = (self.keys.bindings.keys())
+            .filter_map(|chord| chord.strip_prefix(&below))
+            .filter(|key| !key.contains(' '))
+            .collect();
+        format!("{name}  {} \u{b7} Esc", keys.join(" "))
     }
 
     fn timeout(&self, now: Instant, decoder: &Decoder) -> Duration {
@@ -1614,7 +1778,7 @@ impl View {
         if let Some(running) = &self.running {
             consider(running.at);
         }
-        if let Some((_, until)) = &self.message {
+        if let Some((_, _, Some(until))) = &self.notice {
             consider(*until);
         }
         if let Some(due) = decoder.deadline() {
@@ -1627,6 +1791,35 @@ impl View {
         }
         at.saturating_duration_since(now)
     }
+}
+
+/// The cells of `borders`, as the frame draws them.
+fn edges(borders: &[layout::Border]) -> Vec<render::Edge> {
+    let small = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
+    let mut out = Vec::new();
+    for border in borders {
+        let along = border.from..border.from.saturating_add(border.length);
+        for at in along {
+            out.push(match border.axis {
+                layout::Axis::Columns => render::Edge {
+                    x: small(border.at),
+                    y: small(at),
+                    upright: true,
+                },
+                layout::Axis::Rows => render::Edge {
+                    x: small(at),
+                    y: small(border.at),
+                    upright: false,
+                },
+            });
+        }
+    }
+    out
+}
+
+/// The columns a frame of the terminal's size has.
+fn frame_cols((cols, _): (u16, u16)) -> u16 {
+    cols.min(render::MAX_COLS)
 }
 
 /// Whether the cell `at` is on `border`.
@@ -1769,11 +1962,12 @@ fn run() -> Result<(), Failure> {
         back: None,
         term: terminal_size(),
         keys: first_keys(),
-        prefix: None,
+        column: None,
+        repeat: None,
         panel: None,
         drag: None,
         fits: Vec::new(),
-        message: None,
+        notice: None,
         file_limit,
         script: Some(script),
         from_script,
@@ -1873,12 +2067,8 @@ fn serve(
         view.retry_rested(now);
         view.release_held(now);
         view.police_run(now);
-        if view
-            .message
-            .as_ref()
-            .is_some_and(|(_, until)| now >= *until)
-        {
-            view.message = None;
+        if (view.notice.as_ref()).is_some_and(|(_, _, until)| until.is_some_and(|u| now >= u)) {
+            view.notice = None;
             view.dirty = true;
         }
         if view.dirty && view.painter.is_idle() && now >= view.next_paint {

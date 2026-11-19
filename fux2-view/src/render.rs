@@ -103,39 +103,6 @@ impl Frame {
         }
     }
 
-    /// A box with `title` on its top edge, blank inside.
-    pub fn boxed(&mut self, tile: Tile, title: &str) {
-        if tile.w < 2 || tile.h < 2 {
-            return;
-        }
-        let right = tile.x.saturating_add(tile.w).saturating_sub(1);
-        let bottom = tile.y.saturating_add(tile.h).saturating_sub(1);
-        for y in tile.y..=bottom {
-            let edge = y == tile.y || y == bottom;
-            let fill = if edge { "\u{2500}" } else { " " };
-            self.fill(tile.x, y, tile.w, fill, "");
-            if !edge {
-                self.put(tile.x, y, "\u{2502}", "", false);
-                self.put(right, y, "\u{2502}", "", false);
-            }
-        }
-        for (x, y, corner) in [
-            (tile.x, tile.y, "\u{250c}"),
-            (right, tile.y, "\u{2510}"),
-            (tile.x, bottom, "\u{2514}"),
-            (right, bottom, "\u{2518}"),
-        ] {
-            self.put(x, y, corner, "", false);
-        }
-        self.label(
-            tile.x.saturating_add(2),
-            tile.y,
-            tile.w.saturating_sub(4),
-            title,
-            ";1",
-        );
-    }
-
     /// Draws one pane's row, clipped to `w` columns from `x`. A wide glyph
     /// the edge would cut is left blank.
     fn row(&mut self, x: u16, y: u16, w: u16, row: &Row) {
@@ -168,12 +135,11 @@ impl Frame {
         }
     }
 
-    /// Draws a pane into `tile`, below its title row: top-left, a taller
-    /// screen scrolled to keep the cursor in view. Where the cursor lands,
-    /// if it is shown there.
+    /// Draws a pane into `tile`: top-left, a taller screen scrolled to keep
+    /// the cursor in view. Where the cursor lands, if it is shown there.
     pub fn pane(&mut self, tile: Tile, rows: &[Row], meta: &Meta) -> Option<(u16, u16)> {
-        let height = tile.h.saturating_sub(1);
-        let top = tile.y.saturating_add(1);
+        let height = tile.h;
+        let top = tile.y;
         let first = meta
             .cursor_row
             .saturating_add(1)
@@ -239,6 +205,66 @@ impl Frame {
             at = Some((x.saturating_add(if wide { 2 } else { 1 }), y));
         }
         out
+    }
+}
+
+/// The borders' colour, and that of the borders around the focused pane.
+pub const BORDER: &str = ";38;5;240";
+pub const FOCUSED_BORDER: &str = ";32";
+
+/// One cell of a border: where it is, and whether its line runs up and
+/// down (between panes side by side) or across.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Edge {
+    pub x: u16,
+    pub y: u16,
+    pub upright: bool,
+}
+
+impl Frame {
+    /// Draws border cells as lines, each joined to the border cells beside
+    /// it; those touching `focus` (its edges and corners) in green.
+    pub fn borders(&mut self, edges: &[Edge], focus: Option<Tile>) {
+        let set: std::collections::HashSet<(u16, u16)> =
+            edges.iter().map(|edge| (edge.x, edge.y)).collect();
+        let has = |x: Option<u16>, y: Option<u16>| match (x, y) {
+            (Some(x), Some(y)) => set.contains(&(x, y)),
+            _ => false,
+        };
+        let ring = |x: u16, y: u16| {
+            focus.is_some_and(|tile| {
+                let (x, y) = (u32::from(x), u32::from(y));
+                let (left, top) = (u32::from(tile.x), u32::from(tile.y));
+                let right = left.saturating_add(u32::from(tile.w));
+                let bottom = top.saturating_add(u32::from(tile.h));
+                x.saturating_add(1) >= left
+                    && x <= right
+                    && y.saturating_add(1) >= top
+                    && y <= bottom
+            })
+        };
+        for edge in edges {
+            let (x, y) = (edge.x, edge.y);
+            let up = has(Some(x), y.checked_sub(1));
+            let down = has(Some(x), y.checked_add(1));
+            let left = has(x.checked_sub(1), Some(y));
+            let right = has(x.checked_add(1), Some(y));
+            let glyph = match (up, down, left, right) {
+                (true, true, true, true) => "\u{253c}",
+                (true, true, false, true) => "\u{251c}",
+                (true, true, true, false) => "\u{2524}",
+                (false, true, true, true) => "\u{252c}",
+                (true, false, true, true) => "\u{2534}",
+                (true, false, false, true) => "\u{2514}",
+                (true, false, true, false) => "\u{2518}",
+                (false, true, false, true) => "\u{250c}",
+                (false, true, true, false) => "\u{2510}",
+                _ if edge.upright => "\u{2502}",
+                _ => "\u{2500}",
+            };
+            let sgr = if ring(x, y) { FOCUSED_BORDER } else { BORDER };
+            self.put(x, y, glyph, sgr, false);
+        }
     }
 }
 

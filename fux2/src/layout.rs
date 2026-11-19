@@ -423,7 +423,7 @@ impl Node {
         let total: u64 = parts.iter().map(|(share, _)| *share).sum();
         let room = match axis {
             Axis::Columns => area.w.saturating_sub(gaps(parts.len())),
-            Axis::Rows => area.h,
+            Axis::Rows => area.h.saturating_sub(gaps(parts.len())),
         };
         let delta = amount.shares(total, room)?;
         let (a, b) = (share_of(parts, first), share_of(parts, second));
@@ -580,18 +580,19 @@ impl Rect {
     }
 }
 
-/// The columns a split along columns gives to borders between its parts.
+/// The cells a split gives to the borders between its parts: a column
+/// between parts side by side, a row between parts stacked.
 fn gaps(parts: usize) -> u32 {
     u32::try_from(parts.saturating_sub(1)).unwrap_or(u32::MAX)
 }
 
-/// Each part's rectangle. Side by side, a column between two parts is
-/// their border; stacked, each part's first row (its title) is.
+/// Each part's rectangle, with a column (side by side) or a row (stacked)
+/// between two parts for their border.
 fn part_rects(axis: Axis, parts: &[(u64, Node)], area: Rect) -> Vec<Rect> {
     let total: u64 = parts.iter().map(|(share, _)| *share).sum();
     let room = match axis {
         Axis::Columns => area.w.saturating_sub(gaps(parts.len())),
-        Axis::Rows => area.h,
+        Axis::Rows => area.h.saturating_sub(gaps(parts.len())),
     };
     let mut out = Vec::with_capacity(parts.len());
     let mut sum = 0u64;
@@ -612,7 +613,7 @@ fn part_rects(axis: Axis, parts: &[(u64, Node)], area: Rect) -> Vec<Rect> {
                 ..area
             },
             Axis::Rows => Rect {
-                y: area.y.saturating_add(start),
+                y: area.y.saturating_add(start).saturating_add(gap),
                 h: length,
                 ..area
             },
@@ -657,7 +658,7 @@ fn borders_of(node: &Node, area: Rect, out: &mut Vec<Border>) {
         let next = index
             .checked_add(1)
             .and_then(|i| parts.get(i).zip(rects.get(i)));
-        let (Some(before), Some(((_, after), next_rect))) = (node.last(), next) else {
+        let (Some(before), Some(((_, after), _))) = (node.last(), next) else {
             continue;
         };
         let Some(after) = after.first() else {
@@ -665,7 +666,7 @@ fn borders_of(node: &Node, area: Rect, out: &mut Vec<Border>) {
         };
         let (at, from, length) = match axis {
             Axis::Columns => (rect.x.saturating_add(rect.w), area.y, area.h),
-            Axis::Rows => (next_rect.y, area.x, area.w),
+            Axis::Rows => (rect.y.saturating_add(rect.h), area.x, area.w),
         };
         out.push(Border {
             axis: *axis,

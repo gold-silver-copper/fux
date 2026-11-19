@@ -99,11 +99,14 @@ pub enum ToViewer {
     Verb(Verb),
     /// Focus this pane once it is there, and come back when it goes.
     Focus(String),
-    /// Show a list; the value picked goes to callback `id`.
+    /// Show a list: rows of value, label and whether it is where you are
+    /// now (`*`) or only selected at first, and keys besides choosing with
+    /// their captions. What is chosen goes to callback `id`.
     Pick {
         id: u64,
         title: String,
-        items: Vec<(String, String)>,
+        rows: Vec<(String, String, Start)>,
+        actions: Vec<(String, String)>,
     },
     /// Ask for a line; it goes to callback `id`.
     Ask {
@@ -129,6 +132,16 @@ pub enum ToViewer {
     Done(Option<String>),
 }
 
+/// How a row of a list starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Start {
+    Plain,
+    /// Marked `*` and selected: where you are now.
+    Current,
+    /// Selected, not marked.
+    Selected,
+}
+
 /// What the viewer shows, as a run sees it.
 #[derive(Clone, Default)]
 pub struct Context {
@@ -147,8 +160,13 @@ pub struct Context {
 pub enum Job {
     /// The binding of `chord`, if it is still number `generation`.
     Binding { chord: String, generation: u64 },
-    /// Callback `id` with what a panel gave.
-    Answer { id: u64, value: String },
+    /// Callback `id` with what a panel gave: chosen, or one of its keys
+    /// pressed on it, by number.
+    Answer {
+        id: u64,
+        value: String,
+        action: Option<usize>,
+    },
     /// Callback `id` is no longer wanted.
     Drop(u64),
     /// The function the configuration names `name`, with string arguments.
@@ -183,8 +201,9 @@ struct Host {
     /// refused out loud, never run with whatever replaced it.
     generations: HashMap<String, u64>,
     next_generation: u64,
-    /// The one panel callback waiting, by number.
-    callback: Option<(u64, Kept)>,
+    /// The open panel's callbacks, by number: what choosing calls, then
+    /// what each of its keys calls.
+    callback: Option<(u64, Vec<Kept>)>,
     next_callback: u64,
 }
 
@@ -441,19 +460,36 @@ fn captions(
     Ok((caption, heading))
 }
 
-/// Keeps `function` as the one panel callback, letting go of any before.
-fn keep_callback(
+/// Keeps `functions` as the open panel's callbacks, letting go of any before.
+fn keep_callbacks(
     g: &mut HostCall<'_, Host>,
     host: &mut Host,
-    function: Value,
+    functions: &[Value],
 ) -> Result<u64, Error> {
-    let kept = g.keep(function)?;
-    if let Some((_, old)) = host.callback.take() {
-        let _ = g.release(old);
+    let mut kept = Vec::with_capacity(functions.len());
+    for function in functions {
+        match g.keep(*function) {
+            Ok(one) => kept.push(one),
+            Err(error) => {
+                for one in kept {
+                    let _ = g.release(one);
+                }
+                return Err(error);
+            }
+        }
     }
+    release_callbacks(g, host);
     host.next_callback = host.next_callback.saturating_add(1);
     host.callback = Some((host.next_callback, kept));
     Ok(host.next_callback)
+}
+
+fn release_callbacks(g: &mut HostCall<'_, Host>, host: &mut Host) {
+    if let Some((_, old)) = host.callback.take() {
+        for one in old {
+            let _ = g.release(one);
+        }
+    }
 }
 
 const WORDS: &[(&str, Word)] = &[
@@ -627,27 +663,58 @@ const WORDS: &[(&str, Word)] = &[
         rows(g, &items)
     }),
     ("pick", |g, host, args| {
-        let [title, items, function] = *g.exactly(args)?;
+        let (title, items, function, actions) = match args {
+            [title, items, function] => (*title, *items, *function, None),
+            [title, items, function, actions] => (*title, *items, *function, Some(*actions)),
+            _ => return Err(g.arity_error(args)),
+        };
         let title = string_arg(g, host, title)?;
-        let mut list = Vec::new();
+        let mut rows = Vec::new();
         for item in g.list_items(&items)? {
-            let pair = g.list_items(&item)?;
-            let (Some(value), Some(label)) = (pair.first(), pair.get(1)) else {
-                return Err(failed(g, "each item is (value label)"));
-            };
-            list.push((string_arg(g, host, *value)?, string_arg(g, host, *label)?));
-            if list.len() > crate::panel::MAX_ITEMS {
+            let parts = g.list_items(&item)?;
+            let (Some(value), Some(label)) = (parts.first(), parts.get(1)) else {
                 return Err(failed(
                     g,
-                    &format!("more than {} items", crate::panel::MAX_ITEMS),
+                    "each row is (value label), then #true for where you are, or \"selected\"",
+                ));
+            };
+            let start = match parts.get(2) {
+                Some(Value::Boolean(true)) => Start::Current,
+                Some(other) if g.as_str(other)? == Some("selected") => Start::Selected,
+                _ => Start::Plain,
+            };
+            rows.push((
+                string_arg(g, host, *value)?,
+                string_arg(g, host, *label)?,
+                start,
+            ));
+            if rows.len() > crate::panel::MAX_ITEMS {
+                return Err(failed(
+                    g,
+                    &format!("more than {} rows", crate::panel::MAX_ITEMS),
                 ));
             }
         }
-        let id = keep_callback(g, host, function)?;
+        let mut keys = Vec::new();
+        let mut functions = vec![function];
+        if let Some(actions) = actions {
+            for action in g.list_items(&actions)? {
+                let parts = g.list_items(&action)?;
+                let (Some(key), Some(caption), Some(then)) =
+                    (parts.first(), parts.get(1), parts.get(2))
+                else {
+                    return Err(failed(g, "each key of a list is (key caption function)"));
+                };
+                keys.push((string_arg(g, host, *key)?, string_arg(g, host, *caption)?));
+                functions.push(*then);
+            }
+        }
+        let id = keep_callbacks(g, host, &functions)?;
         host.tell(ToViewer::Pick {
             id,
             title,
-            items: list,
+            rows,
+            actions: keys,
         });
         inert()
     }),
@@ -655,7 +722,7 @@ const WORDS: &[(&str, Word)] = &[
         let [prompt, initial, function] = *g.exactly(args)?;
         let prompt = string_arg(g, host, prompt)?;
         let initial = string_arg(g, host, initial)?;
-        let id = keep_callback(g, host, function)?;
+        let id = keep_callbacks(g, host, &[function])?;
         host.tell(ToViewer::Ask {
             id,
             prompt,
@@ -907,24 +974,30 @@ fn function_of(
                 None => Ok(None),
             }
         }
-        Job::Answer { id, value } => {
-            let Some((own, function)) = host.callback.take() else {
+        Job::Answer { id, value, action } => {
+            let Some((own, functions)) = host.callback.take() else {
                 return Ok(None);
             };
             if own != id {
-                host.callback = Some((own, function));
+                host.callback = Some((own, functions));
                 return Ok(None);
             }
-            let function_value = kept(g, &function);
-            let _ = g.release(function);
+            let wanted = action.map_or(0, |n| n.saturating_add(1));
+            let function = functions.get(wanted).map(|f| kept(g, f));
+            for one in functions {
+                let _ = g.release(one);
+            }
             let value = g.string(&value).map_err(|e| describe(g, &e))?;
-            Ok(Some((function_value?, vec![value])))
+            match function {
+                Some(function) => Ok(Some((function?, vec![value]))),
+                None => Ok(None),
+            }
         }
         Job::Drop(id) => {
-            if let Some((own, function)) = host.callback.take() {
+            if let Some((own, functions)) = host.callback.take() {
                 match own == id {
-                    true => drop(g.release(function)),
-                    false => host.callback = Some((own, function)),
+                    true => functions.into_iter().for_each(|f| drop(g.release(f))),
+                    false => host.callback = Some((own, functions)),
                 }
             }
             Ok(None)
