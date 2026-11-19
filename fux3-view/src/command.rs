@@ -52,77 +52,9 @@ pub fn live_panes(session: &Session) -> Vec<Live> {
         .collect()
 }
 
-/// Runs `fux3 ARGS` in `root`'s session: its output, or what it said
-/// wrong. Running out of time or `cancel` ends it.
-pub fn run(
-    fux3: &Path,
-    root: &Path,
-    args: &[String],
-    cancel: &AtomicBool,
-) -> Result<String, Failure> {
-    let mut child = Command::new(fux3)
-        .args(args)
-        .env("FUX3_DIR", root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| fux3::io(fux3.display(), e))?;
-    let read = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::Builder::new().spawn(move || {
-            let mut text = Vec::new();
-            if let Some(pipe) = pipe {
-                let _ = pipe.take(MAX_OUTPUT).read_to_end(&mut text);
-            }
-            String::from_utf8_lossy(&text).into_owned()
-        })
-    };
-    let out = child
-        .stdout
-        .take()
-        .map(|p| Box::new(p) as Box<dyn Read + Send>);
-    let err = child
-        .stderr
-        .take()
-        .map(|p| Box::new(p) as Box<dyn Read + Send>);
-    let readers = read(out).and_then(|out| Ok((out, read(err)?)));
-    let (out, err) = match readers {
-        Ok(readers) => readers,
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(fux3::io("a thread", e));
-        }
-    };
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(e) => return Err(fux3::io(fux3.display(), e)),
-        }
-        let late = start.elapsed() >= COMMAND_TIME;
-        if late || cancel.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Failure::new(if late {
-                "fux3 took too long"
-            } else {
-                "stopped"
-            }));
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    };
-    let out = out.join().unwrap_or_default();
-    let err = err.join().unwrap_or_default();
-    match status.success() {
-        true => Ok(out),
-        false => Err(Failure::new(err.trim().trim_start_matches("fux3: "))),
-    }
-}
-
-/// Starts pane `name` running `program` (the user's shell if none): the
-/// pane as this one life of it.
+/// Starts pane `name` running `program` (the user's shell if none), with
+/// the `fux3` beside this program: the pane as this one life of it.
+/// Running out of time, or `cancel`, ends the `fux3` that starts it.
 pub fn start(
     fux3: &Path,
     session: &Session,
@@ -130,12 +62,42 @@ pub fn start(
     program: &[String],
     cancel: &AtomicBool,
 ) -> Result<PaneRef, Failure> {
-    let mut args = vec!["start".to_owned(), name.to_owned()];
+    let mut command = Command::new(fux3);
+    command.args(["start", name]).env("FUX3_DIR", &session.root);
     if !program.is_empty() {
-        args.push("--".to_owned());
-        args.extend(program.iter().cloned());
+        command.arg("--").args(program);
     }
-    run(fux3, &session.root, &args, cancel)?;
+    let mut child = (command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn())
+    .map_err(|e| fux3::io(fux3.display(), e))?;
+    let begun = Instant::now();
+    // Its one line of error fits the pipe: it is read once it has ended.
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| fux3::io(fux3.display(), e))? {
+            break status;
+        }
+        let late = begun.elapsed() >= COMMAND_TIME;
+        if late || cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Failure::new(if late {
+                "fux3 start took too long"
+            } else {
+                "stopped"
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    if !status.success() {
+        let mut said = String::new();
+        if let Some(err) = child.stderr.take() {
+            let _ = err.take(MAX_OUTPUT).read_to_string(&mut said);
+        }
+        return Err(Failure::new(said.trim().trim_start_matches("fux3: ")));
+    }
     let status = read_status(&session.pane_dir(name))?;
     let id = fux3::files::status_value(&status, "id").filter(|id| layout::is_id(id));
     let id =

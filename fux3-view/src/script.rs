@@ -316,19 +316,32 @@ fn rows(g: &mut HostCall<'_, Host>, items: &[Vec<String>]) -> Result<Answer, Err
     g.list(&values).map(Answer::Now)
 }
 
-/// Caption and heading, each a non-empty string.
-fn captions(
+/// A binding's keys, caption and heading: the keys in their one spelling,
+/// the caption and heading each a non-empty string.
+fn head(
     g: &mut HostCall<'_, Host>,
     host: &mut Host,
-    caption: Value,
-    heading: Value,
-) -> Result<(String, String), Error> {
-    let caption = string_arg(g, host, caption)?;
-    let heading = string_arg(g, host, heading)?;
+    words: [Value; 3],
+) -> Result<(String, String, String), Error> {
+    let [key, caption, heading] = words;
+    let text = string_arg(g, host, key)?;
+    let chord = chord(&text).map_err(|why| failed(g, &why))?;
+    let (caption, heading) = (string_arg(g, host, caption)?, string_arg(g, host, heading)?);
     if caption.trim().is_empty() || heading.trim().is_empty() {
         return Err(failed(g, "a binding needs a caption and a heading"));
     }
-    Ok((caption, heading))
+    Ok((chord, caption, heading))
+}
+
+/// Numbers `chord`'s binding to something the viewer does itself (a verb,
+/// a group's menu), letting go of any function it ran before.
+fn bind_other(g: &mut HostCall<'_, Host>, host: &mut Host, chord: &str) -> Result<u64, Error> {
+    let generation = host.rebind(chord).map_err(|why| failed(g, &why))?;
+    if let Some(old) = host.kept.remove(chord) {
+        let _ = g.release(old);
+    }
+    host.others.insert(chord.to_owned());
+    Ok(generation)
 }
 
 /// Keeps `functions` as the open panel's callbacks, letting go of any before.
@@ -366,12 +379,10 @@ fn release_callbacks(g: &mut HostCall<'_, Host>, host: &mut Host) {
 const WORDS: &[(&str, Word)] = &[
     ("bind-key", |g, host, args| {
         let [key, caption, heading, function] = *g.exactly(args)?;
-        let text = string_arg(g, host, key)?;
-        let chord = chord(&text).map_err(|why| failed(g, &why))?;
-        let (caption, heading) = captions(g, host, caption, heading)?;
+        let (chord, caption, heading) = head(g, host, [key, caption, heading])?;
         // Kept first: a binding that can't be made leaves the old one whole.
         let kept = g.keep(function)?;
-        let generation = match host.rebind(&chord) {
+        let order = match host.rebind(&chord) {
             Ok(generation) => generation,
             Err(why) => {
                 let _ = g.release(kept);
@@ -382,69 +393,46 @@ const WORDS: &[(&str, Word)] = &[
         if let Some(old) = host.kept.insert(chord.clone(), kept) {
             let _ = g.release(old);
         }
-        let action = Action::Script(generation);
+        let action = Action::Script(order);
         host.tell(ToViewer::Bind(
             chord,
             Binding {
                 action,
                 caption,
                 heading,
-                order: generation,
+                order,
             },
         ));
         inert()
     }),
     ("bind-verb", |g, host, args| {
-        let Some(([key, caption, heading], rest)) = args.split_first_chunk::<3>() else {
+        let Some((words, rest)) = args.split_first_chunk::<3>() else {
             return Err(g.arity_error(args));
         };
-        let text = string_arg(g, host, *key)?;
-        let chord = chord(&text).map_err(|why| failed(g, &why))?;
-        let (caption, heading) = captions(g, host, *caption, *heading)?;
-        let verb = verb_of(g, host, rest)?;
-        let generation = host.rebind(&chord).map_err(|why| failed(g, &why))?;
-        if let Some(old) = host.kept.remove(&chord) {
-            let _ = g.release(old);
-        }
-        host.others.insert(chord.clone());
-        let action = Action::Verb(verb);
+        let (chord, caption, heading) = head(g, host, *words)?;
+        let action = Action::Verb(verb_of(g, host, rest)?);
+        let order = bind_other(g, host, &chord)?;
         host.tell(ToViewer::Bind(
             chord,
             Binding {
                 action,
                 caption,
                 heading,
-                order: generation,
+                order,
             },
         ));
         inert()
     }),
     ("bind-group", |g, host, args| {
-        let (key, caption, heading, repeat) = match args {
-            [key, caption, heading] => (*key, *caption, *heading, false),
-            [key, caption, heading, repeat] => (
-                *key,
-                *caption,
-                *heading,
-                matches!(repeat, Value::Boolean(true)),
-            ),
-            _ => return Err(g.arity_error(args)),
-        };
-        let text = string_arg(g, host, key)?;
-        let chord = chord(&text).map_err(|why| failed(g, &why))?;
-        let (caption, heading) = captions(g, host, caption, heading)?;
-        let generation = host.rebind(&chord).map_err(|why| failed(g, &why))?;
-        if let Some(old) = host.kept.remove(&chord) {
-            let _ = g.release(old);
-        }
-        host.others.insert(chord.clone());
+        let [key, caption, heading] = *g.exactly(args)?;
+        let (chord, caption, heading) = head(g, host, [key, caption, heading])?;
+        let order = bind_other(g, host, &chord)?;
         host.tell(ToViewer::Group(
             chord,
             Group {
                 caption,
                 heading,
-                repeat,
-                order: generation,
+                order,
             },
         ));
         inert()

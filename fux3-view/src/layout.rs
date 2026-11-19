@@ -1281,29 +1281,19 @@ fn find_id<'a>(
     text: &str,
     items: impl Iterator<Item = (u32, &'a str)>,
 ) -> Result<u32, Failure> {
-    let items: Vec<(u32, &str)> = items.collect();
-    if let Some(id) = text
+    let id = text
         .strip_prefix(prefix)
-        .and_then(|d| d.parse::<u32>().ok())
-        && items.iter().any(|(i, _)| *i == id)
-    {
-        return Ok(id);
-    }
-    let titled: Vec<u32> = (items.iter())
-        .filter(|(_, title)| *title == text)
-        .map(|(id, _)| *id)
+        .and_then(|d| d.parse::<u32>().ok());
+    let found: Vec<u32> = items
+        .filter(|(i, title)| Some(*i) == id || *title == text)
+        .map(|(i, _)| i)
         .collect();
-    match titled.as_slice() {
+    match found.as_slice() {
         [id] => Ok(*id),
         [] => Err(bad(format!("no {kind} {text}"))),
-        _ => {
-            let ids: Vec<String> = titled.iter().map(|id| format!("{prefix}{id}")).collect();
-            Err(bad(format!(
-                "{} {kind}s are called {text:?}: {}",
-                ids.len(),
-                ids.join(", ")
-            )))
-        }
+        _ => Err(bad(format!(
+            "several {kind}s are called {text:?}: give its id"
+        ))),
     }
 }
 

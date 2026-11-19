@@ -26,7 +26,7 @@
 (bind-key "C-b t g" "choose a tab" "Tabs" choose-tab)
 (bind-key "C-b t r" "rename tab" "Tabs" (lambda! () (rename-tab (shown-tab))))
 (bind-key "C-b t x" "close tab" "Tabs" (lambda! () (confirm-close-tab (shown-tab))))
-(bind-group "C-b t m" "Reorder" "Reorder" #true)
+(bind-group "C-b t m" "Reorder" "Reorder")
 (bind-key "C-b t m h" "move tab earlier" "Reorder" (lambda! () (arrange (join "tab move " (shown-tab) " earlier"))))
 (bind-key "C-b t m l" "move tab later" "Reorder" (lambda! () (arrange (join "tab move " (shown-tab) " later"))))
 
@@ -37,7 +37,7 @@
 (bind-key "C-b w g" "choose a workspace" "Workspaces" choose-workspace)
 (bind-key "C-b w r" "rename workspace" "Workspaces" (lambda! () (rename-workspace (shown-workspace))))
 (bind-key "C-b w x" "close workspace" "Workspaces" (lambda! () (confirm-close-workspace (shown-workspace))))
-(bind-group "C-b w m" "Reorder" "Reorder" #true)
+(bind-group "C-b w m" "Reorder" "Reorder")
 (bind-key "C-b w m h" "move workspace earlier" "Reorder" (lambda! () (arrange (join "workspace move " (shown-workspace) " earlier"))))
 (bind-key "C-b w m l" "move workspace later" "Reorder" (lambda! () (arrange (join "workspace move " (shown-workspace) " later"))))
 
@@ -45,7 +45,7 @@
 (bind-verb "C-b d" "detach" "Session" "detach")
 (bind-key "C-b ?" "list every key" "Session" key-list)
 
-(bind-group "C-b r" "Resize" "Resize" #true)
+(bind-group "C-b r" "Resize" "Resize")
 (bind-key "C-b r h" "shrink or grow left" "Resize" (lambda! () (edit! (join "border " (focused) " left 1"))))
 (bind-key "C-b r j" "shrink or grow down" "Resize" (lambda! () (edit! (join "border " (focused) " down 1"))))
 (bind-key "C-b r k" "shrink or grow up" "Resize" (lambda! () (edit! (join "border " (focused) " up 1"))))
@@ -59,11 +59,11 @@
 (bind-key "C-b a n" "move to a new tab" "Pane actions" (lambda! () (move-to-new-tab (focused))))
 (bind-key "C-b a w" "move to workspace…" "Pane actions" (lambda! () (move-to-workspace (focused))))
 (bind-key "C-b a W" "move to a new workspace" "Pane actions" (lambda! () (move-to-new-workspace (focused))))
-(bind-group "C-b a m" "Reorder" "Reorder" #true)
+(bind-group "C-b a m" "Reorder" "Reorder")
 (bind-key "C-b a m h" "move pane earlier" "Reorder" (lambda! () (edit! (join "move " (focused) " earlier"))))
 (bind-key "C-b a m l" "move pane later" "Reorder" (lambda! () (edit! (join "move " (focused) " later"))))
 
-(bind-group "C-b m" "Move" "Move" #true)
+(bind-group "C-b m" "Move" "Move")
 (bind-key "C-b m h" "move left" "Move" (lambda! () (edit! (join "move " (focused) " left"))))
 (bind-key "C-b m j" "move down" "Move" (lambda! () (edit! (join "move " (focused) " down"))))
 (bind-key "C-b m k" "move up" "Move" (lambda! () (edit! (join "move " (focused) " up"))))

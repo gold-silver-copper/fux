@@ -76,13 +76,8 @@
 (define! tab-row (lambda! (row current)
   (list (first row) (join (first row) " " (second row) " — " (panes-text (panes-of (first row))))
         (equal? (first row) current))))
-(define! count-of (lambda! (n noun)
-  (join (integer-to-string n) " " noun (if! (equal? n 1) "" "s"))))
-(define! workspace-panes (lambda! (space)
-  (apply append (map (lambda! (tab) (panes-of (first tab))) (tabs-of space)))))
 (define! workspace-row (lambda! (row current)
-  (list (first row) (join (first row) " " (second row) " — " (panes-text (workspace-panes (first row))))
-        (equal? (first row) current))))
+  (list (first row) (join (first row) " " (second row)) (equal? (first row) current))))
 
 ;; Lists. A tab or workspace list renames with r and closes with x.
 (define! choose-tab (lambda! ()
@@ -92,14 +87,7 @@
       (list (list "r" "rename" rename-tab) (list "x" "close" confirm-close-tab))))))
 (define! choose-workspace (lambda! ()
   (let! ((here (shown-workspace)))
-    (pick "workspaces"
-      (map (lambda! (row)
-             (let! ((space (first row)) (tabs-here (length (tabs-of (first row)))))
-               (list space
-                     (join (if! (equal? space here) "* " "  ") space " " (second row) " — "
-                           (count-of tabs-here "tab") ", " (count-of (length (workspace-panes space)) "pane"))
-                     "selected")))
-           (workspaces))
+    (pick "workspaces" (map (lambda! (row) (workspace-row row here)) (workspaces))
       show-workspace
       (list (list "r" "rename" rename-workspace) (list "x" "close" confirm-close-workspace))))))
 (define! swap-with (lambda! (pane)

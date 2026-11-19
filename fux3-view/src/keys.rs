@@ -27,8 +27,6 @@ pub struct Binding {
 pub struct Group {
     pub caption: String,
     pub heading: String,
-    /// Its keys act again without the keys before them, until another key.
-    pub repeat: bool,
     pub order: u64,
 }
 
@@ -51,13 +49,6 @@ impl Keys {
     pub fn opens(&self, chord: &str) -> bool {
         let below = format!("{chord} ");
         self.bindings.keys().any(|key| key.starts_with(&below))
-    }
-
-    /// The group holding `chord`, if its keys repeat.
-    pub fn repeating_parent(&self, chord: &str) -> Option<String> {
-        let (parent, _) = chord.rsplit_once(' ')?;
-        let group = self.groups.get(parent)?;
-        group.repeat.then(|| parent.to_owned())
     }
 
     /// The menu of the keys right below `prefix`, under their headings in

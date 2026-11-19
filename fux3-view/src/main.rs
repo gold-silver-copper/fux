@@ -21,7 +21,7 @@ use fux3::session::Session;
 use fuxix::Errno;
 use fuxix::poll::{Events, Poke, Poll, PollFd, Wake, waker};
 use fuxix::process::Signal;
-use keys::{Action, Binding, Keys};
+use keys::{Action, Keys};
 use layout::{Dir, Layout, Live, PaneRef, Rect, Tab as LayoutTab, Target, Workspace};
 use panel::{Column, Outcome, Panel};
 use panes::Pane;
@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
 /// How often the session directory is looked at again.
@@ -45,9 +45,6 @@ const LOOK: Duration = Duration::from_millis(20);
 const RETRY_KEYS: Duration = Duration::from_millis(10);
 /// The least time between paints.
 const PAINT: Duration = Duration::from_millis(16);
-/// How long a notice of a pane's ending stays; other notices stay until
-/// the next key.
-const ALERT: Duration = Duration::from_secs(5);
 /// The bar's colours, as fux's: the bar, the tab shown, the keys typed, a
 /// notice and an error.
 const BAR: &str = ";38;5;250;48;5;236";
@@ -64,14 +61,10 @@ const FORCE_AFTER: Duration = Duration::from_secs(1);
 const LEAVE_WAIT: Duration = Duration::from_millis(500);
 /// Bindings waiting behind the one running.
 const MAX_WAITING_RUNS: usize = 16;
-/// How long held input waits for a pane to take it once the keys load.
-const HOLD_FOR_FOCUS: Duration = Duration::from_secs(2);
 /// How long leaving waits for a binding to be stopped.
 const END_RUN_WAIT: Duration = Duration::from_secs(1);
 /// How many messages from the language are taken in one turn.
 const SCRIPT_TURN: usize = 64;
-/// Input held while the configuration loads.
-const MAX_HELD_KEYS: usize = 256;
 /// The longest paste passed on.
 const MAX_PASTE: usize = 1 << 20;
 /// The longest line `.view/ctl` takes, and the most refusals `.view/errors`
@@ -97,19 +90,18 @@ fn io_failure(what: &str, error: impl std::fmt::Display) -> Failure {
 }
 
 /// Writes frames on a thread of its own, so that a terminal that stopped
-/// reading holds up no key: while it is busy, frames are merged.
+/// reading holds up no key: one frame at a time, the next made once it is
+/// out.
 struct Painter {
     frames: SyncSender<Vec<u8>>,
-    /// How many frames were handed over, and how many are written.
-    sent: std::cell::Cell<u64>,
-    written: Arc<std::sync::atomic::AtomicU64>,
+    busy: Arc<AtomicBool>,
 }
 
 impl Painter {
     fn start(poke: Poke) -> std::io::Result<Painter> {
-        let (frames, incoming): (_, Receiver<Vec<u8>>) = std::sync::mpsc::sync_channel(1);
-        let written = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let count = Arc::clone(&written);
+        let (frames, incoming) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+        let busy = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&busy);
         std::thread::Builder::new()
             .name("fux3-paint".to_owned())
             .spawn(move || {
@@ -118,55 +110,41 @@ impl Painter {
                     if out.write_all(&frame).and_then(|()| out.flush()).is_err() {
                         return;
                     }
-                    count.fetch_add(1, Ordering::SeqCst);
+                    done.store(false, Ordering::SeqCst);
                     poke.poke();
                 }
             })?;
-        Ok(Painter {
-            frames,
-            sent: std::cell::Cell::new(0),
-            written,
-        })
+        Ok(Painter { frames, busy })
     }
 
     fn is_idle(&self) -> bool {
-        self.written.load(Ordering::SeqCst) >= self.sent.get()
+        !self.busy.load(Ordering::SeqCst)
     }
 
+    /// Hands over a frame, unless one is being written.
     fn send(&self, bytes: Vec<u8>) -> bool {
-        match self.frames.try_send(bytes) {
-            Ok(()) => {
-                self.sent.set(self.sent.get().saturating_add(1));
-                true
-            }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
+        if !self.is_idle() {
+            return false;
         }
+        self.busy.store(true, Ordering::SeqCst);
+        let sent = self.frames.try_send(bytes).is_ok();
+        self.busy.store(sent, Ordering::SeqCst);
+        sent
     }
 
     /// Hands over the last bytes once the frame in progress is out, and
-    /// waits for them to be written: each step has its own time.
+    /// waits for them to be written, each wait bounded.
     fn finish(&self, bytes: Vec<u8>) {
-        let wait_idle = |budget: Duration| {
-            let until = after(Instant::now(), budget);
+        let wait = || {
+            let until = after(Instant::now(), LEAVE_WAIT);
             while !self.is_idle() && Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
-        wait_idle(LEAVE_WAIT);
-        // Queued as soon as there is room; its own time starts then.
-        let until = after(Instant::now(), LEAVE_WAIT);
-        let mut bytes = Some(bytes);
-        while let Some(next) = bytes.take() {
-            match self.frames.try_send(next) {
-                Ok(()) => self.sent.set(self.sent.get().saturating_add(1)),
-                Err(TrySendError::Full(back)) if Instant::now() < until => {
-                    bytes = Some(back);
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => return,
-            }
+        wait();
+        if self.send(bytes) {
+            wait();
         }
-        wait_idle(LEAVE_WAIT);
     }
 }
 
@@ -206,8 +184,6 @@ struct View {
     /// The tab each workspace shows.
     places: BTreeMap<u32, u32>,
     panes: BTreeMap<String, Pane>,
-    /// Panes seen ending, so each ending is told once.
-    ended: Vec<PaneRef>,
     focus: Option<PaneRef>,
     /// The pane focused before, for `last-pane`.
     last_focus: Option<PaneRef>,
@@ -216,12 +192,11 @@ struct View {
     /// The keys typed so far of a chord: their menu is shown.
     column: Option<Column>,
     /// The group whose keys act again without the keys before them.
-    repeat: Option<String>,
     panel: Option<Panel>,
     drag: Option<Drag>,
-    /// A notice for the bar's corner: its text, its colours, and until when
-    /// if it is an alert (else until the next key).
-    notice: Option<(String, &'static str, Option<Instant>)>,
+    /// A notice for the bar's corner, until the next key: its text and
+    /// colours.
+    notice: Option<(String, &'static str)>,
     /// `.view/ctl`, read by every viewer, and a line not yet whole.
     ctl: Option<File>,
     ctl_part: Vec<u8>,
@@ -234,13 +209,10 @@ struct View {
     from_script: Receiver<ToViewer>,
     running: Option<Running>,
     waiting_runs: VecDeque<Run>,
-    /// The configuration is still being read: keys it might bind wait.
+    /// The keys are still loading (each part in its time): keys typed
+    /// wait in the terminal until then, so none goes to a pane it was not
+    /// meant for.
     loading: bool,
-    held: Vec<Input>,
-    /// The last key typed while loading was `C-b`.
-    loading_prefix: bool,
-    /// The keys have loaded; held input waits for a focused pane until then.
-    keys_loaded: Option<Instant>,
     /// A run was handed to the language and has not finished.
     run_sent: bool,
     painter: Painter,
@@ -253,21 +225,6 @@ struct View {
     next_scan: Instant,
     next_look: Instant,
     quit: bool,
-}
-
-/// What holds before the default keys have loaded: a way out.
-fn first_keys() -> Keys {
-    let mut keys = Keys::default();
-    keys.bindings.insert(
-        "C-b d".to_owned(),
-        Binding {
-            action: Action::Verb(Verb::Detach),
-            caption: "detach".to_owned(),
-            heading: "Session".to_owned(),
-            order: 0,
-        },
-    );
-    keys
 }
 
 /// `index` moved by one through `len` places, wrapping.
@@ -294,13 +251,13 @@ fn tile_of(rect: Rect) -> Tile {
 impl View {
     /// An error, in the bar's corner until the next key.
     fn say(&mut self, text: impl Into<String>) {
-        self.notice = Some((text.into(), ERROR, None));
+        self.notice = Some((text.into(), ERROR));
         self.dirty = true;
     }
 
     /// A notice that is no error.
-    fn note(&mut self, text: impl Into<String>, until: Option<Instant>) {
-        self.notice = Some((text.into(), NOTICE, until));
+    fn note(&mut self, text: impl Into<String>) {
+        self.notice = Some((text.into(), NOTICE));
         self.dirty = true;
     }
 
@@ -493,21 +450,6 @@ impl View {
         if let Ok(changed) = pane.look(shown, now) {
             self.dirty |= changed;
         }
-        let Some(life) = pane.pane_ref() else {
-            return;
-        };
-        let state = pane.state().to_owned();
-        if state != "running" && !self.ended.contains(&life) {
-            self.ended.push(life);
-            self.note(format!("{name} {state}"), Some(after(now, ALERT)));
-        }
-        if self.ended.len() > 2 * fux3::session::MAX_PANES {
-            self.ended.retain(|life| {
-                self.panes
-                    .get(&life.name)
-                    .is_some_and(|p| p.id() == Some(life.id.as_str()))
-            });
-        }
     }
 
     /// Reads the layout file again: true if what it holds changed. A file
@@ -532,10 +474,7 @@ impl View {
                 }
                 // The file is good again: what it said wrong is no longer so.
                 if let Some(said) = self.layout_failed.take()
-                    && self
-                        .notice
-                        .as_ref()
-                        .is_some_and(|(text, _, _)| *text == said)
+                    && self.notice.as_ref().is_some_and(|(text, _)| *text == said)
                 {
                     self.notice = None;
                 }
@@ -710,19 +649,6 @@ impl View {
             let job = Job::Answer { id, value, action };
             return self.dispatch_job(String::new(), job);
         }
-        if let Some(group) = self.repeat.clone() {
-            self.dirty = true;
-            if name == "Escape" || name == "Enter" {
-                self.repeat = None;
-                return;
-            }
-            let chord = format!("{group} {name}");
-            if self.keys.bindings.contains_key(&chord) {
-                return self.perform_chord(chord);
-            }
-            self.repeat = None;
-            return self.say(format!("{name} is not one of this mode's keys"));
-        }
         if let Some(mut column) = self.column.take() {
             self.dirty = true;
             let lines = self.keys.menu(&column.keys);
@@ -757,16 +683,14 @@ impl View {
     }
 
     /// Does what `chord` is bound to; a chord that holds keys opens their
-    /// menu. A key of a repeating group stays in that group's mode.
+    /// menu.
     fn perform_chord(&mut self, chord: String) {
         self.dirty = true;
         if let Some(binding) = self.keys.bindings.get(&chord).cloned() {
             self.column = None;
-            self.repeat = self.keys.repeating_parent(&chord);
             return self.perform(chord, binding.action);
         }
         if self.keys.opens(&chord) {
-            self.repeat = None;
             self.column = Some(Column {
                 keys: chord,
                 selected: 0,
@@ -848,7 +772,7 @@ impl View {
             }
             ToViewer::Verb(verb) => self.apply_verb(verb),
             ToViewer::Panel(panel) => {
-                (self.column, self.repeat, self.notice) = (None, None, None);
+                (self.column, self.notice) = (None, None);
                 self.panel = Some(panel);
             }
             // What a binding does next may name what the edit made.
@@ -858,7 +782,7 @@ impl View {
                     self.fit(&pane);
                 }
             }
-            ToViewer::Say(text) => self.note(text, None),
+            ToViewer::Say(text) => self.note(text),
             ToViewer::Type(pane, bytes) => self.type_into(&pane, |_| bytes),
             ToViewer::Key(pane, press) => {
                 self.type_into(&pane, |p| p.key_bytes(Keystroke { press, kitty: None }))
@@ -880,11 +804,8 @@ impl View {
                         None => self.say(why),
                     }
                 }
-                // Held keys go once a pane can take them: the panes may not
-                // have greeted yet.
-                if self.loading && self.keys_loaded.is_none() {
-                    self.keys_loaded = Some(after(now, HOLD_FOR_FOCUS));
-                }
+                // The keys have loaded: they are read from now on.
+                self.loading = false;
                 if let Some(run) = self.waiting_runs.pop_front() {
                     self.start_run(run);
                 }
@@ -1011,20 +932,6 @@ impl View {
         }
     }
 
-    /// Lets held input go once the keys have loaded and a pane has the focus,
-    /// or the wait for one is over.
-    fn release_held(&mut self, now: Instant) {
-        let Some(until) = self.keys_loaded else {
-            return;
-        };
-        if self.focus.is_some() || now >= until {
-            self.keys_loaded = None;
-            self.loading = false;
-            let held = std::mem::take(&mut self.held);
-            self.on_inputs(held);
-        }
-    }
-
     /// Stops the binding whose time is up, and then insists.
     fn police_run(&mut self, now: Instant) {
         let Some(running) = &mut self.running else {
@@ -1049,30 +956,6 @@ impl View {
 
     fn on_inputs(&mut self, inputs: Vec<Input>) {
         for input in inputs {
-            // The keys are still loading, and may bind what was typed: it
-            // waits, in order, the load's own time at most. The way out
-            // does not wait.
-            if self.loading {
-                let key = match &input {
-                    Input::Key(k) => Some(k.press.to_string()),
-                    Input::Paste(_)
-                    | Input::PasteTooLong
-                    | Input::FocusIn
-                    | Input::FocusOut
-                    | Input::Mouse(_)
-                    | Input::Reply(_) => None,
-                };
-                let prefixed =
-                    std::mem::replace(&mut self.loading_prefix, key.as_deref() == Some("C-b"));
-                if prefixed && key.as_deref() == Some("d") {
-                    self.quit = true;
-                } else if self.held.len() < MAX_HELD_KEYS {
-                    self.held.push(input);
-                } else {
-                    self.say("keys typed while the keys load were dropped");
-                }
-                continue;
-            }
             match input {
                 Input::Key(stroke) => self.on_key(stroke),
                 // Typed into an open panel, never a pane.
@@ -1148,9 +1031,6 @@ impl View {
     fn paint(&mut self, now: Instant) {
         self.dirty = false;
         self.next_paint = after(now, PAINT);
-        if (self.notice.as_ref()).is_some_and(|(_, _, until)| until.is_some_and(|u| now >= u)) {
-            self.notice = None;
-        }
         let (cols, rows) = self.term;
         let mut frame = Frame::new(cols, rows);
         let area = self.area();
@@ -1204,7 +1084,7 @@ impl View {
             open.draw(&mut frame, above_bar);
             cursor = None;
         }
-        let bar = self.draw_bar(&mut frame, &tiles);
+        let bar = self.draw_bar(&mut frame);
         if bar {
             let last = rows.saturating_sub(1);
             if cursor.is_some_and(|(_, y)| y >= last) {
@@ -1218,16 +1098,16 @@ impl View {
         if self.sixel && self.column.is_none() && self.panel.is_none() {
             let bottom = if bar { rows.saturating_sub(1) } else { rows };
             for (pane, rect) in &tiles {
-                let tile = tile_of(*rect);
-                let Some(screen) = self.live_pane(pane).and_then(|p| p.screen.as_ref()) else {
+                let (tile, live) = (tile_of(*rect), self.live_pane(pane));
+                let Some((screen, dir)) = live.and_then(|p| Some((p.screen.as_ref()?, &p.dir)))
+                else {
                     continue;
                 };
                 let first = render::first_row(screen, tile);
-                let shown = (screen.pictures.iter())
-                    .filter_map(|(placed, pixels)| Some((placed, pixels.as_ref()?)));
-                drawn.extend(shown.filter_map(|(placed, pixels)| {
-                    pictures::place(tile, first, bottom, placed, pixels)
-                }));
+                let shown = screen.pictures.iter();
+                drawn.extend(
+                    shown.filter_map(|placed| pictures::place(tile, first, bottom, dir, placed)),
+                );
             }
         }
         let fresh = drawn != self.pictures;
@@ -1256,23 +1136,20 @@ impl View {
 
     /// The bar, on the last row, as fux draws it: all of it while a menu,
     /// a repeating group, a list or a prompt is open; else only its right
-    /// corner, and only for a notice or panes hidden or cut. True if drawn.
-    fn draw_bar(&self, frame: &mut Frame, tiles: &[(PaneRef, Rect)]) -> bool {
+    /// corner, and only for a notice or the zoom marker. True if drawn.
+    fn draw_bar(&self, frame: &mut Frame) -> bool {
         let (cols, rows) = (frame_cols(self.term), self.term.1);
         let y = rows.saturating_sub(1);
-        let whole = self.column.is_some() || self.repeat.is_some() || self.panel.is_some();
-        let unseen = self.unseen(tiles);
+        let whole = self.column.is_some() || self.panel.is_some();
         let mut right: Vec<(String, &str)> = Vec::new();
-        if let Some((text, sgr, _)) = &self.notice {
+        if let Some((text, sgr)) = &self.notice {
             right.push((text.replace('\n', "  "), sgr));
         } else if let Some(column) = &self.column {
             right.push((format!("{} \u{2026}", column.keys), KEYS));
-        } else if let Some(group) = &self.repeat {
-            right.push((self.repeat_text(group), KEYS));
         } else {
             let zoomed = (self.shown_tab())
                 .is_some_and(|tab| tab.zoom.as_ref().is_some_and(|z| tab.holds(z)));
-            let mut text = unseen.clone();
+            let mut text = String::new();
             if zoomed {
                 text.push_str("[zoom] ");
             }
@@ -1297,9 +1174,7 @@ impl View {
             true => (cols_n / 2).saturating_add(cols_n / 4),
             false => cols_n,
         };
-        let right_width = width(&right)
-            .min(share.max(fux_vt::str_width(&unseen)))
-            .min(cols_n);
+        let right_width = width(&right).min(share).min(cols_n);
         let start = cols_n.saturating_sub(right_width).saturating_sub(1);
         let left_limit = cols_n
             .saturating_sub(right_width)
@@ -1357,61 +1232,14 @@ impl View {
             .unwrap_or_default()
     }
 
-    /// `[hidden …] [cut …] `: panes of this tab with no room, and panes
-    /// larger than their tiles.
-    fn unseen(&self, tiles: &[(PaneRef, Rect)]) -> String {
-        let all = (self.shown_tab())
-            .map(|tab| tab.tiles(self.area()))
-            .unwrap_or_default();
-        let hidden: Vec<&str> = (all.iter())
-            .filter(|(pane, _)| !tiles.iter().any(|(p, _)| p == pane))
-            .map(|(pane, _)| pane.name.as_str())
-            .collect();
-        let cut: Vec<&str> = (tiles.iter())
-            .filter(|(pane, rect)| {
-                let size = self.live_pane(pane).and_then(Pane::size);
-                size.is_some_and(|(cols, rows)| {
-                    u32::from(cols) > rect.w || u32::from(rows) > rect.h
-                })
-            })
-            .map(|(pane, _)| pane.name.as_str())
-            .collect();
-        let mut out = String::new();
-        if !hidden.is_empty() {
-            out.push_str(&format!("[hidden {}] ", hidden.join(" ")));
-        }
-        if !cut.is_empty() {
-            out.push_str(&format!("[cut {}] ", cut.join(" ")));
-        }
-        out
-    }
-
-    /// A repeating group's mode, as `RESIZE  h j k l · Esc`.
-    fn repeat_text(&self, group: &str) -> String {
-        let name = (self.keys.groups.get(group))
-            .map_or_else(|| group.to_owned(), |g| g.caption.to_uppercase());
-        let below = format!("{group} ");
-        let keys: Vec<&str> = (self.keys.bindings.keys())
-            .filter_map(|chord| chord.strip_prefix(&below))
-            .filter(|key| !key.contains(' '))
-            .collect();
-        format!("{name}  {} \u{b7} Esc", keys.join(" "))
-    }
-
     fn timeout(&self, now: Instant, decoder: &Decoder) -> Duration {
         let mut at = self.next_scan;
         let mut consider = |other: Instant| at = at.min(other);
-        if let Some(until) = self.keys_loaded {
-            consider(until);
-        }
         if self.dirty && self.painter.is_idle() {
             consider(self.next_paint);
         }
         if let Some(running) = &self.running {
             consider(running.at);
-        }
-        if let Some((_, _, Some(until))) = &self.notice {
-            consider(*until);
         }
         if let Some(due) = decoder.deadline() {
             consider(due);
@@ -1646,13 +1474,11 @@ fn run() -> Result<(), Failure> {
         workspace: 0,
         places: BTreeMap::new(),
         panes: BTreeMap::new(),
-        ended: Vec::new(),
         focus: None,
         last_focus: None,
         term: terminal_size(),
-        keys: first_keys(),
+        keys: Keys::default(),
         column: None,
-        repeat: None,
         panel: None,
         drag: None,
         notice: None,
@@ -1665,9 +1491,6 @@ fn run() -> Result<(), Failure> {
         running: None,
         waiting_runs: VecDeque::new(),
         loading: true,
-        held: Vec::new(),
-        loading_prefix: false,
-        keys_loaded: None,
         run_sent: false,
         painter,
         drawn: Frame::default(),
@@ -1727,7 +1550,7 @@ fn wait(
     let (signals, paint, script) = sources;
     let stdin = std::io::stdin();
     let mut fds = poll.list();
-    let keys = fds.push(PollFd::new(&stdin, Events::IN));
+    let keys = (!view.loading).then(|| fds.push(PollFd::new(&stdin, Events::IN)));
     let signal_entry = fds.push(PollFd::new(signals.reader(), Events::IN));
     let paint_entry = fds.push(PollFd::new(paint, Events::IN));
     let script_entry = fds.push(PollFd::new(script, Events::IN));
@@ -1740,7 +1563,7 @@ fn wait(
         Err(errno) => return Err(io_failure("poll", errno)),
     }
     Ok(Ready {
-        stdin: !fds.events(keys).is_empty(),
+        stdin: keys.is_some_and(|entry| !fds.events(entry).is_empty()),
         signals: !fds.events(signal_entry).is_empty(),
         paint: !fds.events(paint_entry).is_empty(),
         script: !fds.events(script_entry).is_empty(),
@@ -1770,16 +1593,11 @@ fn serve(
         }
         for pane in view.panes.values_mut().filter(|p| p.has_queued()) {
             if let Err(failure) = pane.flush() {
-                view.notice = Some((failure.0, ERROR, None));
+                view.notice = Some((failure.0, ERROR));
                 view.dirty = true;
             }
         }
-        view.release_held(now);
         view.police_run(now);
-        if (view.notice.as_ref()).is_some_and(|(_, _, until)| until.is_some_and(|u| now >= u)) {
-            view.notice = None;
-            view.dirty = true;
-        }
         if view.dirty && view.painter.is_idle() && now >= view.next_paint {
             view.paint(now);
         }
