@@ -436,9 +436,14 @@ impl View {
                 true => &name,
                 false => left.first().map_or(DEFAULT_WORKSPACE, String::as_str),
             };
+            let own = self.run_sent;
             self.show_workspace(next, now);
-            // Said where it is seen; the next key was meant for what was
-            // shown before, and is dropped with the notice still up.
+            // Said where it is seen, unless a binding of this viewer is
+            // closing it; the next key was meant for what was shown before,
+            // and is dropped with the notice still up.
+            if own {
+                return;
+            }
             self.swallow = true;
             return self.say(format!("workspace {name} was removed"));
         }

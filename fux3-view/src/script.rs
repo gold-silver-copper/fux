@@ -12,6 +12,7 @@ use crate::keys::{Action, Binding, Group};
 use crate::layout::{Dir, Layout, Rect};
 use crate::panel::{Ask, List, Panel, Row};
 use fux3::session::Workspace;
+use fuxix::file::at;
 use fuxix::poll::Poke;
 use grift::{Answer, Error, Grift, HostCall, HostFunction, Interrupter, Kept, Value};
 use std::collections::HashMap;
@@ -32,7 +33,7 @@ pub const BINDING_TIME: Duration = Duration::from_secs(5);
 /// The most text a binding run copies out of the language, over all its words.
 const MAX_COPIED: usize = 16 << 20;
 /// The most panes whose going a callback waits for, and the most
-/// workspaces a list holds.
+/// workspaces held at once.
 const MAX_WATCHED: usize = 64;
 /// The most keys in one chord.
 const MAX_CHORD_KEYS: usize = 4;
@@ -159,8 +160,8 @@ struct Host {
     /// what each of its keys calls.
     callback: Option<(u64, Vec<Kept>)>,
     next_callback: u64,
-    /// The workspaces `workspaces` last listed, each directory held.
-    named: Vec<Workspace>,
+    /// The workspaces `hold-workspace` was asked for, newest last.
+    held: Vec<Workspace>,
     /// What `when-gone` calls, by pane.
     gone: HashMap<String, Kept>,
 }
@@ -492,11 +493,6 @@ const WORDS: &[(&str, Word)] = &[
         let [] = *g.exactly(args)?;
         let session = &host.context.workspace.session;
         let names = session.workspaces().map_err(|f| failed(g, &f.0))?;
-        // Each is held from here: a name this list gave is that directory.
-        let held = names.iter().take(MAX_WATCHED);
-        host.named = held
-            .filter_map(|n| session.workspace(n, false).ok())
-            .collect();
         strings(g, &names).map(Answer::Now)
     }),
     ("tabs", |g, host, args| {
@@ -698,19 +694,34 @@ const WORDS: &[(&str, Word)] = &[
             Err(failure) => Err(refused(g, host, &failure)),
         }
     }),
-    ("close-workspace", |g, host, args| {
+    ("hold-workspace", |g, host, args| {
         let [name] = *g.exactly(args)?;
         let name = string_arg(g, host, name)?;
-        // The directory the name was given for (the one shown, or one the
-        // last list held), never whatever has the name by now.
+        // The one shown is held already; another is opened now, once.
         let shown = &host.context.workspace;
-        let held = [shown]
+        let workspace = match shown.name == name {
+            true => shown.clone(),
+            false => (shown.session.workspace(&name, false)).map_err(|f| failed(g, &f.0))?,
+        };
+        let id = workspace.id();
+        // The newest last; past the bound the oldest is let go.
+        host.held.retain(|w| w.id() != id);
+        host.held.push(workspace);
+        let extra = host.held.len().saturating_sub(MAX_WATCHED);
+        host.held = std::mem::take(&mut host.held)
             .into_iter()
-            .chain(&host.named)
-            .find(|w| w.name == name);
-        let workspace = match held {
-            Some(held) => held.clone(),
-            None => (shown.session.workspace(&name, false)).map_err(|f| failed(g, &f.0))?,
+            .skip(extra)
+            .collect();
+        g.string(&id).map(Answer::Now)
+    }),
+    ("close-workspace", |g, host, args| {
+        let [held] = *g.exactly(args)?;
+        let held = string_arg(g, host, held)?;
+        // Only a directory held is closed: a name is never opened here, as
+        // another workspace may have it by now.
+        let Some(workspace) = host.held.iter().find(|w| w.id() == held).cloned() else {
+            let why = format!("{held:?} is no workspace held: (hold-workspace NAME) gives one");
+            return Err(failed(g, &why));
         };
         let outcome = crate::command::close_workspace(&workspace, &host.cancel);
         host.tell(ToViewer::Reread);
@@ -718,6 +729,17 @@ const WORDS: &[(&str, Word)] = &[
             Ok(()) => inert(),
             Err(failure) => Err(refused(g, host, &failure)),
         }
+    }),
+    ("forget-recipe", |g, host, args| {
+        let [pane] = *g.exactly(args)?;
+        let pane = string_arg(g, host, pane)?;
+        // Of the pane this names now, by its id: just started, so the
+        // recipe under its name is its own.
+        pane_dir(g, host, &pane)?;
+        let name = pane.split('@').next().unwrap_or_default();
+        let recipes = at::open_dir(host.context.workspace.held(), fux3::recipe::DIR);
+        let _ = recipes.and_then(|dir| at::remove_file(&dir, name));
+        inert()
     }),
     ("send", |g, host, args| {
         let [pane, text] = *g.exactly(args)?;
@@ -919,7 +941,7 @@ pub fn start(
         next_generation: 0,
         callback: None,
         next_callback: 0,
-        named: Vec::new(),
+        held: Vec::new(),
         gone: HashMap::new(),
         cancel: Arc::clone(&cancel),
         fux3,
