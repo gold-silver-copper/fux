@@ -11,7 +11,14 @@ use std::time::{Duration, Instant};
 struct Session(PathBuf);
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        // (A holder may write a file while its folder is being removed: then once more, so that
+        // no pane of a test outlives it.)
+        for _ in 0..20 {
+            if fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
