@@ -1249,6 +1249,10 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     was elsewhere; the README says "each time". Kept: an `.empty` that
     fails shows its error in the corner and not the sentence; a slow one
     is waited for two seconds, as any key script.
+  - Found later by the test failing 2 runs in 36: a default shell pane's
+    `rm -rf` of its own folder could find it "not empty" (the holder wrote
+    a file in that moment), and the pane stayed, dead. `.shell` removes
+    again until the folder is gone (a second at most).
 - **D87. The fix check of D84 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
   The tester found the two files line for line the same through real
   programs, resizes and rotation; the reviewers traced where they could

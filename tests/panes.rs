@@ -361,7 +361,10 @@ fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
     // The shell ends, and its pane with it: the workspace stays empty, and the viewer says how
     // to go on. Nothing is started again: not then, and not when the viewer draws anew.
     fs::write(view.join("in"), "exit\r").unwrap();
-    until("the viewer says so", || read(&view.join("screen")).contains("no panes in main: C-b t n starts a shell"));
+    let seen = || format!(": the viewer shows {:?}", read(&view.join("screen")).trim());
+    until_or("the viewer says so", seen, || {
+        read(&view.join("screen")).contains("no panes in main: C-b t n starts a shell")
+    });
     fs::write(view.join("ctl"), "resize 70 20\n").unwrap();
     until("the viewer drew at the new size", || {
         fact(&view, "size") == "70 20" && read(&view.join("screen")).contains("no panes")
