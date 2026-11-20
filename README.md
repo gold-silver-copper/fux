@@ -388,7 +388,7 @@ does something else is a row below with a case that shows it.
 
 | Question | Authority |
 | --- | --- |
-| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 9, 21 and 58 and the colon forms of 38 and 48, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
+| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6, 9, 21 and 58 and the colon forms of 4, 38 and 48, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. Text is what is printed with nothing between: a control or a move ends a character |
 | How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room, a joiner or another format character, or the vowel or final consonant of a Hangul syllable; one otherwise, the "ambiguous" ones too. U+FE0F after an emoji makes it two. A mark or a format character with nothing to join takes no cell and is dropped |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports) | Its own specification |
@@ -403,7 +403,8 @@ sequences where terminals are known to differ (`controls/`), Unicode strings
 and htop (`sessions/`). xterm is the authority for control sequences only;
 tmux and the old emulator are there because a difference from them is worth
 a look. It sees text and cursor only: a case for a colour, a mode, an answer
-or the bell shows that nothing else moved. CI runs it on Linux and fails on
+or the bell shows that nothing else moved, and the rows below are the
+departures it can see. The others are under "Left out". CI runs it on Linux and fails on
 any difference that is not a row here, on a row that says the difference is
 elsewhere (`text`, `cursor`), and on a case a witness could not be played.
 Witnesses differ between their own versions (the rows were made with CI's
@@ -435,6 +436,7 @@ takes a desktop's number removes the desktop's socket when it ends).
 | `controls/overlong-utf8` | tmux | text | The same bytes: old and tmux count the marks otherwise, and tmux a waiting wrap (below) |
 | `controls/wide-in-one-column` | old, xterm | cursor | On a screen one column wide a wide character is dropped where the cursor is; xterm and old go to the next row first |
 | `controls/wide-in-one-column-then-text` | tmux | text, cursor | The same on tmux, which then writes over the first character |
+| `controls/wrap-off-then-on` | old, tmux | text, cursor | A wrap waits at the row's end even while wrapping is off, and is done when wrapping is turned on again, as in xterm; old and tmux forget it |
 | `controls/ed-two-parameters` | old | text | `CSI 1 ; 0 J` erases as its first parameter says, as in xterm; old erases for each |
 | `controls/wrap-pending-tab` | old | text, cursor | A tab at the row's end leaves the wrap waiting, as in xterm; old ends it |
 | `controls/tab-stops` | old | text, cursor | `CSI 2 g` clears no tab stop, as in xterm; old clears all |
@@ -487,7 +489,8 @@ The kitty keyboard protocol; of the mouse, the UTF-8 and urxvt report forms
 to resize, and any menu use;
 hyperlinks (OSC 8 is read and dropped); reading the clipboard (setting it
 works); colour queries and palette and cursor colour changes (OSC 4, 10, 11,
-12) and the queries DECRQSS, XTGETTCAP and XTVERSION; focus reports (mode
+12) and the queries DECRQSS, XTGETTCAP and XTVERSION (and `CSI > c` is
+answered with no xterm version in it); focus reports (mode
 1004); the bell, the visual bell, the printer codes and memory lock; reflow on resize (rows keep their text, what does not fit is
 cut or goes to history); left and right margins; line feed mode (`CSI 20 h`);
 double underline and
@@ -499,7 +502,7 @@ editor on the pane's text); Windows. `clear` clears the screen, not the
 `history` file (`CSI 3 J` is ignored).
 
 Pictures: one that does not fit its tile whole is not drawn. After a picture
-the cursor goes to the start of the line below it (xterm leaves it on the
+the cursor goes to the start of the line below it (a VT340 and xterm leave it on the
 picture's last row), so that a prompt does not write over it; a picture
 therefore needs a free row under it, and one as tall as the pane scrolls off.
 

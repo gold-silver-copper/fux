@@ -11,8 +11,9 @@ a session of the referee's own) and to each witness:
   xterm  under Xvfb, never on a display of yours
 
 All three are needed unless --witness names fewer. What is compared is the screen's text, row
-by row with blanks at the end cut, and the cursor's row and column; not colours, answers to
-questions, modes, the bell or the clipboard. A difference is known if the README's table of
+by row with blanks at the end cut, and the cursor's row and column as the terminal answers
+`CSI 6 n` (in origin mode that is counted from the region's top, and not by every witness);
+not colours, answers to questions, modes, the bell, the clipboard or pictures. A difference is known if the README's table of
 departures has a row for the case and the witness that says where it is (`text`, `cursor`, or
 both; `or` between what different versions of a witness do); any other makes the run fail, and so does a case that a witness could not be played.
 Witnesses change between versions, so the table has a row if any version the referee was run
@@ -27,7 +28,7 @@ with differs, and a row that does not differ here is noted. A case's lines:
 
 Feeds that follow each other reach the terminal as one stream.
 """
-import ast, os, pathlib, re, select, shlex, shutil, signal, subprocess, sys, tempfile, time
+import ast, fcntl, os, pathlib, re, select, shlex, shutil, signal, subprocess, sys, tempfile, time
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
@@ -173,14 +174,23 @@ class Display:
 
     number = None
     process = None
+    lock = None
 
     @classmethod
     def get(cls):
         for number in range(90, 100) if cls.process is None else ():
             # Never a number an X server may be using or have used, never one it picks itself:
-            # a server that takes a desktop's number removes the desktop's socket when it ends.
+            # a server that takes a number in use takes the other's socket, and removes it when it
+            # ends. Not every Xvfb leaves a lock, so referees keep one of their own for a number.
+            shared = os.environ.get("XDG_RUNTIME_DIR") or str(pathlib.Path.home() / ".cache")
+            lock = open(f"{shared}/fux-referee-display-{number}.lock", "w")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                continue
             if os.path.lexists(f"/tmp/.X11-unix/X{number}") or os.path.lexists(f"/tmp/.X{number}-lock"):
                 continue
+            cls.lock = lock
             read, write = os.pipe()
             command = ["Xvfb", f":{number}", "-displayfd", str(write), "-screen", "0", "4096x4096x24", "-nolisten", "tcp"]
             process = subprocess.Popen(command, pass_fds=[write], stderr=subprocess.DEVNULL)
@@ -205,10 +215,11 @@ class Display:
 
 
 def xterm(case, _):
+    display = Display.get()
     played = Played(case, extra=["xterm"])
     # A display of the referee's own and no other, and none of the user's settings for xterm.
     env = {k: v for k, v in os.environ.items() if k not in ("WAYLAND_DISPLAY", "XAUTHORITY", "XAPPLRESDIR")}
-    env.update(DISPLAY=Display.get(), LC_ALL="C.UTF-8", HOME=str(played.dir), XENVIRONMENT="/dev/null")
+    env.update(DISPLAY=display, LC_ALL="C.UTF-8", HOME=str(played.dir), XENVIRONMENT="/dev/null")
     printer = f"sh {shlex.quote(str(HERE / 'printer.sh'))} {shlex.quote(str(played.dir))}"
     options = ["allowWindowOps: true", "printerCommand: " + printer, "printerAutoClose: true", "printAttributes: 0"]
     options += ["printerFormFeed: false", "printerNewLine: true", "utf8: 2", "precompose: false"]
@@ -260,7 +271,8 @@ def main():
         if arg in options:
             options[arg] = args.pop(0)
         elif arg.startswith("-"):
-            raise SystemExit(__doc__)
+            print(__doc__)
+            sys.exit(0 if arg in ("-h", "--help") else 2)
         else:
             names.append(arg)
     every = {"old": (old, options["--old"]), "tmux": (tmux, shutil.which("tmux")), "xterm": (xterm, shutil.which("xterm") and shutil.which("Xvfb"))}
@@ -278,6 +290,9 @@ def main():
     if not cases or not witnesses or not os.path.exists(options["--fux"]):
         raise SystemExit("nothing to compare: no case of that name, no witness, or no fux at --fux")
     known, new, stale, agree = departures(), [], [], {name: 0 for name in witnesses}
+    every_case = {named(path) for path in HERE.glob("corpus/**/*.case")}
+    # A row for a case or a witness that does not exist excuses nothing, and is somebody's slip.
+    new += [f"the README's table has a row for {case} and {witness}: no such case or witness" for case, witness in known if case not in every_case or witness not in every]
     try:
         for path in cases:
             name, case = named(path), parse(path)

@@ -593,7 +593,8 @@ impl Term {
         self.col += cells;
         if self.col >= self.cols {
             self.col = self.cols - 1;
-            self.wrap_pending = self.autowrap;
+            // The wrap waits even while wrapping is off, as in xterm: turned on again, it is done.
+            self.wrap_pending = true;
         }
     }
 

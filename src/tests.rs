@@ -138,6 +138,8 @@ fn the_right_margin_is_xterms() {
     bad.feed(b"a\xe0\x82\x9bb\xed\xa0\x80c\xe4\xb8e\xffA\x1b[9\x18\x1b[b");
     assert_eq!(bad.plain(), "a\u{fffd}b\u{fffd}c\u{fffd}e\u{fffd}A\n");
     assert_eq!(term(8, 1, "\x1b[?7l0123456一\x1b[b").plain(), "0123456\n");
+    // A wrap waits even while wrapping is off: turned on again, the next character goes to the next row.
+    assert_eq!(term(4, 2, "\x1b[?7labcdef\x1b[?7hg").plain(), "abcf\ng\n");
     // Asking again for the alternate screen of 1047 keeps what is on it; DECALN lets the whole screen scroll.
     assert_eq!(term(8, 2, "\x1b[?1047hX\x1b[?1047hY").plain(), "XY\n\n");
     assert_eq!(term(3, 3, "\x1b[2;3r\x1b[3;2H\x1b#8X\n\n\nY").plain(), "EEE\nEEE\n Y\n");
