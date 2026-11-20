@@ -972,7 +972,11 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     the viewer's first look that comes with a pane moved in is passed on
     once; an editor whose path has a space cannot be named in `EDITOR` or
     `FUXN_EDIT`; panes started before this series have `marks` in cells
-    (pre-release: start them again).
+    (pre-release: start them again); writing `marks` walks the rows of
+    each mark's line at every publish (a thousand marks on a 500-row
+    screen are still little work); the TERM key asks after the holder's
+    number a moment after it read the program's; a paste typed in the
+    instant the focus moves is wrapped as the last pane asked.
 
 ## The old fux3's bugs: which classes are gone
 
