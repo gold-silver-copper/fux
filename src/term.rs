@@ -7,6 +7,9 @@ use std::fmt::Write as _;
 
 /// The most bytes one picture may have; a longer one is dropped and noted.
 pub const PICTURE_MAX: usize = 4 << 20;
+/// The longest title kept (in characters) and the largest clipboard (in bytes); more is cut or refused.
+const TITLE_MAX: usize = 256;
+const CLIPBOARD_MAX: usize = 1 << 20;
 /// The most pictures a screen keeps; a new one past it drops the oldest.
 pub const PICTURES_MAX: usize = 8;
 const PARAMS_MAX: usize = 32;
@@ -85,8 +88,7 @@ impl Cell {
     }
 }
 
-/// A picture the program drew: where it is, in cells, and its bytes until
-/// the holder takes them to write the file.
+/// A picture the program drew: where it is, in cells. Its bytes leave in the outbox.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Picture {
     pub id: u32,
@@ -94,7 +96,23 @@ pub struct Picture {
     pub col: usize,
     pub cols: usize,
     pub rows: usize,
-    pub data: Option<Vec<u8>>,
+}
+
+/// What the emulator produces besides the screen, for the holder to take all at once.
+#[derive(Default)]
+pub struct Out {
+    /// Answers to the program's queries, to be written to it.
+    pub reply: Vec<u8>,
+    /// Lines that scrolled off the top of the main screen, as plain text.
+    pub history: String,
+    /// What was dropped for being over a bound, or refused, for the log (each kind once).
+    pub refused: Vec<&'static str>,
+    /// New pictures: the number of each and its bytes, a whole sixel string.
+    pub pictures: Vec<(u32, Vec<u8>)>,
+    /// The window title the program set last, without control characters.
+    pub title: Option<String>,
+    /// What the program put on the clipboard last.
+    pub clipboard: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -114,12 +132,11 @@ enum State {
     Escape,
     EscapeInter,
     Csi,
-    /// A string to skip (OSC, SOS, PM, APC), up to BEL or ST.
-    Skip,
-    /// A device control string, kept in `dcs`: a sixel picture if it says so.
-    Dcs,
+    /// A string (OSC, DCS, APC, SOS, PM), kept in `string` up to BEL or ST: a
+    /// title, a clipboard or a sixel picture if it says so.
+    Str,
     /// ESC seen inside a string: `\` ends it, anything else starts anew.
-    StringEscape,
+    StrEscape,
 }
 
 pub struct Term {
@@ -164,20 +181,16 @@ pub struct Term {
     utf8_min: u32,
     /// The sequence being read is malformed or has more parameters than are kept: it will be ignored.
     too_long: bool,
-    dcs: Vec<u8>,
-    dcs_was: State,
-    /// Answers to the program's queries, for the holder to write to it.
-    pub reply: Vec<u8>,
-    /// Lines that scrolled off the top of the main screen, as plain text.
-    pub history: String,
+    /// The string being read, after the byte that began it (`]` for OSC, `P` for DCS…); and whether it outgrew its bound.
+    string: Vec<u8>,
+    string_over: bool,
+    out: Out,
     pub pictures: Vec<Picture>,
     /// The pictures of the screen not shown (the main one while the alternate is).
     pub other_pictures: Vec<Picture>,
     next_picture: u32,
     /// The size of a cell in pixels, to know how many cells a picture covers.
     pub cell: (usize, usize),
-    /// What was dropped for being over a bound, for the holder's log (the last few of each kind).
-    pub refused: Vec<&'static str>,
 }
 
 impl Term {
@@ -222,16 +235,25 @@ impl Term {
             utf8_left: 0,
             utf8_min: 0,
             too_long: false,
-            dcs: Vec::new(),
-            dcs_was: State::Ground,
-            reply: Vec::new(),
-            history: String::new(),
+            string: Vec::new(),
+            string_over: false,
+            out: Out::default(),
             pictures: Vec::new(),
             other_pictures: Vec::new(),
             next_picture: 1,
             cell: (10, 20),
-            refused: Vec::new(),
         }
+    }
+
+    /// What waits to be taken, for the tests to look at.
+    #[cfg(test)]
+    pub fn peek(&self) -> &Out {
+        &self.out
+    }
+
+    /// Everything produced since the last time this was asked.
+    pub fn take(&mut self) -> Out {
+        std::mem::take(&mut self.out)
     }
 
     pub fn cell_at(&self, row: usize, col: usize) -> Option<&Cell> {
@@ -405,9 +427,9 @@ impl Term {
         let mut full = false;
         for row in region.iter_mut().take(n) {
             if from == 0 && !self.alt {
-                if self.history.len() < HISTORY_PENDING_MAX {
-                    Term::row_text(row, &mut self.history);
-                    self.history.push('\n');
+                if self.out.history.len() < HISTORY_PENDING_MAX {
+                    Term::row_text(row, &mut self.out.history);
+                    self.out.history.push('\n');
                 } else {
                     full = true;
                 }
@@ -598,8 +620,8 @@ impl Term {
         }
         let extra = self.grid.len().saturating_sub(rows);
         for row in self.grid.drain(..extra) {
-            Term::row_text(&row, &mut self.history);
-            self.history.push('\n');
+            Term::row_text(&row, &mut self.out.history);
+            self.out.history.push('\n');
         }
         if self.alt {
             if let Some(saved) = self.saved.first_mut() {
@@ -640,16 +662,16 @@ impl Term {
 
     /// Notes a refusal for the log, once until the holder has taken it.
     fn refuse(&mut self, why: &'static str) {
-        if !self.refused.contains(&why) {
-            self.refused.push(why);
+        if !self.out.refused.contains(&why) {
+            self.out.refused.push(why);
         }
     }
 
     fn respond(&mut self, text: &str) {
-        if self.reply.len() + text.len() > REPLY_MAX {
+        if self.out.reply.len() + text.len() > REPLY_MAX {
             self.refuse("an answer to the program was dropped: 4096 bytes of answers were waiting");
         } else {
-            self.reply.extend_from_slice(text.as_bytes());
+            self.out.reply.extend_from_slice(text.as_bytes());
         }
     }
 
@@ -664,27 +686,16 @@ impl Term {
     fn byte(&mut self, byte: u8) {
         match self.state {
             State::Ground => self.ground(byte),
-            State::Skip | State::Dcs => match byte {
-                0x1b => {
-                    self.dcs_was = self.state;
-                    self.state = State::StringEscape;
-                }
-                0x07 if self.state == State::Skip => self.state = State::Ground,
+            State::Str => match byte {
+                0x1b => self.state = State::StrEscape,
+                0x07 if self.string.first() == Some(&b']') => self.end_string(true),
                 0x18 | 0x1a => self.end_string(false),
-                0x20..=0x7e if self.state == State::Dcs => {
-                    if self.dcs.len() < PICTURE_MAX {
-                        self.dcs.push(byte);
-                    } else {
-                        self.refuse("a picture over 4 MiB was dropped");
-                        self.dcs = Vec::new();
-                        self.state = State::Skip;
-                    }
-                }
-                _ => {}
+                0x00..=0x1f | 0x7f => {}
+                _ if self.string.len() <= PICTURE_MAX => self.string.push(byte),
+                _ => self.string_over = true,
             },
-            State::StringEscape => {
-                let was_dcs = self.dcs_was == State::Dcs;
-                self.end_string(byte == b'\\' && was_dcs);
+            State::StrEscape => {
+                self.end_string(byte == b'\\');
                 if byte != b'\\' {
                     self.state = State::Escape;
                     self.byte(byte);
@@ -763,10 +774,9 @@ impl Term {
                 (self.param, self.sub, self.private, self.inter, self.too_long) = (None, false, 0, 0, false);
                 self.state = State::Csi;
             }
-            b']' | b'X' | b'^' | b'_' => self.state = State::Skip,
-            b'P' => {
-                self.dcs.clear();
-                self.state = State::Dcs;
+            b']' | b'P' | b'X' | b'^' | b'_' => {
+                (self.string, self.string_over) = (vec![byte], false);
+                self.state = State::Str;
             }
             0x20..=0x2f => {
                 self.inter = byte;
@@ -788,11 +798,10 @@ impl Term {
             b'=' => self.app_keypad = true,
             b'>' => self.app_keypad = false,
             b'c' => {
-                // A full reset. History stays, and picture numbers go on, so no file's name is used twice.
-                let (cell, history, refused) =
-                    (self.cell, std::mem::take(&mut self.history), std::mem::take(&mut self.refused));
-                *self =
-                    Term { cell, history, refused, next_picture: self.next_picture, ..Term::new(self.cols, self.rows) };
+                // A full reset. What was produced stays to be taken, and picture
+                // numbers go on, so no file's name is used twice.
+                let (cell, out) = (self.cell, std::mem::take(&mut self.out));
+                *self = Term { cell, out, next_picture: self.next_picture, ..Term::new(self.cols, self.rows) };
             }
             _ => {}
         }
@@ -817,18 +826,46 @@ impl Term {
         }
     }
 
-    fn end_string(&mut self, picture: bool) {
+    /// The end of a string: whole (it reached its BEL or ST) or broken off.
+    fn end_string(&mut self, whole: bool) {
         self.state = State::Ground;
-        let data = std::mem::take(&mut self.dcs);
-        let header = data.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
-        if picture && data.get(header) == Some(&b'q') {
-            self.picture(data);
+        let string = std::mem::take(&mut self.string);
+        if std::mem::take(&mut self.string_over) {
+            return self.refuse("a control string over 4 MiB (a picture, a clipboard, a title) was dropped");
+        }
+        match string.split_first().filter(|_| whole) {
+            Some((b'P', data)) => {
+                let header = data.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
+                if data.get(header) == Some(&b'q') && data.iter().all(|b| (0x20..=0x7e).contains(b)) {
+                    self.picture(data);
+                }
+            }
+            Some((b']', data)) => self.command(&String::from_utf8_lossy(data)),
+            _ => {}
+        }
+    }
+
+    /// An operating system command: a title (0, 2) or the clipboard (52). No other is kept.
+    fn command(&mut self, text: &str) {
+        let (number, rest) = text.split_once(';').unwrap_or((text, ""));
+        match number {
+            "0" | "2" => self.out.title = Some(rest.chars().filter(|c| !c.is_control()).take(TITLE_MAX).collect()),
+            "52" => match rest.split_once(';').map_or("", |(_, what)| what) {
+                // Setting only: a program is never told what is on the clipboard.
+                "?" => self.refuse("a program asked to read the clipboard: that is refused"),
+                what => match base64_decode(what) {
+                    Some(bytes) if bytes.len() <= CLIPBOARD_MAX => self.out.clipboard = Some(bytes),
+                    Some(_) => self.refuse("a clipboard over 1 MiB was dropped"),
+                    None => self.refuse("a clipboard that was not base64 was dropped"),
+                },
+            },
+            _ => {}
         }
     }
 
     /// Places a sixel picture at the cursor and moves the cursor below it.
-    fn picture(&mut self, data: Vec<u8>) {
-        let (width, height) = sixel_size(&data);
+    fn picture(&mut self, data: &[u8]) {
+        let (width, height) = sixel_size(data);
         let cols = width.div_ceil(self.cell.0.max(1)).max(1);
         let rows = height.div_ceil(self.cell.1.max(1)).max(1);
         if cols > SIZE_MAX || rows > SIZE_MAX {
@@ -841,16 +878,10 @@ impl Term {
         }
         let mut whole = Vec::with_capacity(data.len() + 4);
         whole.extend_from_slice(b"\x1bP");
-        whole.extend_from_slice(&data);
+        whole.extend_from_slice(data);
         whole.extend_from_slice(b"\x1b\\");
-        self.pictures.push(Picture {
-            id: self.next_picture,
-            row: self.row,
-            col: self.col,
-            cols,
-            rows,
-            data: Some(whole),
-        });
+        self.pictures.push(Picture { id: self.next_picture, row: self.row, col: self.col, cols, rows });
+        self.out.pictures.push((self.next_picture, whole));
         self.next_picture = self.next_picture.wrapping_add(1);
         // The picture scrolls with the text; one taller than the screen leaves it.
         for _ in 0..rows.min(self.rows + 1) {
@@ -1188,6 +1219,41 @@ impl Term {
             _ => (None, if colons { count } else { 0 }),
         }
     }
+}
+
+/// Base64, as the clipboard command carries it. `None` for text that is not.
+pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let (mut out, mut bits, mut have) = (Vec::new(), 0u32, 0u32);
+    for byte in text.bytes().filter(|b| *b != b'=') {
+        let six = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        (bits, have) = ((bits << 6) | u32::from(six), have + 6);
+        if have >= 8 {
+            have -= 8;
+            out.push((bits >> have) as u8);
+            bits &= (1 << have) - 1;
+        }
+    }
+    Some(out)
+}
+
+pub fn base64_encode(bytes: &[u8]) -> String {
+    const SET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let three = chunk.iter().fold(0u32, |n, b| (n << 8) | u32::from(*b)) << (8 * (3 - chunk.len()));
+        for i in 0..4 {
+            let six = SET.get((three >> (18 - 6 * i)) as usize & 63).copied().unwrap_or(b'=');
+            out.push(if i <= chunk.len() { char::from(six) } else { '=' });
+        }
+    }
+    out
 }
 
 /// The DEC line-drawing set, for programs that draw boxes with `ESC ( 0`.

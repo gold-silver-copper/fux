@@ -227,6 +227,30 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   removes the folder" as voted: it still sends no `kill`, which was the
   point, and it is what makes the removal whole.
 
+- **D45. The rest of the panel's table, at the owner's word** ("I want you to
+  do all of them, dont wait for daily use"). One bounded string state for
+  OSC, DCS, APC, SOS and PM, with the byte that began the string kept (it
+  replaces two states and makes the next string feature a match arm). The
+  emulator hands all it produces to the holder as one value, `Out` (answers,
+  history, refusals, pictures' bytes, title, clipboard), taken with
+  `Term::take`; those were loose public fields before. Titles: a `title`
+  file, and the viewer sets its terminal's title from the focused pane's,
+  with xterm's title stack to give the old one back. Clipboard: setting
+  only; a `clipboard` file; the viewer relays a write of the focused pane
+  once, and tells a fresh one by the file's having changed since it first
+  looked. `pid` and `state` are on line 1 of the screens only; `status`
+  holds `holder` and `command` and is written once. That removed the second
+  write of `status` and its ordering against the screens (about 20 lines)
+  and cost 8 in `fux wait` and one key script; it was worth doing. `replace`
+  and `plain` moved from the holder to the crate's root, beside `is_name`.
+- **D46. No workarounds for a platform's kernel bugs, by the owner's word**
+  ("we shouldnt have workarounds for obscure macos pty stuff, the new fux
+  should be ultra minimal"). A system call that fails is reported as it
+  failed: `fux start` says the error and exits non-zero. Nothing retries or
+  watches a system call. The code had none of that kind to take out: the
+  one retry there is, in `fux start`, waits a moment for a `fux wait` that
+  holds the pane's lock, which is this program's own doing, not a kernel's.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

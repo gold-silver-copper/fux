@@ -6,7 +6,7 @@
 
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
-use crate::term::{BOLD, Cell, Color, DIM, PICTURE_MAX, SIZE_MAX, Style, Term};
+use crate::term::{BOLD, Cell, Color, DIM, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode};
 use crate::width::width;
 use crate::{is_name, keys};
 use std::collections::HashMap;
@@ -44,6 +44,11 @@ struct Pane {
     pictures: Vec<(String, usize, usize, usize, usize)>,
     /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
     asked: (u32, usize, usize, (u16, u16)),
+    /// The title its program set (the `title` file), without control characters.
+    title: String,
+    /// The `clipboard` file as last seen, and whether it has changed since this viewer first looked.
+    clipboard: Option<(u64, i64, i64)>,
+    copied: bool,
 }
 
 struct View {
@@ -72,6 +77,8 @@ struct View {
     /// The pictures on the terminal now: file, column, row, columns, rows, and whose holder's.
     drawn: Vec<Drawn>,
     cursor: String,
+    /// The title this viewer gave its own terminal, if any.
+    title: Option<String>,
     carry: Vec<u8>,
     typed: Vec<u8>,
     pasting: bool,
@@ -90,7 +97,7 @@ struct View {
 struct Restore(File, sys::Termios);
 impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?1049l");
+        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?1049l\x1b[23;2t");
         let _ = sys::restore_mode(&self.0, &self.1);
     }
 }
@@ -137,6 +144,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         sixel: false,
         drawn: Vec::new(),
         cursor: String::new(),
+        title: None,
         carry: Vec::new(),
         typed: Vec::new(),
         pasting: false,
@@ -148,7 +156,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         quit: false,
     };
     // The alternate screen, pastes marked, and "what are you" (for sixel).
-    let result = view.tty.write_all(b"\x1b[?1049h\x1b[?2004h\x1b[c").and_then(|()| view.run(&ctl));
+    let result = view.tty.write_all(b"\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[c").and_then(|()| view.run(&ctl));
     drop(restore);
     let _ = fs::remove_file(&view.ctl_path);
     result.map_err(|e| format!("the viewer stopped: {e}"))
@@ -447,6 +455,7 @@ impl View {
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
+        let mut title = None;
         let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
         for (name, body) in &tiles {
             let pane = self.panes.entry(name.clone()).or_insert_with(Pane::new);
@@ -498,6 +507,18 @@ impl View {
             let state = cells(&state, colour(11, Some(236), 0));
             let room = state.len().min(body.w);
             put(&mut back, w, body.x + body.w - room, body.y + body.h - 1, room, &state);
+            // What the focused pane's program copied since this viewer first saw the pane
+            // goes to this terminal's clipboard, once. An old one is never sent again.
+            if std::mem::take(&mut pane.copied) && focused {
+                let mut bytes = Vec::new();
+                let file =
+                    OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(pane_directory.join("clipboard"));
+                let _ = file.map(|file| file.take(1 << 20).read_to_end(&mut bytes));
+                out.push_str(&format!("\x1b]52;c;{}\x07", base64_encode(&bytes)));
+            }
+            if focused && !pane.title.is_empty() {
+                title = Some(pane.title.clone());
+            }
             if focused && pane.term.cursor_shown && pane.term.row < body.h && pane.term.col < body.w {
                 let (row, col) = (body.y + pane.term.row + 1, body.x + pane.term.col + 1);
                 cursor = format!("\x1b[{row};{col}H\x1b[{} q\x1b[?25h", pane.term.cursor_shape);
@@ -697,6 +718,11 @@ impl View {
             }
             self.drawn = pictures;
         }
+        // This terminal's title is the focused pane's; with none, it is what it was before the viewer.
+        if title != self.title {
+            out.push_str(&title.as_ref().map_or("\x1b[23;2t\x1b[22;2t".into(), |title| format!("\x1b]2;{title}\x07")));
+            self.title = title;
+        }
         if out.is_empty() && cursor == self.cursor {
             return Ok(false);
         }
@@ -752,6 +778,9 @@ impl Pane {
             state: String::new(),
             pictures: Vec::new(),
             asked: (0, 0, 0, (0, 0)),
+            title: String::new(),
+            clipboard: None,
+            copied: false,
         }
     }
 
@@ -762,7 +791,7 @@ impl Pane {
         if seen == self.seen {
             return;
         }
-        self.seen = seen;
+        let first = std::mem::replace(&mut self.seen, seen);
         // Opened without waiting (should the name be a FIFO), and read up to the largest screen there is.
         let mut bytes = Vec::new();
         let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(&file);
@@ -785,6 +814,14 @@ impl Pane {
                 _ => {}
             }
         });
+        let mut title = Vec::new();
+        let _ = File::open(directory.join("title")).map(|file| file.take(1024).read_to_end(&mut title));
+        let title = String::from_utf8_lossy(&title);
+        self.title = title.lines().next().unwrap_or_default().chars().filter(|c| !c.is_control()).take(256).collect();
+        let clipboard = fs::metadata(directory.join("clipboard")).ok().map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
+        // The first look only notes what is there.
+        self.copied |= first.is_some() && clipboard != self.clipboard;
+        self.clipboard = clipboard;
     }
 }
 

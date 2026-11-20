@@ -16,7 +16,7 @@ fn term(cols: usize, rows: usize, bytes: &str) -> Term {
 fn every_line_printed_is_on_the_screen_or_in_history_in_order() {
     let lines: Vec<String> = (0..100).map(|n| format!("line {n}")).collect();
     let term = term(20, 7, &lines.join("\r\n"));
-    let all = term.history.clone() + &term.plain();
+    let all = term.peek().history.clone() + &term.plain();
     assert_eq!(all.lines().filter(|l| !l.is_empty()).collect::<Vec<_>>(), lines);
 }
 
@@ -61,17 +61,17 @@ fn what_a_program_writes_never_puts_a_control_code_of_its_own_in_a_file() {
         );
         rest.replace_range(start..=start + end, "");
     }
-    for text in [rest, term.plain(), term.history.clone()] {
+    for text in [rest, term.plain(), term.peek().history.clone()] {
         assert!(text.chars().all(|c| c == '\n' || !c.is_control()), "a control character reached a file");
     }
-    assert!(term.pictures.len() <= PICTURES_MAX && term.reply.len() <= 4096);
+    assert!(term.pictures.len() <= PICTURES_MAX && term.peek().reply.len() <= 4096);
 }
 
 #[test]
 fn queries_are_answered_with_nobody_watching() {
     let term = term(80, 24, "\x1b[c\x1b[>c\x1b[5n\x1b[3;7H\x1b[6n\x1b[?2004$p\x1b[18t");
     assert_eq!(
-        String::from_utf8_lossy(&term.reply),
+        String::from_utf8_lossy(&term.peek().reply),
         "\x1b[?62;4;22c\x1b[>1;10;0c\x1b[0n\x1b[3;7R\x1b[?2004;2$y\x1b[8;24;80t"
     );
 }
@@ -81,6 +81,30 @@ fn a_cursor_waiting_at_the_right_margin_moves_like_any_other() {
     // After a character in the last column the cursor waits there; a back-tab still goes back.
     let term = term(80, 3, "\x1b[1;80Hb\x1b[Z.");
     assert_eq!((term.row, term.col), (0, 73));
+}
+
+#[test]
+fn a_title_and_a_clipboard_leave_as_text_and_bytes_and_a_string_has_one_bound() {
+    use crate::term::{base64_decode, base64_encode};
+    // The title loses its control characters; the clipboard is what the base64 says; text goes on after both.
+    let mut term = term(40, 2, "\x1b]2;my \u{9b}title\x07\x1b]52;c;aGVsbG8sIHdvcmxk\x1b\\after");
+    let out = term.take();
+    assert_eq!((out.title.as_deref(), out.clipboard.as_deref()), (Some("my title"), Some(&b"hello, world"[..])));
+    assert_eq!(term.plain(), "after\n\n");
+    // A program is never told what is on the clipboard, and is refused in words.
+    term.feed(b"\x1b]52;c;?\x07\x1b]52;c;not base64!\x07");
+    let out = term.take();
+    assert!(out.reply.is_empty() && out.clipboard.is_none() && out.refused.len() == 2);
+    // A string of any kind that never ends is dropped at its bound, and said; what follows is text again.
+    term.feed(b"\x1b]0;");
+    term.feed(&vec![b'x'; (4 << 20) + 2]);
+    term.feed(b"\x07ok");
+    let out = term.take();
+    assert!(out.title.is_none() && out.refused.len() == 1 && term.plain().contains("afterok"));
+    // What is encoded decodes to itself, whatever its length.
+    for bytes in [&b""[..], b"a", b"ab", b"abc", &[0, 255, 128, 7]] {
+        assert_eq!(base64_decode(&base64_encode(bytes)).as_deref(), Some(bytes));
+    }
 }
 
 #[test]
@@ -110,7 +134,7 @@ fn what_is_malformed_changes_nothing_and_what_is_cut_leaves_no_half() {
     assert_eq!(term.styled().lines().next(), Some("A\u{fffd}B\x1b[0;31mRX\x1b[m"));
     // `?` after a parameter is no private mode, and 33 parameters are no command (and the log hears of it).
     term.feed(format!("\x1b[0;?25l\x1b[{}0m", "1;".repeat(32)).as_bytes());
-    assert!(term.cursor_shown && !term.refused.is_empty());
+    assert!(term.cursor_shown && !term.peek().refused.is_empty());
     // Deleting across two wide characters leaves blanks, not a character made of two halves.
     term.feed("\x1b[m\x1b[2;1H漢界X\x1b[2;2H\x1b[2P".as_bytes());
     assert_eq!(term.plain().lines().nth(1), Some("  X"));
@@ -124,7 +148,7 @@ fn what_is_malformed_changes_nothing_and_what_is_cut_leaves_no_half() {
 #[test]
 fn the_alternate_screen_gives_the_main_one_back_and_keeps_no_history() {
     let mut term = term(20, 4, "one\r\ntwo\x1b[?1049h\x1b[2Jfull\r\n\n\n\n\n\nscreen");
-    assert!(term.alt && term.history.is_empty());
+    assert!(term.alt && term.peek().history.is_empty());
     term.feed(b"\x1b[?1049l!");
     assert_eq!(term.plain(), "one\ntwo!\n\n\n");
 }
@@ -133,7 +157,7 @@ fn the_alternate_screen_gives_the_main_one_back_and_keeps_no_history() {
 fn a_resize_keeps_the_text_and_sends_what_no_longer_fits_to_history() {
     let mut term = term(10, 4, "a\r\nb\r\nc\r\nd");
     term.resize(5, 2);
-    assert_eq!((term.history.as_str(), term.plain().as_str()), ("a\nb\n", "c\nd\n"));
+    assert_eq!((term.peek().history.as_str(), term.plain().as_str()), ("a\nb\n", "c\nd\n"));
     term.resize(8, 3);
     assert_eq!((term.plain().as_str(), term.row), ("c\nd\n\n", 1));
 }
@@ -144,7 +168,8 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     let mut term = term(20, 4, "ab\x1bPq\"1;1;30;12#0!30~-!30~\x1b\\");
     let picture = term.pictures.first().expect("a picture");
     assert_eq!((picture.row, picture.col, picture.cols, picture.rows), (0, 2, 3, 1));
-    assert!(picture.data.as_ref().is_some_and(|d| d.starts_with(b"\x1bPq") && d.ends_with(b"\x1b\\")));
+    let bytes = term.peek().pictures.first().map(|(id, bytes)| (*id, bytes.as_slice()));
+    assert!(bytes.is_some_and(|(id, d)| id == picture.id && d.starts_with(b"\x1bPq") && d.ends_with(b"\x1b\\")));
     assert_eq!((term.row, term.col), (1, 0));
     // It stays through a full-screen program, an erase beside it and a resize that fits it.
     term.feed(b"\x1b[?1049h\x1b[2Jless\x1b[?1049l\x1b[1;10H\x1b[K\x1b[2;1H");
@@ -153,7 +178,7 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     term.feed(b"\x1b[1;4Hx");
     assert!(term.pictures.is_empty());
     term.feed(b"\x1bPq~~\x1b\\\n\n\n\n\n");
-    assert!(term.pictures.is_empty() && term.refused.is_empty());
+    assert!(term.pictures.is_empty() && term.peek().refused.is_empty());
     // Its size is the larger of what it says and what it paints: here 40 pixels, 4 cells, not 1.
     term.feed(b"\x1b[H\x1bPq\"1;1;10;6!40~\x1b\\");
     assert_eq!(term.pictures.first().map(|p| (p.cols, p.rows)), Some((4, 1)));
@@ -289,7 +314,7 @@ fn a_wide_character_cut_by_a_resize_goes_whole_on_both_screens() {
 #[test]
 fn a_program_is_told_which_mouse_reports_are_on() {
     let term = term(20, 2, "\x1b[?1002h\x1b[?1002$p\x1b[?1000$p\x1b[?1006$p");
-    assert_eq!(String::from_utf8_lossy(&term.reply), "\x1b[?1002;1$y\x1b[?1000;2$y\x1b[?1006;2$y");
+    assert_eq!(String::from_utf8_lossy(&term.peek().reply), "\x1b[?1002;1$y\x1b[?1000;2$y\x1b[?1006;2$y");
     // The form of the reports is listed on line 1 whether or not any report is on, and reads back.
     let mut form = crate::tests::term(20, 2, "\x1b[?1006h");
     assert!(form.header().ends_with("modes=cursor,mousesgr"));
@@ -323,11 +348,11 @@ fn a_resize_under_the_alternate_screen_keeps_the_main_screens_lines() {
     term.feed(b"l1\r\nl2\r\nl3\r\nl4\r\nl5\r\n\x1b[?1047h");
     term.resize(10, 3);
     term.feed(b"\x1b[?1047l");
-    assert_eq!(term.history.clone() + &term.plain(), "l1\nl2\nl3\nl4\nl5\n\n");
+    assert_eq!(term.peek().history.clone() + &term.plain(), "l1\nl2\nl3\nl4\nl5\n\n");
     // A row with text below the cursor is kept as well: rows leave by the top, into history.
     let mut below = Term::new(10, 6);
     below.feed(b"TOP\x1b[5;1HBOTTOM\x1b[1;1H\x1b[?1049h");
     below.resize(10, 3);
     below.feed(b"\x1b[?1049l");
-    assert!((below.history.clone() + &below.plain()).contains("TOP") && below.plain().contains("BOTTOM"));
+    assert!((below.peek().history.clone() + &below.plain()).contains("TOP") && below.plain().contains("BOTTOM"));
 }

@@ -5,14 +5,14 @@
 //! its program.
 
 use crate::sys::{self, Winsize};
-use crate::term::{SIZE_MAX, Term};
+use crate::term::{Out, SIZE_MAX, Term};
+use crate::{plain, replace};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -46,17 +46,13 @@ struct Holder {
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
     pictures: Vec<u32>,
-    command: String,
-    /// `running`, `hungup`, `exited CODE` or `killed SIGNAL`: in `status` and on line 1 of the screens.
+    /// `running`, `hungup`, `exited CODE` or `killed SIGNAL`: on line 1 of the screens, and nowhere else.
     state: String,
-    /// The state `status` holds: it is written again, after the screens, when the state has changed.
-    told: String,
+    /// What the emulator produced and the next publish writes: history, pictures, a title, a clipboard.
+    pending: Out,
+    /// The title in the `title` file.
+    title: String,
     logged: usize,
-}
-
-/// Text for a file a person reads with `cat`: control characters become `?`.
-pub fn plain(text: &str) -> String {
-    text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
 }
 
 /// A FIFO of ours: made if missing, opened to read without waiting, and with
@@ -69,14 +65,6 @@ fn fifo(name: &str) -> io::Result<(File, File)> {
     let reader = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(name)?;
     let writer = OpenOptions::new().write(true).open(name)?;
     Ok((reader, writer))
-}
-
-/// Replaces a file in one step, so a reader sees the old one or the new one.
-pub fn replace(name: impl AsRef<Path>, content: &[u8]) -> io::Result<()> {
-    let mut new = name.as_ref().as_os_str().to_owned();
-    new.push(".new");
-    fs::write(&new, content)?;
-    fs::rename(&new, name)
 }
 
 /// Keeps the pane whose directory is the working directory until its program
@@ -155,9 +143,9 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: Vec::new(),
-        command,
         state: "running".into(),
-        told: String::new(),
+        pending: Out::default(),
+        title: String::new(),
         logged: 0,
     };
     for name in odd {
@@ -166,7 +154,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // The FIFOs are there for as long as this function runs, and not after.
     let fifos = fifo("in").and_then(|input| Ok((input, fifo("ctl")?)));
     let result = fifos.map_err(|e| format!("cannot make the FIFOs: {e}"));
-    let result = result.and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended));
+    let result =
+        result.and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended, &command));
     let _ = fs::remove_file("in");
     let _ = fs::remove_file("ctl");
     // A directory that is gone is how a pane is closed: no failure, and nothing to say.
@@ -174,8 +163,11 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
 }
 
 impl Holder {
-    fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
+    fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader, command: &str) -> Result<(), String> {
         self.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
+        // Written once: who holds the pane and what it runs. The program's own number and state are on line 1 of the screens.
+        let status = format!("holder {}\ncommand {command}\n", std::process::id());
+        replace("status", status.as_bytes()).map_err(|e| format!("cannot write status: {e}"))?;
         // What an earlier holder of this pane left goes now that this one's
         // screen has replaced the one that named it: its history and its pictures.
         let _ = fs::remove_file("history.1");
@@ -251,12 +243,8 @@ impl Holder {
                     }
                 }
                 (self.master, self.state) = (None, state);
-                // The end is in `status` even when the last screen cannot be written.
                 if let Err(e) = self.publish() {
-                    self.log(&format!("cannot write the last screen: {e}"));
-                }
-                if let Err(e) = self.tell() {
-                    self.log(&format!("cannot write status (the program {}): {e}", self.state));
+                    self.log(&format!("cannot write the last screen (the program {}): {e}", self.state));
                 }
                 return Ok(());
             }
@@ -285,19 +273,27 @@ impl Holder {
             return 0;
         };
         self.term.feed(buffer.get(..n).unwrap_or(&[]));
-        let reply = std::mem::take(&mut self.term.reply);
-        if self.input.len() + reply.len() <= INPUT_MAX {
-            self.input.extend_from_slice(&reply);
+        self.collect();
+        n
+    }
+
+    /// Takes what the emulator produced: answers go to the program and
+    /// refusals to the log now; the rest waits for the next publish.
+    fn collect(&mut self) {
+        let mut out = self.term.take();
+        if self.input.len() + out.reply.len() <= INPUT_MAX {
+            self.input.extend_from_slice(&out.reply);
         } else {
-            self.term.refused.push("an answer to the program was dropped: 64 KiB were waiting for it");
+            out.refused.push("an answer to the program was dropped: 64 KiB were waiting for it");
         }
-        for refused in std::mem::take(&mut self.term.refused) {
-            self.log(refused);
-        }
-        if self.term.history.len() > READ_BUDGET {
+        out.refused.into_iter().for_each(|refused| self.log(refused));
+        self.pending.history.push_str(&out.history);
+        self.pending.pictures.append(&mut out.pictures);
+        self.pending.title = out.title.or(self.pending.title.take());
+        self.pending.clipboard = out.clipboard.or(self.pending.clipboard.take());
+        if self.pending.history.len() > READ_BUDGET {
             self.history();
         }
-        n
     }
 
     fn commands(&mut self, mut ctl: &File, buffer: &mut [u8]) {
@@ -360,6 +356,7 @@ impl Holder {
                     self.term.cell = (usize::from(cell.0), usize::from(cell.1));
                 }
                 self.term.resize(usize::from(cols), usize::from(rows));
+                self.collect();
                 Ok(())
             }
             _ => Err("not a command (kill, resize COLS ROWS)".into()),
@@ -369,7 +366,7 @@ impl Holder {
     /// Appends the lines that scrolled off to `history`. Lines that cannot be
     /// written are lost, and the log says so: they are not kept to try again.
     fn history(&mut self) {
-        let lines = std::mem::take(&mut self.term.history);
+        let lines = std::mem::take(&mut self.pending.history);
         let rotated = match fs::metadata("history") {
             Ok(m) if m.len() > HISTORY_MAX => fs::rename("history", "history.1"),
             _ => Ok(()),
@@ -380,30 +377,37 @@ impl Holder {
         }
     }
 
-    /// Writes what changed: history first, then pictures, then both screens,
-    /// then `status` if the state changed; so nothing a screen names is
-    /// missing, no line is in neither file, and `status` never runs ahead.
+    /// Writes what changed: history first, then pictures, the title and the
+    /// clipboard, then both screens; so nothing a screen names is missing and
+    /// no line is in neither file.
     fn publish(&mut self) -> io::Result<()> {
-        if !self.term.history.is_empty() {
+        if !self.pending.history.is_empty() {
             self.history();
         }
-        // A picture that cannot be written is not on the screen: it goes, and the log says why.
-        let mut failed = None;
-        self.term.pictures.retain_mut(|picture| {
-            let Some(data) = &picture.data else { return true };
-            let name = format!("pic-{}.sixel", picture.id);
-            match fs::write(&name, data) {
-                Ok(()) => picture.data = None,
-                Err(e) => {
-                    let _ = fs::remove_file(&name);
-                    failed = Some(format!("a picture was dropped, as its file could not be written: {e}"));
-                }
+        for (id, data) in std::mem::take(&mut self.pending.pictures) {
+            // One that left the screen before it was written has no reader. One that
+            // cannot be written is not on the screen either: it goes, and the log says why.
+            let name = format!("pic-{id}.sixel");
+            if !self.term.pictures.iter().chain(&self.term.other_pictures).any(|p| p.id == id) {
+                continue;
             }
-            self.pictures.push(picture.id);
-            picture.data.is_none()
-        });
-        if let Some(failed) = failed {
-            self.log(&failed);
+            self.pictures.push(id);
+            if let Err(e) = fs::write(&name, data) {
+                let _ = fs::remove_file(&name);
+                self.term.pictures.retain(|p| p.id != id);
+                self.term.other_pictures.retain(|p| p.id != id);
+                self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
+            }
+        }
+        // The title is one line, rewritten only when it changes; the clipboard is the bytes the program set.
+        if let Some(title) = self.pending.title.take().filter(|title| *title != self.title) {
+            match replace("title", format!("{title}\n").as_bytes()) {
+                Ok(()) => self.title = title,
+                Err(e) => self.log(&format!("the title could not be written: {e}")),
+            }
+        }
+        if let Some(Err(e)) = self.pending.clipboard.take().map(|bytes| replace("clipboard", &bytes)) {
+            self.log(&format!("the clipboard could not be written: {e}"));
         }
         let placed =
             |p: &crate::term::Picture| format!(" pic=pic-{}.sixel@{},{}+{}x{}", p.id, p.row, p.col, p.cols, p.rows);
@@ -429,17 +433,6 @@ impl Holder {
             }
             kept
         });
-        self.tell()
-    }
-
-    /// Writes `status` if the state is not the one it holds.
-    fn tell(&mut self) -> io::Result<()> {
-        if self.told != self.state {
-            let (pid, holder) = (self.pid, std::process::id());
-            let status = format!("pid {pid}\nholder {holder}\nstate {}\ncommand {}\n", self.state, self.command);
-            replace("status", status.as_bytes())?;
-            self.told.clone_from(&self.state);
-        }
         Ok(())
     }
 }

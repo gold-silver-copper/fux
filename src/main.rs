@@ -37,7 +37,7 @@ use std::time::Duration;
 const USAGE: &str = "\
 fux dir                         print the session directory
 fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/
-fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its status
+fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and last state
 fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: in a pane its own, else main)
 fux layout [EDIT…]              print the layout of the workspace (in a pane: its own; else main), or edit it
 The files of a pane, and everything else, are in the README.";
@@ -82,6 +82,19 @@ fn is_name(name: &str) -> bool {
         && !name.starts_with('.')
         && name.len() <= 64
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+/// Text for a file a person reads with `cat`: control characters become `?`.
+pub fn plain(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
+}
+
+/// Replaces a file in one step, so a reader sees the old one or the new one.
+pub fn replace(name: impl AsRef<Path>, content: &[u8]) -> std::io::Result<()> {
+    let mut new = name.as_ref().as_os_str().to_owned();
+    new.push(".new");
+    fs::write(&new, content)?;
+    fs::rename(&new, name)
 }
 
 fn make_dir(path: &Path) -> std::io::Result<()> {
@@ -228,9 +241,15 @@ fn wait(args: &[OsString]) -> Result<(), String> {
     let lock = File::open(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     lock.lock_shared().map_err(|e| format!("{}: {e}", dir.display()))?;
     sys::enter_directory(&lock).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let status = read_some(Path::new("status")).map_err(|e| format!("{}/status: {e}", dir.display()))?;
+    // What became of the program is on line 1 of its last screen.
+    let screen = read_some(Path::new("screen")).map_err(|e| format!("{}/screen: {e}", dir.display()))?;
     drop(lock);
-    say(status.trim_end().as_bytes())
+    let words = screen.lines().next().unwrap_or_default().split(' ').filter_map(|word| word.split_once('='));
+    let said: Vec<String> = words
+        .filter(|(key, _)| matches!(*key, "pid" | "state"))
+        .map(|(k, v)| format!("{k} {}", v.replace(':', " ")))
+        .collect();
+    say(said.join("\n").as_bytes())
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
@@ -272,7 +291,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
             // What is quoted may be anything: no control codes, and not without end.
-            let why: String = holder::plain(&why).chars().take(1000).collect();
+            let why: String = plain(&why).chars().take(1000).collect();
             let _ = writeln!(std::io::stderr(), "fux: {why}");
             ExitCode::FAILURE
         }

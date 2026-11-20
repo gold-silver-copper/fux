@@ -13,7 +13,7 @@ A terminal multiplexer that is a view over directories.
   a directory inside it is a menu.
 
 One package, no dependencies: the system calls, the terminal emulator, the
-character widths and sixel are all here, in about 3,800 lines of Rust.
+character widths and sixel are all here, in about 3,900 lines of Rust.
 Linux and macOS.
 
 ```sh
@@ -52,7 +52,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 |---|---|
 | `fux dir` | prints the session directory |
 | `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`, or typed in a pane, that pane's), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place |
-| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `status` |
+| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as line 1 of its last screen has them |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
 
@@ -74,9 +74,11 @@ in `FUXN_WS`.
 | `ctl` | FIFO, one command a line: `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]` |
 | `screen` | line 1 says what rows cannot; then one line of plain text per row |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code |
-| `status` | `pid N` (the program), `holder N`, `state running` (or `hungup`, `exited CODE`, `killed SIGNAL`), `command …` (its first 4,096 characters). Written after the screen that shows the same state |
+| `status` | `holder N` and `command …` (its first 4,096 characters): written once, when the pane starts. The program's number and state are on line 1 of the screens, and only there |
 | `history` | plain text of the lines that scrolled off the top. Past 4 MiB it becomes `history.1` and a new one starts |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
+| `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes |
+| `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture over 4 MiB, history it could not write); stops at 64 KiB |
 
 Line 1 of both screens:
@@ -86,7 +88,8 @@ pid=4242 state=running v=17 size=80x24 cursor=3,8 shape=0 modes=cursor,paste pic
 ```
 
 `v` grows by one with every change written (and would start again at 0); `cursor` is row,column from 0;
-`state` is `status`'s, with `:` for its space (`exited:0`);
+`pid` is the program's number and `state` what became of it: `running`,
+`hungup`, `exited:CODE` or `killed:SIGNAL`;
 `modes` lists what is on (`cursor` shown, `appcursor`, `keypad`, `paste`,
 `mouse9`, `mouse1000`, `mouse1002` or `mouse1003`: the mouse reports the
 program asked for, and `mousesgr`: their newer form,
@@ -190,7 +193,7 @@ The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 in the editor, `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
 workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
-TERM to the program), `g` arrange (`r c g m`, `t` turn). Whether a pane
+TERM to the pane's program), `g` arrange (`r c g m`, `t` turn). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
 not your shell but `keys/.shell`, a few lines that run it and then remove
 the pane's own folder. A shell killed outright (or hung up with `kill`)
@@ -281,6 +284,13 @@ typed so far, and the corner above it the keys that can follow. A message
 corner until the next key. A pane whose program ended, or whose holder is
 gone, says so in the corner of its own last row (`exited 0`, `lost`).
 
+**Titles and the clipboard.** The viewer gives your terminal the focused
+pane's title (and its own back when no pane has one, and when it leaves);
+no row is taken for it. What the focused pane's program copies (OSC 52)
+is passed to your terminal once, when it is copied: looking at a pane, or
+coming back to it, never sends an old clipboard again. Without a viewer the
+`clipboard` file is still there to read.
+
 **The mouse** passes through. When the focused pane's program asks for mouse
 reports, the viewer asks your terminal for the same and forwards each one to
 that pane, counted from its tile's corner; a drag that leaves the tile is
@@ -305,7 +315,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   removes its folder when its shell ends (it removes a folder only if it is
   still its own).
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
-  kernel hangs up its program. `status` goes on saying `running` and the
+  kernel hangs up its program. Line 1 goes on saying `state=running` and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
   `printf > in` then waits for ever, as on any FIFO nobody reads. `fux start`
   with the same name starts it again in place. (A holder that ends normally
@@ -313,7 +323,7 @@ fux adds nothing to stop these. What happens is what Unix does:
 - **Don't count on `kill`, or `rm -r`, killing.** They hang up the terminal.
   A program that ignores SIGHUP lives on (after `kill`, with `state hungup`,
   and what is then written to `in` goes nowhere), and so does anything it
-  started in a session of its own. `pid` is in `status`.
+  started in a session of its own. Its number is `pid=` on line 1 of `screen`.
 - **Don't remove a live pane's `in`**: that is how its holder knows the
   directory is gone, and it leaves.
 - **Don't expect a pane to drop what its starter had open.** It inherits the
@@ -329,6 +339,9 @@ fux adds nothing to stop these. What happens is what Unix does:
   another workspace or session it is fine.
 - **Don't put other folders in a workspace**: every folder there with a
   pane's kind of name is shown as a pane. Files are fine.
+- **Don't edit `layout` by hand just as panes come or go**: the viewer writes
+  the file then too, and one of the two edits is lost. `fux layout` takes a
+  lock and loses none.
 - **Don't write nonsense to `layout`**: the viewer says what is wrong in the corner
   of its last row and shows every pane as a tab until it is fixed.
 
@@ -359,8 +372,8 @@ key: both would be scripts.
 The kitty keyboard protocol; of the mouse, the UTF-8 and urxvt report forms
 (1005, 1015: programs get the SGR form or the oldest one), dragging a line
 to resize, and any menu use;
-hyperlinks, window titles and the clipboard (OSC 8, 0, 52 are read and
-dropped); colour queries and palette changes (OSC 4, 10, 11) and the
+hyperlinks (OSC 8 is read and dropped); reading the clipboard (setting it
+works); colour queries and palette changes (OSC 4, 10, 11) and the
 queries DECRQSS, XTGETTCAP and XTVERSION; the bell, the visual bell and the
 printer codes; reflow on resize (rows keep their text, what does not fit is
 cut or goes to history); left and right margins; double underline and

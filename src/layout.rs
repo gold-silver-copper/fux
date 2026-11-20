@@ -10,8 +10,7 @@
 //! part's share, `*` marks the tab shown and `-` the one shown before it,
 //! `focus=` is the pane that gets the keys.
 
-use crate::holder::replace;
-use crate::is_name;
+use crate::{is_name, replace};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Read;
