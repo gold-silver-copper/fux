@@ -38,10 +38,18 @@ type Stamp = Option<(u64, i64, i64)>;
 
 type Drawn = (PathBuf, usize, usize, usize, usize, u32);
 
+/// What a frame is drawn from, other than the terminal's size: the workspace's folder, its
+/// layout and what is wrong with it, the message, what the terminal is like and whether its
+/// window has the keys, each tile's screen file (as `Pane::seen`) and whether its holder lives,
+/// and the focused pane's `clipboard` file.
+type From = (PathBuf, String, Option<String>, String, (bool, bool, u8, bool), Vec<(Seen, bool)>, Stamp);
+/// A screen file's inode, time and length.
+type Seen = Option<(u64, i64, i64, u64)>;
+
 /// What the viewer knows of a pane: its last screen, read from the file.
 struct Pane {
-    /// The file's inode, time and length when it was last read.
-    seen: Option<(u64, i64, i64, u64)>,
+    /// The screen's file when it was last read.
+    seen: Seen,
     term: Term,
     /// The size the pane says it has (`size`), if it says one.
     size: (usize, usize),
@@ -75,6 +83,8 @@ struct View {
     size: Winsize,
     /// What the terminal shows now, to send only what changes.
     front: Vec<Cell>,
+    /// What the last frame was drawn from, if no menu was open.
+    from: Option<From>,
     panes: HashMap<String, Pane>,
     focus: Option<String>,
     /// Where each pane's screen was drawn last, for the mouse.
@@ -182,6 +192,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         tty,
         size,
         front: Vec::new(),
+        from: None,
         panes: HashMap::new(),
         focus: None,
         tiles: Vec::new(),
@@ -813,6 +824,34 @@ impl View {
         let tab = layout.tab();
         // Panes get every cell but the lines between them: no titles, and no row for a bar.
         let tiles = tab.map(|tab| tab.tiles(Rect { x: 0, y: 0, w, h })).unwrap_or_default();
+        self.focus = tab.map(|tab| tab.focus.clone());
+        self.notices(&layout, &directory);
+        // A frame drawn from what the last one was drawn from is the last one: nothing is put
+        // together and nothing compared. (A menu is drawn from more than this: with one open,
+        // every frame is.)
+        let stamp = |file: PathBuf| fs::metadata(file).ok();
+        let panes: Vec<(Seen, bool)> = tiles
+            .iter()
+            .map(|(name, _)| (directory.join(name), directory.join(name).join("screen.styled")))
+            .map(|(pane, screen)| {
+                let held = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(sys::O_NONBLOCK)
+                    .open(pane)
+                    .is_ok_and(|dir| matches!(dir.try_lock_shared(), Err(fs::TryLockError::WouldBlock)));
+                (stamp(screen).map(|m| (m.ino(), m.mtime(), m.mtime_nsec(), m.len())), held)
+            })
+            .collect();
+        let held: Vec<bool> = panes.iter().map(|(_, held)| *held).collect();
+        let clipboard = self.focus.as_ref().and_then(|name| stamp(directory.join(name).join("clipboard")));
+        let clipboard = clipboard.map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
+        let terminal = (self.sixel, self.joins, self.keyboard, self.window);
+        let from = (directory.clone(), layout.print(), wrong.clone(), self.message.clone(), terminal, panes, clipboard);
+        let from = self.menu.is_none().then_some(from);
+        if out.is_empty() && from.is_some() && from == self.from {
+            return Ok(false);
+        }
+        self.from = from;
         let colour = |fg: u8, bg: Option<u8>, flags: u16| Style {
             fg: Color::Indexed(fg),
             bg: bg.map_or(Color::Default, Color::Indexed),
@@ -822,8 +861,6 @@ impl View {
         // What no tile covers is a line: marked here, drawn once the tiles are in place.
         let line = Cell { ch: '\u{2}', ..Cell::blank(Style::default()) };
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
-        self.focus = tab.map(|tab| tab.focus.clone());
-        self.notices(&layout, &directory);
         // (The table of links' addresses keeps only those of the cells on the terminal, numbered
         // anew, when it has grown large and most of it is of links that are drawn no more, or
         // when this frame's could be more than it has numbers left for.)
@@ -855,7 +892,7 @@ impl View {
         let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
         let mut wants_focus = None;
         let mut keys = 0;
-        for (name, body) in &tiles {
+        for ((name, body), held) in tiles.iter().zip(held) {
             let pane = self.panes.entry(name.clone()).or_insert_with(Pane::new);
             let pane_directory = directory.join(name);
             pane.read(&pane_directory);
@@ -923,12 +960,7 @@ impl View {
                 }
             }
             // A pane whose program ended, or whose holder is gone, says so in its last row's corner.
-            let live = pane.state == "running"
-                && OpenOptions::new()
-                    .read(true)
-                    .custom_flags(sys::O_NONBLOCK)
-                    .open(&pane_directory)
-                    .is_ok_and(|dir| matches!(dir.try_lock_shared(), Err(fs::TryLockError::WouldBlock)));
+            let live = pane.state == "running" && held;
             let state = match (live, pane.state.as_str()) {
                 (true, "running") => String::new(),
                 (false, "running") => " lost ".into(),

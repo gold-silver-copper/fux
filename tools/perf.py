@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""perf.py FUX: how fast fux is, beside tmux, on the same steps.
+"""perf.py FUX [STEP…]: how fast fux is, beside tmux, on the same steps.
 
 FUX is the path of the fux binary to measure (a release build). Each multiplexer
 runs one pane of 200x60 with `sh` in it, on a session of its own in a temporary
 directory that is removed at the end, and is looked at through its viewer (tmux:
-its client) in a pty this script owns, as a terminal would own it. The steps:
+its client) in a pty this script owns, as a terminal would own it. The steps
+(all of them, or those named):
 
   flood    `seq 1 2000000` typed into the pane: seconds until what the shell
            prints after it has come out of the viewer.
@@ -258,7 +259,8 @@ SIDES = ("the viewer (tmux: the client)", "the holder (tmux: the server)")
 
 
 def main():
-    if len(sys.argv) != 2 or not os.access(sys.argv[1], os.X_OK):
+    steps = {"flood": flood, "key": keys, "idle": idle, "busy": repaint, "slow": slow}
+    if len(sys.argv) < 2 or not os.access(sys.argv[1], os.X_OK) or not set(sys.argv[2:]) <= set(steps):
         raise SystemExit(__doc__)
     fux = os.path.abspath(sys.argv[1])
     cores = ""
@@ -278,9 +280,9 @@ def main():
                 values.setdefault((kind, label), []).append(value)
             mux = Mux(kind, fux, root)
             try:
-                for step in (flood, keys, idle, repaint, slow):
-                    print(f"{kind}: {step.__name__}", file=sys.stderr, flush=True)
-                    step(mux, add)
+                for name in sys.argv[2:] or steps:
+                    print(f"{kind}: {name}", file=sys.stderr, flush=True)
+                    steps[name](mux, add)
             finally:
                 mux.stop()
     finally:
