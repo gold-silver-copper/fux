@@ -106,6 +106,8 @@ fn sequence(parameters: &str, last: u8) -> String {
         }
         // The terminal's answer to "what are you": not a key, but ours to read.
         (b'c', _) if first.starts_with('?') => return format!("terminal:{parameters}"),
+        // The terminal's window gained or lost the keys (it was asked to say: mode 1004).
+        (b'I' | b'O', _) if parameters.is_empty() => return format!("focus:{}", char::from(last)),
         // Its answer to "is this mode set": `?MODE;STATE$y`.
         (b'y', _) if first.starts_with('?') && parameters.ends_with('$') => {
             return format!("mode:{}", parameters.trim_start_matches('?').trim_end_matches('$'));

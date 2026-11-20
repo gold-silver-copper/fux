@@ -630,6 +630,34 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     in. The viewer says it (`FUXN_SELF`), and the workspace picker leaves
     that workspace out.
 
+- **D63. The fix check of D61 (1 Opus, 1 gpt-6.2-astra, a tester; one pass).**
+  Fixed: a pane whose program had turned focus reports off (vim leaving)
+  was sent `CSI O` into its shell: the pane that loses the keys is told only
+  if its `modes` still asks. The terminal's own `CSI I` and `CSI O` went
+  through the keys (they closed an open menu and could reach a pane that
+  never asked): they are read as what they are and passed to the pane with
+  the keys only if it asked. Two frames drawn back to back within the half
+  second were shown half way: each "I am drawing" starts the half second
+  anew, and the holder sleeps until then instead of waking every
+  millisecond. A notice's words are passed on with the pane's name before
+  them, so they cannot be read as a numbered OSC 9 command; OSC 9 with a
+  number first, and OSC 99 questions, parts and encoded text, are no notice.
+  The underline's kind and colour are a second code after the plain one (a
+  terminal that drops a code with colons dropped the reset and the colours
+  with it). `cwd`: 4,096 bytes at most, no U+FFFD, and a far machine named
+  with a bad path still removes the file; host names compare without case.
+  `notify` on `ctl` may be as long as a notice (the line bound is 1,280).
+  The viewer's memory of notices is kept across a change of workspace and
+  cleared for the pane with the keys at every frame. The tab finder names a
+  pane of the tab (a number went stale if a tab closed meanwhile); the
+  workspace finder compares directories, not their names' spelling.
+  Kept, and in the README where a user meets it: only the shown workspace's
+  notices are looked at; of two notices within a quarter second the last is
+  passed on; a failed write of `cwd` or `notice` is logged and not tried
+  again; the child may write `cwd` itself before the holder has cleared an
+  old one (a restart keeps the last program's files until the new one is
+  up); a soft reset leaves modes 1004 and 2026.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

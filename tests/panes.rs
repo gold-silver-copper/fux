@@ -410,18 +410,35 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     std::thread::sleep(Duration::from_millis(600));
     fs::write(p2.join("ctl"), "notify the build is done\n").unwrap();
     until("the notice is written", || read(&p2.join("notice")) == "1 the build is done\n");
-    until("the viewer passed it on", || read(&view.join("notice")).ends_with(" the build is done\n"));
+    until("the viewer passed it on", || read(&view.join("notice")).ends_with(" p2: the build is done\n"));
     fs::write(view.join("in"), "\x02").unwrap();
     until("the tab is marked", || read(&view.join("screen")).contains(" p2! "));
+    // The terminal's window loses and gains the keys with the menu open: the menu stays, and
+    // the pane that asked is told.
+    fs::write(view.join("in"), "\x1b[O\x1b[I").unwrap();
+    until("the pane is told of the window", || shown(&p1) == "^[[I^[[O^[[I");
+    assert!(read(&view.join("screen")).contains(" p2! "));
     // The next tab: the pane has the keys, the mark goes, and the panes are told who has them.
     fs::write(view.join("in"), "n").unwrap();
-    until("the second pane is told", || shown(&p2) == "^[[I" && shown(&p1) == "^[[I^[[O");
+    until("the second pane is told", || shown(&p2) == "^[[I" && shown(&p1) == "^[[I^[[O^[[I^[[O");
     fs::write(view.join("in"), "\x02").unwrap();
     until("the mark is gone", || {
         read(&view.join("screen")).contains(" p2 ") && !read(&view.join("screen")).contains("p2!")
     });
     fs::write(view.join("in"), "\x1b").unwrap();
-    fs::write(p2.join("in"), "").unwrap();
+    // A program that stops asking (it ends, and a shell is there again) is told nothing more:
+    // not when it stops, and not when its pane loses the keys.
+    let quits = inner.start(
+        "quits",
+        &["sh", "-c", "stty raw -echo; printf '\\033[?1004h'; sleep 1; printf '\\033[?1004l'; exec cat -vt"],
+    );
+    fs::write(inner.0.join("main/layout"), "  p1 focus=p1\n  p2 focus=p2\n* quits focus=quits\n").unwrap();
+    until("it is told it has the keys", || shown(&quits) == "^[[I");
+    until("it stops asking", || fact(&quits, "modes").is_empty());
+    std::thread::sleep(Duration::from_millis(300));
+    fs::write(inner.0.join("main/layout"), "  p1 focus=p1\n* p2 focus=p2\n  quits focus=quits\n").unwrap();
+    until("the second pane has the keys again", || shown(&p2).ends_with("^[[O^[[I"));
+    assert_eq!(shown(&quits), "^[[I");
     let bell = inner.start("bell", &["sh", "-c", "sleep 0.7; printf '\\007'; sleep 600"]);
     until("the bell is a notice with no words", || read(&bell.join("notice")) == "1\n");
     // A program in the middle of drawing (mode 2026) is not shown until it is done: half a

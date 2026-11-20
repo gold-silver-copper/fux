@@ -1,9 +1,10 @@
 #!/bin/sh
 # find a tab
 # group: Find
-# A list of this workspace's tabs (number, panes) in a pane of its own; the one
-# chosen is shown. The list is the layout file: a line a tab.
+# A list of this workspace's tabs (a pane of each, then its panes) in a pane of
+# its own; the one chosen is shown. The list is the layout file: a line a tab,
+# and `focus=` names the pane of it that has the keys.
 list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
-awk '{ sub(/^[*-]? */, ""); printf "%d\t%s\n", NR, $0 }' "$FUXN_DIR/$FUXN_WS/layout" > "$list"
-p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" fux layout tab) || { rm -f "$list"; exit; }
+awk '{ sub(/^[*-]? */, ""); pane = $NF; sub(/^focus=/, "", pane); if (pane != "") printf "%s\t%s\n", pane, $0 }' "$FUXN_DIR/$FUXN_WS/layout" > "$list"
+p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" fux layout pane) || { rm -f "$list"; exit; }
 [ -d "$p" ] && fux layout pane "${p##*/}"

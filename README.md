@@ -86,8 +86,8 @@ in `FUXN_WS`.
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
-| `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). A shell that does not send OSC 7 can write the file itself: `pwd > "$FUXN_PANE/cwd"` |
-| `notice` | what was last to be noticed: a number that grows with each one, then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL, OSC 9, 777 or 99) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
+| `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself: `pwd > "$FUXN_PANE/cwd"` |
+| `notice` | what was last to be noticed: a number that grows with each one, then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture over 4 MiB, history it could not write); stops at 64 KiB |
 
 **One fact, one file.** The screens are text and nothing else; everything
@@ -241,10 +241,12 @@ any terminal: bash counts each part of a joined character, so its cursor
 is off after an emoji with a skin tone here as in tmux, and stepping into a
 Devanagari conjunct, which is one character here, redraws it oddly.
 
-The viewer looks at every pane's `notice` four times a second. A new one is
-passed on to your terminal once (the bell as a bell, words as OSC 9), said
-in the corner, and its tab has a `!` in the bar until its pane has had the
-keys. What was there when the viewer started only marks its tab. A program
+The viewer looks at the `notice` of every pane of the workspace it shows,
+four times a second. A new one is passed on to your terminal once (the bell
+as a bell; the pane's name and the first 200 characters of the words as OSC 9), said in the
+corner, and its tab has a `!` in the bar (which is there while a prefix is
+held: `C-b`) until its pane has had the keys. Of two within a quarter of a
+second the last is passed on. Another workspace's notices are not looked at. What was there when the viewer started only marks its tab. A program
 that asked to be told about focus (mode 1004) is told when its pane gains
 and loses the keys, and when your terminal's window does.
 

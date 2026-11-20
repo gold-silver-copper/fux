@@ -29,7 +29,7 @@ const READ_BUDGET: usize = 512 << 10;
 const INPUT_MAX: usize = 64 << 10;
 /// `history` becomes `history.1` when it is longer than this.
 const HISTORY_MAX: u64 = 4 << 20;
-const CTL_LINE_MAX: usize = 256;
+const CTL_LINE_MAX: usize = 1280;
 const LOG_MAX: usize = 64 << 10;
 /// The longest a program may hold its screen back while it draws (mode 2026).
 const DRAWING_MAX: Duration = Duration::from_millis(500);
@@ -58,6 +58,7 @@ struct Holder {
     noticed: u32,
     /// Since when the program has been in the middle of drawing (mode 2026).
     drawing: Option<Instant>,
+    syncs: u32,
     input: Vec<u8>,
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
@@ -168,6 +169,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         failing: false,
         noticed: 0,
         drawing: None,
+        syncs: 0,
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: Vec::new(),
@@ -219,8 +221,15 @@ impl Holder {
             let since = published.elapsed();
             // A program in the middle of drawing (mode 2026) is not shown until it says it is done,
             // or half a second has gone by: one that never says so cannot freeze its pane.
-            self.drawing = if self.term.sync { self.drawing.or(Some(Instant::now())) } else { None };
-            let drawing = self.drawing.is_some_and(|since| since.elapsed() < DRAWING_MAX) && self.master.is_some();
+            // (Each time it says so anew, the half second starts anew.)
+            let again = std::mem::replace(&mut self.syncs, self.term.syncs) != self.term.syncs;
+            self.drawing = match self.drawing {
+                _ if !self.term.sync => None,
+                Some(since) if !again => Some(since),
+                _ => Some(Instant::now()),
+            };
+            let left = self.drawing.map_or(Duration::ZERO, |since| DRAWING_MAX.saturating_sub(since.elapsed()));
+            let drawing = !left.is_zero() && self.master.is_some();
             if since >= PUBLISH_EVERY {
                 budget = READ_BUDGET;
                 if dirty && !drawing {
@@ -250,7 +259,11 @@ impl Holder {
                 wanted.push((input.as_raw_fd(), if self.input.len() < INPUT_MAX { sys::POLLIN } else { 0 }));
             }
             let look = LOOK_EVERY.saturating_sub(looked.elapsed());
-            let wait = if dirty || budget == 0 { PUBLISH_EVERY.saturating_sub(since) } else { look };
+            let wait = match dirty || budget == 0 {
+                true if drawing => left.max(PUBLISH_EVERY.saturating_sub(since)).min(look),
+                true => PUBLISH_EVERY.saturating_sub(since),
+                false => look,
+            };
             let events = sys::wait(&wanted, wait.as_millis() as i32 + 1).map_err(|e| format!("cannot wait: {e}"))?;
             let event = |i: usize| events.get(i).copied().unwrap_or(0);
             if event(1) != 0 {
@@ -393,7 +406,7 @@ impl Holder {
             }
             let line = String::from_utf8_lossy(&std::mem::take(&mut self.ctl_line)).into_owned();
             if line.len() > CTL_LINE_MAX {
-                self.log("ctl: a line over 256 bytes was dropped");
+                self.log("ctl: a line over 1280 bytes was dropped");
             } else if let Err(why) = self.command(&line) {
                 self.log(&format!("ctl: {line}: {why}"));
             }
@@ -537,11 +550,12 @@ impl Holder {
         // named, or this one's name), and forgotten if it is another machine's (a shell at the
         // far end of ssh): a path of there means nothing here.
         if let Some((host, path)) = self.pending.cwd.take() {
-            let here = host.is_empty() || host == "localhost" || sys::host().is_some_and(|name| name == host);
-            let written = if here && path.starts_with('/') {
-                replace("cwd", format!("{path}\n").as_bytes())
-            } else {
-                fs::remove_file("cwd")
+            let same = |name: &str| name.eq_ignore_ascii_case(&host);
+            let here = host.is_empty() || same("localhost") || sys::host().is_some_and(|name| same(&name));
+            let written = match (here, path.starts_with('/')) {
+                (true, true) => replace("cwd", format!("{path}\n").as_bytes()),
+                (true, false) => Ok(()),
+                (false, _) => fs::remove_file("cwd"),
             };
             if let Err(e) = written.or_else(|e| if e.kind() == ErrorKind::NotFound { Ok(()) } else { Err(e) }) {
                 self.log(&format!("the directory could not be written: {e}"));

@@ -9,8 +9,8 @@ list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
 own=${FUXN_SELF%/*}
 for w in "$FUXN_DIR"/*/; do
   w=${w%/}
-  [ "$w" = "$own" ] && continue
-  printf '%s\t%s\n' "${w##*/}" "$(ls "$w" | grep -v '^layout' | tr '\n' ' ')"
+  [ -n "$own" ] && [ "$w" -ef "$own" ] && continue
+  printf '%s\t%s\n' "${w##*/}" "$(ls "$w" | grep -v -x -e layout -e layout.new | tr '\n' ' ')"
 done > "$list"
 # (The pane has no word for the viewer: it is given the viewer's FIFO to write to.)
 p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" sh -c 'echo "workspace $1" > "$0"' "$FUXN_VIEW") || { rm -f "$list"; exit; }

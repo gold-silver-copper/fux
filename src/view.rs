@@ -291,7 +291,7 @@ impl View {
                 } else if name != self.workspace {
                     self.before = Some(std::mem::replace(&mut self.workspace, name));
                     self.panes.clear();
-                    (self.notices, self.looked) = (HashMap::new(), None);
+                    self.looked = None;
                 }
             }
             ("workspace", name) => self.message = format!("no workspace {name}"),
@@ -351,7 +351,13 @@ impl View {
                 }
                 // The terminal's answer about joining characters into clusters (mode 2027): set (1,
                 // or 3 for good) or not set but known (2), which is then turned on.
-                name if name.starts_with("mode:2027;") => {
+                // The window's own focus: for the pane that has the keys, if it asked to be told.
+                name if name.starts_with("focus:") => {
+                    if self.told_focus.is_some() {
+                        self.typed.extend_from_slice(raw);
+                    }
+                }
+                name if name.starts_with("mode:2027;") && !self.joins => {
                     let state = name.trim_start_matches("mode:2027;").parse::<u8>().unwrap_or(0);
                     (self.joins, self.joined) = (matches!(state, 1..=3), state == 2);
                     if self.joined {
@@ -426,7 +432,15 @@ impl View {
     /// that was told before that it has them no more.
     fn tell(&mut self, now: Option<PathBuf>) {
         if self.told_focus != now {
-            for (pane, report) in [(self.told_focus.take(), "\x1b[O"), (now.clone(), "\x1b[I")] {
+            // (The one that was told is told no more only if it still asks: a program that has
+            // turned the mode off, or has ended, left a shell there that never asked.)
+            let asks = |pane: &PathBuf| {
+                let mut modes = String::new();
+                let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(pane.join("modes"));
+                let _ = file.map(|file| file.take(256).read_to_string(&mut modes));
+                modes.split_whitespace().any(|word| word == "focus")
+            };
+            for (pane, report) in [(self.told_focus.take().filter(asks), "\x1b[O"), (now.clone(), "\x1b[I")] {
                 let input =
                     pane.map(|pane| OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(pane.join("in")));
                 let _ = input.map(|input| input.and_then(|mut input| input.write_all(report.as_bytes())));
@@ -439,23 +453,31 @@ impl View {
     /// is passed on to this terminal once (the bell as a bell, words as a notice), said in the
     /// corner, and remembered until its pane has the keys in the tab shown.
     fn notices(&mut self, layout: &Layout, directory: &Path) {
+        // What the pane with the keys had to say has been seen.
+        let key = |name: &str| directory.join(name).to_string_lossy().into_owned();
+        if let Some(seen) = self.focus.as_ref().and_then(|focus| self.notices.get_mut(&key(focus))) {
+            seen.1 = false;
+        }
         if self.looked.is_some_and(|at| at.elapsed() < Duration::from_millis(250)) {
             return;
         }
-        let first = self.looked.replace(Instant::now()).is_none();
-        let panes: Vec<String> = layout.tabs.iter().flat_map(|tab| tab.panes()).map(str::to_string).collect();
-        self.notices.retain(|name, _| panes.contains(name));
-        for name in panes {
-            let file = directory.join(&name).join("notice");
+        self.looked = Some(Instant::now());
+        if self.notices.len() > 4000 {
+            self.notices.clear();
+        }
+        // (A workspace looked at for the first time: what is there is old, and is not rung.)
+        let first = self.notices.insert(key(""), (None, false)).is_none();
+        for name in layout.tabs.iter().flat_map(|tab| tab.panes()) {
+            let file = directory.join(name).join("notice");
             let stamp: Stamp =
                 fs::metadata(&file).ok().filter(|m| m.is_file()).map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
-            let known = self.notices.get(&name).copied();
+            let known = self.notices.get(&key(name)).copied();
             if known.is_some_and(|(was, _)| was == stamp) {
                 continue;
             }
-            // (One that was there when this viewer came, or with its pane, is old: it is not rung again.)
+            // (One that came with its pane is old too.)
             let new = stamp.is_some() && !first && known.is_some();
-            self.notices.insert(name.clone(), (stamp, stamp.is_some()));
+            self.notices.insert(key(name), (stamp, stamp.is_some() && self.focus.as_deref() != Some(name)));
             if new {
                 let mut text = Vec::new();
                 let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(&file);
@@ -463,14 +485,12 @@ impl View {
                 let text = String::from_utf8_lossy(&text);
                 let words = text.lines().next().unwrap_or_default().split_once(' ').map_or("", |(_, words)| words);
                 let words: String = words.chars().filter(|c| !c.is_control()).take(200).collect();
-                let rung = if words.is_empty() { "\x07".to_string() } else { format!("\x1b]9;{words}\x1b\\") };
+                // (With the pane's name before them, the words cannot be taken for one of the
+                // numbered commands some terminals read after `9;`.)
+                let rung = if words.is_empty() { "\x07".to_string() } else { format!("\x1b]9;{name}: {words}\x1b\\") };
                 let _ = self.tty.write_all(rung.as_bytes());
                 self.message = if words.is_empty() { format!("{name}: bell") } else { format!("{name}: {words}") };
             }
-        }
-        // What the pane with the keys had to say has been seen.
-        if let Some(seen) = self.focus.as_ref().and_then(|focus| self.notices.get_mut(focus)) {
-            seen.1 = false;
         }
     }
 
@@ -833,7 +853,9 @@ impl View {
             let mut left = cells(&format!(" {} ", self.workspace), colour(250, Some(236), BOLD));
             let labels = layout.tabs.iter().enumerate().map(|(i, tab)| {
                 // (A tab with a notice not seen yet has a mark.)
-                let unseen = tab.panes().iter().any(|pane| self.notices.get(*pane).is_some_and(|notice| notice.1));
+                let workspace = self.session.join(&self.workspace);
+                let noted = |pane: &&str| self.notices.get(workspace.join(pane).to_string_lossy().as_ref());
+                let unseen = tab.panes().iter().any(|pane| noted(pane).is_some_and(|notice| notice.1));
                 let mark = if unseen { "!" } else { "" };
                 cells(
                     &format!(" {}{mark} ", tab.focus),

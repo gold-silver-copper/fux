@@ -75,18 +75,7 @@ impl Style {
             if self.flags & bit != 0 {
                 let _ = write!(out, ";{code}");
             }
-            // An underline's kind and colour are written in the form with colons, which a
-            // terminal that does not know them passes over whole.
-            let kind = [DOUBLE, CURLY, DOTTED, DASHED].iter().position(|kind| self.flags & kind != 0);
-            if let Some(kind) = kind.filter(|_| *bit == UNDERLINE && self.flags & bit != 0) {
-                let _ = write!(out, ":{}", kind + 2);
-            }
         }
-        let _ = match self.ul {
-            Color::Default => Ok(()),
-            Color::Indexed(n) => write!(out, ";58:5:{n}"),
-            Color::Rgb(r, g, b) => write!(out, ";58:2::{r}:{g}:{b}"),
-        };
         for (color, base) in [(self.fg, 30), (self.bg, 40)] {
             let _ = match color {
                 Color::Default => Ok(()),
@@ -97,6 +86,20 @@ impl Style {
             };
         }
         out.push('m');
+        // An underline's kind and colour come in a code of their own, in the form with colons:
+        // a terminal that does not know that form passes the whole code over, and has the
+        // plain underline and the colours from the one before.
+        let kind = [DOUBLE, CURLY, DOTTED, DASHED].iter().position(|kind| self.flags & kind != 0);
+        let kind = kind.map(|kind| format!("4:{}", kind + 2));
+        let colour = match self.ul {
+            Color::Default => None,
+            Color::Indexed(n) => Some(format!("58:5:{n}")),
+            Color::Rgb(r, g, b) => Some(format!("58:2::{r}:{g}:{b}")),
+        };
+        let parts: Vec<String> = kind.into_iter().chain(colour).collect();
+        if !parts.is_empty() {
+            let _ = write!(out, "\x1b[{}m", parts.join(";"));
+        }
     }
 }
 
@@ -233,6 +236,8 @@ pub struct Term {
     pub focus: bool,
     /// The program is in the middle of drawing (mode 2026): what it has drawn so far is not to be shown yet.
     pub sync: bool,
+    /// How many times it has said so.
+    pub syncs: u32,
     /// The mouse reports the program asked for: 0 for none, else 9, 1000, 1002 or 1003; and whether as SGR (1006).
     pub mouse: u16,
     pub mouse_sgr: bool,
@@ -324,6 +329,7 @@ impl Term {
             paste: false,
             focus: false,
             sync: false,
+            syncs: 0,
             mouse: 0,
             mouse_sgr: false,
             tabs: (0..SIZE_MAX).map(|c| c % 8 == 0).collect(),
@@ -1280,6 +1286,7 @@ impl Term {
             }
             // The directory the program is in: `file://HOST/PATH`, the path's odd bytes as `%XX`.
             "7" => {
+                let named = rest.starts_with("file://");
                 let (host, path) = rest
                     .strip_prefix("file://")
                     .and_then(|rest| rest.split_at_checked(rest.find('/')?))
@@ -1291,21 +1298,44 @@ impl Term {
                     let pair = |rest: &mut std::str::Bytes| Some((hex(rest)? * 16 + hex(rest)?) as u8);
                     bytes.push(if byte == b'%' { pair(&mut rest).unwrap_or(0) } else { byte });
                 }
-                // (A path that is no text, or has a control character in it, is not told.)
-                if let Some(path) =
-                    String::from_utf8(bytes).ok().filter(|path| !path.is_empty() && !path.chars().any(char::is_control))
-                {
-                    self.out.cwd = Some((host.to_string(), path));
+                // (A path that is no text, has a control character in it or is longer than a path
+                // can be is not told: only that the program is on the machine it named.)
+                let path = String::from_utf8(bytes).ok().filter(|path| {
+                    !path.is_empty() && path.len() <= 4096 && !path.chars().any(|c| c.is_control() || c == '\u{fffd}')
+                });
+                if named && (path.is_some() || !host.is_empty()) {
+                    self.out.cwd = Some((host.to_string(), path.unwrap_or_default()));
                 }
             }
             // A notice: `9;TEXT` (but `9;4;…` is a progress bar's), `777;notify;TITLE;BODY`, `99;…;TEXT`.
-            "9" if !rest.starts_with("4;") => self.notice(rest),
+            "9" if !rest
+                .split_once(';')
+                .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) =>
+            {
+                self.notice(rest)
+            }
             "777" => {
                 if let Some(text) = rest.strip_prefix("notify;") {
                     self.notice(&text.replacen(';', ": ", 1));
                 }
             }
-            "99" => self.notice(rest.split_once(';').map_or("", |(_, text)| text)),
+            // (Of kitty's form only plain words to show: no questions, no parts, nothing encoded.)
+            "99" => {
+                let (about, words) = rest.split_once(';').unwrap_or_default();
+                let plain = |field: &str| {
+                    matches!(
+                        field.split_once('='),
+                        Some(("i" | "o" | "u" | "a" | "t" | "f" | "c" | "w" | "s" | "g" | "n", _))
+                            | Some(("p", "title" | "body"))
+                            | Some(("d", "1"))
+                            | Some(("e", "0"))
+                            | None
+                    )
+                };
+                if !words.is_empty() && about.split(':').all(plain) {
+                    self.notice(words);
+                }
+            }
             "52" => match rest.split_once(';').map(|(_, what)| what) {
                 // Setting only: a program is never told what is on the clipboard.
                 Some("?") => self.refuse("a program asked to read the clipboard: that is refused"),
@@ -1648,7 +1678,7 @@ impl Term {
             7 => self.autowrap = on,
             25 => self.cursor_shown = on,
             1004 => self.focus = on,
-            2026 => self.sync = on,
+            2026 => (self.sync, self.syncs) = (on, self.syncs.wrapping_add(u32::from(on))),
             47 => self.set_alt(on, false),
             1047 => {
                 if !on && self.alt {
