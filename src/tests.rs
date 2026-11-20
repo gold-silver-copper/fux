@@ -241,6 +241,29 @@ fn a_program_says_where_it_is_what_to_notice_and_how_it_draws() {
 }
 
 #[test]
+fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave_alone() {
+    let (a, b, c, d) = ("\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07", "\x1b]133;D;3\x07");
+    let mut term = term(10, 4, &format!("{a}$ {b}ls\r\n{c}one\r\ntwo\r\n{d}{a}$ {b}"));
+    let marks = "0 prompt\n0 command\n1 output\n3 end 3\n3 prompt\n3 command\n";
+    assert_eq!(term.marks(), marks);
+    // The lines scroll into history, are wrapped anew, come back: their numbers are theirs.
+    term.feed(b"a long command that wraps\r\n");
+    assert!(term.top() > 0 && term.marks() == marks);
+    assert!(term.resize(4, 2) && term.resize(30, 9) && term.marks() == marks);
+    // A mark on a line that is written again (the screen was cleared) is the newer one's; the
+    // alternate screen has none; a thousand are kept.
+    let top = term.top();
+    term.feed(format!("\x1b[H\x1b[2J{a}> \x1b[?1049h{a}\x1b[?1049l").as_bytes());
+    assert!(
+        term.marks().ends_with(&format!("{top} prompt\n")) && term.marks().lines().count() <= 6,
+        "{}",
+        term.marks()
+    );
+    term.feed(format!("{c}x\r\n").repeat(1200).as_bytes());
+    assert_eq!(term.marks().lines().count(), 1000);
+}
+
+#[test]
 fn queries_are_answered_with_nobody_watching() {
     let term = term(80, 24, "\x1b[c\x1b[>c\x1b[5n\x1b[3;7H\x1b[6n\x1b[?2004$p\x1b[18t");
     assert_eq!(

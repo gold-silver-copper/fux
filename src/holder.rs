@@ -260,7 +260,8 @@ impl Holder {
             }
             let look = LOOK_EVERY.saturating_sub(looked.elapsed());
             let wait = match dirty || budget == 0 {
-                true if drawing => left.max(PUBLISH_EVERY.saturating_sub(since)).min(look),
+                // (While it draws there is nothing to write out, only more of it to read.)
+                true if drawing && budget > 0 => left.max(PUBLISH_EVERY.saturating_sub(since)).min(look),
                 true => PUBLISH_EVERY.saturating_sub(since),
                 false => look,
             };
@@ -522,6 +523,7 @@ impl Holder {
         let facts = [
             ("top", format!("{}\n", term.top())),
             ("wraps", format!("{}\n", term.wraps())),
+            ("marks", term.marks()),
             ("pictures", term.pictures.iter().map(placed).collect()),
             ("size", format!("{} {}\n", term.cols, term.rows)),
             ("cursor", format!("{} {} {shown} {}\n", term.row, term.col, term.cursor_shape)),

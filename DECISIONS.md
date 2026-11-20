@@ -657,6 +657,24 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   again; the child may write `cwd` itself before the holder has cleared an
   old one (a restart keeps the last program's files until the new one is
   up); a soft reset leaves modes 1004 and 2026.
+- **D62. Prompt marks are line numbers of the pane** (message 12, step H; 6
+  of 8 seats). OSC 133 A, B, C and D are kept as the number of the line the
+  cursor is on, counted from the pane's first line: `top` plus the lines
+  above the cursor on the screen (rows that go on from the row above are no
+  new line). A line's number does not change when it scrolls into history
+  or is wrapped anew, so `marks` is written only when a mark is added. A
+  mark on or below a line that gets a new prompt is dropped (the screen was
+  cleared and written again). The last thousand; none on the alternate
+  screen.
+  - With `top`, a mark is a line of history plus screen: `.text` writes that
+    text into a file and says how many of its lines are before the screen's
+    first; `.edit` opens a file in a tab. `C-b c` is those two; `C-b C` cuts
+    the lines from the last `output` mark to its `end`; `C-b p` opens the
+    text at the prompt before the last. The keys are mine to choose (the
+    order named none): `C` beside `c`, `p` for prompt.
+  - Kept: a line older than `history.1` is in no file, and the keys then
+    start at the text's first line; insert and delete line above a mark
+    move the text and not the mark.
 
 ## The old fux3's bugs: which classes are gone
 

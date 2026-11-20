@@ -1,0 +1,18 @@
+#!/bin/sh
+# .edit FILE [LINE]: opens FILE in a tab of its own, in $EDITOR, else $PAGER, else
+# less, at LINE where the editor is known to take a line number; FILE is removed
+# when that ends.
+f=$1 n=${2:-1}
+# $EDITOR may hold arguments (split at spaces, nothing else expanded).
+set -f
+set -- ${EDITOR:-${PAGER:-less}}
+case ${1##*/} in
+  vi|vim|nvim|nano|emacs) set -- "$@" "+$n" ;;
+  less) set -- "$@" "+${n}g" ;;
+esac
+# The file goes when the editor ends, and the tab with it (`.shell` removes
+# the pane's folder); an editor that failed first waits for Enter, so that
+# what it said can be read. An editor killed outright leaves both.
+p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" sh -c 'f=$1; shift; "$@" "$f"; code=$?; rm -f "$f"; [ "$code" -eq 0 ] || { echo "the editor ended with $code: Enter closes this"; read -r _; }' sh "$f" "$@") || { rm -f "$f"; exit; }
+# An editor that is done at once has taken its pane with it already.
+[ -d "$p" ] && fux layout pane "${p##*/}"

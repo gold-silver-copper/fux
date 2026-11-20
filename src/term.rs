@@ -23,6 +23,8 @@ const REPLY_MAX: usize = 16 << 10;
 /// "report alternate keys"), and how many sets of flags a program can push aside on a screen.
 pub const KEYS: u8 = 1 | 4;
 const KEYS_KEPT: usize = 16;
+/// How many of a shell's marks are kept.
+const MARKS_MAX: usize = 1000;
 /// The most cells of rows that a resize sent to history are kept to come back at the next one.
 const ABOVE_MAX: usize = 100_000;
 
@@ -250,6 +252,8 @@ pub struct Term {
     cluster: Option<Last>,
     /// How many whole lines have gone into history: the number of the line the screen's first row is of.
     pub gone: usize,
+    /// The marks a shell put at its prompts (OSC 133): line, kind, exit code. The last thousand.
+    marks: Vec<(usize, &'static str, Option<u8>)>,
     /// (How many of them are in the rows the last resize sent there.)
     above_lines: usize,
     /// The last row that went to history was not ended: its line goes on in the screen's first row.
@@ -339,6 +343,7 @@ impl Term {
             last: '\0',
             cluster: None,
             gone: 0,
+            marks: Vec::new(),
             above_lines: 0,
             history_open: false,
             above: Vec::new(),
@@ -538,6 +543,15 @@ impl Term {
     pub fn top(&self) -> usize {
         let first = if self.alt { self.other.first() } else { self.grid.first() };
         self.gone + usize::from(self.history_open && !first.is_some_and(|row| continues(row)))
+    }
+
+    /// The shell's marks, a line each: `LINE KIND`, and the command's exit code after `end`.
+    pub fn marks(&self) -> String {
+        let line = |(line, kind, code): &(usize, &str, Option<u8>)| match code {
+            Some(code) => format!("{line} {kind} {code}\n"),
+            None => format!("{line} {kind}\n"),
+        };
+        self.marks.iter().map(line).collect()
     }
 
     /// The rows of the screen that go on from the row above (the text wrapped into them), as
@@ -1178,6 +1192,7 @@ impl Term {
                     next_picture: self.next_picture,
                     history_open: self.history_open,
                     gone: self.gone,
+                    marks: std::mem::take(&mut self.marks),
                     colours: std::mem::take(&mut self.colours),
                     keyboard: self.keyboard,
                     ..Term::new(self.cols, self.rows)
@@ -1318,6 +1333,30 @@ impl Term {
                 if let Some(text) = rest.strip_prefix("notify;") {
                     self.notice(&text.replacen(';', ": ", 1));
                 }
+            }
+            // A shell marks its prompts: `133;A` where a prompt starts, `B` where the command
+            // typed begins, `C` where its output begins, `D[;CODE]` where it ended. Each is kept
+            // as the number of the line the cursor is on, counted from the pane's first line.
+            "133" if !self.alt => {
+                let kind = match rest.as_bytes().first() {
+                    Some(b'A') => "prompt",
+                    Some(b'B') => "command",
+                    Some(b'C') => "output",
+                    Some(b'D') => "end",
+                    _ => return,
+                };
+                let code = rest.split(';').nth(1).filter(|_| kind == "end").and_then(|code| code.parse::<u8>().ok());
+                let below = self.grid.iter().take(self.row + 1).skip(1).filter(|row| !continues(row)).count();
+                let line = self.top() + below;
+                // Lines that were marked and written over since (the screen was cleared) are no
+                // longer what their marks said: a mark is the last on its line or above it.
+                // (A prompt on the line of an earlier prompt is that line written again.)
+                self.marks.retain(|mark| mark.0 <= line);
+                let again = self.marks.iter().position(|mark| mark.0 == line && mark.1 == "prompt");
+                self.marks.truncate(again.filter(|_| kind == "prompt").unwrap_or(self.marks.len()));
+                self.marks.push((line, kind, code));
+                let extra = self.marks.len().saturating_sub(MARKS_MAX);
+                self.marks.drain(..extra);
             }
             // (Of kitty's form only plain words to show: no questions, no parts, nothing encoded.)
             "99" => {

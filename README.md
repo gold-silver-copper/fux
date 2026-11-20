@@ -81,6 +81,7 @@ in `FUXN_WS`.
 | `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
 | `top` | how many lines of the pane's text are before the screen's first row, counted since the pane began: the number, from 0, of the line that row is part of. (After `history` has become `history.1` twice, the oldest of them are in neither file) |
 | `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. A row that goes on in the next keeps the blanks at its end in `screen`, so joining the two gives the line as it was printed: with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
+| `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it). LINE is counted from the pane's first line, as `top` is: line `top` is the screen's first, a smaller number is in `history`. The last thousand; empty when the shell marks nothing |
 | `pictures` | a line `pic-N.sixel ROW COL COLS ROWS` for each picture on the screen: the file, where it is, its size in cells |
 | `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
@@ -310,7 +311,10 @@ The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `s` split stacked (both, and a new tab, start where the focused pane's program says it is, its `cwd`, and else in the directory the viewer was started in),
 `x` then `y` close the pane (remove its directory), `h j k l` focus,
 `o` next pane, `n` `b` next and previous tab, `d` detach, `c` the pane's text
-in the editor, `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
+in the editor, `C` (Shift-c) the last command's output in the editor and `p`
+the editor at the prompt before this one (both for a shell that marks its
+prompts: for bash, `PS1='\[\e]133;A\a\]'$PS1'\[\e]133;B\a\]'; PS0='\e]133;C\a';
+PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'`), `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
 workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
 TERM to the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
@@ -508,7 +512,7 @@ does something else is a row below with a case that shows it.
 
 | Question | Authority |
 | --- | --- |
-| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6, 9, 21, 58 and 59 and the colon forms of 4 (the kinds of underline), 38, 48 and 58, modes 1004 (focus) and 2026 (drawing), OSC 7, 9, 777 and 99, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
+| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6, 9, 21, 58 and 59 and the colon forms of 4 (the kinds of underline), 38, 48 and 58, modes 1004 (focus) and 2026 (drawing), OSC 7, 9, 777, 99 and 133, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. A character goes on while the cursor is where its last part left it and its cell is unchanged: a change of colour or a title between a letter and its accent does not part them (`grep --color` does this), a move or an erase does |
 | How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). An emoji with U+FE0F in its character is two. A control, U+2028 and U+2029 among them, and a mark or joiner with no character to join, takes no cell and is dropped |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports, the kitty keyboard protocol's flags 1 and 4) | Its own specification |

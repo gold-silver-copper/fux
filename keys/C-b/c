@@ -2,34 +2,8 @@
 # history in the editor
 # group: Panes
 # The pane's text (older history, history, then the screen) as one private file,
-# opened in $EDITOR, else $PAGER, else less (at its end where the editor is
-# known to take a line number); removed when that ends.
+# opened in the editor at its end: `.text` makes the file, `.edit` opens it.
 [ -n "$FUXN_PANE" ] || exit 0
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
-# The screen is read first, without the blank rows at its end, and its rows that go
-# on from the row above (`wraps` numbers them from 0) joined to it, as history has them:
-# a line that scrolls off meanwhile is then there twice, never missing.
-read -r wraps 2>/dev/null < "$FUXN_PANE/wraps"
-screen=$(awk -v wraps="$wraps" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
-  { row[NR] = $0; if ($0 != "") last = NR }
-  END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), row[i]; if (last) print "" }' "$FUXN_PANE/screen")
-# History's last line may be unfinished: the screen's first row goes on from it if
-# `wraps` lists row 0, and is a line of its own if not.
-open=$(tail -c 1 "$FUXN_PANE/history" 2>/dev/null)
-case " $wraps " in *" 0 "*) open= ;; esac
-{ cat "$FUXN_PANE/history.1" "$FUXN_PANE/history" 2>/dev/null; [ -z "$open" ] || echo; printf '%s\n' "$screen"; } > "$f"
-n=$(($(wc -l < "$f")))
-# $EDITOR may hold arguments (split at spaces, nothing else expanded). Only an
-# editor known to read a line number is given one.
-set -f
-set -- ${EDITOR:-${PAGER:-less}}
-case ${1##*/} in
-  vi|vim|nvim|nano|emacs) set -- "$@" "+$n" ;;
-  less) set -- "$@" +G ;;
-esac
-# The file goes when the editor ends, and the tab with it (`.shell` removes
-# the pane's folder); an editor that failed first waits for Enter, so that
-# what it said can be read. An editor killed outright leaves both.
-p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" sh -c 'f=$1; shift; "$@" "$f"; code=$?; rm -f "$f"; [ "$code" -eq 0 ] || { echo "the editor ended with $code: Enter closes this"; read -r _; }' sh "$f" "$@") || { rm -f "$f"; exit; }
-# An editor that is done at once has taken its pane with it already.
-[ -d "$p" ] && fux layout pane "${p##*/}"
+"$FUXN_KEYS/.text" "$f" > /dev/null
+exec "$FUXN_KEYS/.edit" "$f" "$(($(wc -l < "$f")))"

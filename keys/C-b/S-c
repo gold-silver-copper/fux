@@ -1,0 +1,21 @@
+#!/bin/sh
+# the last command's output in the editor
+# group: Panes
+# A shell that marks its prompts (OSC 133) says where a command's output starts
+# and ends: the pane's `marks` has the line numbers, counted from the pane's first
+# line. The lines from the last `output` mark to the `end` after it (or to the
+# end of the text, if the command still runs) are opened in the editor.
+[ -n "$FUXN_PANE" ] || exit 0
+[ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
+f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
+before=$("$FUXN_KEYS/.text" "$f")
+read -r top 2>/dev/null < "$FUXN_PANE/top"
+set -- $(awk '$2 == "output" { from = $1; to = "" } $2 == "end" && from != "" && to == "" { to = $1 } END { print from, to }' "$FUXN_PANE/marks")
+[ -n "$1" ] || { rm -f "$f"; echo "no command has run here yet"; exit; }
+# A mark's line is a line of the file: the screen's first line is line `top` of
+# the pane and line `before` + 1 of the file.
+first=$(($1 - ${top:-0} + before + 1))
+[ "$first" -ge 1 ] || first=1
+if [ -n "$2" ]; then last=$(($2 - ${top:-0} + before)); else last='$'; fi
+sed -n "${first},${last}p" "$f" > "$f.out" && mv "$f.out" "$f"
+exec "$FUXN_KEYS/.edit" "$f" 1

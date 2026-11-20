@@ -1,0 +1,21 @@
+#!/bin/sh
+# .text FILE: writes the focused pane's whole text into FILE (older history,
+# history, then the screen), and prints how many of FILE's lines come before the
+# line the screen's first row is part of. That line's number in the pane is in
+# `top`: with the two, a line number of `marks` is a line of FILE.
+# The screen is taken without the blank rows at its end, and its rows that go on
+# from the row above (`wraps` numbers them from 0) joined to it, as history has
+# them. It is read first: a line that scrolls off meanwhile is then there twice,
+# never missing.
+read -r wraps 2>/dev/null < "$FUXN_PANE/wraps"
+screen=$(awk -v wraps="$wraps" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
+  { row[NR] = $0; if ($0 != "") last = NR }
+  END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), row[i]; if (last) print "" }' "$FUXN_PANE/screen")
+# History's last line may be unfinished: the screen's first row goes on from it if
+# `wraps` lists row 0, and is a line of its own if not.
+open=$(tail -c 1 "$FUXN_PANE/history" 2>/dev/null)
+case " $wraps " in *" 0 "*) open= ;; esac
+{ cat "$FUXN_PANE/history.1" "$FUXN_PANE/history" 2>/dev/null; [ -z "$open" ] || echo; } > "$1"
+before=$(($(wc -l < "$1")))
+printf '%s\n' "$screen" >> "$1"
+echo "$before"

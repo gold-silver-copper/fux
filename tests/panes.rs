@@ -469,3 +469,68 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     fs::write(view.join("in"), "\r").unwrap();
     until("the pane chosen has the keys", || read(&inner.0.join("main/layout")).contains("* p2 focus=p2"));
 }
+
+#[test]
+fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_prompt() {
+    let session = Session::new("marks");
+    fs::create_dir_all(&session.0).unwrap();
+    let keys = session.0.join(".keys");
+    assert!(
+        Command::new("cp")
+            .arg("-R")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"))
+            .arg(&keys)
+            .status()
+            .unwrap()
+            .success()
+    );
+    // A program that marks as a shell does: two commands (the first with more output than the
+    // screen has rows, and a line that wraps), then a prompt.
+    let shell = "m() { printf '\\033]133;%s\\007' \"$1\"; }; \
+        m A; printf '$ '; m B; echo first; m C; seq 101 112; echo a-long-line-that-wraps-in-twelve; m 'D;0'; \
+        m A; printf '$ '; m B; echo second; m C; echo alpha; echo beta; m 'D;1'; m A; printf '$ '; m B; sleep 600";
+    let mut start = session.fux();
+    start.env("COLUMNS", "12").env("LINES", "5").args(["start", "sh", "--", "sh", "-c", shell]);
+    let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    until("the marks are there", || read(&pane.join("marks")).lines().count() == 10);
+    let marks = read(&pane.join("marks"));
+    assert!(
+        marks.starts_with("0 prompt\n0 command\n1 output\n14 end 0\n14 prompt\n")
+            && marks.ends_with("17 end 1\n17 prompt\n17 command\n"),
+        "{marks}"
+    );
+    assert!(fact(&pane, "top").parse::<usize>().unwrap() > 10);
+    // An editor for the test: it is called `vim`, so it is given a line number; it notes that
+    // and copies the file it was to open.
+    let out = session.0.join("out");
+    fs::write(
+        session.0.join("vim"),
+        "#!/bin/sh\nfor a; do f=$a; done\necho \"$1\" > \"$OUT.at\"\ncp \"$f\" \"$OUT\"\n",
+    )
+    .unwrap();
+    Command::new("chmod").arg("+x").arg(session.0.join("vim")).status().unwrap();
+    let key = |name: &str| {
+        let _ = fs::remove_file(&out);
+        let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+        let mut script = Command::new(keys.join("C-b").join(name));
+        script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("EDITOR", session.0.join("vim"));
+        script.env("OUT", &out).env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main");
+        assert!(script.env("FUXN_PANE", &pane).status().unwrap().success());
+        until("the editor was given the file", || out.exists() && session.0.join("out.at").exists());
+        (read(&out), read(&session.0.join("out.at")).trim().trim_start_matches('+').parse::<usize>().unwrap())
+    };
+    // The last command's output, and nothing else.
+    assert_eq!(key("S-c"), ("alpha\nbeta\n".to_string(), 1));
+    // The whole text at the prompt before this one; its first command's output is whole, the
+    // wrapped line one line, though most of it is in history.
+    let (text, line) = key("p");
+    assert_eq!(text.lines().nth(line - 1), Some("$ second"), "{text}");
+    assert!(
+        text.starts_with("$ first\n101\n")
+            && text.contains("\n112\na-long-line-that-wraps-in-twelve\n$ second\nalpha\n"),
+        "{text}"
+    );
+    // History in the editor opens at the text's end.
+    let (text, line) = key("c");
+    assert_eq!((text.lines().count(), text.lines().last()), (line, Some("$")));
+}
