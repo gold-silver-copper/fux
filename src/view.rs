@@ -7,7 +7,7 @@
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
 use crate::term::{BOLD, Cell, Color, DIM, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode};
-use crate::{is_name, keys};
+use crate::{is_name, keys, replace};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -73,6 +73,8 @@ struct View {
     message: String,
     /// Whether the terminal said it draws sixel pictures.
     sixel: bool,
+    /// What the terminal has said its colours are, while it is still being asked.
+    colours: Option<String>,
     /// The pictures on the terminal now: file, column, row, columns, rows, and whose holder's.
     drawn: Vec<Drawn>,
     cursor: String,
@@ -143,6 +145,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         menu: None,
         message: String::new(),
         sixel: false,
+        colours: Some(String::new()),
         drawn: Vec::new(),
         cursor: String::new(),
         title: None,
@@ -158,7 +161,11 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         quit: false,
     };
     // The alternate screen, pastes marked, and "what are you" (for sixel).
-    let result = view.tty.write_all(b"\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[c").and_then(|()| view.run(&ctl));
+    // The terminal is asked once what its colours are (the two it draws with and its palette),
+    // and last of all what it is: its answer to that ends the wait for the others.
+    const START: &str = "\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
+    let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
+    let result = view.tty.write_all((START.to_string() + &asked + "\x1b[c").as_bytes()).and_then(|()| view.run(&ctl));
     drop(restore);
     let _ = fs::remove_file(&view.ctl_path);
     result.map_err(|e| format!("the viewer stopped: {e}"))
@@ -282,7 +289,17 @@ impl View {
                     self.typed.extend_from_slice(if wants_paste { raw } else { &[] });
                 }
                 name if name.starts_with("mouse:") => self.mouse(name.trim_start_matches("mouse:")),
-                name if name.starts_with("terminal:") => self.sixel = name.split([':', '?', ';']).any(|n| n == "4"),
+                name if name.starts_with("terminal:") => {
+                    self.sixel = name.split([':', '?', ';']).any(|n| n == "4");
+                    // It was asked last: the colours the terminal told of before it are all it
+                    // will tell. They go into the session's `colours` file, from which every
+                    // pane's program is answered; the viewer that wrote last is believed.
+                    let colours = std::mem::take(&mut self.colours);
+                    if let Some(told) = colours.filter(|told| !told.is_empty()) {
+                        let _ = replace(self.session.join("colours"), told.as_bytes());
+                    }
+                }
+                name if name.starts_with("answer:") => self.colour(name.trim_start_matches("answer:")),
                 name => self.key(name, raw),
             }
             if self.waiting.is_some() || std::mem::take(&mut self.pause) {
@@ -291,6 +308,27 @@ impl View {
         }
         self.carry = bytes.get(at..).unwrap_or(&[]).to_vec();
         self.send();
+    }
+
+    /// The terminal's answer about a colour (`11;rgb:1c1c/1c1c/1c1c`, `4;1;rgb:cc/00/00`): a
+    /// line for the `colours` file, if it was asked and the answer is one.
+    fn colour(&mut self, answer: &str) {
+        let Some((which, value)) = answer.split_once(";rgb:") else { return };
+        let name = match which.split_once(';') {
+            None if which == "10" => "foreground",
+            None if which == "11" => "background",
+            Some(("4", index)) if index.parse::<u8>().is_ok() => index,
+            _ => return,
+        };
+        // Each part is one to four hex digits of however many bits: its first eight are kept.
+        let part = |part: &str| {
+            let full = (1u32 << (4 * part.len().clamp(1, 4))) - 1;
+            u32::from_str_radix(part, 16).ok().filter(|_| part.len() <= 4).map(|value| value * 255 / full)
+        };
+        let parts: Vec<u32> = value.split('/').filter_map(part).collect();
+        if let (Some(told), [r, g, b]) = (&mut self.colours, parts.as_slice()) {
+            told.push_str(&format!("{name} #{r:02x}{g:02x}{b:02x}\n"));
+        }
     }
 
     /// One key: a script if the key's file is one, a menu if it is a

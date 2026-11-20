@@ -195,6 +195,9 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>\"$FUXN_PANE/in\"\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/v")).arg(keys.join("C-b/e")).status().unwrap();
     let one = inner.start("one", &["sh"]);
+    // The terminal the viewer runs in says what its colours are: here the outer session's file does.
+    fs::create_dir_all(&outer.0).unwrap();
+    fs::write(outer.0.join("colours"), "foreground #102030\nbackground #fdf6e3\n4 #268bd2\n").unwrap();
     let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
@@ -245,6 +248,17 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
             && screen().contains("\u{6f22}│")
             && !screen().contains(family)
     });
+    // The viewer asked its terminal once what the colours are and wrote them down for the
+    // session: a program in a pane that asks is told the same, viewer or no viewer.
+    let told = "foreground #102030\nbackground #fdf6e3\n4 #268bd2\n";
+    until("the session knows its colours", || read(&inner.0.join("colours")) == told);
+    fs::write(view.join("in"), "clear; printf '\\033]11;?\\007\\033]4;4;?\\007\\033]4;5;?\\007'; cat -v\r").unwrap();
+    let answers = || read(&inner.0.join("main/two/screen")).replace('\n', "");
+    until("the program is told", || answers().contains("^[]11;rgb:fdfd/f6f6/e3e3^G^[]4;4;rgb:2626/8b8b/d2d2^G"));
+    assert!(!answers().contains("]4;5;rgb"));
+    // (The interrupt empties what was typed after it: the next line waits until it is through.)
+    fs::write(view.join("in"), "\x03").unwrap();
+    until("the program is interrupted", || answers().contains("^G^C"));
     // A program that asks for the mouse gets it, counted from its own tile's corner (the tile starts at column 42).
     fs::write(view.join("in"), "printf '\\033[?1000h\\033[?1006h'; cat -v\r").unwrap();
     until("the pane's line 1 says so", || read(&inner.0.join("main/two/screen")).contains("mouse1000,mousesgr"));

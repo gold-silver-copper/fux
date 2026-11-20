@@ -453,6 +453,22 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     one resize may put more than 4 MiB of rows into the history that waits
     to be written (at most one screen's worth, written at once).
 
+- **D55. A program that asks what a colour is, is told from one file** (the
+  panel; message 11). Three of five programs a seat tried wait on OSC 11 to
+  choose a theme. A pane has no terminal of its own, so the truth is kept
+  where everything else is: `colours` in the session directory, lines of a
+  name and `#rrggbb` that a person can write. The viewer asks its terminal
+  once at its start (foreground, background, the 256 palette entries) and
+  last of all "what are you": that answer, which every terminal gives, ends
+  the wait, so there is no timer, and the file is written with whatever was
+  told before it (not at all if nothing was). The holder reads the file
+  when it has changed and hands its text to the emulator, which answers in
+  the order asked, ending each answer as its question was ended, and is
+  silent about what it was not told. Two viewers: the last to start wins.
+  Setting a colour is taken and does nothing. Checked with real vim and
+  nvim: `:set background?` is `light` on a light file and `dark` on a dark
+  one; with no file each keeps its own default.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

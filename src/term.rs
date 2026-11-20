@@ -240,6 +240,12 @@ pub struct Term {
     titles: Vec<String>,
     /// The size of a cell in pixels, to know how many cells a picture covers.
     pub cell: (usize, usize),
+    /// What the colours are, as whoever keeps this terminal was told: lines of a name
+    /// (`foreground`, `background`, a palette number) and `#rrggbb`. A program that asks for a
+    /// colour is answered from here, and not at all if its line is missing.
+    pub colours: String,
+    /// The string being ended ended with BEL, not ESC `\`: an answer to it ends the same way.
+    bel: bool,
 }
 
 impl Term {
@@ -300,6 +306,8 @@ impl Term {
             title: String::new(),
             titles: Vec::new(),
             cell: (10, 20),
+            colours: String::new(),
+            bel: false,
         }
     }
 
@@ -949,7 +957,11 @@ impl Term {
             State::Ground => self.ground(byte),
             State::Str => match byte {
                 0x1b => self.state = State::StrEscape,
-                0x07 if self.string.first() == Some(&b']') => self.end_string(true),
+                0x07 if self.string.first() == Some(&b']') => {
+                    self.bel = true;
+                    self.end_string(true);
+                    self.bel = false;
+                }
                 0x18 | 0x1a => self.end_string(false),
                 0x00..=0x1f | 0x7f => {}
                 _ if self.string.len() <= PICTURE_MAX => self.string.push(byte),
@@ -1091,6 +1103,7 @@ impl Term {
                     titles,
                     next_picture: self.next_picture,
                     history_open: self.history_open,
+                    colours: std::mem::take(&mut self.colours),
                     ..Term::new(self.cols, self.rows)
                 };
             }
@@ -1139,7 +1152,8 @@ impl Term {
         }
     }
 
-    /// An operating system command: a title (0, 2) or the clipboard (52). No other is kept.
+    /// An operating system command: a title (0, 2), the clipboard (52), or a question about a
+    /// colour (4, 10, 11 with `?`). No other is kept: setting a colour changes nothing.
     fn command(&mut self, text: &str) {
         let (number, rest) = text.split_once(';').unwrap_or((text, ""));
         match number {
@@ -1150,6 +1164,26 @@ impl Term {
                     self.refuse("a title over 256 characters was cut");
                 }
                 self.out.title = Some(self.title.clone());
+            }
+            "4" | "10" | "11" => {
+                // `4 ; N ; ?` may come several times in one string; the others ask once.
+                let mut words = rest.split(';');
+                while let Some(word) = words.next() {
+                    let (name, asked) = match number {
+                        "4" => (word.parse::<u8>().map_or(String::new(), |n| n.to_string()), words.next() == Some("?")),
+                        "10" => ("foreground".to_string(), word == "?"),
+                        _ => ("background".to_string(), word == "?"),
+                    };
+                    let line = |line: &str| line.strip_prefix(name.as_str())?.strip_prefix(" #").map(str::to_string);
+                    let value =
+                        self.colours.lines().find_map(line).filter(|hex| hex.len() == 6 && asked && !name.is_empty());
+                    if let Some(value) = value.and_then(|hex| u32::from_str_radix(&hex, 16).ok()) {
+                        let [_, r, g, b] = value.to_be_bytes();
+                        let which = if number == "4" { format!("4;{name}") } else { number.to_string() };
+                        let end = if self.bel { "\x07" } else { "\x1b\\" };
+                        self.respond(&format!("\x1b]{which};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}"));
+                    }
+                }
             }
             "52" => match rest.split_once(';').map(|(_, what)| what) {
                 // Setting only: a program is never told what is on the clipboard.

@@ -118,6 +118,27 @@ and neither `COLUMNS` nor `LINES`, which the holder reads for itself: the
 pane's first size is `COLUMNS`x`LINES` if the starter set them (each 1 to
 500; otherwise `log` says so), else 80x24.
 
+What colours has the terminal? Programs ask (vim, Neovim and others, to
+choose a light or a dark theme), and a pane has no terminal of its own to
+know. The answer is one file, `colours` in the session directory
+(`$(fux dir)/colours`), plain lines that you may write yourself:
+
+```
+foreground #d0d0d0
+background #1c1c1c
+1 #cc0000
+```
+
+(`foreground`, `background`, or a palette number from 0 to 255, then
+`#rrggbb`). The viewer asks its terminal once when it starts and writes the
+file with what it is told; two viewers on terminals of different colours do
+not agree, and the one that started last is believed. A pane's holder
+answers a program's question (OSC 10, 11, and 4 with `?`) from that file,
+with or without a viewer, and says nothing about a colour the file has no
+line for: a program is never told a colour that someone made up. A program
+that sets a colour (OSC 4, 10, 11 with a value, 104, 110, 111) is heard and
+changes nothing.
+
 Is a pane alive? Its holder keeps a lock on the directory for as long as it
 lives: `flock -n "$D/main/build" true` fails while it does (Linux), and
 `fux wait` returns when it is gone.
@@ -419,6 +440,7 @@ does something else is a row below with a case that shows it.
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. A character goes on while the cursor is where its last part left it and its cell is unchanged: a change of colour or a title between a letter and its accent does not part them (`grep --color` does this), a move or an erase does |
 | How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). An emoji with U+FE0F in its character is two. A control, U+2028 and U+2029 among them, and a mark or joiner with no character to join, takes no cell and is dropped |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports) | Its own specification |
+| What a colour is (OSC 10, 11, and 4 with `?`) | The session's `colours` file: what the terminal you look at said, or what you wrote. No file or no line, no answer. Setting a colour (OSC 4, 10, 11 with a value, 104, 110, 111) is taken and changes nothing |
 
 `tools/referee/referee.py` plays the same bytes to fux and to three
 witnesses, and compares the screen's text and the cursor: xterm (under Xvfb,
@@ -507,8 +529,8 @@ The kitty keyboard protocol; of the mouse, the UTF-8 and urxvt report forms
 (1005, 1015: programs get the SGR form or the oldest one), dragging a line
 to resize, and any menu use;
 hyperlinks (OSC 8 is read and dropped); reading the clipboard (setting it
-works); colour queries and palette and cursor colour changes (OSC 4, 10, 11,
-12) and the queries DECRQSS, XTGETTCAP and XTVERSION (and `CSI > c` is
+works); changing a colour (OSC 4, 10, 11, 12 with a value: taken, without
+effect) and asking for the cursor's (OSC 12) and the queries DECRQSS, XTGETTCAP and XTVERSION (and `CSI > c` is
 answered with no xterm version in it); focus reports (mode
 1004); the bell, the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
 double underline and

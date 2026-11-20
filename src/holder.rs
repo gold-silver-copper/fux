@@ -30,6 +30,8 @@ const INPUT_MAX: usize = 64 << 10;
 const HISTORY_MAX: u64 = 4 << 20;
 const CTL_LINE_MAX: usize = 256;
 const LOG_MAX: usize = 64 << 10;
+/// The session's file of what the colours are, from a pane's folder.
+const COLOURS: &str = "../../colours";
 /// A holder looks this often whether its directory is still there.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
 const GONE: &str = "the pane's directory is gone";
@@ -50,6 +52,8 @@ struct Holder {
     state: String,
     /// What the emulator produced and the next publish writes: history, pictures, a title, a clipboard.
     pending: Out,
+    /// When the `colours` file read last was written.
+    colours: Option<std::time::SystemTime>,
     /// The `history` file ends in the middle of a line.
     history_open: bool,
     /// The title in the `title` file.
@@ -147,6 +151,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         pictures: Vec::new(),
         state: "running".into(),
         pending: Out::default(),
+        colours: None,
         history_open: false,
         title: String::new(),
         logged: 0,
@@ -277,6 +282,14 @@ impl Holder {
         let Some(n) = self.master.as_ref().and_then(|mut m| m.read(buffer).ok()) else {
             return 0;
         };
+        // What the colours are is in the session's `colours` file, two folders up, if a viewer
+        // (or a person) wrote one: read again when it has changed, 16 KiB of it at most.
+        let stamp = fs::metadata(COLOURS).and_then(|file| file.modified()).ok();
+        if stamp != self.colours {
+            let mut text = String::new();
+            let _ = File::open(COLOURS).map(|file| file.take(16 << 10).read_to_string(&mut text));
+            (self.colours, self.term.colours) = (stamp, text);
+        }
         self.term.feed(buffer.get(..n).unwrap_or(&[]));
         self.collect();
         n

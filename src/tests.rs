@@ -68,6 +68,30 @@ fn what_a_program_writes_never_puts_a_control_code_of_its_own_in_a_file() {
 }
 
 #[test]
+fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() {
+    // Told nothing, the terminal says nothing: the answer to the next question comes alone.
+    let asks = "\x1b]11;?\x07\x1b]10;?\x1b\\\x1b]4;1;?;7;?;300;?\x1b\\\x1b[c";
+    let da = "\x1b[?62;4;22c".to_string();
+    assert_eq!(String::from_utf8(term(20, 2, asks).take().reply).unwrap(), da);
+    // Told, it answers in the order asked, each answer ended as its question was, and is silent
+    // about what it was not told (a palette entry, a number that is no entry).
+    let mut told = Term::new(20, 2);
+    told.colours = "foreground #d0d0d0\nbackground #1c1c1c\n1 #cc0000\nnonsense\n".into();
+    told.feed(asks.as_bytes());
+    let answers = "\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]4;1;rgb:cccc/0000/0000\x1b\\";
+    assert_eq!(String::from_utf8(told.take().reply).unwrap(), answers.to_string() + &da);
+    // Setting a colour is taken and changes nothing; a reset keeps what was told.
+    told.feed(b"\x1b]11;#ffffff\x07\x1b]4;1;rgb:00/00/00\x07\x1b]104\x07\x1b]111\x07\x1bc\x1b]11;?\x07x");
+    assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]11;rgb:1c1c/1c1c/1c1c\x07");
+    assert_eq!(told.plain(), "x\n\n");
+    // The viewer reads its terminal's answers as answers, not as keys.
+    use crate::keys::next;
+    assert_eq!(next(b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\x", false), Some((25, "answer:11;rgb:1c1c/1c1c/1c1c".into())));
+    assert_eq!(next(b"\x1b]4;1;rgb:cc/00/00\x07", false), Some((19, "answer:4;1;rgb:cc/00/00".into())));
+    assert_eq!((next(b"\x1b]11;rgb:1c", false), next(b"\x1b]", true)), (None, Some((2, "M-]".into()))));
+}
+
+#[test]
 fn queries_are_answered_with_nobody_watching() {
     let term = term(80, 24, "\x1b[c\x1b[>c\x1b[5n\x1b[3;7H\x1b[6n\x1b[?2004$p\x1b[18t");
     assert_eq!(

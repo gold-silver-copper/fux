@@ -35,6 +35,18 @@ pub fn next(bytes: &[u8], whole: bool) -> Option<(usize, String)> {
                 let parameters = String::from_utf8_lossy(bytes.get(2..end + 2)?).into_owned();
                 Some((end + 3, sequence(&parameters, *bytes.get(end + 2)?)))
             }
+            // The terminal's answer to a question asked in a string (what a colour is): not a
+            // key, but ours to read. It ends with BEL or ESC `\\`.
+            Some(b']') => {
+                let bel = bytes.iter().position(|b| *b == 7).map(|at| (at, at + 1));
+                let st = bytes.windows(2).skip(1).position(|pair| pair == b"\x1b\\").map(|at| (at + 1, at + 3));
+                let end = bel.into_iter().chain(st).min();
+                let Some((end, length)) = end else {
+                    let alone = (whole && bytes.len() == 2).then(|| (2, "M-]".to_string()));
+                    return alone.or((bytes.len() > 256).then(|| (bytes.len(), String::new())));
+                };
+                Some((length, format!("answer:{}", String::from_utf8_lossy(bytes.get(2..end)?))))
+            }
             // The short forms of the arrows, Home, End and F1 to F4. Others (the keypad's) are not keys of ours.
             Some(b'O') => match bytes.get(2) {
                 None => whole.then(|| (2, "M-S-o".into())),
