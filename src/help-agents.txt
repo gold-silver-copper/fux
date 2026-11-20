@@ -22,8 +22,8 @@ A second start of a live pane's name fails ("a holder already keeps this pane");
 name of a pane whose program has ended is started again in place, its files replaced.
 
 WAIT FOR WHAT YOU EXPECT
-`screen` is the screen now, as plain text: a frame, not a log, replaced up to 40 times a
-second, some milliseconds after the program prints. So never read once and conclude, and
+`screen` is the screen now, as plain text: a frame, not a log, replaced up to 125 times a
+second (40 while output never pauses), a millisecond or more after the program prints. So never read once and conclude, and
 never sleep and hope: wait for a text, or for the frame to change, always with a limit.
     seen() { n=0; until grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
     unseen() { n=0; while grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
@@ -107,7 +107,7 @@ links   `LINE COL LEN ADDRESS` for each link (OSC 8) on the screen, e.g. `24 0 4
         LINE counts as `top` does (screen row = LINE - top, if no row above wraps), COL is
         the first cell from 0, LEN the number of cells
 log     what the holder refused or lost. (Also: clipboard, pictures and pic-N.sixel.)
-A fact can be one frame (25 ms) ahead of a screen read just before it. All the text of a
+A fact can be one frame (the next writing of the files) ahead of a screen read just before it. All the text of a
 pane, oldest first, wrapped rows joined into the lines that were printed:
     whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(cat "$1/wraps")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/screen"; }
     whole "$P" | tail -n 5

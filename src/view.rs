@@ -32,6 +32,11 @@ const MENU_MAX: usize = 200;
 const STYLED_MAX: u64 = 32 << 20;
 const TYPED_MAX: usize = 64 << 10;
 const SCRIPT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long the start of an escape sequence waits for the rest of it: after that an ESC by
+/// itself is the Escape key.
+const ESCAPE_WAIT: Duration = Duration::from_millis(4);
+/// For how long after a key went to a pane its echo is looked for every millisecond.
+const ECHO_WAIT: Duration = Duration::from_millis(40);
 
 /// A key of a menu: its name, what it does, and the heading it is listed under (or none).
 type Entry = (String, String, String);
@@ -45,7 +50,7 @@ type Drawn = (PathBuf, usize, usize, usize, usize, u32);
 /// layout and what is wrong with it, the message, what the terminal is like and whether its
 /// window has the keys, each tile's screen file (as `Pane::seen`) and whether its holder lives,
 /// and the focused pane's `clipboard` file.
-type From = (PathBuf, String, Option<String>, String, (bool, bool, u8, bool), Vec<(Seen, bool)>, Stamp);
+type From = (PathBuf, String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Seen, bool)>, Stamp);
 /// A screen file's inode, time and length.
 type Seen = Option<(u64, i64, i64, u64)>;
 
@@ -145,6 +150,8 @@ struct View {
     title: Option<String>,
     carry: Vec<u8>,
     typed: Vec<u8>,
+    /// When a key last went to a pane: its echo is looked for often for a moment after.
+    keyed: Option<Instant>,
     pasting: bool,
     scripts: Vec<Child>,
     /// The script the keys wait for: its pid and when it started.
@@ -194,14 +201,19 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     size.rows = 0; // the first frame sees a new size and draws everything
     let (out, queue) = mpsc::channel::<String>();
     let unwritten = Arc::new(AtomicUsize::new(0));
+    // (The writer says so on a pipe when it has written, or cannot: the loop waits on that as on
+    // the keys, and looks no more often for a terminal that reads slowly.)
+    let (wrote, mut done) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
     let writer = {
         let (mut tty, unwritten) = (tty.try_clone().map_err(|e| e.to_string())?, unwritten.clone());
         std::thread::Builder::new().spawn(move || {
-            queue.into_iter().try_for_each(|text| {
+            let written = queue.into_iter().try_for_each(|text| {
                 tty.write_all(text.as_bytes())?;
                 unwritten.fetch_sub(1, Ordering::Release);
-                io::Result::Ok(())
-            })
+                done.write_all(b"w")
+            });
+            let _ = done.write_all(b"w");
+            written
         })
     };
     let writer = writer.map_err(|e| format!("cannot start a thread: {e}"))?;
@@ -245,6 +257,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         copied: None,
         carry: Vec::new(),
         typed: Vec::new(),
+        keyed: None,
         pasting: false,
         scripts: Vec::new(),
         waiting: None,
@@ -262,7 +275,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     view.write(START.to_string() + &asked + "\x1b[c");
-    let result = view.run(&ctl, &writer);
+    let result = view.run(&ctl, &wrote, &writer);
     // The keys leave with the viewer: a key that is down in a pane is let go there.
     view.leave(None);
     // The pane that was told it has the keys is told that it has them no more.
@@ -287,9 +300,10 @@ impl View {
         }
     }
 
-    fn run(&mut self, ctl: &File, writer: &JoinHandle<io::Result<()>>) -> io::Result<()> {
+    fn run(&mut self, ctl: &File, wrote: &io::PipeReader, writer: &JoinHandle<io::Result<()>>) -> io::Result<()> {
         let mut buffer = vec![0u8; 16 << 10];
-        let (mut active, mut typed) = (Instant::now(), None::<Instant>);
+        // When something last happened, and when the terminal last sent anything.
+        let (mut active, mut heard) = (Instant::now(), Instant::now());
         // (The writer ends only when the terminal cannot be written to.)
         while !self.quit && !writer.is_finished() {
             // A key's script runs before the keys typed after it, as a command
@@ -328,14 +342,18 @@ impl View {
             let timeout = match active.elapsed().as_millis() {
                 _ if self.waiting.is_some() => 2,
                 // (A key's echo is a millisecond or two away.)
-                _ if typed.is_some_and(|at| at.elapsed() < Duration::from_millis(40)) => 1,
+                _ if self.keyed.is_some_and(|at| at.elapsed() < ECHO_WAIT) => 1,
                 0..300 => 4,
                 300..3000 => 16,
                 _ => 50,
             };
+            // (The start of an escape sequence is looked at again when its wait is over.)
+            let rest = ESCAPE_WAIT.saturating_sub(heard.elapsed());
+            let timeout = if self.carry.is_empty() || rest.is_zero() { timeout } else { rest.as_millis() as i32 + 1 };
             // Typed bytes are not read while 64 KiB of them wait for a script.
             let typing = if self.carry.len() < TYPED_MAX { sys::POLLIN } else { 0 };
-            let wanted = [(self.tty.as_raw_fd(), typing), (ctl.as_raw_fd(), sys::POLLIN)];
+            let wanted =
+                [(self.tty.as_raw_fd(), typing), (ctl.as_raw_fd(), sys::POLLIN), (wrote.as_raw_fd(), sys::POLLIN)];
             let events = sys::wait(&wanted, timeout)?;
             if events.first().is_some_and(|e| *e != 0) {
                 let n = (&self.tty).read(&mut buffer)?;
@@ -343,8 +361,12 @@ impl View {
                     return Ok(());
                 }
                 self.carry.extend_from_slice(buffer.get(..n).unwrap_or(&[]));
+                (active, heard) = (Instant::now(), Instant::now());
+            }
+            // (What the writer said is taken: the frame that waited for it is next.)
+            if events.get(2).is_some_and(|e| *e != 0) {
+                let _ = (&*wrote).read(&mut buffer)?;
                 active = Instant::now();
-                typed = Some(active);
             }
             // The terminal is given a second to say what it is like.
             // The terminal is given a second to say what it is like before that is written down
@@ -354,11 +376,18 @@ impl View {
                 self.told(asked > Duration::from_secs(10));
             }
             if self.waiting.is_none() && !self.carry.is_empty() {
-                // When nothing at all happened for a moment, a lone ESC is the Escape key.
-                self.keys(events.iter().all(|e| *e == 0));
+                // When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
+                self.keys(heard.elapsed() >= ESCAPE_WAIT);
             }
         }
         Ok(())
+    }
+
+    /// Another workspace is shown: what was read of the panes is forgotten, and with it what the
+    /// last frame was drawn from, so the next one is drawn (and the panes read) whatever it finds.
+    fn forget(&mut self) {
+        self.panes.clear();
+        self.from = None;
     }
 
     /// A line a script printed: a command of the viewer's, or else a message to show.
@@ -372,7 +401,7 @@ impl View {
                     self.message = format!("no workspace {name}");
                 } else if name != self.workspace {
                     self.before = Some(std::mem::replace(&mut self.workspace, name));
-                    self.panes.clear();
+                    self.forget();
                     self.looked = None;
                 }
             }
@@ -394,7 +423,9 @@ impl View {
         // of it now is looked at.)
         let has = self.focus.as_ref().map(|name| self.session.join(&self.workspace).join(name));
         self.leave(has.as_deref());
-        let wants_paste = self.focus.as_ref().and_then(|f| self.panes.get(f)).is_some_and(|pane| pane.term.paste);
+        // (Whether its program wants a paste marked is read now, as who it is is for a key: a frame
+        // may be a while behind, when the terminal reads slowly.)
+        let wants_paste = has.as_deref().is_some_and(|pane| asks(pane).paste);
         let mut at = 0;
         while let Some(rest) = bytes.get(at..).filter(|rest| !rest.is_empty()) {
             if self.pasting {
@@ -527,15 +558,9 @@ impl View {
         if self.told_focus != now {
             // (The one that was told is told no more only if it still asks: a program that has
             // turned the mode off, or has ended, left a shell there that never asked.)
-            let asks = |pane: &PathBuf| {
-                let mut modes = String::new();
-                let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(pane.join("modes"));
-                let _ = file.map(|file| file.take(256).read_to_string(&mut modes));
-                modes.split_whitespace().any(|word| word == "focus")
-            };
             // (While the window itself is without the keys, the one was told so already and the
             // other is told when the window has them again.)
-            let told = self.told_focus.take().filter(|pane| self.window && asks(pane));
+            let told = self.told_focus.take().filter(|pane| self.window && asks(pane).focus);
             for (pane, report) in [(told, "\x1b[O"), (now.clone().filter(|_| self.window), "\x1b[I")] {
                 let input =
                     pane.map(|pane| OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(pane.join("in")));
@@ -654,6 +679,7 @@ impl View {
             }
             _ if menu.is_none() => {
                 self.typed.extend_from_slice(raw);
+                self.keyed = Some(Instant::now());
                 // (Its release is the pane's only if the program there asks to be told of
                 // releases now: a key typed to one that does not is typed, and no more.)
                 let directory = self.session.join(&self.workspace).join(self.focus.as_deref().unwrap_or_default());
@@ -733,8 +759,11 @@ impl View {
             }
             return;
         }
+        // (Where the tile is, is as it was drawn; what its program asks to be told is read now.)
         let focused = self.tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name));
-        let Some((term, body)) = focused.and_then(|(name, body)| Some((&self.panes.get(name)?.term, *body))) else {
+        let Some((term, body)) =
+            focused.map(|(name, body)| (asks(&self.session.join(&self.workspace).join(name)), *body))
+        else {
             return;
         };
         // A button held stays that program's until it is let go: a drag out of the tile is reported at its edge.
@@ -834,7 +863,7 @@ impl View {
         // One frame at a time: while the terminal is still reading the last, the next one waits
         // (and is then of what the panes show by then), and the keys do not.
         if self.unwritten.load(Ordering::Acquire) > 0 {
-            return Ok(true);
+            return Ok(false);
         }
         let mut size = sys::winsize(&self.tty)?;
         let cell_size = (size.xpixel / size.cols.max(1), size.ypixel / size.rows.max(1));
@@ -854,7 +883,7 @@ impl View {
             let other = [self.before.take().unwrap_or_default(), "main".into()];
             if let Some(other) = other.into_iter().find(|name| is_name(name) && self.session.join(name).is_dir()) {
                 self.message = format!("workspace {} is gone", std::mem::replace(&mut self.workspace, other));
-                self.panes.clear();
+                self.forget();
             }
         }
         let directory = self.session.join(&self.workspace);
@@ -888,8 +917,9 @@ impl View {
             .collect();
         let held: Vec<bool> = panes.iter().map(|(_, held)| *held).collect();
         let clipboard = self.focus.as_ref().and_then(|name| stamp(directory.join(name).join("clipboard")));
-        let clipboard = clipboard.map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
-        let terminal = (self.sixel, self.joins, self.keyboard, self.window);
+        // (By when the file last changed in any way: one that could not be read may be readable now.)
+        let clipboard = clipboard.map(|m| (m.ino(), m.ctime(), m.ctime_nsec()));
+        let terminal = (self.sixel, self.joins, self.keyboard, self.window, cell_size);
         let from = (directory.clone(), layout.print(), wrong.clone(), self.message.clone(), terminal, panes, clipboard);
         let from = self.menu.is_none().then_some(from);
         if out.is_empty() && from.is_some() && from == self.from {
@@ -992,6 +1022,11 @@ impl View {
                                 }
                                 Some(number)
                             });
+                            // (Out of numbers: the next frame is put together too, and by then the
+                            // table has given up those of the links this one draws no more.)
+                            if address.is_some() && number.is_none() {
+                                self.from = None;
+                            }
                             mine.get_mut(at).into_iter().for_each(|slot| *slot = Some(number.unwrap_or(0)));
                             live += usize::from(number.is_some());
                             number.unwrap_or(0)
@@ -1367,18 +1402,27 @@ fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Ce
     }
 }
 
+/// The first 256 bytes of one of a pane's small files, as it is now.
+fn small(directory: &Path, name: &str) -> String {
+    let mut bytes = Vec::new();
+    let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(directory.join(name));
+    let _ = file.map(|file| file.take(256).read_to_end(&mut bytes));
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// How a pane's program asks for its input (pastes marked, the mouse, the focus, keys), as its
+/// `modes` file says now: what is typed is sent by this, not by what was last drawn.
+fn asks(directory: &Path) -> Term {
+    let mut term = Term::new(1, 1);
+    term.set_words(&small(directory, "modes"));
+    term
+}
+
 /// Who a pane's program is (the pid in `status`) and whether it asks to be told of keys let go
 /// and held (flag 2 of the `keys` word in `modes`), as the files say now.
 fn program(directory: &Path) -> (u32, bool) {
-    let fact = |name: &str| {
-        let mut bytes = Vec::new();
-        let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(directory.join(name));
-        let _ = file.map(|file| file.take(256).read_to_end(&mut bytes));
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
-    let pid = fact("status").lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0);
-    let keys = fact("modes").split_whitespace().find_map(|word| word.strip_prefix("keys")?.parse::<u8>().ok());
-    (pid, keys.unwrap_or(0) & 2 != 0)
+    let pid = small(directory, "status").lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0);
+    (pid, asks(directory).keys() & 2 != 0)
 }
 
 impl Pane {

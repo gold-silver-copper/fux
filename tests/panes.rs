@@ -2,6 +2,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -335,6 +336,28 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     until("the viewer asked its own terminal", || fact(&view, "modes").contains("mouse1000 mousesgr"));
     fs::write(view.join("in"), "\x1b[<0;50;3M\r").unwrap();
     until("the click arrives translated", || read(&inner.0.join("main/two/screen")).contains("^[[<0;9;3M"));
+    // What a paste and a click are sent as is what the program asks now, whatever the viewer last
+    // drew: here it has just been shown another workspace and this one again, in one go, with
+    // nothing on the screen changed by it.
+    fs::write(view.join("in"), "\x03").unwrap();
+    until("the program is interrupted", || read(&inner.0.join("main/two/screen")).matches("^C").count() >= 2);
+    fs::write(view.join("in"), "printf '\\033[?2004hre''ady\\n'; cat -v\r").unwrap();
+    until("the program asks for pastes marked", || read(&inner.0.join("main/two/screen")).contains("\nready\n"));
+    until("the pane's modes say so", || fact(&inner.0.join("main/two"), "modes").contains("paste"));
+    fs::create_dir(inner.0.join("other")).unwrap();
+    let mut own = fs::read_dir(&inner.0).unwrap().flatten().map(|entry| entry.path());
+    let own = own.find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".view.")).unwrap();
+    fs::OpenOptions::new().write(true).open(own).unwrap().write_all(b"workspace other\nworkspace main\n").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    fs::write(view.join("in"), "\x1b[200~pasted\x1b[201~\x1b[<0;51;4M\r").unwrap();
+    until_or(
+        "the paste arrives marked and the click translated",
+        || read(&inner.0.join("main/two/screen")),
+        || {
+            let screen = read(&inner.0.join("main/two/screen"));
+            screen.contains("^[[200~pasted^[[201~") && screen.contains("^[[<0;10;4M")
+        },
+    );
     fs::write(view.join("in"), "\x03").unwrap();
     lay(&inner.0, "* one focus=one\n  two focus=two\n");
     until("an edit of the file by hand is followed", || width("one") == Some("80x24".into()));

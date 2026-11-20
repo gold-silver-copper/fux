@@ -48,7 +48,8 @@ folder is called.
 
 **Holding.** One loop waits on the pty, `in`, `ctl` and a pipe on which a
 waiting thread reports the program's end. No signal is handled anywhere.
-Output goes through the emulator; at most every 25 ms the screens are
+Output goes through the emulator; when the program has written nothing for a millisecond (but
+not within 8 ms of the last time), and every 25 ms while it keeps writing, the screens are
 written: first each fact that changed, in a small file of its own, then the two screens, which
 are text and nothing else. When the program ends the holder writes `state` and its last screen,
 removes its FIFOs and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
