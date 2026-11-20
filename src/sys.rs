@@ -125,9 +125,12 @@ pub fn new_session(command: &mut Command, tty: bool) {
             check(setsid())?;
             if tty {
                 check(ioctl(0, os::TIOCSCTTY, 0 as c_int))?;
-                // SIGHUP (1) back to its default (0): a hangup must be able to
-                // end the program even when whoever started the pane ignored it.
-                signal(1, 0);
+                // Every signal back to its default (0): the program starts as on
+                // any new terminal, whatever whoever started the pane ignored.
+                // A hangup, Ctrl-C and Ctrl-Z must be able to reach it.
+                for number in 1..32 {
+                    signal(number, 0);
+                }
             }
             Ok(())
         });

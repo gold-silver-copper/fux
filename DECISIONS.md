@@ -18,8 +18,8 @@ Append-only.
 - **D5. The holder works in its folder with relative names.** `mv` within a
   filesystem therefore just works, with no code for it.
 - **D6. The folder is the pane.** A holder whose folder is gone leaves (it
-  looks every 2 s when idle). This is how panes are closed, and it means no
-  program is left running with no file to reach it by.
+  looks every 2 s), which hangs up its program. This is how panes are
+  closed. A program that ignores the hangup survives it, as after `kill`.
 - **D7. `kill` is a hangup, nothing more.** No process-tree kill, no
   subreaper, no "kill-incomplete". The program's SIGHUP is set back to its
   default before it starts, so that a hangup can end it even when whoever
@@ -62,6 +62,33 @@ Append-only.
   and a `pic=` word on line 1. One that does not fit its tile is not drawn.
   A second protocol is a second extension.
 - **D20. rustfmt at 120 columns.** Stated because the line bands are in lines.
+
+- **D21. After a picture the cursor goes to the start of the line below.**
+  xterm leaves it on the picture's last row, where a shell's prompt then
+  writes over the picture's cells, and here text over a picture removes it.
+  The price is in the README: a picture needs a free row under it.
+- **D22. A screen is at most 500 by 500 cells.** One bound for the holder,
+  the emulator and the viewer (which reads at most 32 MiB of a styled screen,
+  more than such a screen can be). Review round 1 found three bounds that did
+  not agree.
+- **D23. `fux3 start` claims a name under a lock on the workspace, and knows
+  its holder is up when `status` names that holder.** Two starts of one name,
+  a start and the tidying after a failed one, and a restart that fails no
+  longer touch each other's files. The old status is not removed first.
+- **D24. Every signal is at its default for a pane's program** (D7 said
+  SIGHUP only): Ctrl-C must work in a pane started by something that ignores
+  SIGINT.
+- **D25. Keys typed after a key with a script wait for the script, two
+  seconds at most.** Found by a tester: `C-b C-b a b c` arrived as `a b c ^B`.
+- **D26. The viewer's own text (titles, the last line, the menu) goes through
+  one function that makes cells**: a control character is `?`, a wide
+  character two cells. Nothing from a file's name, a script's words or a
+  hand-made screen file reaches the terminal as a control code.
+- **D27. What cannot be written is lost and logged, not kept to try again**:
+  history on a full disk, a picture whose file fails. The screen goes on.
+- **D28. Round 1 findings not taken as defects**: no answer to DECRQSS and
+  XTGETTCAP; `clear` leaving `history`; the bell; a picture at the bottom row
+  scrolling one line (D21). All are in the README's "Left out".
 
 ## The old fux3's bugs: which classes are gone
 

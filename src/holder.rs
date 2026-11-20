@@ -5,10 +5,10 @@
 //! its program.
 
 use crate::sys::{self, Winsize};
-use crate::term::Term;
+use crate::term::{SIZE_MAX, Term};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::os::unix::process::ExitStatusExt;
@@ -29,8 +29,9 @@ const INPUT_MAX: usize = 64 << 10;
 const HISTORY_MAX: u64 = 4 << 20;
 const CTL_LINE_MAX: usize = 256;
 const LOG_MAX: usize = 64 << 10;
-/// An idle holder looks this often whether its directory is still there.
-const LOOK_EVERY: i32 = 2000;
+/// A holder looks this often whether its directory is still there.
+const LOOK_EVERY: Duration = Duration::from_secs(2);
+const GONE: &str = "the pane's directory is gone";
 
 struct Holder {
     term: Term,
@@ -42,11 +43,19 @@ struct Holder {
     version: u64,
     input: Vec<u8>,
     ctl_line: Vec<u8>,
+    /// The numbers of the picture files written and not yet removed.
     pictures: Vec<u32>,
     command: String,
     /// `running`, `hungup`, `exited CODE` or `killed SIGNAL`: in `status` and on line 1 of the screens.
     state: String,
+    /// The state `status` holds: it is written again, after the screens, when the state has changed.
+    told: String,
     logged: usize,
+}
+
+/// Text for a file a person reads with `cat`: control characters become `?`.
+pub fn plain(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
 }
 
 /// A FIFO of ours: made if missing, opened to read without waiting, and with
@@ -74,36 +83,35 @@ pub fn replace(name: &str, content: &[u8]) -> io::Result<()> {
 pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // The first size is COLUMNS x LINES when the starter set them (the viewer
     // does, for key scripts), and 80x24 otherwise. `resize` changes it later.
-    let number = |name: &str, or: u16| {
-        std::env::var(name).ok().and_then(|n| n.parse().ok()).filter(|n| (1..=1000).contains(n)).unwrap_or(or)
+    let mut odd = None;
+    let mut number = |name: &'static str, or: u16| match std::env::var(name).ok().map(|n| n.parse::<u16>()) {
+        Some(Ok(n)) if (1..=SIZE_MAX).contains(&usize::from(n)) => n,
+        Some(_) => {
+            odd = Some(name);
+            or
+        }
+        None => or,
     };
     let (cols, rows) = (number("COLUMNS", 80), number("LINES", 24));
     let size = Winsize { cols, rows, xpixel: cols * 10, ypixel: rows * 20 };
     let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
-    let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
     let Some((program, args)) = command.split_first() else {
         return Err("no program to run".into());
     };
     let pane = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
-    let mut child = Command::new(program);
-    child
-        .args(args)
-        .current_dir(cwd)
-        .env("TERM", TERM)
-        .env("FUX3C_PANE", pane)
-        .env_remove("COLUMNS")
-        .env_remove("LINES");
-    child.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
-    sys::new_session(&mut child, true);
-    let mut child = child.spawn().map_err(|e| format!("cannot start {}: {e}", program.to_string_lossy()))?;
+    let mut child = {
+        let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
+        let mut child = Command::new(program);
+        child.args(args).current_dir(cwd).env("TERM", TERM).env("FUX3C_PANE", pane);
+        child.env_remove("COLUMNS").env_remove("LINES").stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
+        sys::new_session(&mut child, true);
+        child.spawn().map_err(|e| format!("cannot start {}: {e}", program.to_string_lossy()))?
+    };
     let pid = child.id();
-    // The FIFOs are made once there is a program to read them for.
-    let (input, _input_writer) = fifo("in").map_err(|e| format!("cannot make in: {e}"))?;
-    let (ctl, _ctl_writer) = fifo("ctl").map_err(|e| format!("cannot make ctl: {e}"))?;
-    // The program's end arrives as a line on a pipe, so the loop below waits
-    // on it like on everything else.
+    // The program's end arrives as a line on a pipe, so the loop waits on it
+    // like on everything else.
     let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
-    std::thread::spawn(move || {
+    let waiter = std::thread::Builder::new().spawn(move || {
         let state = match child.wait() {
             Ok(status) => match (status.code(), status.signal()) {
                 (Some(code), _) => format!("exited {code}"),
@@ -113,7 +121,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         };
         let _ = end_writer.write_all(state.as_bytes());
     });
-    let command = command.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
+    waiter.map_err(|e| format!("cannot start a thread: {e}"))?;
+    let command = plain(&command.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
     let mut holder = Holder {
         term: Term::new(usize::from(cols), usize::from(rows)),
         master: Some(master),
@@ -125,101 +134,119 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         pictures: Vec::new(),
         command,
         state: "running".into(),
+        told: String::new(),
         logged: 0,
     };
-    let _ = fs::remove_file("history.1");
-    File::create("history").map_err(|e| format!("cannot make history: {e}"))?;
-    holder.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
-    holder.status().map_err(|e| format!("cannot write status: {e}"))?;
-
-    let mut buffer = vec![0u8; 64 << 10];
-    let (mut dirty, mut published, mut budget) = (false, Instant::now(), READ_BUDGET);
-    loop {
-        let since = published.elapsed();
-        if since >= PUBLISH_EVERY {
-            budget = READ_BUDGET;
-            if dirty {
-                match holder.publish() {
-                    Err(e) if e.kind() == ErrorKind::NotFound => {
-                        return Err("the pane's directory is gone".into());
-                    }
-                    Err(e) => holder.log(&format!("cannot write the screen: {e}")),
-                    Ok(()) => {}
-                }
-                (dirty, published) = (false, Instant::now());
-            }
-        }
-        let master = holder.master.as_ref().map(|m| m.as_raw_fd());
-        let mut wanted = vec![(ended.as_raw_fd(), sys::POLLIN), (ctl.as_raw_fd(), sys::POLLIN)];
-        if let Some(master) = master {
-            let events =
-                if budget > 0 { sys::POLLIN } else { 0 } | if holder.input.is_empty() { 0 } else { sys::POLLOUT };
-            wanted.push((master, events));
-            wanted.push((input.as_raw_fd(), if holder.input.len() < INPUT_MAX { sys::POLLIN } else { 0 }));
-        }
-        let timeout =
-            if dirty || budget == 0 { PUBLISH_EVERY.saturating_sub(since).as_millis() as i32 + 1 } else { LOOK_EVERY };
-        let events = sys::wait(&wanted, timeout).map_err(|e| format!("cannot wait: {e}"))?;
-        let ready = |i: usize| events.get(i).is_some_and(|e| *e != 0);
-        if events.iter().all(|e| *e == 0) && !dirty && fs::symlink_metadata("in").is_err() {
-            return Err("the pane's directory is gone".into());
-        }
-        if ready(1) {
-            holder.commands(&ctl, &mut buffer);
-            dirty = true;
-        }
-        if ready(2) {
-            let n = holder.read_program(&mut buffer);
-            budget = budget.saturating_sub(n);
-            dirty |= n > 0;
-            holder.write_program();
-        }
-        if ready(3) && holder.master.is_some() {
-            let room = INPUT_MAX.saturating_sub(holder.input.len()).min(buffer.len());
-            if let Some(Ok(n)) = buffer.get_mut(..room).map(|b| (&input).read(b)) {
-                holder.input.extend_from_slice(buffer.get(..n).unwrap_or(&[]));
-            }
-            holder.write_program();
-        }
-        if ready(0) {
-            let mut state = String::new();
-            let _ = ended.read_to_string(&mut state);
-            // What the program wrote last is still in the pty: read it, up to a bound.
-            let mut left = 4 << 20;
-            while left > 0 {
-                match holder.read_program(&mut buffer) {
-                    0 => break,
-                    n => left -= n.min(left),
-                }
-            }
-            (holder.master, holder.state) = (None, state);
-            let _ = holder.publish();
-            let _ = holder.status();
-            let _ = fs::remove_file("in");
-            let _ = fs::remove_file("ctl");
-            return Ok(());
-        }
+    if let Some(name) = odd {
+        holder.log(&format!("{name} is not a number from 1 to {SIZE_MAX}: the pane starts at {cols}x{rows}"));
     }
+    // The FIFOs are there for as long as this function runs, and not after.
+    let fifos = fifo("in").and_then(|input| Ok((input, fifo("ctl")?)));
+    let result = fifos.map_err(|e| format!("cannot make the FIFOs: {e}"));
+    let result = result.and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended));
+    let _ = fs::remove_file("in");
+    let _ = fs::remove_file("ctl");
+    result
 }
 
 impl Holder {
+    fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
+        // What an earlier holder of this pane left is this one's to replace.
+        let _ = fs::remove_file("history.1");
+        File::create("history").map_err(|e| format!("cannot make history: {e}"))?;
+        for old in fs::read_dir(".").into_iter().flatten().flatten().map(|entry| entry.file_name()) {
+            if old.to_str().is_some_and(|name| name.starts_with("pic-") && name.ends_with(".sixel")) {
+                let _ = fs::remove_file(old);
+            }
+        }
+        self.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
+
+        let mut buffer = vec![0u8; 64 << 10];
+        let (mut dirty, mut published, mut looked, mut budget) = (false, Instant::now(), Instant::now(), READ_BUDGET);
+        loop {
+            let since = published.elapsed();
+            if since >= PUBLISH_EVERY {
+                budget = READ_BUDGET;
+                if dirty {
+                    match self.publish() {
+                        Err(e) if e.kind() == ErrorKind::NotFound => return Err(GONE.into()),
+                        Err(e) => self.log(&format!("cannot write the screen: {e}")),
+                        Ok(()) => {}
+                    }
+                    (dirty, published) = (false, Instant::now());
+                }
+            }
+            // The directory is the pane: when it is gone, so is this.
+            if looked.elapsed() >= LOOK_EVERY {
+                looked = Instant::now();
+                if fs::symlink_metadata("in").is_err() {
+                    return Err(GONE.into());
+                }
+            }
+            let mut wanted = vec![(ended.as_raw_fd(), sys::POLLIN), (ctl.as_raw_fd(), sys::POLLIN)];
+            if let Some(master) = &self.master {
+                let read = if budget > 0 { sys::POLLIN } else { 0 };
+                let write = if self.input.is_empty() { 0 } else { sys::POLLOUT };
+                wanted.push((master.as_raw_fd(), read | write));
+                wanted.push((input.as_raw_fd(), if self.input.len() < INPUT_MAX { sys::POLLIN } else { 0 }));
+            }
+            let wait = if dirty || budget == 0 { PUBLISH_EVERY.saturating_sub(since) } else { LOOK_EVERY };
+            let events = sys::wait(&wanted, wait.as_millis() as i32 + 1).map_err(|e| format!("cannot wait: {e}"))?;
+            let event = |i: usize| events.get(i).copied().unwrap_or(0);
+            if event(1) != 0 {
+                self.commands(ctl, &mut buffer);
+                dirty = true;
+            }
+            if event(2) & !sys::POLLOUT != 0 && budget > 0 {
+                let n = self.read_program(buffer.get_mut(..budget.min(64 << 10)).unwrap_or(&mut []));
+                budget -= n.min(budget);
+                dirty |= n > 0;
+            }
+            if event(3) != 0 && self.master.is_some() {
+                let room = INPUT_MAX.saturating_sub(self.input.len()).min(buffer.len());
+                if let Some(Ok(n)) = buffer.get_mut(..room).map(|b| (&*input).read(b)) {
+                    self.input.extend_from_slice(buffer.get(..n).unwrap_or(&[]));
+                }
+            }
+            let typed = self.master.as_ref().filter(|_| !self.input.is_empty()).map(|mut m| m.write(&self.input));
+            if let Some(Ok(n)) = typed {
+                self.input.drain(..n.min(self.input.len()));
+            }
+            if event(0) != 0 {
+                let mut state = String::new();
+                let _ = ended.read_to_string(&mut state);
+                // What the program wrote last is still in the pty: read it, up to 4 MiB.
+                let mut left = 4 << 20;
+                while left > 0 {
+                    match self.read_program(&mut buffer) {
+                        0 => break,
+                        n => left -= n.min(left),
+                    }
+                }
+                (self.master, self.state) = (None, state);
+                // The end is in `status` even when the last screen cannot be written.
+                if let Err(e) = self.publish().and(self.tell()) {
+                    self.log(&format!("cannot write the last screen: {e}"));
+                    let _ = self.tell();
+                }
+                return Ok(());
+            }
+        }
+    }
+
     /// A line in `log` (the holder's standard error). The file never passes
     /// 64 KiB: its last line says that it is full. Control characters in what
     /// is quoted are written as `?`, so `cat log` is as safe as the screens.
     fn log(&mut self, line: &str) {
         const FULL: &str = "the log is full: nothing more is written here";
-        let line: String = line.chars().map(|c| if c.is_control() { '?' } else { c }).collect();
+        let line = plain(line);
         if self.logged + line.len() + 1 + FULL.len() < LOG_MAX {
             self.logged += line.len() + 1;
-            eprintln!("{line}");
+            let _ = writeln!(io::stderr(), "{line}");
         } else if self.logged < LOG_MAX {
             self.logged = LOG_MAX;
-            eprintln!("{FULL}");
+            let _ = writeln!(io::stderr(), "{FULL}");
         }
-    }
-
-    fn status(&self) -> io::Result<()> {
-        replace("status", format!("pid {}\nstate {}\ncommand {}\n", self.pid, self.state, self.command).as_bytes())
     }
 
     /// Feeds the emulator what the program wrote; says how many bytes.
@@ -237,13 +264,10 @@ impl Holder {
         if let Some(refused) = self.term.refused.take() {
             self.log(refused);
         }
-        n
-    }
-
-    fn write_program(&mut self) {
-        if let Some(Ok(n)) = self.master.as_ref().map(|mut m| m.write(&self.input)) {
-            self.input.drain(..n.min(self.input.len()));
+        if self.term.history.len() > READ_BUDGET {
+            self.history();
         }
+        n
     }
 
     fn commands(&mut self, mut ctl: &File, buffer: &mut [u8]) {
@@ -271,30 +295,40 @@ impl Holder {
                 // children do about it is theirs to decide.
                 if self.master.take().is_some() {
                     self.state = "hungup".into();
-                    self.status().map_err(|e| e.to_string())?;
                 }
                 Ok(())
             }
             Some("resize") => {
                 let numbers: Vec<u16> = words.map(|word| word.parse().unwrap_or(0)).collect();
                 let (cols, rows, cell) = match numbers.as_slice() {
-                    [cols @ 1..=1000, rows @ 1..=1000] => (*cols, *rows, None),
-                    [cols @ 1..=1000, rows @ 1..=1000, w @ 1..=100, h @ 1..=100] => (*cols, *rows, Some((*w, *h))),
-                    _ => return Err("resize takes COLS ROWS, each 1 to 1000, then perhaps a cell's WIDTH HEIGHT in pixels, each 1 to 100".into()),
+                    [cols @ 1..=500, rows @ 1..=500] => (*cols, *rows, None),
+                    [cols @ 1..=500, rows @ 1..=500, w @ 1..=100, h @ 1..=100] => (*cols, *rows, Some((*w, *h))),
+                    _ => return Err("resize takes COLS ROWS, each 1 to 500, then perhaps a cell's WIDTH HEIGHT in pixels, each 1 to 100".into()),
                 };
                 let old = (self.term.cell.0 as u16, self.term.cell.1 as u16);
                 let cell = cell.unwrap_or(old);
-                if cell != old {
-                    // Pictures were laid out in cells of the old size.
-                    self.term.pictures.clear();
+                if self.master.is_none() {
+                    return Err("the program was hung up".into());
+                }
+                // What the program has written so far, it wrote for the old size:
+                // it is drawn at that size first (up to 1 MiB of it).
+                let mut buffer = vec![0u8; 64 << 10];
+                for _ in 0..16 {
+                    if self.read_program(&mut buffer) == 0 {
+                        break;
+                    }
                 }
                 let Some(master) = &self.master else {
                     return Err("the program was hung up".into());
                 };
-                let size =
-                    Winsize { cols, rows, xpixel: cols.saturating_mul(cell.0), ypixel: rows.saturating_mul(cell.1) };
+                let size = Winsize { cols, rows, xpixel: cols * cell.0, ypixel: rows * cell.1 };
                 sys::set_winsize(master, size).map_err(|e| e.to_string())?;
-                self.term.cell = (usize::from(cell.0), usize::from(cell.1));
+                if cell != old {
+                    // Pictures were laid out in cells of the old size.
+                    self.term.pictures.clear();
+                    self.term.other_pictures.clear();
+                    self.term.cell = (usize::from(cell.0), usize::from(cell.1));
+                }
                 self.term.resize(usize::from(cols), usize::from(rows));
                 Ok(())
             }
@@ -302,27 +336,47 @@ impl Holder {
         }
     }
 
+    /// Appends the lines that scrolled off to `history`. Lines that cannot be
+    /// written are lost, and the log says so: they are not kept to try again.
+    fn history(&mut self) {
+        let lines = std::mem::take(&mut self.term.history);
+        if fs::metadata("history").is_ok_and(|m| m.len() > HISTORY_MAX) {
+            let _ = fs::rename("history", "history.1");
+        }
+        let file = OpenOptions::new().append(true).create(true).open("history");
+        if let Err(e) = file.and_then(|mut file| file.write_all(lines.as_bytes())) {
+            self.log(&format!("{} bytes of history were lost: {e}", lines.len()));
+        }
+    }
+
     /// Writes what changed: history first, then pictures, then both screens,
-    /// so nothing a screen names is missing and no line is in neither file.
+    /// then `status` if the state changed; so nothing a screen names is
+    /// missing, no line is in neither file, and `status` never runs ahead.
     fn publish(&mut self) -> io::Result<()> {
         if !self.term.history.is_empty() {
-            if fs::metadata("history").is_ok_and(|m| m.len() > HISTORY_MAX) {
-                fs::rename("history", "history.1")?;
-            }
-            let mut history = OpenOptions::new().append(true).create(true).open("history")?;
-            history.write_all(self.term.history.as_bytes())?;
-            self.term.history.clear();
+            self.history();
         }
-        let mut pictures = String::new();
-        for picture in &mut self.term.pictures {
+        // A picture that cannot be written is not on the screen: it goes, and the log says why.
+        let mut failed = None;
+        self.term.pictures.retain_mut(|picture| {
+            let Some(data) = &picture.data else { return true };
             let name = format!("pic-{}.sixel", picture.id);
-            if let Some(data) = picture.data.take() {
-                fs::write(&name, data)?;
-                self.pictures.push(picture.id);
+            match fs::write(&name, data) {
+                Ok(()) => picture.data = None,
+                Err(e) => {
+                    let _ = fs::remove_file(&name);
+                    failed = Some(format!("a picture was dropped, as its file could not be written: {e}"));
+                }
             }
-            pictures
-                .push_str(&format!(" pic={name}@{},{}+{}x{}", picture.row, picture.col, picture.cols, picture.rows));
+            self.pictures.push(picture.id);
+            picture.data.is_none()
+        });
+        if let Some(failed) = failed {
+            self.log(&failed);
         }
+        let placed =
+            |p: &crate::term::Picture| format!(" pic=pic-{}.sixel@{},{}+{}x{}", p.id, p.row, p.col, p.cols, p.rows);
+        let pictures: String = self.term.pictures.iter().map(placed).collect();
         self.version += 1;
         let term = &self.term;
         let modes = [
@@ -347,14 +401,27 @@ impl Holder {
         );
         replace("screen", (header.clone() + &term.plain()).as_bytes())?;
         replace("screen.styled", (header + &term.styled()).as_bytes())?;
-        // A picture no screen names any more has no reader left.
+        // A picture neither screen has any more (the one shown, the one behind) has no reader left.
+        self.pictures.sort_unstable();
+        self.pictures.dedup();
         self.pictures.retain(|id| {
-            let kept = self.term.pictures.iter().any(|p| p.id == *id);
+            let kept = self.term.pictures.iter().chain(&self.term.other_pictures).any(|p| p.id == *id);
             if !kept {
                 let _ = fs::remove_file(format!("pic-{id}.sixel"));
             }
             kept
         });
+        self.tell()
+    }
+
+    /// Writes `status` if the state is not the one it holds.
+    fn tell(&mut self) -> io::Result<()> {
+        if self.told != self.state {
+            let (pid, holder) = (self.pid, std::process::id());
+            let status = format!("pid {pid}\nholder {holder}\nstate {}\ncommand {}\n", self.state, self.command);
+            replace("status", status.as_bytes())?;
+            self.told.clone_from(&self.state);
+        }
         Ok(())
     }
 }

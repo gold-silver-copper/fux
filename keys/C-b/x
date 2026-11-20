@@ -1,5 +1,5 @@
 #!/bin/sh
-# close this pane: remove its directory
+# close this pane
 # Removing the directory is what ends a pane; `kill` first only makes it prompt.
 [ -n "$FUX3C_PANE" ] || exit 0
 [ -p "$FUX3C_PANE/ctl" ] && echo kill 1<>"$FUX3C_PANE/ctl"

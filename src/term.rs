@@ -10,6 +10,10 @@ pub const PICTURE_MAX: usize = 4 << 20;
 /// The most pictures a screen keeps; a new one past it drops the oldest.
 pub const PICTURES_MAX: usize = 8;
 const PARAMS_MAX: usize = 32;
+/// The most columns and the most rows a screen may have.
+pub const SIZE_MAX: usize = 500;
+/// The most history kept between two looks by the holder; lines past it are dropped and noted.
+const HISTORY_PENDING_MAX: usize = 4 << 20;
 const REPLY_MAX: usize = 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -101,6 +105,7 @@ struct Saved {
     origin: bool,
     graphics: [bool; 2],
     shift: bool,
+    wrap: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -150,6 +155,10 @@ pub struct Term {
     inter: u8,
     utf8: u32,
     utf8_left: u8,
+    /// The smallest character this many bytes may encode: a longer spelling of a smaller one is refused.
+    utf8_min: u32,
+    /// The sequence being read has more parameters than are kept: it will be ignored.
+    too_long: bool,
     dcs: Vec<u8>,
     dcs_was: State,
     /// Answers to the program's queries, for the holder to write to it.
@@ -157,6 +166,8 @@ pub struct Term {
     /// Lines that scrolled off the top of the main screen, as plain text.
     pub history: String,
     pub pictures: Vec<Picture>,
+    /// The pictures of the screen not shown (the main one while the alternate is).
+    pub other_pictures: Vec<Picture>,
     next_picture: u32,
     /// The size of a cell in pixels, to know how many cells a picture covers.
     pub cell: (usize, usize),
@@ -166,7 +177,7 @@ pub struct Term {
 
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Term {
-        let (cols, rows) = (cols.max(1), rows.max(1));
+        let (cols, rows) = (cols.clamp(1, SIZE_MAX), rows.clamp(1, SIZE_MAX));
         let grid = vec![vec![Cell::blank(Style::default()); cols]; rows];
         Term {
             cols,
@@ -188,7 +199,7 @@ impl Term {
             app_cursor: false,
             app_keypad: false,
             paste: false,
-            tabs: (0..cols).map(|c| c % 8 == 0).collect(),
+            tabs: (0..SIZE_MAX).map(|c| c % 8 == 0).collect(),
             graphics: [false; 2],
             shift: false,
             saved: [Saved::default(); 2],
@@ -201,11 +212,14 @@ impl Term {
             inter: 0,
             utf8: 0,
             utf8_left: 0,
+            utf8_min: 0,
+            too_long: false,
             dcs: Vec::new(),
             dcs_was: State::Ground,
             reply: Vec::new(),
             history: String::new(),
             pictures: Vec::new(),
+            other_pictures: Vec::new(),
             next_picture: 1,
             cell: (10, 20),
             refused: None,
@@ -281,44 +295,64 @@ impl Term {
         }
     }
 
-    /// Blanks columns `from..to` of a row.
-    fn erase(&mut self, row: usize, from: usize, to: usize) {
+    /// Blanks a wide character that a boundary before column `at` would cut in two.
+    fn split(&mut self, row: usize, at: usize) {
         let blank = self.blank();
-        if let Some(cells) = self.grid.get_mut(row).and_then(|r| r.get_mut(from..to.min(self.cols))) {
-            cells.fill(blank);
+        if let Some(cells) = self.grid.get_mut(row).filter(|cells| cells.get(at).is_some_and(|c| c.ch == '\0'))
+            && let Some(pair) = cells.get_mut(at.saturating_sub(1)..=at)
+        {
+            pair.fill(blank);
         }
-        self.tidy(row);
-        self.pictures.retain(|p| !(p.row..p.row + p.rows).contains(&row));
     }
 
-    fn drop_pictures(&mut self, from: usize, to: usize) {
-        self.pictures.retain(|p| p.row + p.rows <= from || p.row > to);
+    /// Blanks columns `from..to` of a row.
+    fn erase(&mut self, row: usize, from: usize, to: usize) {
+        let (blank, to) = (self.blank(), to.min(self.cols));
+        self.split(row, from);
+        self.split(row, to);
+        if let Some(cells) = self.grid.get_mut(row).and_then(|r| r.get_mut(from..to)) {
+            cells.fill(blank);
+        }
+        self.wrap_pending = false;
+        self.pictures.retain(|p| !((p.row..p.row + p.rows).contains(&row) && p.col < to && from < p.col + p.cols));
+    }
+
+    /// Pictures move with rows `from..=bottom` when those scroll by `n`; one
+    /// that would leave those rows, or lies across their edge, goes.
+    fn scroll_pictures(&mut self, from: usize, n: usize, up: bool) {
+        let bottom = self.bottom;
+        self.pictures.retain_mut(|p| {
+            let end = p.row + p.rows;
+            if end <= from || p.row > bottom {
+                return true;
+            }
+            let stays =
+                p.row >= from && end <= bottom + 1 && if up { p.row >= from + n } else { end + n <= bottom + 1 };
+            p.row = if up { p.row.saturating_sub(n) } else { p.row + n };
+            stays
+        });
     }
 
     /// Moves rows `from..=bottom` up by `n`, blank rows coming in below.
     fn scroll_up(&mut self, from: usize, n: usize) {
         let n = n.min(self.bottom + 1 - from.min(self.bottom));
         let blank = vec![self.blank(); self.cols];
-        let whole = from == 0 && self.bottom + 1 == self.rows;
         let Some(region) = self.grid.get_mut(from..=self.bottom) else {
             return;
         };
         for row in region.iter_mut().take(n) {
             if from == 0 && !self.alt {
-                Term::row_text(row, &mut self.history);
-                self.history.push('\n');
+                if self.history.len() < HISTORY_PENDING_MAX {
+                    Term::row_text(row, &mut self.history);
+                    self.history.push('\n');
+                } else {
+                    self.refused = Some("lines were not kept in history: 4 MiB of it were waiting to be written");
+                }
             }
             row.clone_from(&blank);
         }
         region.rotate_left(n);
-        if whole {
-            self.pictures.retain_mut(|p| {
-                p.row = p.row.wrapping_sub(n);
-                p.row < self.rows
-            });
-        } else {
-            self.drop_pictures(from, self.bottom);
-        }
+        self.scroll_pictures(from, n, true);
     }
 
     /// Moves rows `from..=bottom` down by `n`, blank rows coming in at `from`.
@@ -330,10 +364,11 @@ impl Term {
         };
         region.rotate_right(n);
         region.iter_mut().take(n).for_each(|row| row.clone_from(&blank));
-        self.drop_pictures(from, self.bottom);
+        self.scroll_pictures(from, n, false);
     }
 
     fn linefeed(&mut self) {
+        self.wrap_pending = false;
         if self.row == self.bottom {
             self.scroll_up(self.top, 1);
         } else if self.row + 1 < self.rows {
@@ -342,6 +377,7 @@ impl Term {
     }
 
     fn reverse_linefeed(&mut self) {
+        self.wrap_pending = false;
         if self.row == self.top {
             self.scroll_down(self.top, 1);
         } else {
@@ -438,6 +474,7 @@ impl Term {
             origin: self.origin,
             graphics: self.graphics,
             shift: self.shift,
+            wrap: self.wrap_pending,
         };
         if let Some(slot) = self.saved.get_mut(usize::from(self.alt)) {
             *slot = saved;
@@ -452,25 +489,33 @@ impl Term {
         self.origin = saved.origin;
         self.graphics = saved.graphics;
         self.shift = saved.shift;
-        self.wrap_pending = false;
+        self.wrap_pending = saved.wrap && saved.col + 1 == self.cols;
     }
 
     fn set_alt(&mut self, alt: bool, clear: bool) {
         if alt != self.alt {
             std::mem::swap(&mut self.grid, &mut self.other);
+            std::mem::swap(&mut self.pictures, &mut self.other_pictures);
             self.alt = alt;
-            self.pictures.clear();
         }
         if alt && clear {
-            let blank = vec![Cell::blank(Style::default()); self.cols];
-            self.grid.iter_mut().for_each(|row| row.clone_from(&blank));
+            self.clear();
         }
+    }
+
+    fn clear(&mut self) {
+        let blank = vec![Cell::blank(Style::default()); self.cols];
+        self.grid.iter_mut().for_each(|row| row.clone_from(&blank));
+        self.pictures.clear();
     }
 
     /// A new size. Rows keep their text (no reflow): what does not fit to the
     /// right is cut, and rows that do not fit above the cursor go to history.
     pub fn resize(&mut self, cols: usize, rows: usize) {
-        let (cols, rows) = (cols.max(1), rows.max(1));
+        let (cols, rows) = (cols.clamp(1, SIZE_MAX), rows.clamp(1, SIZE_MAX));
+        if (cols, rows) == (self.cols, self.rows) {
+            return;
+        }
         let blank = Cell::blank(Style::default());
         if self.alt {
             std::mem::swap(&mut self.grid, &mut self.other);
@@ -502,14 +547,15 @@ impl Term {
         self.row = self.row.min(rows - 1);
         self.col = self.col.min(cols - 1);
         self.wrap_pending = false;
-        self.tabs = (0..cols).map(|c| c % 8 == 0).collect();
-        // A picture stays if it still fits whole where it is.
-        let up = if self.alt { 0 } else { extra };
-        self.pictures.retain_mut(|p| {
-            let fits = p.row >= up && p.row - up + p.rows <= rows && p.col + p.cols <= cols;
-            p.row = p.row.saturating_sub(up);
-            fits
-        });
+        // A picture stays if it still fits whole where it is; the main screen's moved up with its rows.
+        let (shown, other) = if self.alt { (0, extra) } else { (extra, 0) };
+        for (pictures, up) in [(&mut self.pictures, shown), (&mut self.other_pictures, other)] {
+            pictures.retain_mut(|p| {
+                let fits = p.row >= up && p.row - up + p.rows <= rows && p.col + p.cols <= cols;
+                p.row = p.row.saturating_sub(up);
+                fits
+            });
+        }
         (0..rows).for_each(|row| self.tidy(row));
     }
 
@@ -578,7 +624,8 @@ impl Term {
                 self.utf8 = (self.utf8 << 6) | u32::from(byte & 0x3f);
                 self.utf8_left -= 1;
                 if self.utf8_left == 0 {
-                    self.print(char::from_u32(self.utf8).filter(|c| *c >= '\u{a0}').unwrap_or('\u{fffd}'));
+                    let whole = char::from_u32(self.utf8).filter(|c| *c >= '\u{a0}' && self.utf8 >= self.utf8_min);
+                    self.print(whole.unwrap_or('\u{fffd}'));
                 }
                 return;
             }
@@ -589,9 +636,9 @@ impl Term {
             0x1b => self.state = State::Escape,
             0x00..=0x1f => self.control(byte),
             0x20..=0x7e => self.print(char::from(byte)),
-            0xc2..=0xdf => (self.utf8, self.utf8_left) = (u32::from(byte & 0x1f), 1),
-            0xe0..=0xef => (self.utf8, self.utf8_left) = (u32::from(byte & 0x0f), 2),
-            0xf0..=0xf4 => (self.utf8, self.utf8_left) = (u32::from(byte & 0x07), 3),
+            0xc2..=0xdf => (self.utf8, self.utf8_left, self.utf8_min) = (u32::from(byte & 0x1f), 1, 0x80),
+            0xe0..=0xef => (self.utf8, self.utf8_left, self.utf8_min) = (u32::from(byte & 0x0f), 2, 0x800),
+            0xf0..=0xf4 => (self.utf8, self.utf8_left, self.utf8_min) = (u32::from(byte & 0x07), 3, 0x10000),
             0x7f => {}
             _ => self.print('\u{fffd}'),
         }
@@ -627,7 +674,7 @@ impl Term {
         match byte {
             b'[' => {
                 self.params.clear();
-                (self.param, self.sub, self.private, self.inter) = (None, false, 0, 0);
+                (self.param, self.sub, self.private, self.inter, self.too_long) = (None, false, 0, 0, false);
                 self.state = State::Csi;
             }
             b']' | b'X' | b'^' | b'_' => self.state = State::Skip,
@@ -655,8 +702,9 @@ impl Term {
             b'=' => self.app_keypad = true,
             b'>' => self.app_keypad = false,
             b'c' => {
-                let (cell, history) = (self.cell, std::mem::take(&mut self.history));
-                *self = Term { cell, history, ..Term::new(self.cols, self.rows) };
+                // A full reset. History stays, and picture numbers go on, so no file's name is used twice.
+                let (cell, history, next_picture) = (self.cell, std::mem::take(&mut self.history), self.next_picture);
+                *self = Term { cell, history, next_picture, ..Term::new(self.cols, self.rows) };
             }
             _ => {}
         }
@@ -695,8 +743,13 @@ impl Term {
         let (width, height) = sixel_size(&data);
         let cols = width.div_ceil(self.cell.0.max(1)).max(1);
         let rows = height.div_ceil(self.cell.1.max(1)).max(1);
+        if cols > SIZE_MAX || rows > SIZE_MAX {
+            self.refused = Some("a picture over 500 cells wide or high was dropped");
+            return;
+        }
         if self.pictures.len() >= PICTURES_MAX {
             self.pictures.remove(0);
+            self.refused = Some("a screen keeps 8 pictures: the oldest was dropped for a new one");
         }
         let mut whole = Vec::with_capacity(data.len() + 4);
         whole.extend_from_slice(b"\x1bP");
@@ -725,22 +778,26 @@ impl Term {
                 let digit = u16::from(byte - b'0');
                 self.param = Some(self.param.unwrap_or(0).saturating_mul(10).saturating_add(digit));
             }
-            b';' | b':' => {
-                if self.params.len() < PARAMS_MAX {
+            b';' | b':' | 0x40..=0x7e => {
+                // More parameters than are kept: the whole sequence is ignored, and said so.
+                self.too_long |= self.params.len() >= PARAMS_MAX;
+                if !self.too_long {
                     self.params.push((self.param.unwrap_or(0), self.sub));
                 }
                 self.param = None;
                 self.sub = byte == b':';
-            }
-            b'<'..=b'?' => self.private = byte,
-            0x20..=0x2f => self.inter = byte,
-            0x40..=0x7e => {
-                if self.params.len() < PARAMS_MAX {
-                    self.params.push((self.param.unwrap_or(0), self.sub));
+                if byte >= 0x40 {
+                    self.state = State::Ground;
+                    if self.too_long {
+                        self.refused = Some("a control sequence with more than 32 parameters was ignored");
+                    } else {
+                        self.dispatch(byte);
+                    }
                 }
-                self.state = State::Ground;
-                self.dispatch(byte);
             }
+            // `?` and its like count only before the parameters; elsewhere the sequence means nothing.
+            b'<'..=b'?' => self.private = if self.params.is_empty() && self.param.is_none() { byte } else { 0xff },
+            0x20..=0x2f => self.inter = byte,
             _ => self.state = State::Ground,
         }
     }
@@ -758,7 +815,11 @@ impl Term {
         let (row, col) = (self.row, self.col);
         match (self.private, self.inter, last) {
             (0, 0, b'A') => self.move_rows(n, false),
-            (0, 0, b'B' | b'e') => self.move_rows(n, true),
+            (0, 0, b'B') => self.move_rows(n, true),
+            (0, 0, b'e') => {
+                self.row = row.saturating_add(n).min(self.rows - 1);
+                self.wrap_pending = false;
+            }
             (0, 0, b'C' | b'a') => self.move_to_col(col + n),
             (0, 0, b'D') => self.move_to_col(col.saturating_sub(n)),
             (0, 0, b'E') => {
@@ -781,7 +842,7 @@ impl Term {
                 }
                 self.wrap_pending = false;
             }
-            (_, 0, b'J') => match self.arg(0, 0) {
+            (0 | b'?', 0, b'J') => match self.arg(0, 0) {
                 0 => {
                     self.erase(row, col, self.cols);
                     (row + 1..self.rows).for_each(|r| self.erase(r, 0, self.cols));
@@ -793,7 +854,7 @@ impl Term {
                 2 => (0..self.rows).for_each(|r| self.erase(r, 0, self.cols)),
                 _ => {}
             },
-            (_, 0, b'K') => match self.arg(0, 0) {
+            (0 | b'?', 0, b'K') => match self.arg(0, 0) {
                 0 => self.erase(row, col, self.cols),
                 1 => self.erase(row, 0, col + 1),
                 2 => self.erase(row, 0, self.cols),
@@ -801,6 +862,10 @@ impl Term {
             },
             (0, 0, b'X') => self.erase(row, col, col.saturating_add(n)),
             (0, 0, b'@' | b'P') => {
+                self.split(row, col);
+                if last == b'P' {
+                    self.split(row, col.saturating_add(n));
+                }
                 let blank = self.blank();
                 if let Some(rest) = self.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
                     let n = n.min(rest.len());
@@ -823,12 +888,7 @@ impl Term {
                 if last == b'L' {
                     self.scroll_down(row, n);
                 } else {
-                    // Lines deleted here are not history: only the top of the screen is.
-                    let history = self.history.len();
                     self.scroll_up(row, n);
-                    if row != 0 {
-                        self.history.truncate(history);
-                    }
                 }
                 self.col = 0;
                 self.wrap_pending = false;
@@ -836,7 +896,7 @@ impl Term {
             (0, 0, b'S') => self.scroll_up(self.top, n),
             (0, 0, b'T') => self.scroll_down(self.top, n),
             (0, 0, b'b') => {
-                for _ in 0..n.min(self.cols) {
+                for _ in 0..n.min(self.cols * self.rows) {
                     self.print(self.last);
                 }
             }
@@ -914,10 +974,14 @@ impl Term {
     }
 
     fn move_rows(&mut self, n: usize, down: bool) {
-        // Inside the scroll region the cursor stops at its edge.
-        let (low, high) =
-            if (self.top..=self.bottom).contains(&self.row) { (self.top, self.bottom) } else { (0, self.rows - 1) };
-        self.row = if down { self.row.saturating_add(n).min(high) } else { self.row.saturating_sub(n).max(low) };
+        // The cursor stops at the scroll region's edge, unless it is already past it.
+        self.row = if down {
+            let limit = if self.row <= self.bottom { self.bottom } else { self.rows - 1 };
+            self.row.saturating_add(n).min(limit)
+        } else {
+            let limit = if self.row >= self.top { self.top } else { 0 };
+            self.row.saturating_sub(n).max(limit)
+        };
         self.wrap_pending = false;
     }
 
@@ -936,7 +1000,12 @@ impl Term {
             7 => self.autowrap = on,
             25 => self.cursor_shown = on,
             47 => self.set_alt(on, false),
-            1047 => self.set_alt(on, on),
+            1047 => {
+                if !on && self.alt {
+                    self.clear();
+                }
+                self.set_alt(on, on);
+            }
             1048 if on => self.save_cursor(),
             1048 => self.restore_cursor(),
             1049 if on => {
@@ -1006,16 +1075,20 @@ impl Term {
     /// The colour after a 38 or 48 at `i`, and how many parameters it used:
     /// `5;N`, `2;R;G;B`, or the same with `:` (where a colour space may come first).
     fn long_color(&self, i: usize) -> (Option<Color>, usize) {
-        let value = |k: usize| self.params.get(i + k).map_or(0, |p| p.0.min(255) as u8);
+        let value = |k: usize| self.params.get(i + k).and_then(|p| u8::try_from(p.0).ok());
+        let rgb = |at: usize| Some(Color::Rgb(value(at)?, value(at + 1)?, value(at + 2)?));
         let colons = self.params.get(i).is_some_and(|p| p.1);
         let count = self.params.iter().skip(i).take_while(|p| p.1).count();
+        let left = self.params.len().saturating_sub(i);
+        // A colour with a part missing or over 255 sets nothing.
         match self.params.get(i).map(|p| p.0) {
-            Some(5) => (Some(Color::Indexed(value(1))), if colons { count } else { 2 }),
+            Some(5) if colons => (value(1).filter(|_| count >= 2).map(Color::Indexed), count),
+            Some(5) => (value(1).map(Color::Indexed), left.min(2)),
             Some(2) if colons => {
                 let at = if count >= 5 { 2 } else { 1 };
-                (Some(Color::Rgb(value(at), value(at + 1), value(at + 2))), count)
+                (rgb(at).filter(|_| at + 2 < count), count)
             }
-            Some(2) => (Some(Color::Rgb(value(1), value(2), value(3))), 4),
+            Some(2) => (rgb(1), left.min(4)),
             _ => (None, if colons { count } else { 0 }),
         }
     }
@@ -1030,48 +1103,40 @@ fn line_drawing(c: char) -> char {
     }
 }
 
-/// The size of a sixel picture in pixels: what its raster attributes say,
-/// or else what its data covers.
+/// The size of a sixel picture in pixels: the larger of what its raster
+/// attributes say and what its data paints.
 fn sixel_size(data: &[u8]) -> (usize, usize) {
-    let mut bytes = data.iter().copied().skip_while(|&b| b != b'q').skip(1).peekable();
-    if bytes.next_if_eq(&b'"').is_some() {
-        let mut numbers = vec![0usize];
-        while let Some(byte) = bytes.next_if(|b| b.is_ascii_digit() || *b == b';') {
-            match (byte, numbers.last_mut()) {
-                (b';', _) => numbers.push(0),
-                (_, Some(n)) => *n = n.saturating_mul(10).saturating_add(usize::from(byte - b'0')),
+    let body = data.iter().copied().skip_while(|&b| b != b'q').skip(1);
+    let (mut x, mut band, mut painted, mut declared) = (0usize, 0usize, (0usize, 0usize), (0usize, 0usize));
+    // Whose numbers are being read: `!` a repeat count, `#` a colour, `"` the raster attributes.
+    let (mut owner, mut numbers) = (b' ', vec![0usize]);
+    for byte in body.chain(std::iter::once(b'$')) {
+        if byte.is_ascii_digit() {
+            if let Some(n) = numbers.last_mut() {
+                *n = n.saturating_mul(10).saturating_add(usize::from(byte - b'0')).min(1 << 20);
+            }
+        } else if byte == b';' {
+            if numbers.len() < 8 {
+                numbers.push(0);
+            }
+        } else {
+            if owner == b'"' {
+                let size = |i: usize| numbers.get(i).copied().unwrap_or(0);
+                declared = (declared.0.max(size(2)), declared.1.max(size(3)));
+            }
+            let repeat = if owner == b'!' { numbers.first().copied().unwrap_or(1).max(1) } else { 1 };
+            (owner, numbers) = (b' ', vec![0]);
+            match byte {
+                b'!' | b'#' | b'"' => owner = byte,
+                b'?'..=b'~' => {
+                    x = x.saturating_add(repeat);
+                    painted = (painted.0.max(x), (band + 1) * 6);
+                }
+                b'$' => x = 0,
+                b'-' => (x, band) = (0, band + 1),
                 _ => {}
             }
         }
-        if let (Some(&w @ 1..), Some(&h @ 1..)) = (numbers.get(2), numbers.get(3)) {
-            return (w, h);
-        }
     }
-    let (mut x, mut widest, mut bands) = (0usize, 0usize, 1usize);
-    // `!N` repeats the next sixel N times; `#N;…` picks a colour.
-    let (mut repeat, mut colour) = (None::<usize>, false);
-    for byte in bytes {
-        match byte {
-            b'!' => (repeat, colour) = (Some(0), false),
-            b'#' => colour = true,
-            b'0'..=b'9' | b';' if colour => {}
-            b'0'..=b'9' => {
-                if let Some(n) = repeat.as_mut() {
-                    *n = n.saturating_mul(10).saturating_add(usize::from(byte - b'0')).min(1 << 16);
-                }
-            }
-            b'?'..=b'~' => {
-                x = x.saturating_add(repeat.take().unwrap_or(1).max(1));
-                widest = widest.max(x);
-                colour = false;
-            }
-            b'$' | b'-' => {
-                x = 0;
-                bands += usize::from(byte == b'-');
-                colour = false;
-            }
-            _ => {}
-        }
-    }
-    (widest, bands * 6)
+    (painted.0.max(declared.0), painted.1.max(declared.1))
 }

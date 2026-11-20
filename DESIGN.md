@@ -38,9 +38,11 @@ fux3 is a view over the filesystem and pane daemons. Everything else follows.
 
 ## How it works
 
-**Starting.** `fux3 start` makes the pane's folder (that claims the name),
-locks it, and starts `fux3 hold` in a new session with the lock as its
-standard input: the lock lives exactly as long as the holder. The holder
+**Starting.** `fux3 start` makes the pane's folder and locks it (both under
+a lock on the workspace, so that two starts never mix), and starts
+`fux3 hold` in a new session with the pane's lock as its standard input: the
+lock lives exactly as long as the holder. The start is done when `status`
+names that holder. The holder
 works inside the folder with relative names, so it does not care what the
 folder is called.
 

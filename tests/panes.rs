@@ -77,6 +77,13 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     let waited = session.fux3().arg("wait").arg(&pane).output().unwrap();
     assert!(String::from_utf8_lossy(&waited.stdout).contains("state exited 3"));
     assert!(!pane.join("in").exists() && !pane.join("ctl").exists(), "the FIFOs go with the holder");
+    // A start in place that fails leaves what the last program left.
+    assert!(!session.fux3().args(["start", "build", "--", "/no/such/program"]).output().unwrap().status.success());
+    assert!(read(&pane.join("status")).contains("state exited 3") && read(&pane.join("screen")).contains("exit 3"));
+    assert!(
+        !session.fux3().args(["start", "layout"]).output().unwrap().status.success(),
+        "the layout file's name is taken"
+    );
 }
 
 #[test]
@@ -90,6 +97,14 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
     fs::write(pane.join("ctl"), "kill\n").unwrap();
     until("the program saw the hangup", || read(&pane.join("saw")) == "hup\n");
     until("its end is in status", || read(&pane.join("status")).contains("state exited 0"));
+
+    // Whoever starts a pane may ignore signals; its program does not inherit that.
+    let start = format!("trap '' INT HUP; exec '{}' start c -- sleep 600", env!("CARGO_BIN_EXE_fux3"));
+    assert!(Command::new("sh").args(["-c", &start]).env("FUX3C_DIR", &session.0).status().unwrap().success());
+    let interrupted = session.0.join("main/c");
+    until("the program runs", || read(&interrupted.join("status")).contains("state running"));
+    fs::write(interrupted.join("in"), "\x03").unwrap();
+    until("Ctrl-C ended it", || read(&interrupted.join("status")).contains("state killed 2"));
 
     let other = session.start("b", &["sh", "-c", "echo $$ > \"$FUX3C_PANE/pid\"; exec sleep 600"]);
     until("the program runs", || !read(&other.join("pid")).is_empty());
@@ -156,4 +171,10 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     });
     fs::write(inner.0.join("main/layout"), "* col(two one) focus=one zoom\n").unwrap();
     until("an edit of the file by hand is followed", || width("one") == Some("80x23".into()));
+    // A folder with a screen of someone's own making: what it says reaches the terminal as text only.
+    fs::create_dir(inner.0.join("main/odd")).unwrap();
+    fs::write(inner.0.join("main/odd/screen.styled"), "pid=1 size=9x2 cursor=0,0 state=x\x1b]0;T\x07\x1b[2Jy\nhi\n")
+        .unwrap();
+    fs::write(inner.0.join("main/layout"), "* row(one odd) focus=one\n").unwrap();
+    until("its title is drawn with the codes as marks", || screen().contains("─ odd [x?]0;T??[2Jy] ─"));
 }

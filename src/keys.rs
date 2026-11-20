@@ -23,15 +23,18 @@ pub fn next(bytes: &[u8], whole: bool) -> Option<(usize, String)> {
         return match bytes.get(1) {
             None => whole.then(|| (1, "esc".into())),
             Some(b'[') => {
+                // A sequence not yet whole waits for its end, however long that takes to come.
                 let Some(end) = bytes.iter().skip(2).position(|b| (0x40..=0x7e).contains(b)) else {
-                    return (whole || bytes.len() > 64).then(|| (bytes.len(), String::new()));
+                    return (bytes.len() > 64).then(|| (bytes.len(), String::new()));
                 };
                 let parameters = String::from_utf8_lossy(bytes.get(2..end + 2)?).into_owned();
                 Some((end + 3, sequence(&parameters, *bytes.get(end + 2)?)))
             }
+            // The short forms of the arrows, Home, End and F1 to F4. Others (the keypad's) are not keys of ours.
             Some(b'O') => match bytes.get(2) {
                 None => whole.then(|| (2, "M-S-o".into())),
-                Some(last) => Some((3, sequence("", if (b'P'..=b'S').contains(last) { last + 32 } else { *last }))),
+                Some(last @ (b'A'..=b'D' | b'H' | b'F' | b'P'..=b'S')) => Some((3, sequence("", *last))),
+                Some(_) => Some((3, String::new())),
             },
             Some(_) => {
                 let (length, name) = next(bytes.get(1..)?, true)?;
@@ -67,37 +70,32 @@ fn sequence(parameters: &str, last: u8) -> String {
     let mut numbers = parameters.split(';');
     let first = numbers.next().unwrap_or_default();
     let mut modifier = numbers.next().and_then(|n| n.parse::<u8>().ok()).unwrap_or(1).saturating_sub(1);
-    let key = match (last, first) {
-        (b'A', _) => "up",
-        (b'B', _) => "down",
-        (b'C', _) => "right",
-        (b'D', _) => "left",
-        (b'H', _) | (b'~', "1" | "7") => "home",
-        (b'F', _) | (b'~', "4" | "8") => "end",
+    let f = |n: u8| format!("f{n}");
+    let key = match (last, first.parse::<u8>().ok()) {
+        // The terminal's answer to "what are you": not a key, but ours to read.
+        (b'c', _) if first.starts_with('?') => return format!("terminal:{parameters}"),
+        (b'A', _) => "up".into(),
+        (b'B', _) => "down".into(),
+        (b'C', _) => "right".into(),
+        (b'D', _) => "left".into(),
+        (b'H', _) | (b'~', Some(1 | 7)) => "home".into(),
+        (b'F', _) | (b'~', Some(4 | 8)) => "end".into(),
         (b'Z', _) => {
             modifier |= 1;
-            "tab"
+            "tab".into()
         }
-        (b'~', "2") => "insert",
-        (b'~', "3") => "delete",
-        (b'~', "5") => "pgup",
-        (b'~', "6") => "pgdn",
-        (b'~', "200") => "paste-start",
-        (b'~', "201") => "paste-end",
-        (b'p'..=b's', "") => return format!("f{}", last - b'o'),
-        (b'~', number) => {
-            let f = match number.parse::<u8>() {
-                Ok(n @ 11..=15) => n - 10,
-                Ok(n @ 17..=21) => n - 11,
-                Ok(n @ 23..=24) => n - 12,
-                _ => return String::new(),
-            };
-            return format!("f{f}");
-        }
-        // The terminal's answer to "what are you": not a key, but ours to read.
-        (b'c', answer) if answer.starts_with('?') => return format!("terminal:{parameters}"),
+        (b'P'..=b'S', _) => f(last - b'O'),
+        (b'~', Some(2)) => "insert".into(),
+        (b'~', Some(3)) => "delete".into(),
+        (b'~', Some(5)) => "pgup".into(),
+        (b'~', Some(6)) => "pgdn".into(),
+        (b'~', Some(n @ 11..=15)) => f(n - 10),
+        (b'~', Some(n @ 17..=21)) => f(n - 11),
+        (b'~', Some(n @ 23..=24)) => f(n - 12),
+        (b'~', Some(200)) => return "paste-start".into(),
+        (b'~', Some(201)) => return "paste-end".into(),
         _ => return String::new(),
     };
     let held = [(4, "C-"), (2, "M-"), (1, "S-")].iter().filter(|(bit, _)| modifier & bit != 0).map(|(_, name)| *name);
-    held.chain([key]).collect()
+    held.chain([key.as_str()]).collect()
 }

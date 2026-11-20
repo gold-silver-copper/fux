@@ -1,4 +1,9 @@
 #!/bin/sh
 # previous workspace
-prev=$(ls "$FUX3C_DIR" | grep -B1 -x "$FUX3C_WS" | head -n 1)
-echo "workspace ${prev:-$FUX3C_WS}"
+before=
+for d in "$FUX3C_DIR"/*/; do
+  n=${d%/}; n=${n##*/}
+  [ "$n" = "$FUX3C_WS" ] && break
+  before=$n
+done
+[ -n "$before" ] && echo "workspace $before"

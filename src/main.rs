@@ -14,6 +14,8 @@ mod width;
 
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File};
+use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -48,6 +50,19 @@ fn make_dir(path: &Path) -> std::io::Result<()> {
     DirBuilder::new().mode(0o700).create(path)
 }
 
+/// A line on standard output. A reader that has left is no reason for a word.
+fn say(line: &[u8]) {
+    let mut out = std::io::stdout();
+    let _ = out.write_all(line).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush());
+}
+
+/// At most 64 KiB of a small file of ours, as text.
+fn read_some(path: &Path) -> String {
+    let mut bytes = Vec::new();
+    let _ = File::open(path).map(|file| file.take(64 << 10).read_to_end(&mut bytes));
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 fn start(args: &[OsString]) -> Result<(), String> {
     let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let (names, program) = (args.get(..split).unwrap_or(&[]), args.get(split + 1..).unwrap_or(&[]));
@@ -62,66 +77,92 @@ fn start(args: &[OsString]) -> Result<(), String> {
             "{name}: a name is letters, digits, '.', '_' and '-', at most 64, not starting with a dot"
         ));
     }
-    let workspace = session()?.join(workspace);
-    DirBuilder::new()
-        .mode(0o700)
-        .recursive(true)
-        .create(&workspace)
-        .map_err(|e| format!("{}: {e}", workspace.display()))?;
-    // Making the directory is what claims the name: two starts cannot both make it.
-    let numbered = (1..10000).map(|n| workspace.join(n.to_string()));
-    let (dir, made) = if pane.is_empty() {
-        (numbered.into_iter().find(|dir| make_dir(dir).is_ok()).ok_or("no free number for a pane")?, true)
-    } else {
-        let dir = workspace.join(pane);
-        match make_dir(&dir) {
-            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(format!("{}: {e}", dir.display())),
-            made => (dir, made.is_ok()),
-        }
-    };
+    if ["layout", "layout.new"].iter().any(|taken| pane.eq_ignore_ascii_case(taken)) {
+        return Err(format!("{name}: a workspace keeps its layout in a file of that name"));
+    }
     let program: Vec<OsString> = match program {
         [] => vec![std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into())],
         program => program.to_vec(),
     };
-    // The lock on the directory is the proof that a holder lives: the kernel
-    // drops it when the holder is gone, however it went. We take it here and
-    // the holder inherits it. A `fux3 wait` may hold it for an instant.
-    let lock = File::open(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let locked = (0..20).any(|i| {
-        std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
-        lock.try_lock().is_ok()
-    });
-    if !locked {
-        return Err(format!("{}: a holder already keeps this pane", dir.display()));
+    let workspace = session()?.join(workspace);
+    let fail = |path: &Path, e: std::io::Error| format!("{}: {e}", path.display());
+    DirBuilder::new().mode(0o700).recursive(true).create(&workspace).map_err(|e| fail(&workspace, e))?;
+    // The claim is made under a lock on the workspace, so that two starts of
+    // one name, or a start and the tidying after a failed one, never mix.
+    let claim =
+        File::open(&workspace).and_then(|claim| claim.lock().map(|()| claim)).map_err(|e| fail(&workspace, e))?;
+    // Making the directory is what claims a new name.
+    let named = |dir: PathBuf| match make_dir(&dir) {
+        Ok(()) => Ok(Some((dir, true))),
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(fail(&dir, e)),
+        Err(_) if pane.is_empty() => Ok(None),
+        Err(_) => Ok(Some((dir, false))),
+    };
+    let (dir, made) = if pane.is_empty() {
+        let mut numbers = (1..10000).map(|n| named(workspace.join(n.to_string())));
+        numbers.find_map(Result::transpose).ok_or("no free number for a pane")??
+    } else {
+        named(workspace.join(pane))?.ok_or("no pane")?
+    };
+    // The lock on the pane's directory is the proof that a holder lives: the
+    // kernel drops it when the holder is gone, however it went. We take it
+    // here and the holder inherits it. A `fux3 wait` may hold it for an instant.
+    let lock = File::open(&dir);
+    let started = match &lock {
+        Err(e) => Err(e.to_string()),
+        Ok(lock) => {
+            let locked = (0..20).any(|i| {
+                std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
+                lock.try_lock().is_ok()
+            });
+            // The workspace is let go while the holder starts, and taken again to tidy up if it does not.
+            let _ = claim.unlock();
+            if locked { launch(&dir, lock, &program) } else { Err("a holder already keeps this pane".into()) }
+        }
+    };
+    match started {
+        Ok(()) => {
+            // Our copy of the lock goes before anything that could wait.
+            drop(lock);
+            say(dir.as_os_str().as_bytes());
+            Ok(())
+        }
+        Err(why) => {
+            // A folder made for a pane that never was is not left behind. We
+            // still hold its lock, so nobody has started anything in it.
+            if made && claim.lock().is_ok() {
+                let _ = fs::remove_dir_all(&dir).or_else(|_| fs::remove_dir(&dir));
+            }
+            Err(format!("{}: {why}", dir.display()))
+        }
     }
-    // A pane left by an earlier program is started again in place. Its old
-    // status goes first: a new one is how we know the holder is up.
-    let _ = fs::remove_file(dir.join("status"));
-    let log = File::options()
-        .append(true)
-        .create(true)
-        .open(dir.join("log"))
-        .map_err(|e| format!("{}: {e}", dir.display()))?;
+}
+
+/// Starts the holder of a pane we hold the lock of, and waits until it is up.
+fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
+    let log = File::create(dir.join("log")).map_err(|e| format!("cannot make the log: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
-    let mut holder = Command::new(me);
-    holder.arg("hold").arg(cwd).args(&program).current_dir(&dir);
-    holder.stdin(Stdio::from(lock)).stdout(Stdio::null()).stderr(log);
-    sys::new_session(&mut holder, false);
-    let mut holder = holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?;
+    let mut holder = {
+        let lock = lock.try_clone().map_err(|e| format!("cannot copy the lock: {e}"))?;
+        let mut holder = Command::new(me);
+        holder.arg("hold").arg(cwd).args(program).current_dir(dir);
+        holder.stdin(Stdio::from(lock)).stdout(Stdio::null()).stderr(log);
+        sys::new_session(&mut holder, false);
+        holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?
+    };
+    // The holder is up when `status` names it. A status left by an earlier
+    // program stays until then, and for good if this start fails.
+    let ours = format!("holder {}\n", holder.id());
     loop {
-        if dir.join("status").exists() {
-            println!("{}", dir.display());
+        let ended = holder.try_wait().map_err(|e| e.to_string())?.is_some();
+        if read_some(&dir.join("status")).contains(&ours) {
             return Ok(());
         }
-        if holder.try_wait().map_err(|e| e.to_string())?.is_some() {
-            let log = fs::read_to_string(dir.join("log")).unwrap_or_default();
-            let why = log.lines().last().unwrap_or("the holder ended without a word").trim_start_matches("fux3: ");
-            // A folder made for a pane that never was is not left behind.
-            if made {
-                let _ = fs::remove_dir_all(&dir);
-            }
-            return Err(format!("{}: {why}", dir.display()));
+        if ended {
+            let log = read_some(&dir.join("log"));
+            let why = log.lines().last().unwrap_or("the holder ended without a word");
+            return Err(why.trim_start_matches("fux3: ").to_string());
         }
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -132,12 +173,13 @@ fn wait(args: &[OsString]) -> Result<(), String> {
         return Err("wait takes one pane directory".into());
     };
     let dir = Path::new(dir);
-    // The holder locks its directory for as long as it lives; the kernel
-    // drops the lock when it is gone, however it went.
+    // The holder locks its directory for as long as it lives. The status is
+    // read before our own lock goes, so it is that holder's and no later one's.
     let lock = File::open(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     lock.lock_shared().map_err(|e| format!("{}: {e}", dir.display()))?;
+    let status = read_some(&dir.join("status"));
     drop(lock);
-    print!("{}", fs::read_to_string(dir.join("status")).unwrap_or_default());
+    say(status.trim_end().as_bytes());
     Ok(())
 }
 
@@ -145,7 +187,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
     let rest = args.get(1..).unwrap_or(&[]);
     match args.first().and_then(|a| a.to_str()) {
         Some("dir") => {
-            println!("{}", session()?.display());
+            say(session()?.as_os_str().as_bytes());
             Ok(())
         }
         Some("start") => start(rest),
@@ -166,7 +208,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             let text =
                 layout::command(&session()?.join(workspace), &words.iter().map(String::as_str).collect::<Vec<_>>())?;
             if words.is_empty() {
-                print!("{text}");
+                say(text.trim_end().as_bytes());
             }
             Ok(())
         }
@@ -175,7 +217,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             None => Err("hold is started by `fux3 start`".into()),
         },
         Some("help" | "--help" | "-h") => {
-            println!("{USAGE}");
+            say(USAGE.as_bytes());
             Ok(())
         }
         _ => Err(format!("usage:\n{USAGE}")),
@@ -187,7 +229,9 @@ fn main() -> ExitCode {
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
-            eprintln!("fux3: {why}");
+            // What is quoted may be anything: no control codes, and not without end.
+            let why: String = holder::plain(&why).chars().take(1000).collect();
+            let _ = writeln!(std::io::stderr(), "fux3: {why}");
             ExitCode::FAILURE
         }
     }

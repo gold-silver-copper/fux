@@ -84,6 +84,44 @@ fn a_cursor_waiting_at_the_right_margin_moves_like_any_other() {
 }
 
 #[test]
+fn the_right_margin_is_xterms() {
+    // A bare line feed after a full line goes one line down, not two.
+    assert_eq!(term(5, 4, "abcde\nZ").plain(), "abcde\n    Z\n\n\n");
+    // The wait at the margin is saved and restored with the cursor, and an erase ends it.
+    assert_eq!(term(5, 3, "abcde\x1b7\x1b[H\x1b8Z").plain(), "abcde\nZ\n\n");
+    assert_eq!(term(5, 3, "abcde\x1b[KZ").plain(), "abcdZ\n\n\n");
+    // A repeat runs on through the wrap.
+    let repeated = term(5, 4, "X\x1b[11b");
+    assert_eq!((repeated.plain().as_str(), repeated.row, repeated.col), ("XXXXX\nXXXXX\nXX\n\n", 2, 2));
+}
+
+#[test]
+fn the_cursor_stops_at_the_scroll_regions_edge_from_either_side() {
+    let down = term(10, 6, "\x1b[2;4r\x1b[1;1H\x1b[9BX");
+    let up = term(10, 6, "\x1b[2;4r\x1b[6;1H\x1b[9AX");
+    assert_eq!((down.plain().as_str(), up.plain().as_str()), ("\n\n\nX\n\n\n", "\nX\n\n\n\n\n"));
+}
+
+#[test]
+fn what_is_malformed_changes_nothing_and_what_is_cut_leaves_no_half() {
+    // A longer spelling of é is not é; a colour with a part missing is no colour.
+    let mut term = Term::new(20, 3);
+    term.feed(b"A\xe0\x83\xa9B\x1b[31mR\x1b[38;2;255mX");
+    assert_eq!(term.styled().lines().next(), Some("A\u{fffd}B\x1b[0;31mRX\x1b[m"));
+    // `?` after a parameter is no private mode, and 33 parameters are no command (and the log hears of it).
+    term.feed(format!("\x1b[0;?25l\x1b[{}0m", "1;".repeat(32)).as_bytes());
+    assert!(term.cursor_shown && term.refused.is_some());
+    // Deleting across two wide characters leaves blanks, not a character made of two halves.
+    term.feed("\x1b[m\x1b[2;1H漢界X\x1b[2;2H\x1b[2P".as_bytes());
+    assert_eq!(term.plain().lines().nth(1), Some("  X"));
+    // Tab stops a program set are still there after a resize.
+    term.feed(b"\x1b[3g\x1b[3;5H\x1bH");
+    term.resize(21, 3);
+    term.feed(b"\r\tT");
+    assert_eq!(term.plain().lines().nth(2), Some("    T"));
+}
+
+#[test]
 fn the_alternate_screen_gives_the_main_one_back_and_keeps_no_history() {
     let mut term = term(20, 4, "one\r\ntwo\x1b[?1049h\x1b[2Jfull\r\n\n\n\n\n\nscreen");
     assert!(term.alt && term.history.is_empty());
@@ -108,12 +146,17 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     assert_eq!((picture.row, picture.col, picture.cols, picture.rows), (0, 2, 3, 1));
     assert!(picture.data.as_ref().is_some_and(|d| d.starts_with(b"\x1bPq") && d.ends_with(b"\x1b\\")));
     assert_eq!((term.row, term.col), (1, 0));
+    // It stays through a full-screen program, an erase beside it and a resize that fits it.
+    term.feed(b"\x1b[?1049h\x1b[2Jless\x1b[?1049l\x1b[1;10H\x1b[K\x1b[2;1H");
     term.resize(10, 3);
-    assert_eq!(term.pictures.len(), 1, "a picture that still fits stays through a resize");
+    assert_eq!(term.pictures.len(), 1);
     term.feed(b"\x1b[1;4Hx");
     assert!(term.pictures.is_empty());
     term.feed(b"\x1bPq~~\x1b\\\n\n\n\n\n");
     assert!(term.pictures.is_empty() && term.refused.is_none());
+    // Its size is the larger of what it says and what it paints: here 40 pixels, 4 cells, not 1.
+    term.feed(b"\x1b[H\x1bPq\"1;1;10;6!40~\x1b\\");
+    assert_eq!(term.pictures.first().map(|p| (p.cols, p.rows)), Some((4, 1)));
 }
 
 #[test]
@@ -148,6 +191,11 @@ fn a_layout_follows_the_panes_that_exist_and_edits_act_on_the_focused_pane() {
     layout.edit(&["tab", "prev"]).expect("tab");
     assert_eq!(layout.print(), "* col(a new) focus=a\n  b focus=b\n");
     assert!(layout.edit(&["fly"]).is_err() && Layout::default().edit(&["zoom"]).is_err());
+    // A pane that is not there is not placed, a huge step is a big one, and nesting has an end.
+    assert!(layout.edit(&["split", "row", "nobody"]).is_err());
+    layout.edit(&["size", "col", "9223372036854775807"]).expect("size");
+    assert_eq!(layout.print(), "* col(a:10000 new:50) focus=a\n  b focus=b\n");
+    assert!(parse(&format!("{}a{}", "row(".repeat(40), ")".repeat(40))).is_err());
 }
 
 #[test]
@@ -161,6 +209,11 @@ fn keys_have_the_names_of_their_files() {
         (b"\x1bOA", "up"),
         (b"\x1b[1;5D", "C-left"),
         (b"\x1b[15~", "f5"),
+        (b"\x1b[15;2~", "S-f5"),
+        (b"\x1b[1;2P", "S-f1"),
+        (b"\x1bOP", "f1"),
+        // The keypad's 0 in application mode is the program's, not F1.
+        (b"\x1bOp", ""),
         (b"\x1bx", "M-x"),
         (b"\x1b", "esc"),
         (b"/", "slash"),
@@ -170,5 +223,5 @@ fn keys_have_the_names_of_their_files() {
     ] {
         assert_eq!(name(bytes), Some((bytes.len(), expected.to_string())));
     }
-    assert_eq!(crate::keys::next(b"\x1b[1;", false), None, "half a sequence waits for the rest");
+    assert_eq!(crate::keys::next(b"\x1b[20", true), None, "half a sequence waits for the rest, however long");
 }

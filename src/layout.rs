@@ -14,6 +14,7 @@ use crate::holder::replace;
 use crate::is_name;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 /// The parts of a split, each with its share.
@@ -38,6 +39,12 @@ pub struct Layout {
     pub tabs: Vec<Tab>,
     pub current: usize,
 }
+
+/// The deepest rows and columns may nest, and the longest a layout file may be.
+const DEPTH_MAX: usize = 32;
+const FILE_MAX: u64 = 64 << 10;
+/// The most panes of a workspace a layout places; more folders than that are not shown.
+const PANES_MAX: usize = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
@@ -165,12 +172,15 @@ fn tab_of(name: &str) -> Tab {
 }
 
 /// Parses a tree from words, `(` and `)`.
-fn tree(words: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<(Node, u32), String> {
+fn tree(words: &mut std::iter::Peekable<std::vec::IntoIter<String>>, depth: usize) -> Result<(Node, u32), String> {
+    if depth > DEPTH_MAX {
+        return Err(format!("rows and columns are nested more than {DEPTH_MAX} deep"));
+    }
     let word = words.next().ok_or("a pane's name is missing")?;
     let node = if (word == "row" || word == "col") && words.next_if(|w| w == "(").is_some() {
         let mut parts = Vec::new();
         while words.next_if(|w| w == ")").is_none() {
-            parts.push(tree(words)?);
+            parts.push(tree(words, depth + 1)?);
         }
         Node::Split(word == "row", parts)
     } else {
@@ -200,7 +210,7 @@ pub fn parse(text: &str) -> Result<Layout, String> {
             words.remove(0);
         }
         let mut words = words.into_iter().peekable();
-        let (root, _) = tree(&mut words).map_err(fail)?;
+        let (root, _) = tree(&mut words, 0).map_err(fail)?;
         let mut tab = Tab { root, focus: String::new(), zoom: false };
         for word in words {
             match word.strip_prefix("focus=") {
@@ -256,12 +266,22 @@ impl Layout {
         self.current = same.unwrap_or(self.current).min(self.tabs.len().saturating_sub(1));
     }
 
-    /// The workspace's layout as it stands: its file, settled against its
-    /// folders. A file that cannot be read as a layout counts as empty, and
-    /// the second answer says what is wrong with it.
-    pub fn load(workspace: &Path) -> (Layout, Option<String>) {
-        let text = fs::read_to_string(workspace.join("layout")).unwrap_or_default();
-        let (mut layout, mut wrong) = match parse(&text) {
+    /// The workspace's layout as it stands: its file's text, the layout
+    /// settled against the folders, and what is wrong with the file if it
+    /// cannot be read as a layout (it then counts as empty, and is left alone).
+    pub fn load(workspace: &Path) -> (String, Layout, Option<String>) {
+        let mut bytes = Vec::new();
+        let read = match fs::File::open(workspace.join("layout")) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            file => file.and_then(|file| file.take(FILE_MAX + 1).read_to_end(&mut bytes)),
+        };
+        let text = String::from_utf8(bytes).map_err(|_| "the layout file is not text".to_string());
+        let text = text.and_then(|text| match read {
+            Ok(n) if n as u64 > FILE_MAX => Err("the layout file is over 64 KiB".into()),
+            Ok(_) => Ok(text),
+            Err(e) => Err(format!("the layout file cannot be read: {e}")),
+        });
+        let (mut layout, mut wrong) = match text.as_ref().map_err(String::clone).and_then(|text| parse(text)) {
             Ok(layout) => (layout, None),
             Err(why) => (Layout::default(), Some(why)),
         };
@@ -269,11 +289,11 @@ impl Layout {
             Ok(folders) => {
                 let names = folders.flatten().filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()));
                 let names = names.filter_map(|entry| entry.file_name().into_string().ok());
-                layout.settle(names.filter(|name| is_name(name)).collect());
+                layout.settle(names.filter(|name| is_name(name)).take(PANES_MAX).collect());
             }
             Err(e) => (layout, wrong) = (Layout::default(), Some(format!("{}: {e}", workspace.display()))),
         }
-        (layout, wrong)
+        (text.unwrap_or_default(), layout, wrong)
     }
 
     pub fn tab(&self) -> Option<&Tab> {
@@ -306,6 +326,9 @@ impl Layout {
         };
         match words {
             ["split", way @ ("row" | "col"), name] => {
+                if !self.tabs.iter().any(|tab| tab.panes().contains(name)) {
+                    return Err(format!("no pane {name} here"));
+                }
                 let row = *way == "row";
                 let beside = self.tab().map(|tab| tab.focus.clone()).filter(|focus| focus != name);
                 self.remove(name);
@@ -373,6 +396,7 @@ impl Layout {
                 let number = number.parse::<usize>().ok().filter(|n| (1..=count).contains(n));
                 self.current = number.ok_or(format!("tabs are numbered 1 to {count}"))? - 1;
             }
+            ["break"] if self.tab().is_some_and(|tab| tab.panes().len() < 2) => {}
             ["break"] => {
                 let name = self.tab_mut()?.focus.clone();
                 self.remove(&name);
@@ -394,7 +418,7 @@ impl Layout {
                 let tab = self.tab_mut()?;
                 let focus = tab.focus.clone();
                 let share = tab.root.share_mut(&focus, *way == "row").ok_or(format!("this pane is in no {way}"))?;
-                *share = (i64::from(*share) + change).clamp(5, 10000) as u32;
+                *share = i64::from(*share).saturating_add(change).clamp(5, 10000) as u32;
             }
             ["zoom"] => {
                 let tab = self.tab_mut()?;
@@ -450,7 +474,7 @@ impl Node {
 pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {
     let lock = fs::File::open(workspace).map_err(|e| format!("{}: {e}", workspace.display()))?;
     lock.lock().map_err(|e| format!("{}: {e}", workspace.display()))?;
-    let (mut layout, wrong) = Layout::load(workspace);
+    let (old, mut layout, wrong) = Layout::load(workspace);
     if let Some(wrong) = wrong {
         return Err(wrong);
     }
@@ -458,7 +482,7 @@ pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {
         layout.edit(words)?;
     }
     let (file, text) = (workspace.join("layout"), layout.print());
-    if fs::read_to_string(&file).unwrap_or_default() != text {
+    if old != text {
         replace(&file.to_string_lossy(), text.as_bytes()).map_err(|e| format!("{}: {e}", file.display()))?;
     }
     Ok(text)
