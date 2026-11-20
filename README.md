@@ -313,7 +313,7 @@ workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
 TERM to the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
 (`p` a pane, `t` a tab, `w` a workspace: a list in a pane of its own, chosen
-with fzf, sk or fzy if one is installed and by number if none is; the
+with fzf, sk or fzy if one is installed and by number or name if none is; the
 workspace that holds the viewer's own pane is not offered, since a viewer
 that shows itself draws itself without end). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start

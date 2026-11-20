@@ -177,9 +177,11 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
     // `history` and `screen` together (the screen's rows that go on are joined to tell).
     for size in ["12 24", "7 24", "40 5", "80 24"] {
         fs::write(pane.join("ctl"), format!("resize {size}\n")).unwrap();
-        until("the pane has the size", || fact(&pane, "size") == size);
-        let all = (read(&pane.join("history")) + &rows()).replace('\n', "");
-        assert_eq!(all, lines.concat() + "ready", "at {size}");
+        // (The size is written a moment before the text that was wrapped for it.)
+        until("the pane has the size and every line whole", || {
+            fact(&pane, "size") == size
+                && (read(&pane.join("history")) + &rows()).replace('\n', "") == lines.concat() + "ready"
+        });
     }
     // Back at the size it had, with nothing printed between: the screen as it was, and
     // `history` has given back what it was sent.
@@ -437,10 +439,12 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     fs::write(inner.0.join("main/layout"), "* p1 focus=p1\n  p2 focus=p2\n").unwrap();
     until("the first tab is shown", || shown(&p1).ends_with("^[[I"));
     fs::write(view.join("in"), "\x02fp").unwrap();
-    until("the list is shown", || read(&view.join("screen")).contains("p2"));
+    until("the list is shown", || {
+        read(&view.join("screen")).contains("p2") && read(&view.join("screen")).contains("draws")
+    });
     std::thread::sleep(Duration::from_millis(300));
     // (A finder takes a moment to narrow its list to what was typed.)
-    fs::write(view.join("in"), "2").unwrap();
+    fs::write(view.join("in"), "p2").unwrap();
     std::thread::sleep(Duration::from_millis(500));
     fs::write(view.join("in"), "\r").unwrap();
     until("the pane chosen has the keys", || read(&inner.0.join("main/layout")).contains("* p2 focus=p2"));

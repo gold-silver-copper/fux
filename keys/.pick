@@ -11,10 +11,13 @@ if [ -n "$finder" ]; then
   line=$("$finder" < "$list")
 else
   awk '{ printf "%3d  %s\n", NR, $0 }' "$list"
-  printf 'which? '
+  printf 'which (its number or its name)? '
   IFS= read -r n
-  case $n in '' | *[!0-9]*) exit ;; esac
-  line=$(sed -n "${n}p" "$list")
+  case $n in
+    '') exit ;;
+    *[!0-9]*) line=$(awk -F '\t' -v name="$n" '$1 == name' "$list" | head -n 1) ;;
+    *) line=$(sed -n "${n}p" "$list") ;;
+  esac
 fi
 [ -n "$line" ] || exit
 "$@" "${line%%	*}"
