@@ -396,7 +396,9 @@ sequences where terminals are known to differ (`controls/`), Unicode strings
 and htop (`sessions/`). xterm is the authority for control sequences only;
 tmux and the old emulator are there because a difference from them is worth
 a look. CI runs it on Linux and fails on any difference that is not a row
-here. To replay a row: `cargo build --release && tools/referee/referee.py -v
+here. Witnesses differ between their own versions (the rows were made with
+CI's xterm and tmux and with newer ones; the referee prints which it ran): a row stays while any of them differs,
+and the referee notes the rows that do not differ from the ones you have. To replay a row: `cargo build --release && tools/referee/referee.py -v
 CASE` (the old emulator is built apart: `cargo build --release
 --manifest-path tools/referee/old/Cargo.toml`).
 
@@ -443,6 +445,7 @@ of their parts), and rows are cut on a resize instead of wrapped again.
 | `unicode/vs16-at-end` | old, xterm | clusters |
 | `unicode/devanagari-joiner`, `unicode/mark-alone-at-end` | tmux, xterm | clusters |
 | `unicode/e-acute-at-end`, `unicode/e-acute`, `unicode/joiner-after-letter-at-end`, `unicode/joiner-after-letter`, `unicode/mark-alone`, `unicode/skin-tone-at-end`, `unicode/skin-tone`, `unicode/vs15-at-end`, `unicode/vs15`, `unicode/zero-width-space-at-end`, `unicode/zero-width-space` | xterm | clusters |
+| `unicode/flags-three`, `unicode/skin-tone`, `unicode/skin-tone-at-end`, `unicode/vs16-at-end` | tmux | clusters (the older tmux) |
 <!-- referee:end -->
 
 ## Left out

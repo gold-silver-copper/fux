@@ -12,7 +12,9 @@ a session of the referee's own) and to each witness that is installed:
 
 What is compared is the screen's text, row by row with blanks at the end cut, and the cursor's
 row and column. A difference that is a row of the README's table of departures is reported as
-known; any other makes the run fail. A case's lines:
+known; any other makes the run fail. Witnesses change between versions, so the table has a row
+if any version the referee was run with differs, and a row that does not differ here is noted.
+A case's lines:
 
   size COLSxROWS      first
   feed BYTES          as a Python bytes literal's inside: \\x1b[2J, \\r\\n
@@ -242,6 +244,9 @@ def main():
     for name in absent:
         print(f"witness {name}: not installed (or not built), left out")
         del witnesses[name]
+    for name, asked in (("tmux", ["tmux", "-V"]), ("xterm", ["xterm", "-version"])):
+        if name in witnesses:
+            print(f"witness {name}: " + subprocess.run(asked, capture_output=True, text=True).stdout.strip())
     cases = sorted(HERE.glob("corpus/**/*.case"))
     cases = [c for c in cases if not names or c.stem in names or str(c.relative_to(HERE / "corpus").with_suffix("")) in names]
     known, new, stale, agree = departures(), [], [], {name: 0 for name in witnesses}
@@ -278,7 +283,7 @@ def main():
         listed = sum(1 for (case, w) in known if w == witness and any(str(p.relative_to(HERE / "corpus").with_suffix("")) == case for p in cases))
         print(f"{witness}: same on {agree[witness]} of {len(cases)} cases; {listed} departures in the README's table")
     for case, witness in stale:
-        print(f"note: the README lists {case} as differing from {witness}, and it no longer does")
+        print(f"note: the README lists {case} as differing from {witness}, and from this {witness} it does not")
     for case, witness in new:
         print(f"NEW: {case} differs from {witness} and the README's table has no row for it")
     sys.exit(1 if new else 0)
