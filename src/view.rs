@@ -382,7 +382,7 @@ impl View {
         let (Ok(out), Ok(err)) = (output(), output()) else { return };
         let mut script = Command::new(file);
         // Of the `FUX…` names a script gets these five and no other (an older fux's would mislead it).
-        let theirs = |name: &std::ffi::OsString| name.to_str().is_some_and(|n| n.starts_with("FUX"));
+        let theirs = |name: &std::ffi::OsString| name.as_encoded_bytes().starts_with(b"FUX");
         for name in std::env::vars_os().map(|(name, _)| name).filter(theirs) {
             script.env_remove(name);
         }
@@ -618,8 +618,8 @@ impl View {
             }
             // A box as wide as its longest line, in cells, and a cell more on each
             // side. A menu taller than the room above the bar goes on in a
-            // second box to the left of the first, and so on; what still does
-            // not fit is counted, not shown.
+            // second box to the right of the first, and so on; what still does
+            // not fit is counted (lines, headings among them), not shown.
             let lines: Vec<Vec<Cell>> = lines
                 .iter()
                 .map(|(text, flags)| cells(&format!(" {text}"), Style { flags: *flags, ..panel }))
@@ -632,7 +632,8 @@ impl View {
             while boxes.len() > 1 && widths(&boxes) > w {
                 boxes.pop();
             }
-            let hidden: usize = lines.chunks(last.max(1)).skip(boxes.len()).map(<[_]>::len).sum();
+            // The last line shown gives its place to the count, so it is counted too.
+            let hidden: usize = lines.chunks(last.max(1)).skip(boxes.len()).map(<[_]>::len).sum::<usize>() + 1;
             let more = cells(&format!(" ▼ {hidden} more"), Style { flags: DIM, ..panel });
             let (height, mut right) = (boxes.first().map_or(0, |part| part.len()), w);
             for (n, part) in boxes.iter().enumerate().rev() {
@@ -837,7 +838,7 @@ fn menu_entries(directory: &Path) -> Vec<Entry> {
     names.truncate(MENU_MAX);
     let head = |path: &Path| {
         let mut head = Vec::new();
-        let _ = File::open(path).map(|file| file.take(400).read_to_end(&mut head));
+        let _ = File::open(path).map(|file| file.take(1024).read_to_end(&mut head));
         String::from_utf8_lossy(&head).into_owned()
     };
     let described = names.into_iter().map(|name| {

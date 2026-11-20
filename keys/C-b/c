@@ -11,7 +11,9 @@ f=$(mktemp "$FUX_DIR/.text.XXXXXX") || exit
 screen=$(tail -n +2 "$FUX_PANE/screen" | awk '{ row[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) print row[i] }')
 { cat "$FUX_PANE/history.1" "$FUX_PANE/history" 2>/dev/null; printf '%s\n' "$screen"; } > "$f"
 n=$(($(wc -l < "$f")))
-# $EDITOR may hold arguments. Only an editor known to read a line number is given one.
+# $EDITOR may hold arguments (split at spaces, nothing else expanded). Only an
+# editor known to read a line number is given one.
+set -f
 set -- ${EDITOR:-${PAGER:-less}}
 case ${1##*/} in
   vi|vim|nvim|nano|emacs) set -- "$@" "+$n" ;;

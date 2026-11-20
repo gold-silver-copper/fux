@@ -167,6 +167,17 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   `nano`, `emacs` (and `+G` to `less`)**; `$EDITOR` may hold arguments. The
   owner's own `EDITOR` is a launcher that showed `+10` as a file.
 
+- **D40. The fix check of D34 to D39 (1 Opus, 1 gpt-6.2-astra, one pass).**
+  Fixed: `-` alone is no name (it is the tab mark, and "the one before" to
+  the viewer); a relative `FUX_DIR` or `FUX_KEYS` is made whole; a `FUX…`
+  name that is not text is taken out too; `$EDITOR` is split, not expanded;
+  the menu's count of what it hides; the README's restore script (a keys
+  path with a space, a failed write keeping the saved line); README and
+  `fux help` where they said `main` or left out `$XDG_CONFIG_HOME`; the
+  tests no longer take a surrounding pane's workspace or keys for their own.
+  Not taken: the restore script choosing the first tab that holds an old
+  neighbour when they have been spread over several (said in the README).
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

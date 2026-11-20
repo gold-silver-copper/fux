@@ -112,7 +112,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         // key script's, or an older fux's, would say things that are not so
         // here), and no size but the terminal's own.
         let ours =
-            |name: &OsString| name.to_str().is_some_and(|n| n.starts_with("FUX") && n != "FUX_DIR" && n != "FUX_KEYS");
+            |name: &OsString| name.as_encoded_bytes().starts_with(b"FUX") && name != "FUX_DIR" && name != "FUX_KEYS";
         for name in std::env::vars_os().map(|(name, _)| name).filter(ours) {
             child.env_remove(name);
         }

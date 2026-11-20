@@ -4,6 +4,7 @@
 set -eu
 fux=${1:-target/release/fux}
 FUX_DIR=$(mktemp -d) && export FUX_DIR
+unset FUX_PANE FUX_WS    # run in a pane, `build` would else start in that pane's workspace
 trap 'rm -rf "$FUX_DIR"' EXIT
 
 # Waits up to 10 s until the command succeeds.

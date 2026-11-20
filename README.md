@@ -60,18 +60,19 @@ shell. The two do not meet:
 | | |
 |---|---|
 | `fux dir` | prints the session directory |
-| `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place |
+| `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`, or typed in a pane, that pane's), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place |
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `status` |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
-with a dot; a pane cannot be called `layout` or `layout.new`, in any case of
-letters.
+with a dot, and not `-` alone; a pane cannot be called `layout` or
+`layout.new`, in any case of letters.
 
 Typed in a pane, a command means "here": with no workspace named, it is the
 workspace that pane is in (and that pane's session, unless `FUX_DIR` says
-otherwise). Elsewhere it is `main`. A key script is told the workspace shown
+otherwise). Elsewhere it is `main`. So the example above, typed in a pane of
+another workspace, starts `build` there and not in `main`. A key script is told the workspace shown
 in `FUX_WS`.
 
 ## A pane's files
@@ -140,7 +141,8 @@ viewers of the same workspace share it, focus included:
 One tab a line. `row(…)` puts its parts side by side, `col(…)` stacks them,
 `:N` is a part's share (1 to 10000; rows and columns nest at most 32 deep), `*` marks the tab shown and `-` the tab shown before it, `focus=` is the pane that
 gets the keys. When the tab shown goes (its last pane ends), the `-` tab is
-shown, as `cd -` would; an edit that ends on another tab moves the mark. It
+shown, as `cd -` would (a tab goes when its last pane's folder is removed,
+not when a program merely ends); an edit that ends on another tab moves the mark. It
 is in the file, so two viewers agree. A folder the file does not place gets a
 tab of its own; a name with no folder is dropped. A part there is no room
 for (more parts than cells) is not drawn, and the viewer says so if it has
@@ -159,7 +161,8 @@ other shows what fits.
 
 ### Keys are scripts
 
-The keys directory is `$FUX_KEYS`, else `~/.config/fux/keys`; the viewer
+The keys directory is `$FUX_KEYS`, else `$XDG_CONFIG_HOME/fux/keys`, else
+`~/.config/fux/keys`; the viewer
 writes the default scripts there if it does not exist. A key that has a file
 of its name runs it (a file that cannot be run says so in the corner). A key that has a directory opens it as a
 menu (each script's second line, `# what it does`, is its entry) and the next
@@ -182,7 +185,7 @@ takes longer puts its work in the background, as the defaults do.
 What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace (`workspace -` the one this
 viewer showed before, which is also where it goes when the one shown is
-removed; failing that, `main`), and anything else (an error
+removed; failing that, `main`, if there is one), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key. A key with no file, pressed in an
 open menu, closes the menu and goes nowhere. Writing the same lines to the FIFO
 `$FUX_VIEW` does the same from anywhere.
@@ -205,7 +208,8 @@ like `x/y`, is a question.
 
 A script's third line may be `# group: NAME` (and so may the second line of
 an `.about`): the menu lists keys under their group's name, groups in
-alphabetical order, keys with no group first. A menu taller than the
+alphabetical order, keys with no group first (the menu reads a script's
+first kilobyte for its caption and group). A menu taller than the
 terminal goes on in a second column.
 
 There is no copy mode: `C-b c` puts the pane's older history, its history and
@@ -213,8 +217,9 @@ its screen in one private file and opens it in `$EDITOR` (which may hold
 arguments, split at spaces), else `$PAGER`, else `less`, in a new tab. `vi`, `vim`, `nvim`,
 `nano`, `emacs` and `less` are opened at the file's end; any other editor
 gets the file alone, as not every editor reads `+LINE`. The file is removed
-when the editor ends, and the tab shown before it is shown again (the one
-you came from, unless you looked at another meanwhile).
+when the editor ends. If it ended well (exit 0) its tab goes too, and the
+tab shown before it is shown again (the one you came from, unless you looked
+at another meanwhile); if it failed, its tab stays with what it said.
 
 There is no zoom either: a pane shown alone is a tab with one pane. If you
 want the key, these two scripts are it (`keys/C-b/z` and `keys/C-b/S-z`).
@@ -244,7 +249,7 @@ fi
 [ -f "$FUX_PANE/alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
 ws=$FUX_DIR/$FUX_WS me=${FUX_PANE##*/}
 # Under the lock `fux layout` takes (flock on the workspace's folder), by way of perl, which Linux and macOS both have.
-[ -n "$LOCKED" ] || LOCKED=1 exec perl -e 'use Fcntl ":flock"; open(D, "<", shift) && flock(D, LOCK_EX) or die; exit(system(@ARGV) >> 8)' "$ws" "$0"
+[ -n "$LOCKED" ] || LOCKED=1 exec perl -e 'use Fcntl ":flock"; open(D, "<", shift) && flock(D, LOCK_EX) or die; exit(system({ $ARGV[0] } @ARGV) >> 8)' "$ws" "$0"
 awk -v me="$me" '
   function names(line, into,    n, i, w) {
     sub(/^[*-] /, "", line); gsub(/row\(|col\(|focus=[^ ]*|[()]|:[0-9]+/, " ", line)
@@ -256,14 +261,15 @@ awk -v me="$me" '
   !done { for (p in here) if (p in near) { print kept; done = 1; next } }
   { print }
   END { if (!done) print own }
-' "$FUX_PANE/alone" "$ws/layout" > "$ws/.layout.$$" && mv "$ws/.layout.$$" "$ws/layout"
-rm -f "$FUX_PANE/alone"
+' "$FUX_PANE/alone" "$ws/layout" > "$ws/.layout.$$" && mv "$ws/.layout.$$" "$ws/layout" && rm -f "$FUX_PANE/alone"
 ```
 
 Put back: the tab, the pane's place in it, every share, the focus. Not put
 back: a pane closed meanwhile (dropped), a pane opened meanwhile (it keeps
 its own tab), and a share that another viewer or script changed in the old
-tab while the pane was out, which the kept line overwrites. Closing the pane
+tab while the pane was out, which the kept line overwrites. If the pane's
+old neighbours are in different tabs by then, the kept line replaces the
+first tab that holds one of them. Closing the pane
 forgets the line; a pane named `row` or `col` confuses the match.
 
 **The look** is fux 1's. A pane has every cell but the one-cell line between it

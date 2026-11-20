@@ -25,7 +25,7 @@ const USAGE: &str = "\
 fux dir                         print the session directory (FUX_DIR sets it)
 fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/
 fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its status
-fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: main)
+fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: in a pane its own, else main)
 fux layout [EDIT…]              print the layout of the workspace (in a pane: its own; else main), or edit it
 The files of a pane, and everything else, are in the README.";
 
@@ -44,7 +44,10 @@ fn here() -> Option<PathBuf> {
 /// is in; else `$XDG_RUNTIME_DIR/fux/workspaces`; else `~/.cache/fux/workspaces`.
 fn session() -> Result<PathBuf, String> {
     let from_pane = || Some(here()?.parent()?.parent()?.to_path_buf());
+    // A directory named by a relative path is meant from here: panes and scripts get its whole path.
+    let whole = |dir: PathBuf| std::path::absolute(&dir).unwrap_or(dir);
     var("FUX_DIR")
+        .map(whole)
         .or_else(from_pane)
         .or_else(|| var("XDG_RUNTIME_DIR").map(|d| d.join("fux/workspaces")))
         .or_else(|| var("HOME").map(|d| d.join(".cache/fux/workspaces")))
@@ -59,9 +62,11 @@ fn workspace() -> String {
     named.filter(|name| is_name(name)).unwrap_or("main".into())
 }
 
-/// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot.
+/// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot, and not `-` alone
+/// (which marks a tab in the layout and means "the one before" to the viewer).
 fn is_name(name: &str) -> bool {
     !name.is_empty()
+        && name != "-"
         && !name.starts_with('.')
         && name.len() <= 64
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
@@ -223,6 +228,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             }
             let config = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")));
             let keys = var("FUX_KEYS").or_else(|| config.map(|config| config.join("fux/keys")));
+            let keys = keys.map(|keys| std::path::absolute(&keys).unwrap_or(keys));
             view::view(session()?, workspace, keys.ok_or("no keys directory: set FUX_KEYS")?)
         }
         Some("layout") => {

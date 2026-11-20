@@ -24,6 +24,8 @@ impl Session {
     fn fux(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_fux"));
         command.env("FUX_DIR", &self.0).env_remove("COLUMNS").env_remove("LINES");
+        // Run in a pane of fux, the suite must not take that pane's workspace or keys for its own.
+        command.env_remove("FUX_PANE").env_remove("FUX_WS").env_remove("FUX_KEYS");
         command
     }
     fn start(&self, name: &str, program: &[&str]) -> PathBuf {
@@ -101,7 +103,7 @@ fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     let pane = session.0.join("w2/p");
     let me = env!("CARGO_BIN_EXE_fux");
     let typed = format!(
-        "env | grep -E '^(FUX|TERM=|TERM_|COLUMNS)' | LC_ALL=C sort > \"$FUX_PANE/env\"; '{me}' layout > \"$FUX_PANE/here\"\n"
+        "env | grep -E '^(FUX|TERM=|TERM_PROGRAM|COLUMNS)' | LC_ALL=C sort > \"$FUX_PANE/env\"; '{me}' layout > \"$FUX_PANE/here\"\n"
     );
     fs::write(pane.join("in"), typed).unwrap();
     // A command typed in a pane means its own workspace, not `main`.
