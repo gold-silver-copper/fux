@@ -186,6 +186,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         history_open: false,
         logged: 0,
     };
+    holder.term.name = format!("{} {}", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION"));
     for name in odd {
         holder.log(&format!("{name} is not a number from 1 to {SIZE_MAX}: the pane starts at {cols}x{rows}"));
     }

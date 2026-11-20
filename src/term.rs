@@ -260,6 +260,8 @@ pub struct Term {
     /// that sends the keys takes (told by whoever keeps this terminal: none, until told).
     keys: [(u8, Vec<u8>); 2],
     pub keyboard: u8,
+    /// What this terminal is called and its version, for a program that asks (XTVERSION).
+    pub name: String,
     pub row: usize,
     pub col: usize,
     style: Style,
@@ -364,6 +366,7 @@ impl Term {
             main_row: 0,
             keys: [(0, Vec::new()), (0, Vec::new())],
             keyboard: 0,
+            name: String::new(),
             row: 0,
             col: 0,
             style: Style::default(),
@@ -1483,6 +1486,7 @@ impl Term {
                     marks: std::mem::take(&mut self.marks),
                     colours: std::mem::take(&mut self.colours),
                     keyboard: self.keyboard,
+                    name: std::mem::take(&mut self.name),
                     ..Term::new(self.cols, self.rows)
                 };
                 self.move_marks(|_, _, _| At::Screen(0, 0));
@@ -1976,7 +1980,8 @@ impl Term {
             }
             (0, 0, b'c') => self.respond("\x1b[?62;4;22c"),
             (b'>', 0, b'q') if self.params.len() == 1 && self.arg(0, 0) == 0 => {
-                self.respond(&format!("\x1bP>|{} {}\x1b\\", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION")));
+                let answer = format!("\x1bP>|{}\x1b\\", self.name);
+                self.respond(&answer);
             }
             (b'>', 0, b'c') if self.params.len() == 1 && self.arg(0, 0) == 0 => self.respond("\x1b[>1;10;0c"),
             (0, 0, b'g') => match self.arg(0, 0) {

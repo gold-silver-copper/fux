@@ -415,10 +415,10 @@ fn what_fux_is_and_can_do_is_answered_under_its_own_name_and_no_more() {
     let hex = |text: &str| text.bytes().map(|b| format!("{b:02X}")).collect::<String>();
     // Its name and version (XTVERSION); a second device attributes answer that is no other
     // terminal's; neither with parameters that ask something else.
-    assert_eq!(
-        said("\x1b[>q\x1b[>0q\x1b[>1q"),
-        format!("\x1bP>|fux-next {0}\x1b\\\x1bP>|fux-next {0}\x1b\\", env!("CARGO_PKG_VERSION"))
-    );
+    let mut named = Term::new(20, 5);
+    named.name = "fux-next 1.2".into();
+    named.feed(b"\x1b[>q\x1bc\x1b[>0q\x1b[>1q");
+    assert_eq!(named.peek().reply, b"\x1bP>|fux-next 1.2\x1b\\\x1bP>|fux-next 1.2\x1b\\");
     assert_eq!(said("\x1b[>c\x1b[>0c\x1b[>1c"), "\x1b[>1;10;0c\x1b[>1;10;0c");
     // A capability by its terminfo name: each name is answered by itself, so one that is not
     // known cannot hide one that is; true colour and the curly underline are there.
