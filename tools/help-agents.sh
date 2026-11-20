@@ -16,7 +16,7 @@ unset FUXN_PANE FUXN_WS FUXN_KEYS FUXN_EDIT
   cat "$work/out" >&2; tail -n 5 "$work/trace" >&2; echo "help-agents: a command of the page failed" >&2; exit 1; }
 # What the page says its commands print, they print; and what it started, it removed.
 for said in '^exit code 3$' '^<<t1:[1-9][0-9]*>>$' ' end 1$' '^/$' '^state killed 15$' '^state exited 2$' \
-  'crash is dead, though its state says running' '^refused at once$' '^crash is dead by its process too$' \
+  'crash is dead, though its state says running' '^the write to the dead pane came back$' \
   'something of pane stubborn still runs' '^nothing of it is left$' 'col(row(ls w1) w2)' '│' '^command sh -c pwd; exec sleep 600$'; do
   grep -q -- "$said" "$work/out" || { cat "$work/out" >&2; echo "help-agents: no '$said'" >&2; exit 1; }
 done

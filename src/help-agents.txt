@@ -49,27 +49,24 @@ Keys are their bytes: Ctrl-C \003, Ctrl-D \004, Ctrl-U \025, Escape \033, Tab \t
 appcursor). One write of at most 512 bytes arrives whole; larger ones may mix with another
 writer's. Paste, where `modes` says paste: \033[200~ before the text, \033[201~ after.
 
-A WRITE THAT CANNOT HANG
-A plain write to `in` or `ctl` waits for ever if the pane's holder was killed outright
-(kill -9, a crash): the FIFOs stay with no reader, and `state` still says running. It
-also waits while a live program is not reading and 64 KiB are queued. This one never waits:
-    send() { perl -e 'use Fcntl; -p $ARGV[0] or die "$ARGV[0]: not a FIFO\n"; sysopen(F, $ARGV[0], O_WRONLY|O_NONBLOCK) or die "$ARGV[0]: $!\n"; local $/; defined syswrite(F, <STDIN>) or die "$ARGV[0]: $!\n"' "$1"; }
-    printf 'echo sent\r' | send "$P/in"; seen '^sent$' "$P/screen"
-It fails at once and says why: "not a FIFO" or "No such file": the pane ended or is gone;
-"No such device or address": no holder reads, the pane is dead; "Resource temporarily
-unavailable": alive, but its queue is full (try later). In python the same is
-os.open(path, os.O_WRONLY | os.O_NONBLOCK), then os.write. Whether a pane is alive is
-not in `state` and not in the holder's pid (a dead holder can linger as a zombie): the
-holder holds a lock on the pane's directory for as long as it lives, and that is the truth.
-    alive() { perl -e 'use Fcntl ":flock"; open(D, "<", $ARGV[0]) or exit 1; exit(flock(D, LOCK_SH|LOCK_NB) ? 1 : 0)' "$1"; }
+A WRITE THAT CANNOT HANG, AND WHETHER A PANE IS ALIVE
+A plain write (`> "$P/in"`) waits for ever if the pane's holder was killed outright
+(kill -9, a crash): the FIFOs stay with no reader, and `state` still says running. Opened
+for reading and writing at once (`1<>`), a FIFO never makes the opener wait:
+    [ -p "$P/in" ] && printf 'echo sent\r' 1<>"$P/in"; seen '^sent$' "$P/screen"
+What that gives and does not: it cannot hang on a dead pane, but there the bytes are lost
+without a word. (The `-p` test is because on a pane that ended normally `in` is gone, and
+`1<>` would make a plain file of that name.) It still waits while a live program is not
+reading and 64 KiB are queued. So when the answer matters, ask first whether the pane is
+alive, and after typing wait, with a limit, for what you expect. Alive is not what `state`
+says: it is the holder's process, there and not a zombie:
+    alive() { s=$(ps -o state= -p "$(sed -n 's/^holder //p' "$1/status")" 2>/dev/null) && case $s in ''|Z*) false ;; esac; }
     X=$(fux start agent-demo/crash -- sleep 600); kill -9 "$(sed -n 's/^holder //p' "$X/status")"   # a crash, to show it
     seen . "$X/state"; sleep 0.2; alive "$P"; alive "$X" || echo "crash is dead, though its state says $(cat "$X/state")"
-    printf 'x' | send "$X/in" || echo "refused at once"
-(Linux has flock -n "$X" true for the same test, with the answer the other way round.)
-Without perl or python, the next best is the holder's process, there and not a zombie
-(wrong only if the holder died and another process has its number by now):
-    alive_sh() { s=$(ps -o state= -p "$(sed -n 's/^holder //p' "$1/status")" 2>/dev/null) && case $s in ''|Z*) false ;; esac; }
-    alive_sh "$P"; alive_sh "$X" || echo "crash is dead by its process too"
+    printf 'x' 1<>"$X/in"; echo "the write to the dead pane came back"
+Its one limit: long after a crash the holder's number may be another process's. Exact,
+where there is flock(1) (Linux): the holder holds a lock on the pane's directory while it
+lives, so `flock -n "$X" true` FAILS for a live pane and succeeds for a dead one.
 
 READ IT
     cat "$P/screen"                           # the screen now, one line a row

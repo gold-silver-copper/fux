@@ -1057,6 +1057,16 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   a directory that may not be there yet; a viewer in a pane has what it
   passes on in its own `notice`; `colours` only if the terminal answered;
   `alive_sh` for a machine with neither perl nor python, with its limit.
+- **D75. The agents' page in sh alone** (message 19; the owner: "pure sh
+  only", and no command for what a recipe can do). The perl recipes of D73
+  are gone. A write that cannot hang is `1<>` on the FIFO, as the key
+  scripts write: it never waits on the open, and on a dead pane the bytes
+  are lost without a word, which the page says. Alive is the holder's
+  process, there and not a zombie (`ps -o state=`), with its one limit (a
+  number used again after a crash); `flock -n` is named as exact where
+  Linux has it. What was given up: a write that reports a dead pane by
+  itself, and an exact test on macOS. Both are run in the page's script
+  against a holder killed with -9.
 
 ## The old fux3's bugs: which classes are gone
 
