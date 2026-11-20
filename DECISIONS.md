@@ -307,6 +307,39 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   answers, colours and modes (the referee sees text and cursor, and the README
   now says so); decoding tmux's tab and line-drawing cells (two rows say it).
 
+- **D51. Characters are grapheme clusters, cut as UAX #29 says, always**
+  (the panel, 2026-11-19). `src/width.rs` keeps one table (a character's
+  kind for cutting, its part in a conjunct, three flags) and a `Joiner` of
+  six small fields; Unicode's own GraphemeBreakTest passes whole and is kept
+  in `tests/` so no test needs the network. The table is written by
+  `tools/unicode.py` from five files of Unicode 17.0.0 that the tool pins by
+  SHA-256 and fetches only when run by hand (1.5 MB of data files are not
+  kept in the repository; the test file, 127 kB, is). A cell holds one
+  cluster of at most ten characters; more are dropped and `log` says so.
+  - Width: the columns of a cluster's characters added up, two at most; this
+    is what terminals that do not join give for every cluster of up to two
+    columns, and what Ghostty gives with mode 2027 (the seat's probe: 0 of 9
+    cursors differ). Half a flag is one column, so a flag is two everywhere.
+    U+FE0F widens an emoji; U+FE0E changes nothing (the rule has no word for it).
+  - A cluster that grows to two columns in a row's last column goes whole to
+    the next row. With wrapping off the character that would widen it is
+    dropped.
+  - A cluster is text with nothing between: a control, an escape sequence or
+    a resize ends it. A mark or joiner with nothing to join, and a format
+    character such as U+200B, takes no cell and is dropped (xterm shows none
+    either); the old code hung marks on whatever was left of the cursor.
+  - REP repeats the cluster's first character, as xterm's does.
+  - `screen.styled` says the style again between two characters that would
+    read back as one (two halves of a flag put side by side by cursor moves).
+  - Mode 2027 is answered "permanently set" and cannot be switched.
+  - The viewer cannot know how the user's terminal measures, so it does not
+    try: it places by row and column after anything but plain ASCII, blanks
+    the two cells under a joined wide character first, sends again the cells
+    a character may have been drawn over, and at a tile's edge draws `?` for
+    a character that could be drawn past it. The seat's probe (a Ghostty
+    engine as the outer terminal, 5 strings, both modes): 0 of 10 dividers
+    and 0 of 10 neighbour tiles damaged; before, 4 and 1.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

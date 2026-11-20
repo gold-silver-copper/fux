@@ -301,7 +301,7 @@ def main():
                         stale.append((name, witness))
                     continue
                 listed = where in (expected or "").split(" or ")
-                differing.append(witness + ("" if listed else " (NEW)"))
+                differing.append(f"{witness} in {where}" + ("" if listed else " (NEW)"))
                 if not listed:
                     row = f"says {expected}" if expected else "has no row for it"
                     new.append(f"{name} differs from {witness} in {where}, and the README's table {row}")
@@ -310,7 +310,7 @@ def main():
                     print("\n".join("  |" + row for row in ours[0]))
                     print(f"--- {name}: {witness}, cursor {theirs[1]}")
                     print("\n".join("  |" + row for row in theirs[0]))
-            print(f"{name}: " + ("same" if not differing else "differs from " + ", ".join(differing)))
+            print(f"{name}: " + ("same" if not differing else "differs from " + "; ".join(differing)))
     finally:
         Display.stop()
     print()

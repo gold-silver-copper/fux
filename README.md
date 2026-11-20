@@ -151,6 +151,13 @@ pane named like a direction) · `tab next|prev|N|-` (`-`: the tab shown before) 
 (the focused pane to its own tab) · `swap next|prev` · `size row|col +N|-N` ·
 `rotate` · `arrange row|col|grid|main`
 
+Your terminal may not count a character's columns as fux does (it may draw
+three people where fux joined a family). The viewer keeps that inside the
+cell: after anything but plain ASCII it places the next cell by row and
+column, it sends the cells such a character may have been drawn over again,
+and where one could reach past its tile's edge it draws a `?` in each of its
+columns instead (the pane's `screen` keeps the character).
+
 The viewer asks a pane once to take the size of its tile (through `ctl`). Two
 viewers with different sizes do not fight: the last to ask wins, and the
 other shows what fits.
@@ -382,8 +389,8 @@ does something else is a row below with a case that shows it.
 | Question | Authority |
 | --- | --- |
 | What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 9, 21 and 58 and the colon forms of 38 and 48, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
-| Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt` |
-| How many columns a character takes | One rule: two for East Asian wide and fullwidth characters; none for combining marks that take no space (categories Mn and Me) and format characters from U+0300 on, the jamo U+1160 to U+11FF that complete a Hangul syllable, and emoji skin tones; one for everything else, the "ambiguous" ones too |
+| Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. Text is what is printed with nothing between: a control or a move ends a character |
+| How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room, a joiner or another format character, or the vowel or final consonant of a Hangul syllable; one otherwise, the "ambiguous" ones too. U+FE0F after an emoji makes it two. A mark or a format character with nothing to join takes no cell and is dropped |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports) | Its own specification |
 
 `tools/referee/referee.py` plays the same bytes to fux and to three
@@ -438,7 +445,7 @@ takes a desktop's number removes the desktop's socket when it ends).
 | `terminfo/is2`, `terminfo/rs2` | tmux | text, cursor | Leaving 132-column mode (`CSI ? 3 l`) does nothing, as in xterm by default; tmux clears the screen |
 | `terminfo/rmcup` | tmux | text, cursor | Leaving the alternate screen when not on it still restores the saved cursor, as in xterm; tmux does nothing |
 | `controls/alternate-1049-twice` | tmux | text | Asking for the alternate screen of 1049 while on it clears it again, as in xterm; tmux keeps it |
-| `controls/alternate-47`, `controls/wrap-pending-cuf`, `controls/wrap-pending-report` | tmux | cursor | A cursor waiting to wrap is in the last column, reported and moved from there, as in xterm; tmux counts it one column further |
+| `controls/alternate-47`, `controls/wrap-pending-cuf`, `controls/wrap-pending-report`, `unicode/mark-after-letter-at-end` | tmux | cursor | A cursor waiting to wrap is in the last column, reported and moved from there, as in xterm; tmux counts it one column further |
 | `controls/wrap-pending-bs` | tmux | text, cursor | A cursor waiting to wrap is in the last column, reported and moved from there, as in xterm; tmux counts it one column further |
 | `controls/save-restore-pen-and-wrap` | tmux | text, cursor | Saving and restoring the cursor keeps a waiting wrap, as in xterm; tmux forgets it |
 | `controls/wrap-pending-el` | tmux | text, cursor | Erasing in the line ends a waiting wrap, as in xterm; tmux keeps it |
@@ -447,26 +454,21 @@ takes a desktop's number removes the desktop's socket when it ends).
 | `controls/c1-as-text` | tmux | text | A C1 control written as UTF-8 is dropped, as in xterm; tmux keeps it in its text |
 | `controls/rep-after-mark` | tmux | text, cursor | REP after a letter with a combining mark repeats the letter, as in xterm; tmux repeats the mark |
 | `resize/alternate-narrow` | tmux | cursor | Narrowing brings the cursor inside the screen; tmux reports it where it was |
+| `unicode/devanagari-joiner`, `unicode/joiner-after-letter`, `unicode/joiner-after-letter-at-end`, `unicode/three-marks`, `unicode/three-marks-at-end`, `unicode/vs15`, `unicode/vs15-at-end` | xterm | text | The cells and the cursor agree; xterm's print of its screen leaves out or reorders characters that take no column |
+| `unicode/skin-tone`, `unicode/skin-tone-at-end` | xterm | cursor | xterm does not join characters into clusters and does not widen one for U+FE0F: each part takes its own columns, and at a row's end a cluster is cut where fux wraps it whole |
+| `unicode/devanagari-at-end`, `unicode/devanagari-joiner-at-end`, `unicode/family`, `unicode/family-at-end`, `unicode/family-four`, `unicode/family-four-at-end`, `unicode/flag-at-end`, `unicode/flags-three-at-end`, `unicode/keycap`, `unicode/keycap-at-end`, `unicode/prepend-at-end`, `unicode/tamil-at-end`, `unicode/thai-at-end`, `unicode/vs16`, `unicode/vs16-at-end` | xterm | text, cursor | xterm does not join characters into clusters and does not widen one for U+FE0F: each part takes its own columns, and at a row's end a cluster is cut where fux wraps it whole |
+| `unicode/mark-after-move` | old, tmux | text | A mark that comes after a move has no character to join (UAX #29 cuts text, and a move is not text) and is dropped, as in xterm; old and tmux put it on the character left of the cursor |
+| `unicode/zero-width-space`, `unicode/zero-width-space-at-end` | old, tmux | text | A format character that joins nothing (U+200B) takes no cell and is dropped, as in xterm; old and tmux keep it in their text |
+| `unicode/devanagari-joiner` | tmux | cursor | tmux joins fewer characters than UAX #29 does (a spacing mark, a conjunct; before 3.8 also a flag, a skin tone, U+FE0F): what it does not join it measures apart and cuts at a row's end |
+| `unicode/devanagari-at-end`, `unicode/devanagari-joiner-at-end`, `unicode/flag-at-end`, `unicode/flags-three-at-end`, `unicode/keycap-at-end`, `unicode/prepend-at-end`, `unicode/tamil-at-end`, `unicode/thai-at-end`, `unicode/vs16-at-end` | tmux | text, cursor | tmux joins fewer characters than UAX #29 does (a spacing mark, a conjunct; before 3.8 also a flag, a skin tone, U+FE0F): what it does not join it measures apart and cuts at a row's end |
 <!-- referee:end -->
 
 Not done yet, and listed so the referee tells a new difference from these:
-characters are not yet cut as UAX #29 says (a cell is one character and up to
-two marks; emoji joined by U+200D, flags, keycaps and VS16 take the columns
-of their parts), and rows are cut on a resize instead of wrapped again.
+rows are cut on a resize instead of wrapped again.
 
 <!-- referee:departures -->
 | Cases | Differs from | In | |
 | --- | --- | --- | --- |
-| `unicode/devanagari-at-end`, `unicode/keycap-at-end`, `unicode/tamil-at-end`, `unicode/thai-at-end` | old | text, cursor | clusters |
-| `unicode/family`, `unicode/family-at-end`, `unicode/family-four`, `unicode/family-four-at-end`, `unicode/keycap`, `unicode/vs16` | old, tmux | cursor | clusters |
-| `unicode/three-marks`, `unicode/three-marks-at-end` | old, tmux | text | clusters |
-| `unicode/devanagari-joiner-at-end`, `unicode/flag-at-end`, `unicode/flags-three-at-end`, `unicode/vs16-at-end` | old, tmux | text, cursor | clusters |
-| `unicode/prepend` | old, tmux, xterm | cursor | clusters |
-| `unicode/prepend-at-end` | old, tmux, xterm | text, cursor | clusters |
-| `unicode/devanagari-joiner`, `unicode/flags-three`, `unicode/mark-after-letter-at-end` | tmux | cursor | clusters |
-| `unicode/keycap-at-end` | tmux | text or text, cursor | clusters |
-| `unicode/skin-tone`, `unicode/skin-tone-at-end` | tmux, xterm | cursor | clusters |
-| `unicode/devanagari-joiner`, `unicode/devanagari-joiner-at-end`, `unicode/family`, `unicode/family-at-end`, `unicode/family-four`, `unicode/family-four-at-end`, `unicode/joiner-after-letter`, `unicode/joiner-after-letter-at-end`, `unicode/keycap`, `unicode/keycap-at-end`, `unicode/mark-after-move`, `unicode/vs15`, `unicode/vs15-at-end`, `unicode/vs16`, `unicode/vs16-at-end`, `unicode/zero-width-space`, `unicode/zero-width-space-at-end` | xterm | text | clusters |
 | `resize/narrow-full-screen` | old | text | no reflow |
 | `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow` | old | text, cursor | no reflow |
 | `resize/narrow-cursor-mid-line`, `resize/narrow-wide-characters`, `resize/widen` | old, tmux | text, cursor | no reflow |
@@ -489,8 +491,9 @@ works); colour queries and palette and cursor colour changes (OSC 4, 10, 11,
 1004); the bell, the visual bell, the printer codes and memory lock; reflow on resize (rows keep their text, what does not fit is
 cut or goes to history); left and right margins; line feed mode (`CSI 20 h`);
 double underline and
-underline colours (drawn as one plain underline); more than two combining
-marks on a character; choosers and prompts (renaming
+underline colours (drawn as one plain underline); more than ten
+parts in one character (a letter with twelve marks loses the last two, and
+the pane's `log` says so); choosers and prompts (renaming
 and picking from a list would be scripts); a copy mode (`C-b c` is the
 editor on the pane's text); Windows. `clear` clears the screen, not the
 `history` file (`CSI 3 J` is ignored).
