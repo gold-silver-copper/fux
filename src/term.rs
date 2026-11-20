@@ -1654,13 +1654,15 @@ impl Term {
                 // (A number too large to be flags is no flags, not the largest number kept.)
                 let given = if self.huge { 0 } else { self.arg(0, 0) };
                 let (asked, how) = ((given & usize::from(KEYS & self.keyboard)) as u8, self.arg(1, 1));
+                // (A flag in force may be put out of force whatever the terminal takes by now.)
+                let out = (given & usize::from(KEYS)) as u8;
                 // (Going back takes a count: one if none is given, none if it is 0.)
                 let (back, which) = (if self.bare { 1 } else { self.arg(0, 0) }, self.private);
                 let Some((flags, kept)) = self.keys.get_mut(alt) else { return };
                 match which {
                     b'=' => {
                         *flags =
-                            [asked, *flags | asked, *flags & !asked].get(how.wrapping_sub(1)).copied().unwrap_or(*flags)
+                            [asked, *flags | asked, *flags & !out].get(how.wrapping_sub(1)).copied().unwrap_or(*flags)
                     }
                     b'>' => {
                         // The stack is bounded: the oldest entry makes room.

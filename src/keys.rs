@@ -16,6 +16,10 @@ pub const DEFAULT: &[(&str, &str)] = scripts!(
     "C-b/x/.about" "C-b/x/y"
 );
 
+/// How long a key's sequence may be before it is given up as no key (the kitty protocol's text
+/// of a key can be many numbers long).
+const CSI_MAX: usize = 1024;
+
 /// The key at the start of `bytes`: how many bytes it is and its name. The
 /// name is empty for a sequence that is no key we know (it is passed on as
 /// it is). `None` when more bytes are needed to tell; with `whole`, no more
@@ -31,7 +35,7 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)>
                 let Some(end) = bytes.iter().skip(2).position(|b| (0x40..=0x7e).contains(b)) else {
                     // Alt-[ alone, with nothing after it for a moment, is that key; more than that waits.
                     let alone = (whole && bytes.len() == 2).then(|| (2, "M-[".to_string()));
-                    return alone.or((bytes.len() > 64).then(|| (bytes.len(), String::new())));
+                    return alone.or((bytes.len() > CSI_MAX).then(|| (bytes.len(), String::new())));
                 };
                 let parameters = String::from_utf8_lossy(bytes.get(2..end + 2)?).into_owned();
                 Some((end + 3, sequence(&parameters, *bytes.get(end + 2)?)))
@@ -91,9 +95,17 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)>
 
 /// What a key's sequence says beyond its name, in the kitty protocol's forms: which key it is
 /// (its number and the sequence's last byte), whether it is pressed (1), held and repeating (2)
-/// or let go (3), and whether it is a modifier key by itself (Shift, Ctrl and their like).
-/// `None` for bytes that are no such sequence: a key in the old form, which is a press.
+/// or let go (3), and whether it is a modifier key by itself (Shift, Ctrl and their like, and the
+/// locks).
+/// A character by itself is a press of its key (a terminal may send a letter's press so and its
+/// release as a sequence). `None` for other bytes: a key in the old form, of which no more is told.
 pub fn event(raw: &[u8]) -> Option<((u32, u8), u8, bool)> {
+    let mut text = std::str::from_utf8(raw).ok()?.chars();
+    if let (Some(only), None) = (text.next(), text.next())
+        && !only.is_control()
+    {
+        return Some(((only.to_lowercase().next().map_or(0, u32::from), b'u'), 1, false));
+    }
     let (last, inside) = raw.strip_prefix(b"\x1b[")?.split_last()?;
     let mut fields = std::str::from_utf8(inside).ok()?.split(';');
     let code = fields.next()?.split(':').next()?.parse::<u32>().unwrap_or(1);
@@ -101,7 +113,7 @@ pub fn event(raw: &[u8]) -> Option<((u32, u8), u8, bool)> {
     matches!(last, b'u' | b'~' | b'A'..=b'H' | b'P'..=b'S').then_some((
         (code, *last),
         kind,
-        *last == b'u' && (57441..=57454).contains(&code),
+        *last == b'u' && matches!(code, 57358..=57360 | 57441..=57454),
     ))
 }
 
@@ -151,6 +163,11 @@ fn sequence(parameters: &str, last: u8) -> String {
                 Some(' ') => "space".into(),
                 Some('/' | '\u{e042}') => "slash".into(),
                 Some('.' | '\u{e041}') => "dot".into(),
+                Some('\u{e043}') => "*".into(),
+                Some('\u{e044}') => "-".into(),
+                Some('\u{e045}') => "+".into(),
+                Some('\u{e047}') => "=".into(),
+                Some('\u{e048}') => ",".into(),
                 // The keypad's keys have numbers of their own (57399 to 57426): they are named as
                 // the keys they double, as they are in the old form.
                 Some(c @ '\u{e037}'..='\u{e040}') => char::from(b'0' + (u32::from(c) - 0xe037) as u8).to_string(),

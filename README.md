@@ -177,15 +177,23 @@ keys the old way, also after a viewer on a better terminal has come (start
 the program again to have them). While a pane has the keys, the viewer asks
 its terminal for that pane's flags, and takes them back when the focus moves
 or the viewer leaves. The keys go to the program as the terminal sends them.
-A flag the terminal lacks is not in force, and the program is told so.
+A flag the terminal lacks is not in force, and the program is told so. (What
+a program was told stays what `modes` says, also when a viewer on a lesser
+terminal comes later: that terminal sends what it can, and the program
+finds out when it asks again.)
 
 With flag 2 the terminal tells of keys held and let go, and the viewer sees
-those too. A key the viewer took for itself (the prefix, a key of a menu) is
-its own to the end: its repeats and its release reach no program. (Held in
-a menu that stays open, as the resize menu does, a key acts again.) While a
-menu is open, a release, and Shift, Ctrl and their like by themselves, do
-nothing: they neither choose nor close it. A release reaches a pane only if
-that pane got the press.
+those too. A key belongs, until it is let go, to whoever got its press. A key
+the viewer took for itself (the prefix, a key of a menu) is its own to the
+end: its repeats and its release reach no program. (Held in a menu that
+stays open, as the resize menu does, a key that did something there does it
+again.) A key that went to a pane is that pane's: its repeats and its
+release go there too, also after the keys have moved to another pane and
+while a menu is open, unless the pane's program has ended or been started
+anew meanwhile. A release whose press nobody got goes nowhere. While a menu
+is open, Shift, Ctrl and their like by themselves, and the locks, do
+nothing: they neither choose nor close it. (The viewer knows of the last 64
+keys that are down.)
 
 The viewer reads both forms and gives a key one name in both, so `C-b` and
 the keys in the keys directory are found whatever the focused program asked

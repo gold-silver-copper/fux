@@ -549,7 +549,10 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     assert_eq!(run("S-c"), "");
     until("the editor was given the output", || read(&out) == "hello\n");
     until("the second command is done", || read(&pane.join("marks")).lines().count() == 10);
-    assert_eq!(run("S-c"), "the last command printed nothing\n");
+    assert_eq!(
+        run("S-c"),
+        "nothing of the last command's output is here (it printed none, or the screen was cleared)\n"
+    );
 }
 
 #[test]
@@ -579,19 +582,34 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     // A key typed: its press and its release reach the program. One held down stays down for now.
     fs::write(view.join("in"), "\x1b[97;1:1u\x1b[97;1:3u\x1b[120;1:1u").unwrap();
     until("the keys arrive", || shown(&asks) == "^[[?11u^[[97;1:1u^[[97;1:3u^[[120;1:1u");
-    // The prefix, held and let go; Shift by itself, down and up, with the menu open; then the
-    // menu's key, and its release. All of it is the viewer's: the menu stays open through Shift
-    // and the releases, the script runs once, and no pane hears of any of it.
-    fs::write(view.join("in"), "\x1b[98;5:1u\x1b[98;5:2u\x1b[98;5:3u\x1b[57441;2:1u\x1b[57441;1:3u").unwrap();
+    // Ctrl goes down (a terminal that tells of every key tells of that too: the pane has the keys
+    // and gets it), then the prefix, held and let go; Shift by itself, down and up, with the menu
+    // open; Ctrl is let go. The menu stays open through all of it; Ctrl's release follows its
+    // press to the pane, and the pane hears of nothing else.
+    let ctrl = "\x1b[57442;5:1u\x1b[98;5:1u\x1b[98;5:2u\x1b[98;5:3u\x1b[57441;2:1u\x1b[57441;1:3u\x1b[57442;1:3u";
+    fs::write(view.join("in"), ctrl).unwrap();
     until("the menu is open, and stays", || read(&view.join("screen")).contains("o  other"));
-    std::thread::sleep(Duration::from_millis(200));
+    let held = "^[[?11u^[[97;1:1u^[[97;1:3u^[[120;1:1u^[[57442;5:1u^[[57442;1:3u";
+    until("Ctrl went down and up in the pane", || shown(&asks) == held);
     assert!(read(&view.join("screen")).contains("o  other"));
+    // The menu's key and its release: the script runs once and the other pane has the keys.
     fs::write(view.join("in"), "\x1b[111;1:1u\x1b[111;1:3u").unwrap();
     until("the other pane has the keys", || read(&inner.0.join("main/layout")).contains("focus=plain"));
     until("the terminal is asked for no flags", || !fact(&view, "modes").contains("keys"));
-    // The key that was held is let go now: its press went to the first pane, so its release is
-    // not the second one's. What is typed here arrives; nothing else ever did.
-    fs::write(view.join("in"), "\x1b[120;1:3uz").unwrap();
+    // The key that was held all this while repeats and is let go: its press went to the first
+    // pane, and so do these. A release of a key nobody pressed goes nowhere. What is typed
+    // here arrives here.
+    fs::write(view.join("in"), "\x1b[120;1:2u\x1b[120;1:3u\x1b[121;1:3uz").unwrap();
     until("the plain pane has what was typed there", || shown(&plain) == "z");
-    assert_eq!(shown(&asks), "^[[?11u^[[97;1:1u^[[97;1:3u^[[120;1:1u");
+    until("the first has its key back", || shown(&asks) == format!("{held}^[[120;1:2u^[[120;1:3u"));
+    // A key the viewer took whose release never came (the terminal tells of none without the
+    // flag) does not take a later press of that key for its own: the prefix, then the menu's key,
+    // and `b` typed in the pane that has the keys again, down and up.
+    fs::write(view.join("in"), "\x1b[98;5:1u").unwrap();
+    until("the menu is open", || read(&view.join("screen")).contains("o  other"));
+    fs::write(view.join("in"), "\x1b[111;1:1u\x1b[111;1:3u").unwrap();
+    until("the first pane has the keys", || fact(&view, "modes").contains("keys11"));
+    fs::write(view.join("in"), "\x1b[98;1:1u\x1b[98;1:3u").unwrap();
+    until("b went down and up", || shown(&asks) == format!("{held}^[[120;1:2u^[[120;1:3u^[[98;1:1u^[[98;1:3u"));
+    assert_eq!(shown(&plain), "z");
 }

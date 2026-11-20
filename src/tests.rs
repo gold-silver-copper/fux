@@ -147,9 +147,14 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     assert_eq!(event(b"\x1b[97;1:3u"), Some(((97, b'u'), 3, false)));
     assert_eq!(event(b"\x1b[98;5u"), Some(((98, b'u'), 1, false)));
     assert_eq!(event(b"\x1b[97:65;2:2;65u"), Some(((97, b'u'), 2, false)));
+    assert_eq!(event(b"\x1b[57358u"), Some(((57358, b'u'), 1, true)));
+    // A key with much text is one key, also when it comes in two pieces.
+    let long = format!("\x1b[97;;{}", "97:".repeat(24));
+    assert_eq!(crate::keys::next(long.as_bytes(), false, false), None);
+    assert_eq!(crate::keys::next(format!("{long}97u").as_bytes(), false, false), Some((long.len() + 3, "a".into())));
     assert_eq!(event(b"\x1b[57441;2u"), Some(((57441, b'u'), 1, true)));
     assert_eq!(event(b"\x1b[1;5:3A"), Some(((1, b'A'), 3, false)));
-    assert_eq!((event(b"a"), event(b"\x1b[<0;1;1M"), event(b"\x1ba")), (None, None, None));
+    assert_eq!((event(b"A"), event(b"\x1b[<0;1;1M"), event(b"\x1ba")), (Some(((97, b'u'), 1, false)), None, None));
     // Going back takes a count: none given is one, 0 is none.
     assert_eq!(asked("\x1b[=4u\x1b[>1u\x1b[<0u\x1b[?u\x1b[<u\x1b[?u").0, "\x1b[?1u\x1b[?4u");
     // What is kept aside is bounded at 16: of 17, the oldest (4) is gone, and the 16 come back in turn.

@@ -680,7 +680,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   clear. Changed:
   - a mark is `LINE COL KIND [EXIT]`: with the cell, `printf hello` is
     `hello` without the prompt after it and `true` is nothing, which the key
-    says ("the last command printed nothing") instead of opening the prompt;
+    says instead of opening the prompt;
   - marks are not dropped any more. A prompt above marks, and a clear of the
     whole screen (`ESC[2J`, so Ctrl-L and `clear`), bring the marks below to
     that line, in their order: an output and its end stay a pair, of nothing,
@@ -725,6 +725,39 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - Under flag 8 a plain letter comes as `CSI 97 u` and is named `a`: the
     menus work as before. A shifted sign is named by its sign only if the
     terminal says which it is (flag 4): as before.
+- **D67. The fix check of D65 (1 Opus, 1 gpt-6.2-astra, a tester; one pass).**
+  All three found keys left down in programs: D65 dropped a release when
+  the keys had moved or a menu was open, and with flag 8 the prefix's own
+  Ctrl goes to the pane first, so every use of the prefix left Ctrl down
+  there. The order's rule ("never a release to a pane that did not get the
+  press") does not ask for that. Changed: one list of the keys that are
+  down, each with where its press went. A pane's key stays that pane's: its
+  repeat and release are written to that pane's `in`, wherever the keys are
+  by then and with a menu open; not if the program there is another one
+  (the pid in `status`), so a pane started anew, or another workspace's of
+  the same name (astra), gets none. A press takes its key out of the list
+  first, so a key the viewer took whose release never came (no flag 2 then)
+  cannot swallow a later release (Opus). The list keeps the newest 64, not
+  the oldest. The locks count as modifiers. A repeat acts again in a
+  `.repeat` menu only if its press ran a script there (holding the key that
+  opened the menu closed it). A key's sequence may be 1,024 bytes before it
+  is given up (astra: a key with much text cut by a read after 64 bytes
+  became two keys).
+  - Also: a character by itself is a press of its key (a terminal that
+    sends a letter's press as the letter and its release as a sequence, as
+    wezterm's encoder does, has its release passed on); an event type that
+    is none of the three is nothing; a program may clear a flag the
+    terminal no longer takes (astra: the mask was put on what is cleared
+    too); the keypad's signs are named as the signs.
+  - Not done: a press that the pane's full `in` refused is still owed its
+    release (astra 6); two keys with one character and different base keys
+    held at once are one key to the list (astra 10); `ESC [` alone after a
+    pause is still `M-[` (as before this step).
+  - Kept: the keys go to a pane as the terminal sends them, so while a menu
+    is open they still come in the form the pane asked for; `C-b C-b` sends
+    the byte 2 to a program that asked for escape codes (it reads it as
+    C-b); a pane whose press was seen before its pid was known (the first
+    frame) gets no release.
 
 ## The old fux3's bugs: which classes are gone
 
