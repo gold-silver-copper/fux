@@ -182,7 +182,7 @@ takes longer puts its work in the background, as the defaults do.
 What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace (`workspace -` the one this
 viewer showed before, which is also where it goes when the one shown is
-removed), and anything else (an error
+removed; failing that, `main`), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key. A key with no file, pressed in an
 open menu, closes the menu and goes nowhere. Writing the same lines to the FIFO
 `$FUX_VIEW` does the same from anywhere.
@@ -205,14 +205,16 @@ like `x/y`, is a question.
 
 A script's third line may be `# group: NAME` (and so may the second line of
 an `.about`): the menu lists keys under their group's name, groups in
-alphabetical order, keys with no group first.
+alphabetical order, keys with no group first. A menu taller than the
+terminal goes on in a second column.
 
 There is no copy mode: `C-b c` puts the pane's older history, its history and
 its screen in one private file and opens it in `$EDITOR` (which may hold
-arguments), else `$PAGER`, else `less`, in a new tab. `vi`, `vim`, `nvim`,
+arguments, split at spaces), else `$PAGER`, else `less`, in a new tab. `vi`, `vim`, `nvim`,
 `nano`, `emacs` and `less` are opened at the file's end; any other editor
 gets the file alone, as not every editor reads `+LINE`. The file is removed
-when the editor ends, and you are back on the tab you came from.
+when the editor ends, and the tab shown before it is shown again (the one
+you came from, unless you looked at another meanwhile).
 
 There is no zoom either: a pane shown alone is a tab with one pane. If you
 want the key, these two scripts are it (`keys/C-b/z` and `keys/C-b/S-z`).
@@ -355,7 +357,7 @@ queries DECRQSS, XTGETTCAP and XTVERSION; the bell, the visual bell and the
 printer codes; reflow on resize (rows keep their text, what does not fit is
 cut or goes to history); left and right margins; double underline and
 underline colours (drawn as one plain underline); more than two combining
-marks on a character; headings in the menu, choosers and prompts (renaming
+marks on a character; choosers and prompts (renaming
 and picking from a list would be scripts); a copy mode (`C-b c` is the
 editor on the pane's text); Windows. `clear` clears the screen, not the `history` file.
 

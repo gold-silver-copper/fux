@@ -429,12 +429,14 @@ impl View {
             self.drawn.clear();
             out.push_str("\x1b[m\x1b[2J");
         }
-        // A workspace that is gone gives way to the one shown before it, if that is still there.
-        if !self.session.join(&self.workspace).is_dir()
-            && self.before.as_ref().is_some_and(|before| self.session.join(before).is_dir())
-        {
-            self.workspace = self.before.take().unwrap_or_default();
-            self.panes.clear();
+        // A workspace that is gone gives way to the one shown before it, if
+        // that is still there, and else to `main`, if that is.
+        if !self.session.join(&self.workspace).is_dir() {
+            let other = [self.before.take().unwrap_or_default(), "main".into()];
+            if let Some(other) = other.into_iter().find(|name| is_name(name) && self.session.join(name).is_dir()) {
+                self.message = format!("workspace {} is gone", std::mem::replace(&mut self.workspace, other));
+                self.panes.clear();
+            }
         }
         let directory = self.session.join(&self.workspace);
         let (text, mut layout, mut wrong) = Layout::load(&directory);
@@ -614,21 +616,35 @@ impl View {
                 }
                 lines.push((format!("{key:>key_width$}  {about}"), 0));
             }
-            if lines.len() > last {
-                let more = lines.len() - last.saturating_sub(1);
-                lines.truncate(last.saturating_sub(1));
-                lines.push((format!("▼ {more} more"), DIM));
-            }
-            // The box is as wide as its longest line, in cells, and a cell more on each side.
+            // A box as wide as its longest line, in cells, and a cell more on each
+            // side. A menu taller than the room above the bar goes on in a
+            // second box to the left of the first, and so on; what still does
+            // not fit is counted, not shown.
             let lines: Vec<Vec<Cell>> = lines
                 .iter()
                 .map(|(text, flags)| cells(&format!(" {text}"), Style { flags: *flags, ..panel }))
                 .collect();
-            let width = (lines.iter().map(Vec::len).max().unwrap_or(0) + 1).min(w);
-            for (i, line) in lines.iter().enumerate() {
-                let y = last.saturating_sub(lines.len()) + i;
-                put(&mut back, w, w - width, y, width, &cells(&" ".repeat(width), panel));
-                put(&mut back, w, w - width, y, width, line);
+            let widths = |boxes: &[&[Vec<Cell>]]| {
+                boxes.iter().map(|part| part.iter().map(Vec::len).max().unwrap_or(0) + 1).sum::<usize>()
+            };
+            let mut boxes: Vec<&[Vec<Cell>]> = lines.chunks(last.max(1)).collect();
+            let all = boxes.len();
+            while boxes.len() > 1 && widths(&boxes) > w {
+                boxes.pop();
+            }
+            let hidden: usize = lines.chunks(last.max(1)).skip(boxes.len()).map(<[_]>::len).sum();
+            let more = cells(&format!(" ▼ {hidden} more"), Style { flags: DIM, ..panel });
+            let (height, mut right) = (boxes.first().map_or(0, |part| part.len()), w);
+            for (n, part) in boxes.iter().enumerate().rev() {
+                let width = (part.iter().map(Vec::len).max().unwrap_or(0) + 1).min(right);
+                right -= width;
+                for i in 0..height {
+                    let y = last.saturating_sub(height) + i;
+                    let hides = n + 1 == boxes.len() && boxes.len() < all && i + 1 == height;
+                    let line = if hides { Some(&more) } else { part.get(i) };
+                    put(&mut back, w, right, y, width, &cells(&" ".repeat(width), panel));
+                    put(&mut back, w, right, y, width, line.map_or(&[], |line| line));
+                }
             }
             cursor = String::new();
         }
