@@ -13,41 +13,49 @@ START A PANE
     D=$(fux dir)                              # the session directory (made when the first pane starts)
     P=$(fux start agent-demo/job -- sh)       # workspace agent-demo, pane job: prints $D/agent-demo/job
     ls "$D" "$D/agent-demo"                   # workspaces; the panes of one
-NAME is WORKSPACE/PANE, or WORKSPACE/ for the next free number, or PANE alone (workspace
-main; typed in a pane, that pane's workspace). Letters, digits, . _ - only. No program
-after -- means $SHELL. The program gets the starter's environment and working directory,
-and its first size from COLUMNS and LINES (else 80x24):
+NAME is WORKSPACE/PANE (or PANE alone: workspace main; typed in a pane, that pane's
+workspace). Letters, digits, . _ - only. No program after -- means $SHELL. The program
+gets the starter's environment and working directory, and its first size from COLUMNS and
+LINES (else 80x24):
     W=$(cd / && COLUMNS=120 LINES=40 fux start agent-demo/wide -- sh -c 'pwd; exec sleep 600')
-A second start of a name whose pane is alive fails ("a holder already keeps this pane")
-and changes nothing. A name whose program has ended is started again in place, its old
-files replaced.
+A second start of a live pane's name fails ("a holder already keeps this pane"); the
+name of a pane whose program has ended is started again in place, its files replaced.
 
 WAIT FOR WHAT YOU EXPECT
 `screen` is the screen now, as plain text: a frame, not a log, replaced up to 40 times a
 second, some milliseconds after the program prints. So never read once and conclude, and
 never sleep and hope: wait for a text, or for the frame to change, always with a limit.
-    seen() { n=0; until grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt 100 ] || return 1; sleep 0.1; done; }
+    seen() { n=0; until grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
+    unseen() { n=0; while grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
     frame() { cksum < "$1/screen.styled"; }
-    changed() { n=0; while [ "$(frame "$1")" = "$2" ]; do n=$((n+1)); [ $n -lt 100 ] || return 1; sleep 0.1; done; }
-    settled() { a=; b=x; n=0; until [ "$a" = "$b" ]; do n=$((n+1)); [ $n -lt 100 ] || return 1; a=$b; sleep 0.3; b=$(frame "$1"); done; }
-    unseen() { n=0; while grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt 100 ] || return 1; sleep 0.1; done; }
-seen REGEX FILE waits (10 s) until the file has a matching line, unseen until it has none.
-changed DIR FRAME waits until the screen is another than the one you noted BEFORE you
-acted; settled DIR waits until two reads 0.3 s apart are the same. Each returns non-zero
-when its limit ran out: check that (`seen X FILE || give up`), or you go on with nothing
-seen. Settled alone can be the old frame twice, so after a key use `changed` first. A
+    changed() { n=0; while [ "$(frame "$1")" = "$2" ]; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
+    settled() { a=; b=x; n=0; until [ "$a" = "$b" ]; do n=$((n+1)); [ $n -lt "${2:-100}" ] || return 1; a=$b; sleep 0.3; b=$(frame "$1"); done; }
+seen REGEX FILE [LIMIT] waits until the file has a matching line, unseen until it has
+none. changed DIR FRAME [LIMIT] waits until the screen is another than the one you noted
+BEFORE you acted; settled DIR [LIMIT] until two reads 0.3 s apart are the same. LIMIT is
+in tries (0.1 s each, 0.3 for settled), 100 if not given.
+EACH RETURNS NON-ZERO WHEN ITS LIMIT RAN OUT. Check it every time (`seen X FILE || exit
+1`, or run your script under `set -e`): unchecked, you go on with nothing seen.
+A match must be one that was not there before you acted: an old prompt, or the line you
+typed yourself, matches too. So anchor (^...$), wait for `changed` first, or print a tag
+the typed line does not contain (below). Settled alone can be the old frame twice. A
 row's blanks at its end are not in `screen`: a prompt "$ " is the line "$", and where the
-cursor stands is in `cursor`. Waiting for a prompt:
-    seen '[$#>]$' "$P/screen"
+cursor stands is in `cursor`. Waiting for a first prompt, for 5 s at most:
+    seen '[$#>]$' "$P/screen" 50
 
 TYPE INTO IT
 `in` is a FIFO: bytes written to it are typed to the program. Enter is \r.
     f=$(frame "$P"); printf 'echo hello\r' > "$P/in"; changed "$P" "$f"; seen '^hello$' "$P/screen"
     text='any text, with % and \ in it'; printf '%s' "$text" > "$P/in"; printf '\025' > "$P/in"
 Keys are their bytes: Ctrl-C \003, Ctrl-D \004, Ctrl-U \025, Escape \033, Tab \t, Backspace
-\177, Up Down Right Left \033[A \033[B \033[C \033[D (\033OA and so on while `modes` says
-appcursor). One write of at most 512 bytes arrives whole; larger ones may mix with another
-writer's. Paste, where `modes` says paste: \033[200~ before the text, \033[201~ after.
+\177, arrows \033[A B C D. One write of at most 512 bytes arrives whole; larger ones may
+mix with another writer's. Paste, where `modes` says paste: \033[200~ text \033[201~.
+What a program does not read: a program that reads whole lines (cat, a plain `read`) gets
+at most about 4,000 bytes of one line (1,000 on macOS), the rest of the line is dropped;
+under a program that reads nothing at all, typed bytes are echoed and then dropped the
+same way. Only a program that reads key by key and has stopped (an editor that hangs) lets
+them queue, and after some hundred KiB a writer then waits. So: delivery is known only by
+what the program shows; send long text as lines, or as a paste.
 
 A WRITE THAT CANNOT HANG, AND WHETHER A PANE IS ALIVE
 A plain write (`> "$P/in"`) waits for ever if the pane's holder was killed outright
@@ -56,8 +64,8 @@ for reading and writing at once (`1<>`), a FIFO never makes the opener wait:
     [ -p "$P/in" ] && printf 'echo sent\r' 1<>"$P/in"; seen '^sent$' "$P/screen"
 What that gives and does not: it cannot hang on a dead pane, but there the bytes are lost
 without a word. (The `-p` test is because on a pane that ended normally `in` is gone, and
-`1<>` would make a plain file of that name.) It still waits while a live program is not
-reading and 64 KiB are queued. So when the answer matters, ask first whether the pane is
+`1<>` would make a plain file of that name.) Under a program that has stopped reading
+keys it can still wait, as said above. So when the answer matters, ask first whether the pane is
 alive, and after typing wait, with a limit, for what you expect. Alive is not what `state`
 says: it is the holder's process, there and not a zombie:
     alive() { s=$(ps -o state= -p "$(sed -n 's/^holder //p' "$1/status")" 2>/dev/null) && case $s in ''|Z*) false ;; esac; }
@@ -91,7 +99,7 @@ marks   `LINE AT KIND`, a line for each prompt mark of a shell that makes them (
 links   `LINE COL LEN ADDRESS` for each link (OSC 8) on the screen, e.g. `24 0 4 https://x.y`:
         LINE counts as `top` does (screen row = LINE - top, if no row above wraps), COL is
         the first cell from 0, LEN the number of cells
-clipboard  the bytes the program copied last; log: what the holder refused or lost
+log     what the holder refused or lost. (Also: clipboard, pictures and pic-N.sixel.)
 A fact can be one frame (25 ms) ahead of a screen read just before it. All the text of a
 pane, oldest first, wrapped rows joined into the lines that were printed:
     whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(cat "$1/wraps")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/screen"; }
@@ -106,15 +114,25 @@ exit code is in that line (fux wait itself exits 0). The pane stays, to be read.
     J=$(fux start agent-demo/ls -- sh -c 'ls /; exit 3')
     code=$(fux wait "$J" | sed -n 's/^state exited //p'); echo "exit code $code"
     whole "$J"                                # all it printed
-In a shell you keep typing into, print a mark after the command that the typed line itself
+fux wait has no limit: it waits as long as the program runs. To bound it, wait for the
+holder to go, with a limit, and then ask:
+    ended() { n=0; while alive "$1"; do n=$((n+1)); [ $n -lt "${2:-100}" ] || return 1; sleep 0.1; done; }
+    ended "$J" 50 && fux wait "$J" | tail -n 1
+In a shell you keep typing into, print a tag after the command that the typed line itself
 does not contain (here the typed line has $? where the output has a number):
     printf 'ls /nonexistent; echo "<<t1:$?>>"\r' > "$P/in"; seen '<<t1:[0-9]*>>' "$P/screen"
     grep -o '<<t1:[0-9]*>>' "$P/screen"       # <<t1:2>> : the exit code (use a new tag each time)
-A shell that marks its prompts (OSC 133) needs no mark of yours: `marks` gets `LINE AT
-KIND` for each (KIND prompt, command, output, end; `end` is followed by the exit code):
-    S=$(fux start agent-demo/marked -- env PS1='\[\e]133;A\a\]$ ' PROMPT_COMMAND='printf "\e]133;D;%s\a\e]7;file://%s\a" "$?" "$PWD"' bash --norc -i)
-    printf 'cd /; false\r' > "$S/in"; seen ' end 1$' "$S/marks"; seen '^/$' "$S/cwd"
-    grep ' end ' "$S/marks" | tail -n 1; cat "$S/cwd"       # LINE AT end 1, and /
+A shell that marks its prompts (OSC 133) needs no tag: each mark is a line `LINE AT KIND`
+in `marks`. This bash makes three kinds: `prompt`, `command` (where typing starts) and
+`end CODE` (written before each prompt, the first one too: `end 0` is there from the
+start). The fourth, `output`, needs PS0='\e]133;C\a' and bash 4.4.
+    S=$(fux start agent-demo/marked -- env PS1='\[\e]133;A\a\]$ \[\e]133;B\a\]' PROMPT_COMMAND='printf "\e]133;D;%s\a\e]7;file://%s\a" "$?" "$PWD"' bash --norc -i)
+So never wait for "an end": wait for one MORE than there were before you typed.
+    count() { grep -c " $2" "$1/marks" || :; }
+    more() { n=0; while [ "$(count "$1" "$2")" -le "$3" ]; do n=$((n+1)); [ $n -lt "${4:-100}" ] || return 1; sleep 0.1; done; }
+    seen ' prompt$' "$S/marks"; e=$(count "$S" end); p=$(count "$S" prompt)
+    printf 'cd /; false\r' > "$S/in"; more "$S" end "$e"; more "$S" prompt "$p"       # its end, then the next prompt
+    grep ' end' "$S/marks" | tail -n 1; cat "$S/cwd"       # LINE AT end 1, and /
 
 FULL-SCREEN PROGRAMS (vim, less, htop)
 `modes` says alt while one is on the alternate screen; `screen` is then its screen. Send
@@ -129,8 +147,8 @@ RESIZE, RENAME, RING, END
     printf 'notify %s\n' 'the build is done' > "$P/ctl"; seen 'build is done' "$P/notice"
     mv "$W" "$D/agent-demo/broad"; W=$D/agent-demo/broad    # a rename: the pane lives on, under the new path
     echo kill > "$P/ctl"; fux wait "$P"       # hangs up the program: state killed 1, or exited N
-A renamed pane has a tab of its own in the layout again (its old place is dropped), and
-its program's $FUXN_PANE still says the old name. Move only within one filesystem.
+A renamed pane is a tab of its own in the layout again, and its program's $FUXN_PANE
+still says the old name. Move only within one filesystem.
 `kill` hangs up (SIGHUP), as closing a terminal does. It does not remove the pane: the
 directory stays, with the last screen and state. It does not force: a program that
 ignores it lives on, with `state` hungup; then signal the program (never the holder):
@@ -147,11 +165,14 @@ Removing a pane's directory ends the pane too (its holder sees it within 2 secon
 MANY PANES
     for i in 1 2 3; do fux start "agent-demo/w$i" -- sh -c "sleep 0.$i; echo done $i; exit $i" > /dev/null; done
     for i in 1 2 3; do fux wait "$D/agent-demo/w$i" | tail -n 1; done
-    grep . "$D"/agent-demo/*/state            # every pane's state, with its name
+Every workspace and pane of the session, with its state and command:
+    for q in "$D"/*/*/; do [ ! -f "$q/state" ] || echo "${q#"$D"/} $(cat "$q/state") : $(sed -n 's/^command //p' "$q/status")"; done
 
 WHAT A PERSON SEES
-`fux view WORKSPACE` draws a workspace in a terminal: tiles, tabs, a bar (C-b d leaves
-it). Panes run the same without it. It shows each pane as a tab unless the workspace's
+`fux view WORKSPACE` draws a workspace in a terminal (C-b d leaves it). Panes run the same
+without it. Left alone it draws only the panes of the tab shown, with lines between them:
+no bar, no tab names. Those are on its last row only after the prefix C-b (\002), until
+the next key; Escape closes them. It shows each pane as a tab unless the workspace's
 `layout` file says otherwise; edit that with `fux layout EDIT`, the workspace named in
 FUXN_WS (in a pane: that pane's own). Two panes above and one below, across:
     FUXN_WS=agent-demo fux layout split col w2 beside ls    # w2 below ls: do this one first
@@ -159,30 +180,33 @@ FUXN_WS (in a pane: that pane's own). Two panes above and one below, across:
     FUXN_WS=agent-demo fux layout focus ls                  # ls gets the keys
     FUXN_WS=agent-demo fux layout                           # print it: * marks the tab shown
 Edits: split row|col PANE [beside PANE] · focus left|right|up|down|next|prev|PANE · tab
-next|prev|N|- · break · swap next|prev · size row|col +N|-N · rotate · arrange row|col|grid|main.
+next|prev|N|- (and break, swap, size, rotate, arrange).
 To see what a person would, run the viewer in a pane of ANOTHER workspace and read it:
     V=$(COLUMNS=100 LINES=30 fux start agent-view/v -- fux view agent-demo); seen '│' "$V/screen"
     printf 'notify %s\n' 'look here' > "$W/ctl"; seen ' broad: look here$' "$V/notice"
+    printf '\002' > "$V/in"; seen ' agent-demo .* broad' "$V/screen"       # the bar: workspace, tabs
+    printf '\033' > "$V/in"; unseen ' agent-demo ' "$V/screen"            # (a key right after Escape would join it)
     cat "$V/screen"; printf '\002d' > "$V/in"; fux wait "$V"       # C-b d: the viewer leaves
 A viewer sets the size of the panes it shows to their tiles. A notice (`notify`, a bell)
 of a pane in the workspace shown is passed on to the viewer's terminal as `PANE: WORDS`,
 and its tab is marked; a viewer in a pane has that in its own pane's `notice`, as above
-(`N broad: look here`). From inside a pane: printf 'notify %s\n' 'done' > "$FUXN_PANE/ctl".
+(`N broad: look here`; a bell is passed on as a bell, so there it is the number alone).
+From inside a pane: printf 'notify %s\n' 'done' > "$FUXN_PANE/ctl".
 A viewer writes in the session `keyboard` and, only if its terminal answered, `colours`
 (what its terminal can do; harmless, left behind), its key scripts in $FUXN_KEYS (else
 ~/.config/fux-next/keys), and while it runs a FIFO `.view.PID` in the session.
 
 IF YOU HAVE PERL (optional: nothing else on this page needs it)
 The sh forms above have three risks: a write to a dead pane is lost without a word, a
-write can wait while 64 KiB are queued, and `alive` can be wrong long after a crash. With
+write can wait under a program that stopped reading, and `alive` can be wrong long after
+a crash. With
 perl (Linux and macOS ship it) there are exact forms. A write that never waits and fails
 at once, saying why:
     send() { perl -e 'use Fcntl; -p $ARGV[0] or die "$ARGV[0]: not a FIFO\n"; sysopen(F, $ARGV[0], O_WRONLY|O_NONBLOCK) or die "$ARGV[0]: $!\n"; local $/; defined syswrite(F, <STDIN>) or die "$ARGV[0]: $!\n"' "$1"; }
     printf 'x' | send "$W/in"; printf 'x' | send "$X/in" || echo "refused at once"
-"not a FIFO" or "No such file": the pane ended or is gone; "No such device or address":
-no holder reads, the pane is dead; "Resource temporarily unavailable": alive, but its
-queue is full (try later). And alive by the lock the holder holds on the pane's directory
-while it lives, which no other process's number can fake:
+"not a FIFO", "No such file": the pane ended or is gone; "No such device or address": no
+holder reads, it is dead; "Resource temporarily unavailable": alive, its queue full. And
+alive by the lock the holder holds on the pane's directory, which no pid can fake:
     locked() { perl -e 'use Fcntl ":flock"; open(D, "<", $ARGV[0]) or exit 1; exit(flock(D, LOCK_SH|LOCK_NB) ? 1 : 0)' "$1"; }
     locked "$W"; locked "$X" || echo "crash holds no lock"
 In python: os.open(path, os.O_WRONLY | os.O_NONBLOCK) then os.write, and fcntl.flock.
@@ -194,6 +218,5 @@ look at what it is (`status` names the command). When done, remove what you star
 nothing else; removing a workspace ends every pane in it:
     cat "$D"/agent-demo/*/status | grep '^command'
     rm -r "$D/agent-demo" "$D/agent-view"
-What a session holds besides workspaces is the viewer's files named above. In a container
-whose process 1 does not reap (no init), ended holders stay in the process table as
-zombies: they are dead and hold nothing; run the container with an init (docker --init).
+A session holds nothing else but the viewer's files named above. In a container with no
+init, ended holders stay as zombies (dead, holding nothing): use docker --init.

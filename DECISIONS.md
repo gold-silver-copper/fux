@@ -1076,6 +1076,31 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   found, and checks that nothing outside it names perl or python. The
   README's zoom-back script is treated the same: `fux layout` needs
   nothing; the perl line is for a hand edit under the lock.
+- **D77. The agents' page after the split blind test** (message 21: one
+  reader without perl or python, one with perl; 30 and 31 of 32, neither
+  ever hung). From what they got wrong:
+  - waiting for a command's end in `marks` is waiting for one more `end`
+    than before the typing (`count`, `more`): the example had matched the
+    `end 0` its own shell writes before the first prompt. The example
+    shell now marks `prompt`, `command` and `end`; `output` needs PS0,
+    which macOS's bash 3.2 lacks, and the page says so.
+  - every wait takes its limit as an argument, and the page says in
+    capitals to check the result; `ended` bounds `fux wait` (the holder's
+    going, with a limit) in sh on both systems.
+  - "a write waits while 64 KiB are queued" was not reachable as said and
+    is gone. What is true, tried here: under a program that reads lines
+    or nothing, the terminal keeps about 4,000 bytes of a line (cat got
+    4,096 of 6,001) and drops the rest, so 300,000 bytes never waited;
+    only under a program in raw mode that has stopped reading do they
+    queue, and a writer waited after some hundred KiB.
+  - an idle viewer draws no bar and no tab names (they come with the
+    prefix); a bell passed on is a bare number in the viewer pane's
+    `notice`; a loop lists every workspace and pane; `fux help` ends by
+    pointing to this page and no longer to a README.
+  - Cut: automatic numbering, the application cursor keys, the clipboard
+    line, the layout edits beyond split, focus and tab (named only). The
+    page is 222 lines against "near 200": the new recipes are long lines
+    of their own, and nothing else was the testers' to spare.
 
 ## The old fux3's bugs: which classes are gone
 
