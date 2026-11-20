@@ -606,10 +606,12 @@ impl Term {
         let (mut out, mut line, mut base) = (String::new(), self.top(), 0);
         let mut run: Option<(usize, usize, usize, u16)> = None;
         // (A list that would be longer than a reader reads ends before the run that makes it so.)
+        let mut full = false;
         let mut put = |(line, start, length, link): (usize, usize, usize, u16)| {
             let address = usize::from(link).checked_sub(1).and_then(|at| self.links.get(at));
             let record = format!("{line} {start} {length} {}\n", address.map_or("", String::as_str));
-            if address.is_some_and(|address| !address.is_empty()) && out.len() + record.len() <= LINKS_LIST_MAX {
+            full |= out.len() + record.len() > LINKS_LIST_MAX;
+            if address.is_some_and(|address| !address.is_empty()) && !full {
                 out.push_str(&record);
             }
         };

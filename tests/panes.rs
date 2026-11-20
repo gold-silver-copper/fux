@@ -622,25 +622,31 @@ fn a_link_a_program_makes_is_a_line_of_links_and_the_viewer_draws_it_inside_its_
     fs::create_dir_all(&keys).unwrap();
     let address = "https://example.org/a?b=c#d";
     // At columns 3 to 6 of its second row, and again where it runs past the tile's right edge.
+    // Above them two characters a terminal would join into one (a flag's two halves, the right
+    // one printed first), each a link of its own, and in the third row's last cell before the
+    // tile's edge a character that takes the next one into itself (U+0600), a link too.
     let prints = format!(
-        "printf '\\n  \\033]8;;{address}\\033\\\\link\\033]8;;\\033\\\\ plain\\n\\033[4;35H\\033]8;;{address}\\033\\\\0123456789\\033]8;;\\007'; sleep 600"
+        "printf '\\033[1;2H\\033]8;;{address}2\\033\\\\🇧\\033]8;;\\007\\033[1;1H\\033]8;;{address}1\\033\\\\🇦\\033]8;;\\007\\033[3;40H\\033]8;;{address}3\\033\\\\\u{600}\\033]8;;\\007\\033[1;3H\\n  \\033]8;;{address}\\033\\\\link\\033]8;;\\033\\\\ plain\\n\\033[4;35H\\033]8;;{address}\\033\\\\0123456789\\033]8;;\\007'; sleep 600"
     );
     let left = inner.start("left", &["sh", "-c", &prints]);
     inner.start("right", &["sh", "-c", "echo right; sleep 600"]);
-    until("the link is the pane's", || read(&left.join("links")) == format!("1 2 4 {address}\n3 34 10 {address}\n"));
+    let above = format!("0 0 1 {address}1\n0 1 1 {address}2\n1 2 4 {address}\n2 39 1 {address}3\n");
+    until("the link is the pane's", || read(&left.join("links")) == format!("{above}3 34 10 {address}\n"));
     assert!(!read(&left.join("screen.styled")).contains("\x1b]"));
     fs::create_dir_all(inner.0.join("main")).unwrap();
     fs::write(inner.0.join("main/layout"), "* row(left right) focus=right\n").unwrap();
-    let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
+    // (Whatever ran before the viewer left a link open on its terminal: no cell of the viewer's is part of it.)
+    let viewer = format!("printf '\\033]8;;http://open/\\033\\\\'; exec {} view", env!("CARGO_BIN_EXE_fux"));
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
-    let view = outer.start("view", &[&command[..], &viewer[..]].concat());
+    let view = outer.start("view", &[&command[..], &["sh", "-c", &viewer]].concat());
     // The tile is 40 columns wide and the pane takes that size: the second link's text wraps,
     // and the link is drawn on its cells in both rows, up to the tile's edge and not on the
-    // line between the tiles.
+    // line between the tiles. Each cell has its own address and no other: the flag's halves are
+    // two characters still, and the line between the tiles is no part of the character before it.
     until("the pane has its tile's size", || {
-        read(&left.join("links")) == format!("1 2 4 {address}\n3 34 10 {address}\n") && fact(&left, "size") == "40 24"
+        read(&left.join("links")) == format!("{above}3 34 10 {address}\n") && fact(&left, "size") == "40 24"
     });
-    let drawn = format!("1 2 4 {address}\n3 34 6 {address}\n4 0 4 {address}\n");
+    let drawn = format!("{above}3 34 6 {address}\n4 0 4 {address}\n");
     until("the viewer drew the links", || read(&view.join("links")) == drawn);
     assert!(read(&view.join("screen")).lines().nth(3).unwrap().contains("012345│"));
     // The pane's text scrolls into history and its first link with it; the viewer's terminal

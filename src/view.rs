@@ -9,6 +9,7 @@ use crate::sys::{self, Winsize};
 use crate::term::{
     BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode,
 };
+use crate::width::Joiner;
 use crate::{is_name, keys};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -217,8 +218,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // ones kept (to give back at the end), read back, and put to none until a pane asks.
     // The terminal is asked once what its colours are (the two it draws with and its palette),
     // and last of all what it is: its answer to that ends the wait for the others.
-    const START: &str =
-        "\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
+    // (First a link is closed: whatever ran before may have left one open, and no cell here is part of it.)
+    const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     let result = view.tty.write_all((START.to_string() + &asked + "\x1b[c").as_bytes()).and_then(|()| view.run(&ctl));
     // The pane that was told it has the keys is told that it has them no more.
@@ -767,12 +768,27 @@ impl View {
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
         self.focus = tab.map(|tab| tab.focus.clone());
         self.notices(&layout, &directory);
-        // (The table of links' addresses is emptied when it has grown large and most of it is
-        // of links that are drawn no more: all is drawn anew.)
-        if self.links.len() > 4000 && self.links.len() > 2 * self.live {
-            self.links.clear();
-            self.numbers.clear();
-            self.front.iter_mut().for_each(|cell| cell.ch = '\u{1}');
+        // (The table of links' addresses keeps only those of the cells on the terminal, numbered
+        // anew, when it has grown large and most of it is of links that are drawn no more, or
+        // when this frame's could be more than it has numbers left for.)
+        let most = usize::from(u16::MAX).saturating_sub(1000 * tiles.len());
+        if self.links.len() > 4000 && (self.links.len() > 2 * self.live || self.links.len() > most) {
+            let mut old = std::mem::take(&mut self.links);
+            let mut moved = vec![0u16; old.len()];
+            for cell in &mut self.front {
+                let at = usize::from(cell.link).wrapping_sub(1);
+                cell.link = match (moved.get_mut(at), old.get_mut(at)) {
+                    (Some(number), Some(address)) => {
+                        if *number == 0 {
+                            self.links.push(std::mem::take(address));
+                            *number = self.links.len() as u16;
+                        }
+                        *number
+                    }
+                    _ => 0,
+                };
+            }
+            self.numbers = self.links.iter().zip(1..).map(|(address, number)| (address.clone(), number)).collect();
         }
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
@@ -819,7 +835,7 @@ impl View {
                     if let Some(whole) = pane.term.cell_at(y, first).filter(|c| c.spill() > 0 && !self.joins)
                         && first + 1 + usize::from(whole.wide()) + whole.spill() > body.w
                     {
-                        cell = Cell { ch: '?', more: ['\0'; MORE], style: cell.style, link: 0 };
+                        cell = Cell { ch: '?', more: ['\0'; MORE], ..cell };
                     }
                     // A link's number is its address's place in the viewer's own table (found once
                     // for each of the pane's addresses; past 65,535 addresses on one screen, no link).
@@ -1075,9 +1091,19 @@ impl View {
         // The cells from here to `again` are sent whether they changed or not: a character before
         // them may have been drawn over them.
         let mut again = 0;
+        // What a terminal would join to the character in the cell before it (half a flag to the
+        // other half, anything to U+0600) is kept apart from it by U+200B, as in `screen.styled`:
+        // a move of the cursor to where it is parts nothing. So every cell is its own character.
+        let mut joiner = Joiner::default();
         for (i, (new, old)) in back.iter().zip(self.front.iter_mut()).enumerate() {
             let (x, y) = (i % w.max(1), i / w.max(1));
-            again = if x == 0 { 0 } else { again };
+            (again, joiner) = if x == 0 { (0, Joiner::default()) } else { (again, joiner) };
+            let apart = new.ch != '\0' && joiner.joins(new.ch);
+            if apart {
+                joiner = Joiner::default();
+                joiner.joins(new.ch);
+            }
+            new.more.iter().take_while(|&&c| c != '\0').for_each(|&c| _ = joiner.joins(c));
             if new == old && i >= again {
                 continue;
             }
@@ -1103,19 +1129,33 @@ impl View {
                 new.style.sgr(&mut out);
                 style = Some(new.style);
             }
+            if apart {
+                out.push('\u{200b}');
+            }
+            let link = |out: &mut String, number: u16| {
+                let address = usize::from(number).checked_sub(1).and_then(|at| self.links.get(at));
+                out.push_str(&format!("\x1b]8;;{}\x1b\\", address.map_or("", String::as_str)));
+            };
+            // A wide character that may come out narrower (one of several parts, an emoji) is
+            // drawn over two blanks, of its link as it is (closed again before the cursor goes
+            // back over them); the cells one may come out over are sent after it.
+            if new.wide() && !new.plain() {
+                if new.link != pen {
+                    link(&mut out, new.link);
+                }
+                out.push_str("  ");
+                if new.link != 0 {
+                    link(&mut out, 0);
+                }
+                pen = 0;
+                out.push_str(&place);
+            }
             // A cell that is part of a link is drawn inside it (OSC 8): the link is opened before
             // the first such cell and closed before the next cell that is not part of it, so
             // none reaches past its tile or over a line between tiles.
             if new.link != pen {
-                let address = usize::from(new.link).checked_sub(1).and_then(|at| self.links.get(at));
-                out.push_str(&format!("\x1b]8;;{}\x1b\\", address.map_or("", String::as_str)));
+                link(&mut out, new.link);
                 pen = new.link;
-            }
-            // A wide character that may come out narrower (one of several parts, an emoji) is
-            // drawn over two blanks; the cells one may come out over are sent after it.
-            if new.wide() && !new.plain() {
-                out.push_str("  ");
-                out.push_str(&place);
             }
             new.push_text(&mut out);
             again = again.max(i + 1 + usize::from(new.wide()) + new.spill());
@@ -1233,8 +1273,8 @@ impl Pane {
             _ => (0, 0),
         };
         let cols = if self.size.0 == 0 { SIZE_MAX } else { self.size.0 };
-        // (One column more than the pane is said to have: there a line that is longer ends,
-        // and is cut off.)
+        // (One column more than the pane is said to have, where there is room for one: there a
+        // line that is longer ends, and is cut off.)
         self.term = Term::new((cols + 1).min(SIZE_MAX), styled.lines().count().clamp(1, SIZE_MAX));
         self.term.feed(b"\x1b[?7l");
         for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
@@ -1253,8 +1293,10 @@ impl Pane {
                 rest = after.get(colour.unwrap_or(1)..).unwrap_or_default();
             }
             text.push_str(rest);
-            self.term
-                .feed(format!("\x1b[{};1H\x1b[m{text}\x1b[{};{}H\x1b[m\x1b[K", row + 1, row + 1, cols + 1).as_bytes());
+            self.term.feed(format!("\x1b[{};1H\x1b[m{text}", row + 1).as_bytes());
+            if cols < self.term.cols {
+                self.term.feed(format!("\x1b[{};{}H\x1b[m\x1b[K", row + 1, cols + 1).as_bytes());
+            }
         }
         self.term.set_words(&fact("modes", 256));
         let cursor = fact("cursor", 64);

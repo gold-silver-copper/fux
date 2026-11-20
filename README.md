@@ -626,7 +626,11 @@ drawn as part of one on your terminal, with the same address and no other
 word of the program's: the link is closed before the next cell that is not
 part of it and before the cursor is moved, so it ends at its tile's edge and
 at the line between tiles, and a viewer that draws a link has closed it
-before it writes anything else, and closes one when it leaves.
+before it writes anything else, and closes one when it leaves, and whatever
+link was open on your terminal before it draws. A cell is drawn as its
+own character with its own address: where your terminal would join it to the
+one before it (two halves of a flag, each a link of its own), the viewer
+keeps them apart with U+200B, as `screen.styled` does.
 Opening a link is your terminal's doing. Without a viewer the `links` file
 is there to read: `cut -d' ' -f4- "$FUXN_PANE/links"` in a key script lists
 the addresses on the focused pane.

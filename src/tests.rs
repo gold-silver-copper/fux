@@ -352,8 +352,11 @@ fn a_link_is_on_its_cells_through_scrolling_erasing_and_wrapping_and_ends_at_his
     // The list is no longer than a reader reads: it ends before the run that would make it so.
     let wide = "http://".to_string() + &"w".repeat(2041);
     let mut full = Term::new(2, 200);
-    full.feed((0..200).map(|n| format!("\x1b[{};1H{}", n + 1, link(&wide, "x"))).collect::<String>().as_bytes());
+    full.feed((0..199).map(|n| format!("\x1b[{};1H{}", n + 1, link(&wide, "x"))).collect::<String>().as_bytes());
+    // (And there it ends: a shorter run after that one is not in it either.)
+    full.feed(format!("\x1b[200;1H{}", link("http://s/", "x")).as_bytes());
     assert_eq!((full.links().len() <= crate::term::LINKS_LIST_MAX, full.links().lines().count()), (true, 127));
+    assert!(!full.links().contains("http://s/"));
 }
 
 #[test]
