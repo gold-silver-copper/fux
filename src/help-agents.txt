@@ -92,6 +92,8 @@ READ IT
 One fact, one small file (absent until there is something to say, where noted):
 size    COLS ROWS, e.g. `80 24`
 cursor  ROW COL shown|hidden SHAPE, from 0, e.g. `2 8 shown 0`: row 2 is line 3 of screen
+        (a fifth word, `#rrggbb`, if the program gave the cursor a colour; a colour a program
+        sets for its pane is in `screen.styled` as direct colour, `38;2;R;G;B`)
 modes   words, or an empty line: `alt` (a full-screen program has the alternate screen),
         paste, appcursor, keypad, focus, mouseN, mousesgr, keysN
 state   running | hungup | exited CODE | killed SIGNAL

@@ -76,7 +76,7 @@ in `FUXN_WS`.
 | `screen` | the screen as plain text: one line per row, and nothing else |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them |
 | `size` | `COLS ROWS` (`read cols rows < size`) |
-| `cursor` | `ROW COL shown\|hidden SHAPE`: row and column from 0, and the shape's number as a program sets it (0 to 6, as a rule) |
+| `cursor` | `ROW COL shown\|hidden SHAPE`: row and column from 0, and the shape's number as a program sets it (0 to 6, as a rule); then, if the program gave the cursor a colour (OSC 12), a fifth word, `#` and six hex digits |
 | `modes` | one line of words, empty when none: how input is to be sent to the program. `appcursor`, `keypad`, `paste`, `focus` (it asked to be told when its pane gains and loses the keys), `alt` (the alternate screen), `mouse9`, `mouse1000`, `mouse1002` or `mouse1003` (the mouse reports the program asked for), `mousesgr` (their newer form), `keysN` (the keyboard flags in force for it, below) |
 | `state` | what became of the program: `running`, `hungup`, `exited CODE` or `killed SIGNAL` |
 | `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
@@ -220,7 +220,7 @@ its own to install, and claims no other terminal's. Three things follow.
 The viewer passes 24-bit colours on as they are, so on a terminal that has
 none of them (few are left) set `COLORTERM=` for the program yourself. A
 program that goes by `TERM` alone may use what an xterm has and fux has not:
-a nested tmux sets the cursor's colour (heard, without effect) and needs
+a nested tmux needs
 `set -as terminal-features 'xterm-256color:usstyle'` to pass curly
 underlines on. And an answer nobody reads is typed text, as on any terminal:
 a program that asks and ends at once leaves it on its last screen, and one
@@ -237,7 +237,7 @@ background #1c1c1c
 1 #cc0000
 ```
 
-(`foreground`, `background`, or a palette number from 0 to 255, then `#` and
+(`foreground`, `background`, `cursor`, or a palette number from 0 to 255, then `#` and
 six hex digits; of two lines for one colour the last counts, a line that is
 anything else counts for nothing, and 16 KiB of the file are read). The
 viewer asks its terminal once when it starts, gives it a second to answer
@@ -246,11 +246,40 @@ and writes the file with what it was told, in place of the one that was
 there, yours too; a terminal that tells of no colour leaves the file as it
 is. Two viewers on terminals of different colours do not agree: the one that
 wrote last is believed. A pane's holder answers a program's question (OSC
-10, 11, and 4 with `?`) from that file, with or without a viewer, and says
+10, 11, 12, and 4 with `?`) from that file, with or without a viewer, and says
 nothing about a colour the file has no line for: a program is never told a
-colour that someone made up. A program that sets a colour (OSC 4, 10, 11
-with a value, 104, 110, 111) is heard and changes nothing. No workspace or
-pane can be named `colours`.
+colour that someone made up. No workspace or pane can be named `colours`.
+
+A colour a program sets is its pane's, and no other's. It sets one with OSC
+4 (a palette number, any number of pairs in one string), 10 (the
+foreground), 11 (the background) or 12 (the cursor's) and a value: `#` and
+3, 6, 9 or 12 hex digits, or `rgb:R/G/B` with one to four hex digits each.
+Eight bits of each part are kept; a name (`red`), `rgbi:` and the other
+forms X has set nothing, with a line in the pane's `log`. From then on:
+
+- the program is told what it set when it asks, the file or no file;
+- the pane is shown in it. `screen.styled` (and so the viewer, and the last
+  screen a program leaves when it ends) gives a cell that has that palette number,
+  or the default foreground or background, the colour that was set, as
+  direct colour (`38;2;R;G;B`, `48;2;R;G;B`): text that was on the screen
+  before as well, since the emulator keeps a cell as the program wrote it
+  (and tells DECRQSS so). With a background of its own every cell of the
+  pane has it, the blank ones too: each row of `screen.styled` is then as
+  long as the pane is wide, and the tile is that colour to its edges. The
+  plain `screen` and `history` have no colours and do not change;
+- the cursor's colour is the fifth word of the pane's `cursor` file, and the
+  viewer gives its terminal's cursor that colour (OSC 12) while the pane has
+  the keys. When another pane has them, a menu is open or the viewer leaves,
+  the terminal's cursor has its own colour again (OSC 112);
+- the program gives a colour back with OSC 104 (the whole palette, or the
+  numbers it names), 110, 111, 112, or a full reset (`ESC c`): then it is
+  what the file says again, on the screen too.
+
+The pane has one set of colours for its main and its alternate screen, 259
+at most. The viewer never sets a colour of your terminal other than the
+cursor's: a theme a program chose in one pane does not repaint the pane
+beside it, and no file is needed to learn a pane's colours, as its cells
+carry them.
 
 How are keys told? A terminal tells Tab and Ctrl-I, Enter and Shift-Enter,
 Escape and the start of an arrow key with the same bytes, unless the program
@@ -664,7 +693,7 @@ does something else is a row below with a case that shows it.
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. A character goes on while the cursor is where its last part left it and its cell is unchanged: a change of colour or a title between a letter and its accent does not part them (`grep --color` does this), a move or an erase does |
 | How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). An emoji with U+FE0F in its character is two. A control, U+2028 and U+2029 among them, and a mark or joiner with no character to join, takes no cell and is dropped |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports, the kitty keyboard protocol) | Its own specification |
-| What a colour is (OSC 10, 11, and 4 with `?`) | The session's `colours` file: what the terminal you look at said, or what you wrote. No file or no line, no answer. Setting a colour (OSC 4, 10, 11 with a value, 104, 110, 111) is taken and changes nothing |
+| What a colour is (OSC 10, 11, 12, and 4 with `?`) | What the pane's program set (OSC 4, 10, 11, 12 with a value, until 104, 110 to 112 or a full reset gives it back); else the session's `colours` file: what the terminal you look at said, or what you wrote. No file or no line, no answer |
 
 `tools/referee/referee.py` plays the same bytes to fux and to three
 witnesses, and compares the screen's text and the cursor: xterm (under Xvfb,
@@ -774,8 +803,7 @@ Of the mouse, the UTF-8 and urxvt report forms
 (1005, 1015: programs get the SGR form or the oldest one), dragging a line
 to resize, and any menu use;
 a link's `id` (OSC 8: two runs with one address are two links to your terminal) and links in history; reading the clipboard (setting it
-works); changing a colour (OSC 4, 10, 11, 12 with a value, 104, 110, 111, 112:
-taken, without effect) and asking for the cursor's (OSC 12 with `?`); the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
+works); a colour by its name (`OSC 4;1;red`) and the colours xterm has past the cursor's (OSC 13 to 19); the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
 more than ten
 parts in one character (a letter with twelve marks loses the last three,
 and the pane's `log` says so); prompts (renaming
