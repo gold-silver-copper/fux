@@ -18,6 +18,7 @@ pub const TERM_PROGRAM: &str = "fux-next";
 mod holder;
 mod keys;
 mod layout;
+mod sixel;
 mod sys;
 mod term;
 #[cfg(test)]

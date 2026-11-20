@@ -997,6 +997,110 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     assert_eq!(placed(&term), Some((0, 3, 2, 1)));
 }
 
+/// A sixel picture written from a rule (the colour of each pixel, or none), plainly: for each
+/// band each colour's row, every run with its count. And its pixels, as the rule gives them.
+fn drawn(w: usize, h: usize, colours: &[&str], rule: impl Fn(usize, usize) -> Option<usize>) -> String {
+    let mut out = format!("q\"1;1;{w};{h}");
+    for band in 0..h.div_ceil(6) {
+        for (colour, defined) in colours.iter().enumerate() {
+            out.push_str(&format!("#{colour}{defined}"));
+            let painted = |x: usize, k: usize| band * 6 + k < h && rule(x, band * 6 + k) == Some(colour);
+            let sixel = |x: usize| (0..6).fold(0, |bits, k| bits | u8::from(painted(x, k)) << k);
+            let sixels: Vec<u8> = (0..w).map(|x| b'?' + sixel(x)).collect();
+            for run in sixels.chunk_by(|a, b| a == b) {
+                out.push_str(&format!("!{}{}", run.len(), char::from(run[0])));
+            }
+            out.push('$');
+        }
+        out.push('-');
+    }
+    out
+}
+
+/// The pixels of a part of a picture, each with its colour.
+fn pixels(part: &crate::sixel::Part) -> Vec<Option<crate::sixel::Colour>> {
+    let pen = |x: usize, y: usize| usize::from(part.pixels[y * part.stride + x]).checked_sub(1);
+    (0..part.h).flat_map(|y| (0..part.w).map(move |x| pen(x, y).map(|pen| part.colours[pen]))).collect()
+}
+
+#[test]
+fn a_part_cut_out_of_a_picture_has_exactly_its_pixels_and_too_much_is_refused() {
+    use crate::sixel::{Colour, cut, read};
+    let all = [0, 0, 1000, 1000];
+    // Three pictures from rules: stripes of three colours with holes, 47 by 30 pixels (five
+    // bands, odd sizes); colours said as hue, lightness and saturation; and one with a register
+    // it never gave a colour. Each part read back is the rule's pixels of that rectangle.
+    let rgb = [";2;100;0;0", ";2;0;100;0", ";2;0;0;100"];
+    let hls = [";1;120;50;100", ";1;240;50;100", ";1;0;50;100", ";1;77;100;0", ";1;300;25;50"];
+    let seen: Vec<Colour> =
+        [[100, 0, 0], [0, 100, 0], [0, 0, 100], [100, 100, 100], [13, 38, 38]].map(Colour::Rgb).into();
+    let own = [seen[0], seen[1], Colour::Register(2)];
+    let stripes = |x: usize, y: usize| Some((x / 5 + y / 7) % 4).filter(|c| *c < 3);
+    let squares = |x: usize, y: usize| Some((x / 3 + 2 * (y / 4)) % 5);
+    type Picture<'a> = (usize, usize, &'a [&'a str], &'a [Colour], &'a dyn Fn(usize, usize) -> Option<usize>);
+    let pictures: [Picture; 4] = [
+        (47, 30, &rgb, &seen, &stripes),
+        (31, 17, &hls, &seen, &squares),
+        (20, 13, &[rgb[0], rgb[1], ""], &own, &stripes),
+        (1, 1, &rgb, &seen, &|_, _| Some(1)),
+    ];
+    for (w, h, colours, seen, rule) in pictures {
+        let picture = drawn(w, h, colours, rule);
+        for [left, top, width, height] in [all, [0, 0, 23, 18], [0, 12, 47, 18], [5, 7, 20, 13], [46, 29, 9, 9]] {
+            let (right, bottom) = (w.min(left + width), h.min(top + height));
+            let part = cut(picture.as_bytes(), [left, top, width, height], 1 << 20).expect("a part");
+            if left >= w || top >= h {
+                assert_eq!(part, "", "{w} by {h}: nothing of it is at {left} {top}");
+                continue;
+            }
+            let part = read(part.as_bytes(), all).expect("the part is a picture");
+            assert_eq!((part.w, part.h), (right - left, bottom - top), "{w} by {h} at {left} {top}");
+            let rule = |y: usize| (left..right).map(move |x| rule(x, y).map(|colour| seen[colour]));
+            assert!(pixels(&part) == (top..bottom).flat_map(rule).collect::<Vec<_>>(), "{w} by {h} at {left} {top}");
+        }
+    }
+    // Written by hand: a row painted over, a colour changed after it was used, a repeat past the
+    // part's edge, and nothing said of the size.
+    let by_hand = "0;0q#0;2;0;0;0!12~$#1;2;100;100;0!6?!6~-#0;2;100;0;0!3~#0;2;0;0;100!999999999999~";
+    let part =
+        read(cut(by_hand.as_bytes(), [4, 0, 4, 12], 1 << 20).expect("a part").as_bytes(), all).expect("a picture");
+    let (black, yellow, blue) = (Colour::Rgb([0, 0, 0]), Colour::Rgb([100, 100, 0]), Colour::Rgb([0, 0, 100]));
+    let rows = [[black, black, yellow, yellow]; 6].into_iter().chain([[blue; 4]; 6]);
+    assert!(pixels(&part) == rows.flatten().map(Some).collect::<Vec<_>>(), "{:?}", pixels(&part));
+    // Whatever the bytes, a part read back is what was read of the picture there, and no larger
+    // than was allowed.
+    let (mut next, mut compared) = (numbers(3), 0);
+    for _ in 0..400 {
+        let letters = b"q\"#!$-;;0123456789??@AFN^no~~ ";
+        let picture: Vec<u8> = (0..next(200)).map(|_| letters[next(letters.len())]).collect();
+        let part = [next(8), next(20), 1 + next(40), 1 + next(40)];
+        let (whole, cut) = (read(&picture, part), cut(&picture, part, 300));
+        let (Ok(whole), Ok(cut)) = (&whole, &cut) else {
+            assert!(whole.is_err() || whole.is_ok_and(|whole| whole.write(1 << 20).is_ok_and(|all| all.len() > 300)));
+            continue;
+        };
+        let again = read(cut.as_bytes(), all).expect("the part is a picture");
+        let sizes = [(again.w, again.h), (whole.w, whole.h)].map(|(w, h)| (w.min(h * w), h.min(w * h)));
+        assert!(cut.len() <= 300 && sizes[0] == sizes[1] && pixels(&again) == pixels(whole));
+        compared += usize::from(!cut.is_empty());
+    }
+    assert!(compared > 100, "{compared}");
+    // What is too much is refused in a few words: pixels, colours, a register past the last,
+    // painting over and over, and more sixel than a picture may be.
+    let colours: String = (0..257).map(|n| format!("#0;2;{};{};0~", n % 101, n / 101)).collect();
+    let refused = [
+        (String::from("q~"), [0, 0, 4096, 4096], "pixels"),
+        (format!("q{colours}"), [0, 0, 300, 6], "256 colours"),
+        (String::from("q#256~"), all, "register"),
+        (format!("q{}", "!10~$".repeat(100)), [0, 0, 10, 6], "too many times"),
+        (drawn(47, 30, &rgb, stripes), [0, 0, 47, 30], "4 MiB"),
+    ];
+    for (picture, part, why) in refused {
+        let max = if why == "4 MiB" { 100 } else { 1 << 20 };
+        assert!(cut(picture.as_bytes(), part, max).is_err_and(|said| said.contains(why)), "{why}");
+    }
+}
+
 #[test]
 fn a_layout_reads_back_as_written_and_its_tiles_fill_the_area_without_overlap() {
     for text in ["* row(a col(b c):2) focus=c\n- d focus=d\n  e focus=e\n", "* col(row(a b) row(c d e):3 f) focus=a\n"]

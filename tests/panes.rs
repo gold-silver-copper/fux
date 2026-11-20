@@ -7,6 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// The reader of sixel pictures the viewer cuts them with, to look at what it drew.
+#[allow(dead_code)]
+#[path = "../src/sixel.rs"]
+mod sixel;
+
 /// A session directory of the test's own. Removing it ends its panes.
 struct Session(PathBuf);
 impl Drop for Session {
@@ -1043,4 +1048,66 @@ fn a_link_a_program_makes_is_a_line_of_links_and_the_viewer_draws_it_inside_its_
     fs::write(left.join("ctl"), "resize 40 2\n").unwrap();
     until("the first link is in history", || read(&left.join("links")) == format!("3 34 10 {address}\n"));
     until("the viewer follows", || read(&view.join("links")) == format!("0 34 6 {address}\n1 0 4 {address}\n"));
+}
+
+#[test]
+fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_tile() {
+    // The viewer in a pane of an outer session, whose terminal (fux) says it draws sixel: what
+    // the viewer draws is that pane's picture, a file and a line in `pictures`.
+    let (outer, inner) = (Session::new("pouter"), Session::new("pinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    // 600 by 60 pixels, 60 columns and 3 rows of an 80 column pane: red, the last 205 columns
+    // blue, and green for red from the 31st row of pixels on. At a line typed to it the program
+    // scrolls its screen by one row.
+    let bands: Vec<String> = (0..10).map(|band| format!("#{}!395~#1!205~", if band < 5 { 0 } else { 2 })).collect();
+    let picture = format!("q\"1;1;600;60#0;2;100;0;0#1;2;0;0;100#2;2;0;100;0{}", bands.join("-"));
+    let prints = format!(
+        "stty -echo; printf '\\033P%s\\033\\\\' '{picture}'; read line; set -- $(stty size); i=3; while [ $i -lt $1 ]; do echo; i=$((i + 1)); done; sleep 600"
+    );
+    let left = inner.start("left", &["sh", "-c", &prints]);
+    inner.start("right", &["sh", "-c", "echo right; sleep 600"]);
+    until("the picture is the pane's", || fact(&left, "pictures") == "pic-1.sixel 0 0 60 3");
+    let whole = fs::read(left.join("pic-1.sixel")).unwrap();
+    assert_eq!(whole, format!("\x1bP{picture}\x1b\\").as_bytes());
+    lay(&inner.0, "* row(left right) focus=right\n");
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    // The picture the viewer drew last: where it is and its file; and a picture's pixels in a
+    // rectangle of it, each with its colour.
+    let drawn = || {
+        let pictures = fact(&view, "pictures");
+        let (name, place) = pictures.lines().last().and_then(|line| line.split_once(' ')).unwrap_or_default();
+        (place.to_string(), fs::read(view.join(name)).unwrap_or_default())
+    };
+    let pixels = |picture: &[u8], rectangle: [usize; 4]| {
+        let inside = picture.strip_prefix(b"\x1bP").and_then(|rest| rest.strip_suffix(b"\x1b\\")).unwrap_or_default();
+        let part = sixel::read(inside, rectangle).ok()?;
+        let pen = |x: usize, y: usize| usize::from(part.pixels[y * part.stride + x]).checked_sub(1);
+        let colours = (0..part.h).flat_map(|y| (0..part.w).map(move |x| pen(x, y))).map(|pen| Some(part.colours[pen?]));
+        Some((part.w, part.h, colours.collect::<Vec<_>>()))
+    };
+    let [red, green, blue] = [[100, 0, 0], [0, 100, 0], [0, 0, 100]].map(|colour| Some(sixel::Colour::Rgb(colour)));
+    // The tile is 40 columns wide and the pane takes that size, with its picture whole. The
+    // viewer draws the 40 columns of it that are in the tile, 400 pixels of each row: the line
+    // between the tiles and the pane beside it are as they were.
+    until("the part in the tile is drawn", || fact(&left, "size") == "40 24" && drawn().0 == "0 0 40 3");
+    let (_, part) = drawn();
+    let (w, h, colours) = pixels(&part, [0, 0, 1000, 100]).expect("the viewer drew a sixel picture");
+    assert_eq!((w, h, colours[394], colours[395], colours[399], colours[30 * 400]), (400, 60, red, blue, blue, green));
+    assert!(Some((w, h, colours)) == pixels(&whole, [0, 0, 400, 60]));
+    let screen = read(&view.join("screen"));
+    assert!(screen.starts_with(&format!("{:40}│right\n{:40}│\n{:40}│\n", "", "", "")), "{screen}");
+    assert_eq!(fact(&left, "pictures"), "pic-1.sixel 0 0 60 3");
+    assert_eq!(fs::read(left.join("pic-1.sixel")).unwrap(), whole);
+    // In a tile wide enough the picture is whole again: the program's own bytes.
+    lay(&inner.0, "* col(left right) focus=right\n");
+    until("the picture is drawn whole", || drawn() == ("0 0 60 3".to_string(), whole.clone()));
+    // Scrolled one row off its pane's top, it is drawn from its 21st row of pixels on.
+    fs::write(left.join("in"), "\n").unwrap();
+    until("the pane has it one row up", || fact(&left, "pictures") == "pic-1.sixel -1 0 60 3");
+    until("the rest of it is drawn", || drawn().0 == "0 0 60 2");
+    let (w, h, colours) = pixels(&drawn().1, [0, 0, 1000, 100]).expect("the viewer drew a sixel picture");
+    assert_eq!((w, h, colours[9 * 600], colours[10 * 600], colours[599]), (600, 40, red, green, blue));
+    assert!(Some((w, h, colours)) == pixels(&whole, [0, 20, 600, 40]));
 }

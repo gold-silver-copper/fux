@@ -10,7 +10,7 @@ use crate::term::{
     BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode,
 };
 use crate::width::Joiner;
-use crate::{is_name, keys};
+use crate::{is_name, keys, sixel};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -44,7 +44,13 @@ type Entry = (String, String, String);
 /// What tells one writing of a file from the next: its inode and its time.
 type Stamp = Option<(u64, i64, i64)>;
 
-type Drawn = (PathBuf, usize, usize, usize, usize, u32);
+/// Which part of which picture: the file, as it was written, and the rectangle of its pixels.
+type Part = (PathBuf, Stamp, [usize; 4]);
+
+/// A picture on the terminal: its file, the column, row, columns and rows of what is drawn of
+/// it, whose holder's it is, and if it is not drawn whole, the rectangle of its pixels that is
+/// (left, top, width, height).
+type Drawn = (PathBuf, usize, usize, usize, usize, u32, Option<[usize; 4]>);
 
 /// What a frame is drawn from, other than the terminal's size: the workspace's folder, its
 /// layout and what is wrong with it, the message, what the terminal is like and whether its
@@ -66,8 +72,9 @@ struct Pane {
     state: String,
     /// The addresses of the links on the screen: a cell's `link` less one is its place here.
     addresses: Vec<String>,
-    /// Pictures on the screen: file, row, column, columns, rows.
-    pictures: Vec<(String, usize, usize, usize, usize)>,
+    /// Pictures on the screen: file, row, column, columns, rows, and how many more rows it has
+    /// above the screen's first.
+    pictures: Vec<(String, [usize; 5])>,
     /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
     asked: (u32, usize, usize, (u16, u16)),
     /// The title its program set (the `title` file), without control characters.
@@ -144,6 +151,9 @@ struct View {
     written: Vec<(&'static str, String)>,
     /// The pictures on the terminal now: file, column, row, columns, rows, and whose holder's.
     drawn: Vec<Drawn>,
+    /// The parts cut out of the pictures that are not drawn whole, each by its file (as it was
+    /// then) and its rectangle: the sixel written for it, or none if it was refused.
+    parts: Vec<(Part, Option<String>)>,
     cursor: String,
     /// The colour this viewer gave its terminal's cursor, if any: the focused pane's own.
     cursor_colour: Option<[u8; 3]>,
@@ -243,6 +253,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         menu: None,
         message: String::new(),
         sixel: false,
+        parts: Vec::new(),
         keyboard: 0,
         links: Vec::new(),
         numbers: HashMap::new(),
@@ -1105,9 +1116,17 @@ impl View {
                     keys = pane.term.keys() & self.keyboard;
                 }
             }
-            for (file, row, col, cols, rows) in &pane.pictures {
-                if self.sixel && file.ends_with(".sixel") && row + rows <= body.h && col + cols <= body.w {
-                    pictures.push((pane_directory.join(file), body.x + col, body.y + row, *cols, *rows, pane.pid));
+            for (file, [row, col, cols, rows, off]) in &pane.pictures {
+                // What of it is inside the tile, in cells, and in the picture's pixels if that is
+                // not all of it. None is drawn on the terminal's last row: a terminal may put the
+                // cursor under a picture, and scroll everything to do so.
+                let below = body.h.min(h.saturating_sub(body.y + 1)).saturating_sub(*row);
+                let (wide, high) = ((*cols).min(body.w.saturating_sub(*col)), (*rows).min(below));
+                if self.sixel && file.ends_with(".sixel") && wide > 0 && high > 0 {
+                    let (cell_w, cell_h) = (usize::from(cell_size.0), usize::from(cell_size.1));
+                    let part = [0, off * cell_h, wide * cell_w, high * cell_h];
+                    let part = ((wide, high, *off) != (*cols, *rows, 0)).then_some(part);
+                    pictures.push((pane_directory.join(file), body.x + col, body.y + row, wide, high, pane.pid, part));
                 }
             }
         }
@@ -1275,7 +1294,7 @@ impl View {
         // over, the cells under the old ones are sent again and all are redrawn.
         let mut redraw = pictures != self.drawn;
         if redraw {
-            for (_, x, y, cols, rows, _) in &self.drawn {
+            for (_, x, y, cols, rows, ..) in &self.drawn {
                 for cell in (0..*rows).flat_map(|r| (0..*cols).map(move |c| (y + r) * w + x + c)) {
                     self.front.get_mut(cell).into_iter().for_each(|cell| cell.ch = '\u{1}');
                 }
@@ -1361,20 +1380,50 @@ impl View {
             out.push_str("\x1b]8;;\x1b\\");
         }
         if redraw {
-            for (file, x, y, ..) in &pictures {
+            let mut parts = Vec::new();
+            for (path, x, y, _, _, _, part) in &pictures {
                 // Opened without waiting (should the name be a FIFO), and read up to a picture's bound.
-                let mut bytes = Vec::new();
-                let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(file);
-                let _ = file.map(|file| file.take(PICTURE_MAX as u64 + 8).read_to_end(&mut bytes));
-                let inside = bytes.strip_prefix(b"\x1bP").and_then(|rest| rest.strip_suffix(b"\x1b\\"));
-                // Only one whole sixel picture is passed on: nothing else in the file can reach the terminal.
-                let sixel =
-                    |inside: &&[u8]| inside.iter().find(|b| !(b.is_ascii_digit() || **b == b';')) == Some(&b'q');
-                if let Some(inside) =
-                    inside.filter(|inside| inside.iter().all(|b| (0x20..=0x7e).contains(b))).filter(sixel)
-                {
-                    out.push_str(&format!("\x1b[{};{}H\x1bP{}\x1b\\", y + 1, x + 1, String::from_utf8_lossy(inside)));
+                let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path);
+                let stamp: Stamp = file
+                    .as_ref()
+                    .ok()
+                    .and_then(|file| file.metadata().ok())
+                    .map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
+                // A part cut out of this file before is written again as it was cut then.
+                let key = part.map(|part| (path.clone(), stamp, part));
+                let known = self.parts.iter().position(|(known, _)| Some(known) == key.as_ref());
+                let sixel = if let Some(known) = known {
+                    self.parts.swap_remove(known).1
+                } else {
+                    let mut bytes = Vec::new();
+                    let _ = file.map(|file| file.take(PICTURE_MAX as u64 + 8).read_to_end(&mut bytes));
+                    let inside = bytes.strip_prefix(b"\x1bP").and_then(|rest| rest.strip_suffix(b"\x1b\\"));
+                    // Only one whole sixel picture is passed on: nothing else in the file can reach the terminal.
+                    let sixel =
+                        |inside: &&[u8]| inside.iter().find(|b| !(b.is_ascii_digit() || **b == b';')) == Some(&b'q');
+                    let inside = inside.filter(|inside| inside.iter().all(|b| (0x20..=0x7e).contains(b))).filter(sixel);
+                    // One that does not fit its tile is read, and what is inside the tile is written
+                    // as a picture of its own; a picture that is too much for that is not drawn,
+                    // which the corner says once.
+                    let cut = inside.map(|inside| match part {
+                        None => Ok(String::from_utf8_lossy(inside).into_owned()),
+                        Some([.., 0, _] | [.., 0]) => Err("the terminal does not say how many pixels a cell has"),
+                        Some(part) => sixel::cut(inside, *part, PICTURE_MAX),
+                    });
+                    if let Some(Err(why)) = cut {
+                        let pane = path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy();
+                        self.message = format!("{pane}: a picture is not drawn: {why}");
+                    }
+                    cut.and_then(Result::ok)
+                };
+                if let Some(sixel) = sixel.as_ref().filter(|sixel| !sixel.is_empty()) {
+                    out.push_str(&format!("\x1b[{};{}H\x1bP{sixel}\x1b\\", y + 1, x + 1));
                 }
+                parts.extend(key.map(|key| (key, sixel)));
+            }
+            // (While a menu is open no picture is drawn: the parts are kept for when it closes.)
+            if self.menu.is_none() {
+                self.parts = parts;
             }
             self.drawn = pictures;
         }
@@ -1542,15 +1591,18 @@ impl Pane {
         self.state = fact("state", 64).trim_end().to_string();
         let status = fact("status", 256);
         self.pid = status.lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0);
-        // A picture is kept only if it lies on a screen of the largest size there is.
+        // A picture is kept only if it lies on a screen of the largest size there is. A first row
+        // below 0 says how many of its rows are above the screen: the others start at row 0.
         self.pictures.clear();
         for line in fact("pictures", 4096).lines() {
             let (name, place) = line.split_once(' ').unwrap_or_default();
+            let (above, place) = place.strip_prefix('-').map_or((false, place), |place| (true, place));
             if let [row, col, cols, rows] = numbers(place).as_slice()
                 && [row, col, cols, rows].iter().all(|n| **n <= SIZE_MAX)
                 && is_name(name)
             {
-                self.pictures.push((name.into(), *row, *col, *cols, *rows));
+                let off = if above { *row } else { 0 };
+                self.pictures.push((name.into(), [row - off, *col, *cols, rows.saturating_sub(off), off]));
             }
         }
         // The links (`links`: line, cells into it, how many cells, address) are put on the cells.
