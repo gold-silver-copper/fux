@@ -405,7 +405,10 @@ impl Layout {
                 let mut new = Some(new);
                 let found = tab.root.with_parent(&beside, &mut |parent_row, parts, at| {
                     if *parent_row == row {
-                        parts.extend(new.take());
+                        // The new part is as large as the one it is put beside (parts that were
+                        // given shares since would leave one of share 1 a sliver).
+                        let share = parts.get(at).map_or(1, |part| part.1);
+                        parts.extend(new.take().map(|(pane, _)| (pane, share)));
                         parts.get_mut(at + 1..).into_iter().for_each(|rest| rest.rotate_right(1));
                     } else if let Some(part) = parts.get_mut(at) {
                         part.0 = Node::Split(row, vec![(part.0.clone(), 1), (Node::Pane(name.to_string()), 1)]);

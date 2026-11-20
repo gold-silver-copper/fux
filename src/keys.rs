@@ -56,7 +56,13 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)>
             },
             Some(_) => {
                 let (length, name) = next(bytes.get(1..)?, true, false)?;
-                Some((length + 1, if name.is_empty() { name } else { format!("M-{name}") }))
+                // (Held keys are named in one order, Ctrl, Alt, Shift, whatever form a key came in.)
+                let named = match name.strip_prefix("C-") {
+                    _ if name.is_empty() => name,
+                    Some(rest) => format!("C-M-{rest}"),
+                    None => format!("M-{name}"),
+                };
+                Some((length + 1, named))
             }
         };
     }
@@ -102,19 +108,39 @@ fn sequence(parameters: &str, last: u8) -> String {
         (b'c', _) if first.starts_with('?') => return format!("terminal:{parameters}"),
         // Its answer to "which keyboard flags are in force" (the kitty protocol).
         (b'u', _) if first.starts_with('?') => return format!("keyboard:{}", first.trim_start_matches('?')),
-        // A key in that protocol's form: its number is the character it gives with nothing held.
-        (b'u', _) => match first.split(':').next().and_then(|n| n.parse().ok()).and_then(char::from_u32) {
-            Some('\r') => "enter".into(),
-            Some('\t') => "tab".into(),
-            Some('\u{1b}') => "esc".into(),
-            Some('\u{7f}') => "backspace".into(),
-            Some(' ') => "space".into(),
-            Some('/') => "slash".into(),
-            Some('.') => "dot".into(),
-            // (The keys with no character, the keypad's and the modifiers themselves, are numbered from U+E000.)
-            Some(c) if !c.is_control() && !('\u{e000}'..='\u{f8ff}').contains(&c) => c.to_string(),
-            _ => return String::new(),
-        },
+        // A key in that protocol's form: its number is the character it gives with nothing
+        // held; after colons may come the character it gives with Shift, and the key of the
+        // standard layout in its place.
+        (b'u', _) => {
+            let mut faces = first.split(':').map(|n| n.parse().ok().and_then(char::from_u32));
+            let (plain, shifted, standard) = (faces.next().flatten(), faces.next().flatten(), faces.next().flatten());
+            // A key is named as it is in the old form: a sign that needs Shift by the sign and
+            // not by Shift (`M-#`), a letter of another alphabet by the key it shares with ours
+            // (Ctrl with it is the same Ctrl-b), a capital as Shift and the small letter.
+            let sign = shifted.filter(|c| modifier & 1 != 0 && !c.is_alphabetic());
+            modifier &= if sign.is_some() { !1 } else { !0 };
+            let key = sign.or(standard.filter(|_| plain.is_some_and(|c| !c.is_ascii()))).or(plain);
+            modifier |= u8::from(key.is_some_and(|c| c.is_uppercase()));
+            match key.map(|c| c.to_lowercase().next().unwrap_or(c)) {
+                Some('\r' | '\u{e046}') => "enter".into(),
+                Some('\t') => "tab".into(),
+                Some('\u{1b}') => "esc".into(),
+                Some('\u{7f}') => "backspace".into(),
+                Some(' ') => "space".into(),
+                Some('/' | '\u{e042}') => "slash".into(),
+                Some('.' | '\u{e041}') => "dot".into(),
+                // The keypad's keys have numbers of their own (57399 to 57426): they are named as
+                // the keys they double, as they are in the old form.
+                Some(c @ '\u{e037}'..='\u{e040}') => char::from(b'0' + (u32::from(c) - 0xe037) as u8).to_string(),
+                Some(c @ '\u{e049}'..='\u{e052}') => {
+                    let named = ["left", "right", "up", "down", "pgup", "pgdn", "home", "end", "insert", "delete"];
+                    named.get((u32::from(c) - 0xe049) as usize).copied().unwrap_or_default().to_string()
+                }
+                // (The other keys with no character, the modifiers themselves among them, are numbered from U+E000.)
+                Some(c) if !c.is_control() && !('\u{e000}'..='\u{f8ff}').contains(&c) => c.to_string(),
+                _ => return String::new(),
+            }
+        }
         (b'A', _) => "up".into(),
         (b'B', _) => "down".into(),
         (b'C', _) => "right".into(),

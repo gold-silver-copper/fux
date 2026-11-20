@@ -230,6 +230,8 @@ pub struct Term {
     param: Option<u16>,
     sub: bool,
     private: u8,
+    /// The sequence's first number was left out.
+    bare: bool,
     inter: u8,
     utf8: u32,
     utf8_left: u8,
@@ -304,6 +306,7 @@ impl Term {
             param: None,
             sub: false,
             private: 0,
+            bare: false,
             inter: 0,
             utf8: 0,
             utf8_left: 0,
@@ -450,9 +453,9 @@ impl Term {
     }
 
     /// The keyboard flags in force: what the program on the screen shown asked for, as far as
-    /// the terminal that sends the keys takes it.
+    /// the terminal that sends the keys took it when the program asked.
     pub fn keys(&self) -> u8 {
-        self.keys.get(usize::from(self.alt)).map_or(0, |(flags, _)| flags & self.keyboard)
+        self.keys.get(usize::from(self.alt)).map_or(0, |(flags, _)| *flags)
     }
 
     /// What line 1 of a screen file says of the terminal: `size= cursor= shape= modes=`.
@@ -1280,6 +1283,8 @@ impl Term {
                 // More parameters than are kept: the whole sequence is ignored, and said so.
                 self.too_long |= self.params.len() >= PARAMS_MAX;
                 if !self.too_long {
+                    // (A first number that was not given is 0 here; one sequence tells them apart.)
+                    self.bare = if self.params.is_empty() { self.param.is_none() } else { self.bare };
                     self.params.push((self.param.unwrap_or(0), self.sub));
                 }
                 self.param = None;
@@ -1478,11 +1483,13 @@ impl Term {
             // The kitty keyboard protocol: a program says how it wants keys told (`=` sets, `>`
             // sets and keeps the old flags to come back to, `<` comes back) and asks what is in
             // force (`?`). Each screen has its own. Only what the terminal that sends the keys
-            // takes is in force: with no such terminal known, the answer is 0.
+            // takes is put in force, as that is known when the program asks: with no such
+            // terminal known, nothing is, and the answer is 0. What a program was told stays so.
             (b'=' | b'>' | b'<' | b'?', 0, b'u') => {
-                let (known, alt) = (self.keyboard, usize::from(self.alt));
-                let (asked, how) = (self.arg(0, 0).min(255) as u8 & KEYS, self.arg(1, 1));
-                let (back, which) = (self.arg(0, 1), self.private);
+                let alt = usize::from(self.alt);
+                let (asked, how) = ((self.arg(0, 0) & usize::from(KEYS & self.keyboard)) as u8, self.arg(1, 1));
+                // (Going back takes a count: one if none is given, none if it is 0.)
+                let (back, which) = (if self.bare { 1 } else { self.arg(0, 0) }, self.private);
                 let Some((flags, kept)) = self.keys.get_mut(alt) else { return };
                 match which {
                     b'=' => {
@@ -1498,7 +1505,7 @@ impl Term {
                     }
                     b'<' => (0..back.min(KEYS_KEPT + 1)).for_each(|_| *flags = kept.pop().unwrap_or(0)),
                     _ => {
-                        let answer = format!("\x1b[?{}u", *flags & known);
+                        let answer = format!("\x1b[?{}u", *flags);
                         self.respond(&answer);
                     }
                 }

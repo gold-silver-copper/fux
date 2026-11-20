@@ -218,8 +218,6 @@ impl Holder {
                 if fs::symlink_metadata("in").is_err() {
                     return Err(GONE.into());
                 }
-                // A viewer may have learnt meanwhile what its terminal takes.
-                dirty |= self.told();
             }
             let mut wanted = vec![(ended.as_raw_fd(), sys::POLLIN), (ctl.as_raw_fd(), sys::POLLIN)];
             if let Some(master) = &self.master {
@@ -287,12 +285,10 @@ impl Holder {
         }
     }
 
-    /// Reads what the terminal outside is like, if it has changed; says whether the keyboard
-    /// flags in force did. It is in two files of the session, if a viewer (or a person) wrote
-    /// them: `colours`, and `keyboard` (the flags of the kitty protocol that terminal takes, a
-    /// number). 16 KiB of each at most.
-    fn told(&mut self) -> bool {
-        let before = self.term.keys();
+    /// Reads what the terminal outside is like, if it has changed. It is in two files of the
+    /// session, if a viewer (or a person) wrote them: `colours`, and `keyboard` (the flags of
+    /// the kitty protocol that terminal takes, a number). 16 KiB of each at most.
+    fn told(&mut self) {
         for (name, known) in [("colours", &mut self.told.0), ("keyboard", &mut self.told.1)] {
             // (A file, not something that only has a file's name; told apart from the one read
             // last by when it was written, how long it is and which file it is.)
@@ -302,7 +298,9 @@ impl Holder {
             if stamp != *known {
                 let mut text = Vec::new();
                 if stamp.is_some() {
-                    let _ = File::open(&file).map(|file| file.take(16 << 10).read_to_end(&mut text));
+                    // (Opened without waiting, should the name have become a FIFO's meanwhile.)
+                    let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(&file);
+                    let _ = file.map(|file| file.take(16 << 10).read_to_end(&mut text));
                 }
                 let text = String::from_utf8_lossy(&text).into_owned();
                 *known = stamp;
@@ -312,7 +310,6 @@ impl Holder {
                 }
             }
         }
-        before != self.term.keys()
     }
 
     /// Feeds the emulator what the program wrote; says how many bytes.

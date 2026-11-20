@@ -520,6 +520,38 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     screen lost its flags when the viewer read its line 1 back. The pane test
     now asks from the alternate screen.
 
+- **D58. The fix check of D57 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  - A key had two names: Ctrl-Alt-b was `M-C-b` from the old bytes and
+    `C-M-b` from the new, so a key file was found in one mode and missed in
+    the other. Held keys now have one order in both; a sign that needs Shift
+    is named by the sign when the new form says which it is (flag 4); a
+    letter of another alphabet is named by the standard-layout key the new
+    form gives, as the old form's Ctrl byte names it; a capital is Shift
+    and the small letter; the keypad's keys have the names of the keys they
+    double. A test states the property for pairs of old and new bytes.
+  - The terminal's mask was applied when flags were read, so a program told
+    "0" got new-form keys two seconds after a viewer came, and a second
+    viewer on a lesser terminal took the flags from under a program told
+    "1". The mask is now applied when the program asks: what it was told
+    stays true until it asks again. The protocol has no way to tell a
+    program that its flags changed.
+  - `CSI < 0 u` goes back nothing (the count left out is one); a flags
+    number past 255 no longer became 255. The detach test now gives the
+    terminal flags of its own and asks for them after the viewer has left.
+  - The viewer keeps listening for its terminal's answers until the answer
+    to "what are you", ten seconds at most, writing what it has after one:
+    answers that came late on a slow line were typed into the pane.
+  - Found by the tester on the way, outside this change: a pane split off
+    one that had been resized got share 1 beside shares of fifty, a sliver
+    of one or two columns. A new part now takes the share of the part it is
+    put beside.
+  - Kept, and in the README: a viewer killed by a signal leaves the
+    terminal's modes on (no signal handlers: it would be the only place fux
+    catches one; `reset` puts it right); keys typed in the same read as a
+    key that moves the focus reach the next pane in the old pane's form;
+    under flag 1 alone a shifted sign cannot be named by its sign; `C-b C-b`
+    sends the byte 02, which a program reads as Ctrl-B in either mode.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

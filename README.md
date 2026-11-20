@@ -92,7 +92,7 @@ pid=4242 state=running v=17 size=80x24 cursor=3,8 shape=0 modes=cursor,paste pic
 `hungup`, `exited:CODE` or `killed:SIGNAL`;
 `modes` lists what is on (`cursor` shown, `appcursor`, `keypad`, `paste`,
 `mouse9`, `mouse1000`, `mouse1002` or `mouse1003`: the mouse reports the
-program asked for, and `mousesgr`: their newer form; `keys1`, `keys4` or `keys5`: how it asked to have keys told (below),
+program asked for, and `mousesgr`: their newer form; `keys1`, `keys4` or `keys5`: the keyboard flags in force for it (below),
 `alt` screen); each `pic=` is a file, its row and column, and its size in
 cells. A screen file is replaced in one step (written as `screen.new`, then
 renamed), so a reader sees a whole old one or a whole new one.
@@ -132,7 +132,8 @@ background #1c1c1c
 (`foreground`, `background`, or a palette number from 0 to 255, then `#` and
 six hex digits; of two lines for one colour the last counts, a line that is
 anything else counts for nothing, and 16 KiB of the file are read). The
-viewer asks its terminal once when it starts, gives it a second to answer,
+viewer asks its terminal once when it starts, gives it a second to answer
+(and writes again if more comes within ten, on a slow line),
 and writes the file with what it was told, in place of the one that was
 there, yours too; a terminal that tells of no colour leaves the file as it
 is. Two viewers on terminals of different colours do not agree: the one that
@@ -153,17 +154,29 @@ protocol's flags fux passes on two: 1, "disambiguate escape codes", and 4,
 "report alternate keys". The others (2, 8, 16: releases, every key as an
 escape code, text) are never in force, and a program that asks is told so.
 
-The keys come from your terminal, so no more is in force than it takes. That
-is in a second file of the session, `keyboard`: one number, the flags the
-terminal takes. The viewer asks its terminal when it starts and writes it
-(`0` if the terminal does not know the protocol); `echo 5 > "$(fux dir)/keyboard"`
-writes it by hand. With no file, or `0`, a program that asks is told that no
-flag is in force and gets keys the old way. While a pane has the keys, the
-viewer asks the terminal for that pane's flags, and takes them back when the
-focus moves or the viewer leaves. The keys go to the program as the terminal
-sends them. The viewer reads both forms: `C-b`, and every key in the keys
-directory, is found whatever the focused program asked for, and a key that
-runs a script or opens a menu is not also sent to the program. `keyboard` is
+The keys come from your terminal, so no more is put in force than it takes.
+That is in a second file of the session, `keyboard`: one number, the flags
+the terminal takes. The viewer asks its terminal when it starts and writes
+it (`0` if the terminal does not know the protocol; the viewer that wrote
+last is believed); `echo 5 > "$(fux dir)/keyboard"` writes it by hand. A
+program is told, when it asks, what the file says then, and that stays true
+for it: with no file, or `0`, it is told that no flag is in force and gets
+keys the old way, also after a viewer on a better terminal has come (start
+the program again to have them). While a pane has the keys, the viewer asks
+its terminal for that pane's flags, and takes them back when the focus moves
+or the viewer leaves. The keys go to the program as the terminal sends them.
+
+The viewer reads both forms and gives a key one name in both, so `C-b` and
+the keys in the keys directory are found whatever the focused program asked
+for, and a key that runs a script or opens a menu is not also sent to the
+program. Held keys are named in the order `C-`, `M-`, `S-` (`C-M-x`); a sign
+that needs Shift is named by the sign (`M-#`) when the terminal says which
+sign it is, which it does under flag 4 and not under flag 1 alone (there the
+key is `M-S-3`); the keypad's keys are named as the keys they double. Two
+keys that the old form cannot tell apart have two names in the new one:
+Ctrl-I is `C-i` and no longer `tab`, Ctrl-Backspace is `C-backspace` and no
+longer `C-h`. Keys typed in the same instant as a key that moves the focus
+may reach the next pane in the form the last one asked for. `keyboard` is
 no name for a workspace or a pane either.
 
 Is a pane alive? Its holder keeps a lock on the directory for as long as it
@@ -402,6 +415,11 @@ fux adds nothing to stop these. What happens is what Unix does:
   still says the old one, so a default shell pane that was moved no longer
   removes its folder when its shell ends (it removes a folder only if it is
   still its own).
+- **Don't kill the viewer with a signal, or type `reset` if you do.** It
+  puts your terminal back as it found it (the main screen, the mouse, the
+  keyboard flags) when it leaves by itself; killed, it cannot, and with a
+  program's keyboard flags left on, Ctrl-C reaches your shell as an escape
+  sequence.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. Line 1 goes on saying `state=running` and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
@@ -557,8 +575,8 @@ escape code and the text of keys (its flags 2, 8 and 16); of the mouse, the UTF-
 (1005, 1015: programs get the SGR form or the oldest one), dragging a line
 to resize, and any menu use;
 hyperlinks (OSC 8 is read and dropped); reading the clipboard (setting it
-works); changing a colour (OSC 4, 10, 11, 12 with a value: taken, without
-effect) and asking for the cursor's (OSC 12) and the queries DECRQSS, XTGETTCAP and XTVERSION (and `CSI > c` is
+works); changing a colour (OSC 4, 10, 11, 12 with a value, 104, 110, 111, 112:
+taken, without effect) and asking for the cursor's (OSC 12 with `?`) and the queries DECRQSS, XTGETTCAP and XTVERSION (and `CSI > c` is
 answered with no xterm version in it); focus reports (mode
 1004); the bell, the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
 double underline and

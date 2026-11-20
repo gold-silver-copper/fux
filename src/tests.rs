@@ -112,8 +112,16 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
 
 #[test]
 fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_terminal_takes() {
-    // With no terminal known to take the protocol, the answer is 0 whatever was asked.
-    assert_eq!(term(9, 2, "\x1b[>1u\x1b[?u").take().reply, b"\x1b[?0u");
+    // With no terminal known to take the protocol, the answer is 0 whatever was asked, and a
+    // program that was told so is not given the flags later, when a terminal that takes them
+    // comes: what it was told stays true until it asks again.
+    let mut early = term(9, 2, "\x1b[>1u\x1b[?u");
+    early.keyboard = crate::term::KEYS;
+    early.feed(b"\x1b[?u");
+    assert_eq!((early.take().reply.as_slice(), early.keys()), (&b"\x1b[?0u\x1b[?0u"[..], 0));
+    early.feed(b"\x1b[=1u\x1b[?u");
+    early.keyboard = 0;
+    assert_eq!((early.take().reply.as_slice(), early.keys()), (&b"\x1b[?1u"[..], 1));
     let asked = |bytes: &str| {
         let mut term = Term::new(9, 2);
         term.keyboard = crate::term::KEYS;
@@ -126,9 +134,15 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     assert_eq!(asked("\x1b[=1u\x1b[>5u\x1b[?u\x1b[<1u\x1b[?u\x1b[<9u\x1b[?u").0, "\x1b[?5u\x1b[?1u\x1b[?0u");
     assert_eq!(asked("\x1b[=1;1u\x1b[=4;2u\x1b[?u\x1b[=1;3u\x1b[?u\x1b[=0u\x1b[?u").0, "\x1b[?5u\x1b[?4u\x1b[?0u");
     assert_eq!(asked("\x1b[>1u\x1b[?1049h\x1b[?u\x1b[>4u\x1b[?u\x1b[?1049l\x1b[?u").0, "\x1b[?0u\x1b[?4u\x1b[?1u");
-    // Only the flags fux passes on are ever in force (not 2, 8, 16), and what is kept aside is bounded.
-    assert_eq!(asked("\x1b[>31u\x1b[?u").0, "\x1b[?5u");
-    assert_eq!(asked(&format!("{}\x1b[>4u{}\x1b[?u", "\x1b[>1u".repeat(40), "\x1b[<u".repeat(17))).0, "\x1b[?0u");
+    // Only the flags fux passes on are ever in force (not 2, 8, 16, nor a number past them).
+    assert_eq!(asked("\x1b[>31u\x1b[?u\x1b[=256u\x1b[?u").0, "\x1b[?5u\x1b[?0u");
+    // Going back takes a count: none given is one, 0 is none.
+    assert_eq!(asked("\x1b[=4u\x1b[>1u\x1b[<0u\x1b[?u\x1b[<u\x1b[?u").0, "\x1b[?1u\x1b[?4u");
+    // What is kept aside is bounded at 16: of 17, the oldest (4) is gone, and the 16 come back in turn.
+    let deep = format!("\x1b[=4u{}{}\x1b[?u\x1b[<u\x1b[?u", "\x1b[>1u".repeat(17), "\x1b[<u".repeat(16));
+    assert_eq!(asked(&deep).0, "\x1b[?1u\x1b[?0u");
+    // A cursor saved and put back the old way (`CSI s`, `CSI u`) is another matter and stays one.
+    assert_eq!(asked("\x1b[>1u\x1b[s\x1b[u\x1b[?u").0, "\x1b[?1u");
     // The flags in force are a word of line 1, and a screen file read back has them.
     for screen in ["", "\x1b[?1049h"] {
         let header = asked(&format!("{screen}\x1b[>5u")).1;
@@ -147,12 +161,27 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
         ("\x1b[27u", "esc"),
         ("\x1b[97;3u", "M-a"),
         ("\x1b[97:65;6u", "C-S-a"),
+        ("\x1b[65;6u", "C-S-a"),
         ("\x1b[118;1:1u", "v"),
         ("\x1b[1;5:1A", "C-up"),
         ("\x1b[3;133~", "C-delete"),
         ("\x1b[97;9u", ""),
         ("\x1b[57441u", ""),
         ("\x1b[?5u", "keyboard:5"),
+        // A key has one name, in the old form and in the new: held keys in one order, a sign
+        // that needs Shift by the sign, a letter of another alphabet by the key it shares with
+        // ours, the keypad's keys as the keys they double.
+        ("\x1b\x02", "C-M-b"),
+        ("\x1b[98;7u", "C-M-b"),
+        ("\x1b#", "M-#"),
+        ("\x1b[51:35;4u", "M-#"),
+        ("\x1bA", "M-S-a"),
+        ("\x1b[97:65;4u", "M-S-a"),
+        ("\x1b[1080::98;5u", "C-b"),
+        ("\x1b[5~", "pgup"),
+        ("\x1b[57421u", "pgup"),
+        ("\x1b[57399u", "0"),
+        ("\x1b[57414u", "enter"),
     ] {
         assert_eq!(name(bytes), Some((true, key.to_string())), "{bytes:?}");
     }
@@ -478,6 +507,10 @@ fn a_layout_follows_the_panes_that_exist_and_edits_act_on_the_focused_pane() {
     let edits: &[&[&str]] = &[&["split", "col", "new"], &["focus", "up"], &["focus", "right"], &["size", "row", "+10"]];
     edits.iter().for_each(|edit| layout.edit(edit).expect("an edit"));
     assert_eq!(layout.print(), "* row(col(a new):50 b:60) focus=b\n");
+    // A pane split off one that was given a share is as large as that one, not a sliver beside it.
+    let mut sized = parse("* row(a:43 b:51) focus=a\n  c focus=c\n").expect("a layout");
+    sized.edit(&["split", "row", "c", "beside", "a"]).expect("a split");
+    assert_eq!(sized.print(), "* row(a:43 c:43 b:51) focus=c\n");
     layout.edit(&["break"]).expect("break");
     layout.edit(&["tab", "prev"]).expect("tab");
     assert_eq!(layout.print(), "* col(a new) focus=a\n- b focus=b\n");
