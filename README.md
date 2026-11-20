@@ -133,23 +133,26 @@ about a minute and a half on two cores, and leaves nothing behind:
     cargo build --release && tools/perf.py target/release/fux
 
 On the machine this was written on (Linux, arm64, two cores of twelve, tmux
-3.8), at 21cf936b4, the median of each (least to most):
+3.8), the median of each (least to most), before the changes it was written
+for (at 21cf936b4) and after them:
 
-| | fux | tmux |
-|---|---|---|
-| `seq 1 2000000`, until its end is on the screen | 4.37 s (4.37 to 4.41) | 1.02 s (0.99 to 1.02) |
-| A key until its echo, typed slowly | 9.5 ms (5.6 to 13.2) | 0.15 ms (0.08 to 0.88) |
-| A key until its echo, typed fast (10 ms apart) | 20.1 ms (6.3 to 33.5) | 0.10 ms (0.03 to 0.23) |
-| At rest: the viewer (tmux: the client) | 3.2% of a core (2.6 to 4.3) | 0% |
-| At rest: the holder (tmux: the server) | 0.001% of a core | 0% (0 to 0.01) |
-| All 200x60 cells repainted: frames the program wrote | 704 a second (702 to 707) | 955 a second (952 to 956) |
-| Meanwhile: the viewer (tmux: the client) | 27% of a core (25 to 29) | 0% |
-| Meanwhile: the holder (tmux: the server) | 55% of a core (52 to 57) | 98% of a core |
-| Read at 100 KiB a second: a key until the program reads it | 52 ms (0.2 to 264) | 0.07 ms (0.02 to 0.74) |
+| | fux before | fux after | tmux |
+|---|---|---|---|
+| `seq 1 2000000`, until its end is on the screen | 4.37 s (4.37 to 4.41) | 1.46 s (1.44 to 1.46) | 1.01 s (1.00 to 1.02) |
+| A key until its echo, typed slowly | 9.5 ms (5.6 to 13.2) | 4.0 ms (1.8 to 4.2) | 0.15 ms (0.07 to 2.7) |
+| A key until its echo, typed fast (10 ms apart) | 20.1 ms (6.3 to 33.5) | 4.5 ms (2.3 to 6.4) | 0.11 ms (0.03 to 1.7) |
+| At rest: the viewer (tmux: the client) | 3.2% of a core (2.6 to 4.3) | 0.12% (0.11 to 0.13) | 0% |
+| At rest: the holder (tmux: the server) | 0.001% of a core | 0.001% | 0% (0 to 0.04) |
+| All 200x60 cells repainted: frames the program wrote | 704 a second (702 to 707) | 686 a second (672 to 689) | 954 a second (942 to 957) |
+| Meanwhile: the viewer (tmux: the client) | 27% of a core (25 to 29) | 13% (13 to 14) | 0% |
+| Meanwhile: the holder (tmux: the server) | 55% of a core (52 to 57) | 54% (53 to 56) | 99% |
+| Read at 100 KiB a second: a key until the program reads it | 52 ms (0.2 to 264) | 0.19 ms (0.08 to 1.9) | 0.11 ms (0.03 to 0.15) |
 
 (tmux's server writes to the terminal itself, so its client does nothing; and
 fux's holder reads at most 512 KiB between two screens, which is what bounds
-the frames a program can write.)
+the frames a program can write. A key's four milliseconds are the holder
+waiting a millisecond to see that the program is done, the viewer's look at
+the files every millisecond after a key, and its putting the frame together.)
 
 The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux-next`,
 `TERM_PROGRAM_VERSION`, `COLORTERM=truecolor` and `FUXN_PANE` (its pane's directory, whole path), in
