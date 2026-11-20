@@ -6,7 +6,7 @@
 
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
-use crate::term::{BOLD, Cell, Color, DIM, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode};
+use crate::term::{BOLD, Cell, Color, DIM, KEYS, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode};
 use crate::{is_name, keys};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -73,6 +73,8 @@ struct View {
     message: String,
     /// Whether the terminal said it draws sixel pictures.
     sixel: bool,
+    /// The kitty keyboard flags the terminal takes, of those fux passes on.
+    keyboard: u8,
     /// While the terminal is still being asked what it is like: since when, and the colours it
     /// has told of.
     colours: Option<(Instant, String)>,
@@ -101,7 +103,7 @@ struct View {
 struct Restore(File, sys::Termios);
 impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?7h\x1b[?1049l\x1b[23;2t");
+        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t");
         let _ = sys::restore_mode(&self.0, &self.1);
     }
 }
@@ -146,6 +148,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         menu: None,
         message: String::new(),
         sixel: false,
+        keyboard: 0,
         colours: Some((Instant::now(), String::new())),
         drawn: Vec::new(),
         cursor: String::new(),
@@ -161,10 +164,12 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         ctl_line: Vec::new(),
         quit: false,
     };
-    // The alternate screen, pastes marked, and "what are you" (for sixel).
+    // The alternate screen, pastes marked, and "what are you" (for sixel). On the way the
+    // terminal is asked whether it takes the kitty keyboard protocol: flags are set with the old
+    // ones kept (to give back at the end), read back, and put to none until a pane asks.
     // The terminal is asked once what its colours are (the two it draws with and its palette),
     // and last of all what it is: its answer to that ends the wait for the others.
-    const START: &str = "\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
+    const START: &str = "\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>5u\x1b[?u\x1b[=0u\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     let result = view.tty.write_all((START.to_string() + &asked + "\x1b[c").as_bytes()).and_then(|()| view.run(&ctl));
     drop(restore);
@@ -305,6 +310,10 @@ impl View {
                     self.told();
                 }
                 name if name.starts_with("answer:") => self.colour(name.trim_start_matches("answer:")),
+                // The terminal takes the kitty keyboard protocol, and these of the flags it was asked for.
+                name if name.starts_with("keyboard:") => {
+                    self.keyboard = name.trim_start_matches("keyboard:").parse::<u8>().unwrap_or(0) & KEYS;
+                }
                 name => self.key(name, raw),
             }
             if self.waiting.is_some() || std::mem::take(&mut self.pause) {
@@ -346,11 +355,15 @@ impl View {
     /// The file is written whole under a name of this viewer's own and then given its name, so
     /// of two viewers the last to write is believed.
     fn told(&mut self) {
-        if let Some((_, told)) = self.colours.take().filter(|(_, told)| !told.is_empty()) {
-            let own = self.session.join(format!(".colours.{}", std::process::id()));
-            let written = fs::write(&own, told).and_then(|()| fs::rename(&own, self.session.join("colours")));
+        let Some((_, told)) = self.colours.take() else { return };
+        // And which keyboard flags it takes (none, if it did not say): a program in a pane that
+        // asks is told no more than that.
+        let files = [("colours", told), ("keyboard", format!("{}\n", self.keyboard))];
+        for (name, text) in files.into_iter().filter(|(name, text)| *name == "keyboard" || !text.is_empty()) {
+            let own = self.session.join(format!(".{name}.{}", std::process::id()));
+            let written = fs::write(&own, text).and_then(|()| fs::rename(&own, self.session.join(name)));
             if let Err(e) = written {
-                self.message = format!("cannot write {}: {e}", self.session.join("colours").display());
+                self.message = format!("cannot write {}: {e}", self.session.join(name).display());
             }
         }
     }
@@ -541,6 +554,7 @@ impl View {
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
         let mut title = None;
         let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
+        let mut keys = 0;
         for (name, body) in &tiles {
             let pane = self.panes.entry(name.clone()).or_insert_with(Pane::new);
             let pane_directory = directory.join(name);
@@ -635,6 +649,10 @@ impl View {
                 // And reports the mouse when, and as far as, a living program asked (always in the SGR form).
                 if pane.term.mouse != 0 && live {
                     modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.term.mouse));
+                }
+                // And tells keys as that program asked (the kitty protocol), if the terminal can.
+                if live {
+                    keys = pane.term.keys() & self.keyboard;
                 }
             }
             for (file, row, col, cols, rows) in &pane.pictures {
@@ -766,6 +784,9 @@ impl View {
             cursor.push_str("\x1b[?25l");
         }
         cursor.push_str(&modes);
+        if self.keyboard != 0 {
+            cursor.push_str(&format!("\x1b[={keys}u"));
+        }
         // A menu is drawn over the panes, pictures and all: none is drawn while one is open.
         if self.menu.is_some() {
             pictures.clear();

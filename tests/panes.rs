@@ -277,3 +277,58 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(inner.0.join("main/layout"), "* row(one odd) focus=one\n").unwrap();
     until("its title is drawn with the codes as marks", || screen().contains(" x?]0;T??[2Jy\n"));
 }
+
+#[test]
+fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own() {
+    // The viewer runs in a pane of an outer session whose terminal is said to take the kitty
+    // keyboard protocol; what is written to that pane's `in` is what such a terminal would send.
+    let (outer, inner) = (Session::new("kouter"), Session::new("kinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    fs::write(keys.join("C-b/o"), "#!/bin/sh\n# other\nfux layout focus next\n").unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("C-b/o")).status().unwrap();
+    fs::create_dir_all(&outer.0).unwrap();
+    fs::write(outer.0.join("keyboard"), "5\n").unwrap();
+    // One program asks to have keys told apart (on its alternate screen, as an editor does); the other asks for nothing.
+    let asks =
+        inner.start("asks", &["sh", "-c", "stty raw -echo; printf '\\033[?1049h\\033[>1u\\033[?u'; exec cat -vt"]);
+    let plain = inner.start("plain", &["sh", "-c", "stty raw -echo; exec cat -vt"]);
+    // Before any viewer said what its terminal takes, the program was told: none.
+    until("the first answer", || read(&asks.join("screen")).contains("^[[?0u"));
+    fs::create_dir_all(inner.0.join("main")).unwrap();
+    fs::write(inner.0.join("main/layout"), "* row(asks plain) focus=asks\n").unwrap();
+    let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &viewer[..]].concat());
+    let line1 = |pane: &Path| read(&pane.join("screen")).lines().next().unwrap_or_default().to_string();
+    let shown = |pane: &Path| {
+        read(&pane.join("screen")).split_once('\n').map(|(_, rows)| rows.replace('\n', "")).unwrap_or_default()
+    };
+    // The viewer learns what its terminal takes and says so for the session; the program's
+    // flags are then in force, on its own line 1 and, asked of the terminal, on the viewer's.
+    until("the session knows", || read(&inner.0.join("keyboard")) == "5\n");
+    until("the pane's flags are in force", || line1(&asks).contains("keys1"));
+    until("the viewer asked its terminal for them", || line1(&view).contains("keys1"));
+    // Ctrl-I is not Tab and Shift-Enter is not Enter: each reaches the program as it was sent.
+    fs::write(view.join("in"), "a\x1b[105;5ub\tc\x1b[13;2ud\r").unwrap();
+    until("the keys arrive apart", || shown(&asks).contains("a^[[105;5ub^Ic^[[13;2ud^M"));
+    // The prefix is found in that form too, its key runs the script, and neither is typed.
+    fs::write(view.join("in"), "\x1b[98;5uo").unwrap();
+    until("the other pane has the keys", || read(&inner.0.join("main/layout")).contains("focus=plain"));
+    // That program asked for nothing: the terminal is put back to telling keys the old way.
+    until("the viewer took the flags back", || !line1(&view).contains("keys"));
+    fs::write(view.join("in"), "x\ty").unwrap();
+    until("plain keys arrive", || shown(&plain).contains("x^Iy"));
+    assert!(!shown(&asks).contains("98;5u") && !shown(&asks).contains("do") && !shown(&plain).contains('o'));
+    // Back on the pane that asked, they are in force again; when the viewer leaves, the
+    // terminal is as it was found: its main screen, and no flags.
+    fs::write(view.join("in"), "\x02o").unwrap();
+    until("the flags are asked for again", || line1(&view).contains("keys1"));
+    let ctl = fs::read_dir(&inner.0)
+        .unwrap()
+        .flatten()
+        .find(|entry| entry.file_name().to_string_lossy().starts_with(".view."));
+    fs::write(ctl.unwrap().path(), "quit\n").unwrap();
+    until("the viewer has left", || line1(&view).contains("state=exited"));
+    assert!(!line1(&view).contains("keys") && !line1(&view).contains("alt"), "{}", line1(&view));
+}

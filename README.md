@@ -92,7 +92,7 @@ pid=4242 state=running v=17 size=80x24 cursor=3,8 shape=0 modes=cursor,paste pic
 `hungup`, `exited:CODE` or `killed:SIGNAL`;
 `modes` lists what is on (`cursor` shown, `appcursor`, `keypad`, `paste`,
 `mouse9`, `mouse1000`, `mouse1002` or `mouse1003`: the mouse reports the
-program asked for, and `mousesgr`: their newer form,
+program asked for, and `mousesgr`: their newer form; `keys1`, `keys4` or `keys5`: how it asked to have keys told (below),
 `alt` screen); each `pic=` is a file, its row and column, and its size in
 cells. A screen file is replaced in one step (written as `screen.new`, then
 renamed), so a reader sees a whole old one or a whole new one.
@@ -142,6 +142,29 @@ nothing about a colour the file has no line for: a program is never told a
 colour that someone made up. A program that sets a colour (OSC 4, 10, 11
 with a value, 104, 110, 111) is heard and changes nothing. No workspace or
 pane can be named `colours`.
+
+How are keys told? A terminal tells Tab and Ctrl-I, Enter and Shift-Enter,
+Escape and the start of an arrow key with the same bytes, unless the program
+asks for the kitty keyboard protocol. A program in a pane may ask: what it
+asks for is kept by the pane's holder as the protocol says (set, set aside,
+taken back and asked about, apart for the main and the alternate screen, 16
+deep), answered with nobody watching, and shown as `keys…` on line 1. Of the
+protocol's flags fux passes on two: 1, "disambiguate escape codes", and 4,
+"report alternate keys". The others (2, 8, 16: releases, every key as an
+escape code, text) are never in force, and a program that asks is told so.
+
+The keys come from your terminal, so no more is in force than it takes. That
+is in a second file of the session, `keyboard`: one number, the flags the
+terminal takes. The viewer asks its terminal when it starts and writes it
+(`0` if the terminal does not know the protocol); `echo 5 > "$(fux dir)/keyboard"`
+writes it by hand. With no file, or `0`, a program that asks is told that no
+flag is in force and gets keys the old way. While a pane has the keys, the
+viewer asks the terminal for that pane's flags, and takes them back when the
+focus moves or the viewer leaves. The keys go to the program as the terminal
+sends them. The viewer reads both forms: `C-b`, and every key in the keys
+directory, is found whatever the focused program asked for, and a key that
+runs a script or opens a menu is not also sent to the program. `keyboard` is
+no name for a workspace or a pane either.
 
 Is a pane alive? Its holder keeps a lock on the directory for as long as it
 lives: `flock -n "$D/main/build" true` fails while it does (Linux), and
@@ -443,7 +466,7 @@ does something else is a row below with a case that shows it.
 | What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6, 9, 21 and 58 and the colon forms of 4, 38 and 48, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. A character goes on while the cursor is where its last part left it and its cell is unchanged: a change of colour or a title between a letter and its accent does not part them (`grep --color` does this), a move or an erase does |
 | How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). An emoji with U+FE0F in its character is two. A control, U+2028 and U+2029 among them, and a mark or joiner with no character to join, takes no cell and is dropped |
-| A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports) | Its own specification |
+| A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports, the kitty keyboard protocol's flags 1 and 4) | Its own specification |
 | What a colour is (OSC 10, 11, and 4 with `?`) | The session's `colours` file: what the terminal you look at said, or what you wrote. No file or no line, no answer. Setting a colour (OSC 4, 10, 11 with a value, 104, 110, 111) is taken and changes nothing |
 
 `tools/referee/referee.py` plays the same bytes to fux and to three
@@ -529,7 +552,8 @@ takes a desktop's number removes the desktop's socket when it ends).
 
 ## Left out
 
-The kitty keyboard protocol; of the mouse, the UTF-8 and urxvt report forms
+Of the kitty keyboard protocol, key releases and repeats, every key as an
+escape code and the text of keys (its flags 2, 8 and 16); of the mouse, the UTF-8 and urxvt report forms
 (1005, 1015: programs get the SGR form or the oldest one), dragging a line
 to resize, and any menu use;
 hyperlinks (OSC 8 is read and dropped); reading the clipboard (setting it

@@ -491,6 +491,35 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   program's output (one system call; not measured as a cost); answers in
   the 8-bit form of a terminal set to send C1 controls are not read.
 
+- **D57. The kitty keyboard protocol, done as the mouse is** (the panel;
+  message 11). The program's requests are emulator state: current flags and
+  what was set aside, for each screen, 16 deep (the oldest makes room; going
+  back past the first is no flags), answered on the pty with nobody watching,
+  and a word (`keys5`) on line 1. Keys are made by the owner's terminal, not
+  by fux, so "implemented" means "passed on and still understood by the
+  viewer": flags 1 (disambiguate) and 4 (alternate keys). 2, 8 and 16 would
+  need the viewer to follow key releases and to read every letter as an
+  escape code while a menu is open; they are masked out and a program is
+  told so by its query.
+  - What is in force is what the program asked for *and* the terminal takes.
+    The second is one number in the session's `keyboard` file, written by the
+    viewer after it asked its terminal (it sets flags with the old ones kept,
+    reads them back and sets none: three sequences a terminal without the
+    protocol ignores), or by hand. No file: nothing in force, the query is
+    answered 0, and the program uses the old keys. The holder looks at the
+    file when its program writes and every two seconds, so a pane started
+    before the viewer gets its flags when the viewer comes.
+  - The viewer sets the terminal's flags to the focused pane's each frame
+    they differ (`CSI = N u`), and gives the terminal back what it had when
+    it leaves (`CSI < u`, before it leaves the alternate screen).
+  - `keys.rs` names the `CSI … u` forms (and the old forms with the
+    protocol's colon parts), so `C-b` and every key file are found in either
+    form; a key with Super, Hyper or Meta held, and a key that is no
+    character, has no name and goes to the program.
+  - Found by hand with nvim, not by the first tests: a pane on its alternate
+    screen lost its flags when the viewer read its line 1 back. The pane test
+    now asks from the alternate screen.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

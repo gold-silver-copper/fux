@@ -111,6 +111,54 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
 }
 
 #[test]
+fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_terminal_takes() {
+    // With no terminal known to take the protocol, the answer is 0 whatever was asked.
+    assert_eq!(term(9, 2, "\x1b[>1u\x1b[?u").take().reply, b"\x1b[?0u");
+    let asked = |bytes: &str| {
+        let mut term = Term::new(9, 2);
+        term.keyboard = crate::term::KEYS;
+        term.feed(bytes.as_bytes());
+        (String::from_utf8(term.take().reply).unwrap(), term.header())
+    };
+    // The protocol's own examples: flags are set, set aside and come back; setting adds or
+    // takes bits; going back past the first is no flags; the two screens have their own.
+    assert_eq!(asked("\x1b[?u\x1b[>1u\x1b[?u\x1b[<u\x1b[?u").0, "\x1b[?0u\x1b[?1u\x1b[?0u");
+    assert_eq!(asked("\x1b[=1u\x1b[>5u\x1b[?u\x1b[<1u\x1b[?u\x1b[<9u\x1b[?u").0, "\x1b[?5u\x1b[?1u\x1b[?0u");
+    assert_eq!(asked("\x1b[=1;1u\x1b[=4;2u\x1b[?u\x1b[=1;3u\x1b[?u\x1b[=0u\x1b[?u").0, "\x1b[?5u\x1b[?4u\x1b[?0u");
+    assert_eq!(asked("\x1b[>1u\x1b[?1049h\x1b[?u\x1b[>4u\x1b[?u\x1b[?1049l\x1b[?u").0, "\x1b[?0u\x1b[?4u\x1b[?1u");
+    // Only the flags fux passes on are ever in force (not 2, 8, 16), and what is kept aside is bounded.
+    assert_eq!(asked("\x1b[>31u\x1b[?u").0, "\x1b[?5u");
+    assert_eq!(asked(&format!("{}\x1b[>4u{}\x1b[?u", "\x1b[>1u".repeat(40), "\x1b[<u".repeat(17))).0, "\x1b[?0u");
+    // The flags in force are a word of line 1, and a screen file read back has them.
+    for screen in ["", "\x1b[?1049h"] {
+        let header = asked(&format!("{screen}\x1b[>5u")).1;
+        assert!(header.ends_with(",keys5") && Term::from_screen(&header, |_, _| ()).keys() == 5, "{header}");
+    }
+    assert!(!asked("x").1.contains("keys"));
+    // The viewer still finds its keys in that protocol's forms, and tells apart what the old forms cannot.
+    use crate::keys::next;
+    let name = |bytes: &str| next(bytes.as_bytes(), true, false).map(|(length, name)| (length == bytes.len(), name));
+    for (bytes, key) in [
+        ("\x1b[98;5u", "C-b"),
+        ("\x1b[105;5u", "C-i"),
+        ("\t", "tab"),
+        ("\x1b[13;2u", "S-enter"),
+        ("\r", "enter"),
+        ("\x1b[27u", "esc"),
+        ("\x1b[97;3u", "M-a"),
+        ("\x1b[97:65;6u", "C-S-a"),
+        ("\x1b[118;1:1u", "v"),
+        ("\x1b[1;5:1A", "C-up"),
+        ("\x1b[3;133~", "C-delete"),
+        ("\x1b[97;9u", ""),
+        ("\x1b[57441u", ""),
+        ("\x1b[?5u", "keyboard:5"),
+    ] {
+        assert_eq!(name(bytes), Some((true, key.to_string())), "{bytes:?}");
+    }
+}
+
+#[test]
 fn queries_are_answered_with_nobody_watching() {
     let term = term(80, 24, "\x1b[c\x1b[>c\x1b[5n\x1b[3;7H\x1b[6n\x1b[?2004$p\x1b[18t");
     assert_eq!(

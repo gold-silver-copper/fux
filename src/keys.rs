@@ -87,7 +87,11 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)>
 fn sequence(parameters: &str, last: u8) -> String {
     let mut numbers = parameters.split(';');
     let first = numbers.next().unwrap_or_default();
-    let mut modifier = numbers.next().and_then(|n| n.parse::<u8>().ok()).unwrap_or(1).saturating_sub(1);
+    // (In the kitty protocol's forms a part may go on after a colon: the key's other faces, the
+    // kind of event. The key and what is held come first.)
+    let held = numbers.next().and_then(|n| n.split(':').next()?.parse::<u16>().ok()).unwrap_or(1).saturating_sub(1);
+    // Caps Lock and Num Lock (64, 128) are no part of a key's name.
+    let mut modifier = (held & 7) as u8;
     let f = |n: u8| format!("f{n}");
     let key = match (last, first.parse::<u8>().ok()) {
         // A mouse report (always asked for in this form): not a key either.
@@ -96,6 +100,21 @@ fn sequence(parameters: &str, last: u8) -> String {
         }
         // The terminal's answer to "what are you": not a key, but ours to read.
         (b'c', _) if first.starts_with('?') => return format!("terminal:{parameters}"),
+        // Its answer to "which keyboard flags are in force" (the kitty protocol).
+        (b'u', _) if first.starts_with('?') => return format!("keyboard:{}", first.trim_start_matches('?')),
+        // A key in that protocol's form: its number is the character it gives with nothing held.
+        (b'u', _) => match first.split(':').next().and_then(|n| n.parse().ok()).and_then(char::from_u32) {
+            Some('\r') => "enter".into(),
+            Some('\t') => "tab".into(),
+            Some('\u{1b}') => "esc".into(),
+            Some('\u{7f}') => "backspace".into(),
+            Some(' ') => "space".into(),
+            Some('/') => "slash".into(),
+            Some('.') => "dot".into(),
+            // (The keys with no character, the keypad's and the modifiers themselves, are numbered from U+E000.)
+            Some(c) if !c.is_control() && !('\u{e000}'..='\u{f8ff}').contains(&c) => c.to_string(),
+            _ => return String::new(),
+        },
         (b'A', _) => "up".into(),
         (b'B', _) => "down".into(),
         (b'C', _) => "right".into(),
@@ -118,6 +137,10 @@ fn sequence(parameters: &str, last: u8) -> String {
         (b'~', Some(201)) => return "paste-end".into(),
         _ => return String::new(),
     };
+    // With Super, Hyper or Meta held it is no key of ours.
+    if held & 0x38 != 0 {
+        return String::new();
+    }
     let held = [(4, "C-"), (2, "M-"), (1, "S-")].iter().filter(|(bit, _)| modifier & bit != 0).map(|(_, name)| *name);
     held.chain([key.as_str()]).collect()
 }

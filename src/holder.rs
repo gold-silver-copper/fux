@@ -36,6 +36,9 @@ const LOG_MAX: usize = 64 << 10;
 const LOOK_EVERY: Duration = Duration::from_secs(2);
 const GONE: &str = "the pane's directory is gone";
 
+/// What tells a file from the one read before: when it was written, its length, its number.
+type Stamp = (std::time::SystemTime, u64, u64);
+
 struct Holder {
     term: Term,
     master: Option<File>,
@@ -52,9 +55,10 @@ struct Holder {
     state: String,
     /// What the emulator produced and the next publish writes: history, pictures, a title, a clipboard.
     pending: Out,
-    /// The session's file of what the colours are, and which one was read last.
-    colours_file: PathBuf,
-    colours: Option<(std::time::SystemTime, u64, u64)>,
+    /// The session's folder, where the files are that say what the terminal outside is like, and
+    /// which `colours` and `keyboard` were read last.
+    session: PathBuf,
+    told: (Option<Stamp>, Option<Stamp>),
     /// The `history` file ends in the middle of a line.
     history_open: bool,
     /// The title in the `title` file.
@@ -100,7 +104,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // `fux start` says under what name the pane's directory was started.
     let pane = std::env::var_os(name!("PANE")).ok_or("hold is started by `fux start`")?;
     // (The session is two folders up from the pane, by the name the pane was started under.)
-    let colours_file = Path::new(&pane).ancestors().nth(2).unwrap_or(Path::new("")).join("colours");
+    let session = Path::new(&pane).ancestors().nth(2).unwrap_or(Path::new("")).to_path_buf();
     let mut child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
@@ -154,8 +158,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         pictures: Vec::new(),
         state: "running".into(),
         pending: Out::default(),
-        colours_file,
-        colours: None,
+        session,
+        told: (None, None),
         history_open: false,
         title: String::new(),
         logged: 0,
@@ -214,6 +218,8 @@ impl Holder {
                 if fs::symlink_metadata("in").is_err() {
                     return Err(GONE.into());
                 }
+                // A viewer may have learnt meanwhile what its terminal takes.
+                dirty |= self.told();
             }
             let mut wanted = vec![(ended.as_raw_fd(), sys::POLLIN), (ctl.as_raw_fd(), sys::POLLIN)];
             if let Some(master) = &self.master {
@@ -281,6 +287,34 @@ impl Holder {
         }
     }
 
+    /// Reads what the terminal outside is like, if it has changed; says whether the keyboard
+    /// flags in force did. It is in two files of the session, if a viewer (or a person) wrote
+    /// them: `colours`, and `keyboard` (the flags of the kitty protocol that terminal takes, a
+    /// number). 16 KiB of each at most.
+    fn told(&mut self) -> bool {
+        let before = self.term.keys();
+        for (name, known) in [("colours", &mut self.told.0), ("keyboard", &mut self.told.1)] {
+            // (A file, not something that only has a file's name; told apart from the one read
+            // last by when it was written, how long it is and which file it is.)
+            let file = self.session.join(name);
+            let stamp = fs::metadata(&file).ok().filter(|file| file.is_file());
+            let stamp = stamp.and_then(|file| Some((file.modified().ok()?, file.len(), file.ino())));
+            if stamp != *known {
+                let mut text = Vec::new();
+                if stamp.is_some() {
+                    let _ = File::open(&file).map(|file| file.take(16 << 10).read_to_end(&mut text));
+                }
+                let text = String::from_utf8_lossy(&text).into_owned();
+                *known = stamp;
+                match name {
+                    "colours" => self.term.colours = text,
+                    _ => self.term.keyboard = text.trim().parse().unwrap_or(0),
+                }
+            }
+        }
+        before != self.term.keys()
+    }
+
     /// Feeds the emulator what the program wrote; says how many bytes.
     fn read_program(&mut self, buffer: &mut [u8]) -> usize {
         let Some(n) = self.master.as_ref().and_then(|mut m| m.read(buffer).ok()) else {
@@ -288,17 +322,7 @@ impl Holder {
         };
         // What the colours are is in the session's `colours` file, two folders up, if a viewer
         // (or a person) wrote one: read again when it has changed, 16 KiB of it at most.
-        // (A file, not something that only has a file's name; told apart from the one read last
-        // by when it was written, how long it is and which file it is.)
-        let stamp = fs::metadata(&self.colours_file).ok().filter(|file| file.is_file());
-        let stamp = stamp.and_then(|file| Some((file.modified().ok()?, file.len(), file.ino())));
-        if stamp != self.colours {
-            let mut text = Vec::new();
-            if stamp.is_some() {
-                let _ = File::open(&self.colours_file).map(|file| file.take(16 << 10).read_to_end(&mut text));
-            }
-            (self.colours, self.term.colours) = (stamp, String::from_utf8_lossy(&text).into_owned());
-        }
+        self.told();
         self.term.feed(buffer.get(..n).unwrap_or(&[]));
         self.collect();
         n

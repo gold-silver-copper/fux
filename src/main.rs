@@ -76,11 +76,12 @@ fn workspace() -> String {
 
 /// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot, and not `-` alone
 /// (which marks a tab in the layout and means "the one before" to the viewer), nor the name of
-/// the session's file of what the terminal's colours are.
+/// the session's files of what the terminal is like (its colours, its keyboard).
 fn is_name(name: &str) -> bool {
     !name.is_empty()
         && name != "-"
         && name != "colours"
+        && name != "keyboard"
         && !name.starts_with('.')
         && name.len() <= 64
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))

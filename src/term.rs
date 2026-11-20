@@ -19,6 +19,10 @@ pub const SIZE_MAX: usize = 500;
 const HISTORY_PENDING_MAX: usize = 4 << 20;
 /// (Room for an answer to every question about a colour that a viewer asks at its start.)
 const REPLY_MAX: usize = 16 << 10;
+/// The keyboard flags fux passes on (the kitty protocol's "disambiguate escape codes" and
+/// "report alternate keys"), and how many sets of flags a program can push aside on a screen.
+pub const KEYS: u8 = 1 | 4;
+const KEYS_KEPT: usize = 16;
 /// The most cells of rows that a resize sent to history are kept to come back at the next one.
 const ABOVE_MAX: usize = 100_000;
 
@@ -181,6 +185,11 @@ pub struct Term {
     pub alt: bool,
     /// The cursor's row on the main screen while the alternate one is shown.
     main_row: usize,
+    /// The kitty keyboard protocol: the flags a program asked for on the main screen and on
+    /// the alternate one, with the flags it pushed aside on each; and which flags the terminal
+    /// that sends the keys takes (told by whoever keeps this terminal: none, until told).
+    keys: [(u8, Vec<u8>); 2],
+    pub keyboard: u8,
     pub row: usize,
     pub col: usize,
     style: Style,
@@ -260,6 +269,8 @@ impl Term {
             grid,
             alt: false,
             main_row: 0,
+            keys: [(0, Vec::new()), (0, Vec::new())],
+            keyboard: 0,
             row: 0,
             col: 0,
             style: Style::default(),
@@ -438,13 +449,21 @@ impl Term {
         ]
     }
 
+    /// The keyboard flags in force: what the program on the screen shown asked for, as far as
+    /// the terminal that sends the keys takes it.
+    pub fn keys(&self) -> u8 {
+        self.keys.get(usize::from(self.alt)).map_or(0, |(flags, _)| flags & self.keyboard)
+    }
+
     /// What line 1 of a screen file says of the terminal: `size= cursor= shape= modes=`.
     pub fn header(&mut self) -> String {
         // Which reports (`mouse1002`) and in what form (`mousesgr`) are two things a program sets apart.
         let mouse = (self.mouse != 0).then(|| format!("mouse{}", self.mouse));
         let sgr = self.mouse_sgr.then(|| "mousesgr".to_string());
+        // And the keyboard flags a program asked for (the kitty protocol), as a number.
+        let keys = (self.keys() != 0).then(|| format!("keys{}", self.keys()));
         let on = self.modes().into_iter().filter(|m| *m.1).map(|m| m.0.to_string());
-        let modes: Vec<String> = on.chain(mouse).chain(sgr).collect();
+        let modes: Vec<String> = on.chain(mouse).chain(sgr).chain(keys).collect();
         let modes = if modes.is_empty() { "-".into() } else { modes.join(",") };
         format!(
             "size={}x{} cursor={},{} shape={} modes={modes}",
@@ -469,6 +488,10 @@ impl Term {
                     term.modes().into_iter().for_each(|(name, on)| *on = has(name));
                     term.mouse = [9, 1000, 1002, 1003].into_iter().find(|m| has(&format!("mouse{m}"))).unwrap_or(0);
                     term.mouse_sgr = has("mousesgr");
+                    let keys = value.split(',').find_map(|m| m.strip_prefix("keys")?.parse().ok());
+                    // (Whichever screen is shown has them.)
+                    let keys = keys.unwrap_or(0);
+                    (term.keys, term.keyboard) = ([(keys, Vec::new()), (keys, Vec::new())], KEYS);
                 }
                 _ => other(key, value),
             }
@@ -1105,6 +1128,7 @@ impl Term {
                     next_picture: self.next_picture,
                     history_open: self.history_open,
                     colours: std::mem::take(&mut self.colours),
+                    keyboard: self.keyboard,
                     ..Term::new(self.cols, self.rows)
                 };
             }
@@ -1451,6 +1475,34 @@ impl Term {
             }
             (0, 0, b's') => self.save_cursor(),
             (0, 0, b'u') => self.restore_cursor(),
+            // The kitty keyboard protocol: a program says how it wants keys told (`=` sets, `>`
+            // sets and keeps the old flags to come back to, `<` comes back) and asks what is in
+            // force (`?`). Each screen has its own. Only what the terminal that sends the keys
+            // takes is in force: with no such terminal known, the answer is 0.
+            (b'=' | b'>' | b'<' | b'?', 0, b'u') => {
+                let (known, alt) = (self.keyboard, usize::from(self.alt));
+                let (asked, how) = (self.arg(0, 0).min(255) as u8 & KEYS, self.arg(1, 1));
+                let (back, which) = (self.arg(0, 1), self.private);
+                let Some((flags, kept)) = self.keys.get_mut(alt) else { return };
+                match which {
+                    b'=' => {
+                        *flags =
+                            [asked, *flags | asked, *flags & !asked].get(how.wrapping_sub(1)).copied().unwrap_or(*flags)
+                    }
+                    b'>' => {
+                        // The stack is bounded: the oldest entry makes room.
+                        if kept.len() == KEYS_KEPT {
+                            kept.remove(0);
+                        }
+                        kept.push(std::mem::replace(flags, asked));
+                    }
+                    b'<' => (0..back.min(KEYS_KEPT + 1)).for_each(|_| *flags = kept.pop().unwrap_or(0)),
+                    _ => {
+                        let answer = format!("\x1b[?{}u", *flags & known);
+                        self.respond(&answer);
+                    }
+                }
+            }
             (0, 0, b't') => {
                 let (cols, rows, (w, h)) = (self.cols, self.rows, self.cell);
                 match self.arg(0, 0) {
