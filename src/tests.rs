@@ -307,6 +307,34 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
 }
 
 #[test]
+fn a_link_is_on_its_cells_through_scrolling_erasing_and_wrapping_and_ends_at_history() {
+    let link = |address: &str, text: &str| format!("\x1b]8;id=1;{address}\x1b\\{text}\x1b]8;;\x07");
+    let mut term = term(10, 3, &format!("a{}b\r\n{}", link("http://x.example/", "link"), link("file:///y", "漢字")));
+    assert_eq!(term.links(), "0 1 4 http://x.example/\n1 0 4 file:///y\n");
+    // The screens stay text and colours: a link is in no screen file.
+    assert!(!term.styled().contains("\x1b]") && term.plain() == "alinkb\n漢字\n\n");
+    // Written over or erased, a cell is no longer part of the link; an address that is not
+    // plain printable text is no link.
+    term.feed(format!("\x1b[1;3HX\x1b[2;3H\x1b[K\x1b[3;1H{}", link("http://bad example/\x01", "no")).as_bytes());
+    assert_eq!(term.links(), "0 1 1 http://x.example/\n0 3 2 http://x.example/\n1 0 2 file:///y\n");
+    // A link that wraps is one run of cells in reading order, and still one after the text is
+    // wrapped anew; its line's number is a mark's kind of number.
+    let mut long = crate::tests::term(6, 4, &format!("x\r\nab{}", link("http://w/", "0123456789")));
+    assert_eq!(long.links(), "1 2 10 http://w/\n");
+    assert!(long.resize(4, 6) && long.links() == "1 2 10 http://w/\n", "{}", long.links());
+    assert!(long.resize(20, 4) && long.links() == "1 2 10 http://w/\n", "{}", long.links());
+    // What scrolls into history takes its links' cells with it: history is text.
+    long.feed(b"\r\n1\r\n2\r\n3\r\n4");
+    assert_eq!((long.links().as_str(), long.top()), ("", 2));
+    // The table of addresses is bounded: those no cell uses any more make room.
+    let mut many = Term::new(10, 2);
+    for n in 0..1500 {
+        many.feed(format!("\r{}", link(&format!("http://h/{n}"), "x")).as_bytes());
+    }
+    assert_eq!((many.links().as_str(), many.peek().refused.len()), ("0 0 1 http://h/1499\n", 0));
+}
+
+#[test]
 fn queries_are_answered_with_nobody_watching() {
     let term = term(80, 24, "\x1b[c\x1b[>c\x1b[5n\x1b[3;7H\x1b[6n\x1b[?2004$p\x1b[18t");
     assert_eq!(

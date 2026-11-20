@@ -725,7 +725,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - Under flag 8 a plain letter comes as `CSI 97 u` and is named `a`: the
     menus work as before. A shifted sign is named by its sign only if the
     terminal says which it is (flag 4): as before.
-- **D67. The fix check of D65 (1 Opus, 1 gpt-6.2-astra, a tester; one pass).**
+- **D66. The fix check of D65 (1 Opus, 1 gpt-6.2-astra, a tester; one pass).**
   All three found keys left down in programs: D65 dropped a release when
   the keys had moved or a menu was open, and with flag 8 the prefix's own
   Ctrl goes to the pane first, so every use of the prefix left Ctrl down
@@ -758,6 +758,32 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     the byte 2 to a program that asked for escape codes (it reads it as
     C-b); a pane whose press was seen before its pid was known (the first
     frame) gets no release.
+- **D67. Links are a file of runs, and the screens stay text** (message 12,
+  step J; the panel's form). A cell has the number of its link (two bytes;
+  the addresses are in a table of the emulator, a thousand at most, the
+  unused making room when it is full), so a link goes where its cell goes:
+  scroll, insert, reflow. An erased or overwritten cell has none. The holder
+  writes `links`, `LINE COL LEN ADDRESS` for each run on the screen shown,
+  LINE as `marks` counts it; `screen.styled` has no OSC in it, as D59 said.
+  The viewer puts the runs back on its copy's cells with `top` and `wraps`
+  and wraps them in OSC 8 when it draws, opening and closing with the cell,
+  before the blanks a wide character is drawn over.
+  - An address is printable ASCII without blanks, 2,048 bytes at most,
+    checked by the emulator and again by the viewer (the file is anyone's
+    to write): it is the one thing of a program's that the viewer writes to
+    the terminal inside a control string, so nothing that could end the
+    string or start another gets there. A URL with other bytes is no link;
+    programs percent-encode.
+  - Mine to decide: the `id` parameter is dropped. With it a terminal
+    lights up two runs as one link; the viewer would have to make ids that
+    differ between panes and it draws rows apart anyway. Links are of the
+    screen shown, the alternate one too (a pager's links work), numbered
+    on from `top`. History has no links: it is plain text, and the order
+    said so.
+  - Kept: a link is not carried through `fux view` inside `fux view` any
+    differently (the outer pane's emulator reads the inner viewer's OSC 8
+    as any program's); the viewer's table of addresses is emptied and all
+    drawn anew past 4,000.
 
 ## The old fux3's bugs: which classes are gone
 

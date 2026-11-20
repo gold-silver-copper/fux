@@ -26,6 +26,8 @@ pub const KEYS: u8 = 31;
 const KEYS_KEPT: usize = 16;
 /// How many of a shell's marks are kept.
 const MARKS_MAX: usize = 1000;
+/// How many links' addresses are kept at a time.
+const LINKS_MAX: usize = 1000;
 /// The most cells of rows that a resize sent to history are kept to come back at the next one.
 const ABOVE_MAX: usize = 100_000;
 
@@ -116,11 +118,14 @@ pub struct Cell {
     /// The rest of the character (the cluster): marks, joiners and what they join.
     pub more: [char; MORE],
     pub style: Style,
+    /// The link the character is part of (OSC 8): its number in whoever keeps the cell's table
+    /// of addresses, 0 for none.
+    pub link: u16,
 }
 
 impl Cell {
     pub fn blank(style: Style) -> Cell {
-        Cell { ch: ' ', more: ['\0'; MORE], style: Style { bg: style.bg, ..Style::default() } }
+        Cell { ch: ' ', more: ['\0'; MORE], style: Style { bg: style.bg, ..Style::default() }, link: 0 }
     }
     pub fn wide(&self) -> bool {
         width(self.ch, &self.more) == 2
@@ -253,6 +258,10 @@ pub struct Term {
     cluster: Option<Last>,
     /// How many whole lines have gone into history: the number of the line the screen's first row is of.
     pub gone: usize,
+    /// The addresses of the links on the two screens (OSC 8), by a cell's `link` less one; and
+    /// the link that what is printed now is part of.
+    links: Vec<String>,
+    link: u16,
     /// The marks a shell put at its prompts (OSC 133): line, cells into it, kind, exit code. The last thousand.
     marks: Vec<(usize, usize, &'static str, Option<u8>)>,
     /// (How many of them are in the rows the last resize sent there.)
@@ -345,6 +354,8 @@ impl Term {
             cluster: None,
             gone: 0,
             marks: Vec::new(),
+            links: Vec::new(),
+            link: 0,
             above_lines: 0,
             history_open: false,
             above: Vec::new(),
@@ -387,6 +398,13 @@ impl Term {
     /// Everything produced since the last time this was asked.
     pub fn take(&mut self) -> Out {
         std::mem::take(&mut self.out)
+    }
+
+    /// Says of a cell which link it is part of (for a reader that has the links from a file).
+    pub fn set_link(&mut self, row: usize, col: usize, link: u16) {
+        if let Some(cell) = self.grid.get_mut(row).and_then(|cells| cells.get_mut(col)) {
+            cell.link = link;
+        }
     }
 
     pub fn cell_at(&self, row: usize, col: usize) -> Option<&Cell> {
@@ -544,6 +562,68 @@ impl Term {
     pub fn top(&self) -> usize {
         let first = if self.alt { self.other.first() } else { self.grid.first() };
         self.gone + usize::from(self.history_open && !first.is_some_and(|row| continues(row)))
+    }
+
+    /// The number of a link's address in the table, which keeps at most `LINKS_MAX`: when it is
+    /// full, the addresses no cell uses any more make room; if every one is in use, no link.
+    fn link_number(&mut self, address: &str) -> u16 {
+        if let Some(at) = self.links.iter().position(|known| known == address) {
+            return at as u16 + 1;
+        }
+        if self.links.len() >= LINKS_MAX {
+            let mut used = vec![false; self.links.len()];
+            for cell in self.grid.iter().chain(&self.other).flatten().filter(|cell| cell.link != 0) {
+                used.get_mut(usize::from(cell.link) - 1).into_iter().for_each(|used| *used = true);
+            }
+            for (known, _) in self.links.iter_mut().zip(used).filter(|(_, used)| !used) {
+                known.clear();
+            }
+        }
+        let free =
+            self.links.iter().position(String::is_empty).or((self.links.len() < LINKS_MAX).then_some(self.links.len()));
+        let Some(at) = free else {
+            self.refuse("a link was not kept: 1000 others are on the screen");
+            return 0;
+        };
+        self.links.resize(self.links.len().max(at + 1), String::new());
+        self.links.get_mut(at).into_iter().for_each(|slot| *slot = address.to_string());
+        at as u16 + 1
+    }
+
+    /// The links on the screen, a line each: `LINE COL LEN ADDRESS`. LINE is the line's
+    /// number as a mark has it; COL counts cells from the start of that line's first row on the
+    /// screen, a whole row for each row before; LEN is how many cells, in reading order.
+    pub fn links(&self) -> String {
+        let (mut out, mut line, mut base) = (String::new(), self.top(), 0);
+        let mut run: Option<(usize, usize, usize, u16)> = None;
+        // (Of the screen shown: a program on the alternate screen has links too. Its lines are
+        // numbered on from `top` as the main screen's are, though none of them goes to history.)
+        for (y, row) in self.grid.iter().enumerate() {
+            (line, base) = if y > 0 && !continues(row) { (line + 1, 0) } else { (line, base) };
+            for (x, cell) in row.iter().enumerate() {
+                let at = base + x;
+                run = match run {
+                    Some((l, start, len, link)) if l == line && start + len == at && link == cell.link => {
+                        Some((l, start, len + 1, link))
+                    }
+                    ended => {
+                        if let Some((l, start, len, link)) = ended
+                            && let Some(address) = self.links.get(usize::from(link) - 1)
+                        {
+                            let _ = writeln!(out, "{l} {start} {len} {address}");
+                        }
+                        (cell.link != 0).then_some((line, at, 1, cell.link))
+                    }
+                };
+            }
+            base += row.len();
+        }
+        if let Some((l, start, len, link)) = run
+            && let Some(address) = self.links.get(usize::from(link) - 1)
+        {
+            let _ = writeln!(out, "{l} {start} {len} {address}");
+        }
+        out
     }
 
     /// The shell's marks, a line each: `LINE COL KIND`, and the command's exit code after `end`.
@@ -735,7 +815,8 @@ impl Term {
         } else {
             // Until it is placed it has no cell: what joins a character that found no room goes with it.
             (self.last, self.cluster) = (c, Some(Last { at: None, cursor: here }));
-            self.place(Cell { ch: c, more: ['\0'; MORE], style: self.style }, width(c, &[]) == 2, self.insert);
+            let new = Cell { ch: c, more: ['\0'; MORE], style: self.style, link: self.link };
+            self.place(new, width(c, &[]) == 2, self.insert);
         }
         // What the next character must find to go on from this one.
         let here = (self.row, self.col, self.wrap_pending);
@@ -830,7 +911,7 @@ impl Term {
                 *cell = new;
             }
             if let Some(cell) = line.get_mut(col + 1).filter(|_| wide) {
-                *cell = Cell { ch: '\0', more: ['\0'; MORE], style: new.style };
+                *cell = Cell { ch: '\0', more: ['\0'; MORE], style: new.style, link: new.link };
             }
         }
         if insert {
@@ -1334,6 +1415,14 @@ impl Term {
                 if let Some(text) = rest.strip_prefix("notify;") {
                     self.notice(&text.replacen(';', ": ", 1));
                 }
+            }
+            // A link: `8;PARAMETERS;ADDRESS` starts one for what is printed from here on, and an
+            // empty address ends it. An address is plain printable text, 2,048 bytes at most.
+            "8" => {
+                let address = rest.split_once(';').map_or("", |(_, address)| address);
+                let plain =
+                    !address.is_empty() && address.len() <= 2048 && address.bytes().all(|b| (0x21..=0x7e).contains(&b));
+                self.link = if plain { self.link_number(address) } else { 0 };
             }
             // A shell marks its prompts: `133;A` where a prompt starts, `B` where the command
             // typed begins, `C` where its output begins, `D[;CODE]` where it ended. Each is kept

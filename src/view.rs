@@ -44,6 +44,8 @@ struct Pane {
     size: (usize, usize),
     pid: u32,
     state: String,
+    /// The addresses of the links on the screen: a cell's `link` less one is its place here.
+    addresses: Vec<String>,
     /// Pictures on the screen: file, row, column, columns, rows.
     pictures: Vec<(String, usize, usize, usize, usize)>,
     /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
@@ -85,6 +87,8 @@ struct View {
     sixel: bool,
     /// The kitty keyboard flags the terminal takes, of those fux passes on.
     keyboard: u8,
+    /// The addresses of the links drawn: a cell's `link` less one is its place here.
+    links: Vec<String>,
     /// The keys that are down, as far as the terminal tells, and where the press of each went.
     down: Vec<((u32, u8), Went)>,
     /// The terminal joins characters into clusters as fux does (its mode 2027), and whether
@@ -177,6 +181,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         message: String::new(),
         sixel: false,
         keyboard: 0,
+        links: Vec::new(),
         down: Vec::new(),
         joins: false,
         joined: false,
@@ -755,6 +760,11 @@ impl View {
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
         self.focus = tab.map(|tab| tab.focus.clone());
         self.notices(&layout, &directory);
+        // (The table of links' addresses is emptied when it has grown large: all is drawn anew.)
+        if self.links.len() > 4000 {
+            self.links.clear();
+            self.front.iter_mut().for_each(|cell| cell.ch = '\u{1}');
+        }
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
@@ -798,7 +808,16 @@ impl View {
                     if let Some(whole) = pane.term.cell_at(y, first).filter(|c| c.spill() > 0 && !self.joins)
                         && first + 1 + usize::from(whole.wide()) + whole.spill() > body.w
                     {
-                        cell = Cell { ch: '?', more: ['\0'; MORE], style: cell.style };
+                        cell = Cell { ch: '?', more: ['\0'; MORE], style: cell.style, link: 0 };
+                    }
+                    // A link's number is its address's place in the viewer's own table.
+                    if let Some(address) = usize::from(cell.link).checked_sub(1).and_then(|at| pane.addresses.get(at)) {
+                        let known = self.links.iter().position(|link| link == address);
+                        let at = known.unwrap_or_else(|| {
+                            self.links.push(address.clone());
+                            self.links.len() - 1
+                        });
+                        cell.link = u16::try_from(at + 1).unwrap_or(0);
                     }
                     if let Some(slot) = back.get_mut((body.y + y) * w + body.x + x) {
                         *slot = cell;
@@ -899,7 +918,7 @@ impl View {
                 (false, false) => '─',
             };
             let near = focus.is_some_and(|f| x + 1 >= f.x && x <= f.x + f.w && y + 1 >= f.y && y <= f.y + f.h);
-            *cell = Cell { ch, more: ['\0'; MORE], style: colour(if near { 2 } else { 240 }, None, 0) };
+            *cell = Cell { ch, more: ['\0'; MORE], style: colour(if near { 2 } else { 240 }, None, 0), link: 0 };
         }
         // A notice sits in the bottom right corner until the next key: what is
         // wrong with the layout file, what a script said, or that there are no panes.
@@ -1026,6 +1045,7 @@ impl View {
         }
         let mut style = None;
         let mut at = None;
+        let mut pen = 0;
         // The cells from here to `again` are sent whether they changed or not: a character before
         // them may have been drawn over them.
         let mut again = 0;
@@ -1053,6 +1073,14 @@ impl View {
                 new.style.sgr(&mut out);
                 style = Some(new.style);
             }
+            // A cell that is part of a link is drawn inside it (OSC 8): the link is opened before
+            // the first such cell and closed before the next cell that is not part of it, so
+            // none reaches past its tile or over a line between tiles.
+            if new.link != pen {
+                let address = usize::from(new.link).checked_sub(1).and_then(|at| self.links.get(at));
+                out.push_str(&format!("\x1b]8;;{}\x1b\\", address.map_or("", String::as_str)));
+                pen = new.link;
+            }
             // A wide character that may come out narrower (one of several parts, an emoji) is
             // drawn over two blanks; the cells one may come out over are sent after it.
             if new.wide() && !new.plain() {
@@ -1062,6 +1090,9 @@ impl View {
             new.push_text(&mut out);
             again = again.max(i + 1 + usize::from(new.wide()) + new.spill());
             at = ascii.then_some(i + 1);
+        }
+        if pen != 0 {
+            out.push_str("\x1b]8;;\x1b\\");
         }
         if redraw {
             for (file, x, y, ..) in &pictures {
@@ -1139,6 +1170,7 @@ impl Pane {
             pid: 0,
             state: String::new(),
             pictures: Vec::new(),
+            addresses: Vec::new(),
             asked: (0, 0, 0, (0, 0)),
             title: String::new(),
         }
@@ -1215,6 +1247,32 @@ impl Pane {
                 && is_name(name)
             {
                 self.pictures.push((name.into(), *row, *col, *cols, *rows));
+            }
+        }
+        // The links (`links`: line, cells into it, how many cells, address) are put on the cells.
+        // `top` and `wraps` say which line each row is of; a row starts as many cells into its
+        // line as the rows of that line above it hold. An address is plain printable text.
+        let rows: Vec<usize> = numbers(&fact("wraps", 4096));
+        let (mut line, mut base, mut starts) = (numbers(&fact("top", 32)).first().copied().unwrap_or(0), 0, Vec::new());
+        for row in 0..self.term.rows {
+            (line, base) = if row > 0 && !rows.contains(&row) { (line + 1, 0) } else { (line, base) };
+            starts.push((line, base));
+            base += cols;
+        }
+        self.addresses.clear();
+        for run in fact("links", 256 << 10).lines().take(1000) {
+            let mut fields = run.splitn(4, ' ');
+            let mut number = || fields.next().and_then(|n| n.parse::<usize>().ok());
+            let (Some(line), Some(from), Some(length)) = (number(), number(), number()) else { continue };
+            let address = fields.next().unwrap_or_default();
+            if address.is_empty() || address.len() > 2048 || !address.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+                continue;
+            }
+            self.addresses.push(address.to_string());
+            for (row, (_, base)) in starts.iter().enumerate().filter(|(_, (of, _))| *of == line) {
+                for col in from.max(*base)..(from.saturating_add(length)).min(base + cols) {
+                    self.term.set_link(row, col - base, self.addresses.len() as u16);
+                }
             }
         }
         let title = fact("title", 1024);

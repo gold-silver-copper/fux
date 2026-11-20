@@ -524,6 +524,7 @@ impl Holder {
             ("top", format!("{}\n", term.top())),
             ("wraps", format!("{}\n", term.wraps())),
             ("marks", term.marks()),
+            ("links", term.links()),
             ("pictures", term.pictures.iter().map(placed).collect()),
             ("size", format!("{} {}\n", term.cols, term.rows)),
             ("cursor", format!("{} {} {shown} {}\n", term.row, term.col, term.cursor_shape)),
