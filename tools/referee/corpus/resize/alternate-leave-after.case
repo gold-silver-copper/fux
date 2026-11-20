@@ -1,0 +1,4 @@
+size 20x6
+feed main\x20text\x20that\x20is\x20long\x1b[?1049halt
+resize 10x6
+feed \x1b[?1049l

@@ -1,0 +1,2 @@
+size 8x1
+feed -\x1b[2b\x1b[2b

@@ -263,6 +263,25 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   leaves the icon's name alone, an empty stack changes nothing, and a reset
   keeps the title; a picture pushed off by a ninth takes its bytes with it.
 
+- **D48. A referee, and one authority for each kind of question** (the panel
+  on fux's future, 2026-11-19). `tools/referee/` plays case files to the
+  built program (through a pane: `in`, `ctl`, `screen`, so the whole path is
+  what is compared) and to xterm under Xvfb, tmux on its own socket and the
+  old emulator pinned by git revision in a package of its own (the program's
+  `Cargo.lock` still lists one package). The README's table is the only list
+  of departures: the referee reads it, and CI fails on a difference that is
+  not a row. A row that no longer differs is reported, not failed. Its first
+  run found three places where fux differed from xterm for no reason, fixed
+  here: REP repeated a character across a move or a control; a C1 control
+  written as UTF-8 showed U+FFFD; with wrapping off a wide character with no
+  room wrote over the row's last two cells. What it found and fux keeps is in
+  the table: no left and right margins, no printer, no line feed mode, SUB
+  shows nothing. The Unicode and resize rows are the next two changes' work.
+- **D49. Size ceilings are checked** (`sizes.sh`, in CI): the emulator at most
+  2,500 lines written by hand (its two files and the tools that write its
+  tables), the program at most 5,500 (non-test Rust and the key scripts).
+  Generated tables are counted apart.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

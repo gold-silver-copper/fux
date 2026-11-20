@@ -1,0 +1,2 @@
+size 8x3
+feed main\x1b[?47halt\x1b[?47l!

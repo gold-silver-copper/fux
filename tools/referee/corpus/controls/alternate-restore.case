@@ -1,0 +1,2 @@
+size 16x6
+feed main\x1b[?1049halt\x1b[?1049l!

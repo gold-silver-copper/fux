@@ -1,0 +1,4 @@
+size 8x2
+feed a\x1b[1
+text é
+feed Cb

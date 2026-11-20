@@ -1,0 +1,2 @@
+size 8x2
+feed 01234567\x1b[1;3H\x1b[3X\x1b[99P

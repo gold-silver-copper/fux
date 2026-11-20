@@ -1,0 +1,2 @@
+size 16x6
+feed abcdef\x1b[1;4H\x1b[KZ

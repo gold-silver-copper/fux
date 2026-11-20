@@ -1,0 +1,2 @@
+size 10x4
+feed \x1b[2eA\x1b[3aB\x1b[1dC\x1b[5`D\x1b[2FE\x1b[1EF

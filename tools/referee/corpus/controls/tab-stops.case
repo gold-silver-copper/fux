@@ -1,0 +1,2 @@
+size 20x3
+feed \x1b[3g\x1b[1;5H\x1bH\x1b[1;1H\tA\tB\r\n\x1b[2g\tC

@@ -1,0 +1,3 @@
+# recorded from: bash --noprofile --rcfile /tmp/fux-corpus/home/.bashrc -i (the fux this one replaces kept it as fux-vt/compare/corpus/bash.bin), its first 856 bytes
+size 120x40
+file bash.bin 856

@@ -1,0 +1,2 @@
+size 16x6
+feed head\r\n1\r\n2\r\nfoot\x1b[2;3r\x1b[3;1H\nnew

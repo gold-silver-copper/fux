@@ -1,0 +1,3 @@
+size 8x3
+feed \x1b[?7l0123456
+text 一|

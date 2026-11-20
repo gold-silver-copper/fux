@@ -1,0 +1,3 @@
+size 20x6
+feed one\r\ntwo\x20two\x20two\x20two\r\nthree
+resize 8x6

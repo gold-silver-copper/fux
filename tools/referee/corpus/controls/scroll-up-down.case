@@ -1,0 +1,2 @@
+size 8x4
+feed 1\r\n2\r\n3\r\n4\x1b[2S\x1b[1TX

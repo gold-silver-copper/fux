@@ -1,0 +1,3 @@
+# recorded from: htop -p 45993,45994,45995 (the fux this one replaces kept it as fux-vt/compare/corpus/htop.bin), its first 9578 bytes
+size 120x40
+file htop.bin 9578

@@ -1,0 +1,4 @@
+size 20x6
+feed R1\r\nR2\r\nR3\r\nR4\r\nR5\r\nR6
+resize 20x3
+resize 20x6

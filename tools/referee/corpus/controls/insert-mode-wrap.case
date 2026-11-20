@@ -1,0 +1,2 @@
+size 8x2
+feed 0123456\x1b[1;1H\x1b[4hABC

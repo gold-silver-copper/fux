@@ -1,0 +1,13 @@
+# The old emulator (fux-vt, from the fux this program is to replace) as one
+# witness for the referee. A package of its own, outside the program's: the
+# program's Cargo.lock lists one package, and nothing here is built with it.
+[workspace]
+
+[package]
+name = "referee-old"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+fux-vt = { git = "https://github.com/gold-silver-copper/fux", rev = "86164e478c360472d94a930487ba6c6246ebce9a" }

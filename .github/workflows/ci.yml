@@ -20,3 +20,15 @@ jobs:
       - run: cargo test --locked -- --test-threads 4
       - run: ./example.sh
       - run: ./boundary.sh
+      - run: ./sizes.sh
+  referee:
+    # The same bytes to fux, xterm, tmux and the old emulator: fails on a difference the README's table lacks.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xterm xvfb tmux
+      - run: rustup update stable && rustup default stable
+      - run: cargo build --release --locked
+      - run: cargo build --release --locked --manifest-path tools/referee/old/Cargo.toml
+      - run: tools/referee/referee.py

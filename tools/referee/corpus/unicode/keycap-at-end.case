@@ -1,0 +1,3 @@
+size 16x2
+feed \x1b[1;15H
+text a1\ufe0f\u20e3|
