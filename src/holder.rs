@@ -237,7 +237,10 @@ impl Holder {
                     // What could not be written is tried again in the next round (and said once).
                     let written = self.publish();
                     match &written {
-                        Err(e) if e.kind() == ErrorKind::NotFound => return Err(GONE.into()),
+                        // (A file that is not there means the pane is gone only if its `in` is.)
+                        Err(e) if e.kind() == ErrorKind::NotFound && fs::symlink_metadata("in").is_err() => {
+                            return Err(GONE.into());
+                        }
                         Err(e) if !self.failing => self.log(&format!("cannot write the pane's files: {e}")),
                         _ => {}
                     }
@@ -303,7 +306,8 @@ impl Holder {
                 // finds all of it; what cannot be written by then is said in the log.
                 let tried = Instant::now();
                 while let Err(e) = self.publish() {
-                    if tried.elapsed() > Duration::from_secs(2) || e.kind() == ErrorKind::NotFound {
+                    let gone = e.kind() == ErrorKind::NotFound && fs::symlink_metadata("in").is_err();
+                    if tried.elapsed() > Duration::from_secs(2) || gone {
                         self.log(&format!("cannot write the last screen (the program {}): {e}", self.state));
                         break;
                     }
@@ -555,6 +559,8 @@ impl Holder {
         // named, or this one's name or address), and forgotten if it is another machine's (a
         // shell at the far end of ssh): a path of there means nothing here.
         if let Some((host, path)) = self.pending.cwd.take() {
+            // (The file is the program's to write too: what it says is written, whatever was written last.)
+            self.facts.retain(|(fact, _)| *fact != "cwd");
             let same = |name: &str| name.eq_ignore_ascii_case(&host);
             let here = host.is_empty()
                 || ["localhost", "127.0.0.1", "[::1]"].into_iter().any(same)

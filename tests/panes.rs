@@ -39,6 +39,15 @@ fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
+/// Gives a session's `main` workspace a layout, as an editor that saves in one step does: the
+/// file is whole at every moment (the viewer reads it, and writes it too, at any time).
+fn lay(session: &Path, text: &str) {
+    let layout = session.join("main/layout");
+    fs::create_dir_all(session.join("main")).unwrap();
+    fs::write(session.join("main/.layout.test"), text).unwrap();
+    fs::rename(session.join("main/.layout.test"), layout).unwrap();
+}
+
 /// Waits up to 20 seconds for something to become true.
 fn until(what: &str, ready: impl FnMut() -> bool) {
     until_or(what, String::new, ready);
@@ -297,7 +306,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(view.join("in"), "\x1b[<0;50;3M\r").unwrap();
     until("the click arrives translated", || read(&inner.0.join("main/two/screen")).contains("^[[<0;9;3M"));
     fs::write(view.join("in"), "\x03").unwrap();
-    fs::write(inner.0.join("main/layout"), "* one focus=one\n  two focus=two\n").unwrap();
+    lay(&inner.0, "* one focus=one\n  two focus=two\n");
     until("an edit of the file by hand is followed", || width("one") == Some("80x24".into()));
     // A folder with a screen of someone's own making: what it says reaches the terminal as text only.
     fs::create_dir(inner.0.join("main/odd")).unwrap();
@@ -307,7 +316,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(inner.0.join("main/odd/screen.styled"), "h\x1b[1mi\x1b]0;T\x07\x1b[?1049h ho-hum\n").unwrap();
     // The viewer gives the new folder a tab; a hand's edit comes after that, not across it.
     until("the viewer has placed the folder", || read(&inner.0.join("main/layout")).contains("odd"));
-    fs::write(inner.0.join("main/layout"), "* row(one odd) focus=one\n").unwrap();
+    lay(&inner.0, "* row(one odd) focus=one\n");
     until("its title is drawn with the codes as marks", || screen().contains(" x?]0;T??[2Jy\n"));
     // Its row is text and colours and nothing more, cut where it says the pane ends (5 columns).
     assert!(screen().contains("│hi?]0\n") || screen().contains("│hi?]0 "), "{}", screen());
@@ -412,7 +421,7 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     assert!(copied.unwrap().success());
     let raw = "stty raw -echo; printf '\\033[?1004h'; exec cat -vt";
     let (p1, p2) = (inner.start("p1", &["sh", "-c", raw]), inner.start("p2", &["sh", "-c", raw]));
-    fs::write(inner.0.join("main/layout"), "* p1 focus=p1\n  p2 focus=p2\n").unwrap();
+    lay(&inner.0, "* p1 focus=p1\n  p2 focus=p2\n");
     let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
     let path = format!("PATH={}", std::env::var("PATH").unwrap());
     let command = ["env", &path, &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
@@ -460,16 +469,26 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     // not when it stops, and not when its pane loses the keys.
     let asks_then_stops = "stty raw -echo; printf '\\033[?1004h'; until [ -e \"$FUXN_PANE/go\" ]; do sleep 0.05; done; printf '\\033[?1004l'; exec cat -vt";
     let quits = inner.start("quits", &["sh", "-c", asks_then_stops]);
-    until("it asks", || fact(&quits, "modes") == "focus");
-    fs::write(inner.0.join("main/layout"), "  p1 focus=p1\n  p2 focus=p2\n* quits focus=quits\n").unwrap();
+    until("it asks, and has its place", || {
+        fact(&quits, "modes") == "focus" && read(&inner.0.join("main/layout")).contains("quits")
+    });
+    lay(&inner.0, "  p1 focus=p1\n  p2 focus=p2\n* quits focus=quits\n");
     until("the second pane lost the keys", || shown(&p2).ends_with("^[[I^[[O"));
     std::thread::sleep(Duration::from_millis(300));
     fs::write(quits.join("go"), "").unwrap();
-    until("it was told it had the keys, and stops asking", || {
+    let seen = || {
+        format!(
+            ": it has {:?}, modes {:?}, layout {:?}",
+            shown(&quits),
+            fact(&quits, "modes"),
+            read(&inner.0.join("main/layout"))
+        )
+    };
+    until_or("it was told it had the keys, and stops asking", seen, || {
         shown(&quits) == "^[[I" && fact(&quits, "modes").is_empty()
     });
     std::thread::sleep(Duration::from_millis(300));
-    fs::write(inner.0.join("main/layout"), "  p1 focus=p1\n* p2 focus=p2\n  quits focus=quits\n").unwrap();
+    lay(&inner.0, "  p1 focus=p1\n* p2 focus=p2\n  quits focus=quits\n");
     until("the second pane has the keys again", || shown(&p2).ends_with("^[[O^[[I"));
     assert_eq!(shown(&quits), "^[[I");
     let bell = inner.start("bell", &["sh", "-c", "sleep 0.7; printf '\\007'; sleep 600"]);
@@ -490,7 +509,7 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     assert!(start.elapsed() > Duration::from_millis(900));
     // The find key lists the panes in a pane of its own, with whatever finder there is (a
     // numbered list if none): the pane chosen gets the keys.
-    fs::write(inner.0.join("main/layout"), "* p1 focus=p1\n  p2 focus=p2\n").unwrap();
+    lay(&inner.0, "* p1 focus=p1\n  p2 focus=p2\n");
     until("the first tab is shown", || shown(&p1).ends_with("^[[I"));
     fs::write(view.join("in"), "\x02fp").unwrap();
     until("the list is shown", || {
@@ -547,6 +566,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
         let mut script = Command::new(keys.join("C-b").join(name));
         script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("EDITOR", session.0.join("vim"));
         script.env("OUT", &out).env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main");
+        script.env_remove("FUXN_EDIT");
         assert!(script.env("FUXN_PANE", &pane).status().unwrap().success());
         until("the editor was given the file", || out.exists() && session.0.join("out.at").exists());
         (read(&out), read(&session.0.join("out.at")).trim().trim_start_matches('+').parse::<usize>().unwrap())
@@ -570,7 +590,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     // prompt that follows on the line. (And the editor is run as `FUXN_EDIT` says.)
     let quiet = "m() { printf '\\033]133;%s\\007' \"$1\"; }; \
         m A; printf '$ '; m B; echo printf; m C; printf 'e\\314\\201\\347\\225\\214'; m 'D;0'; \
-        m A; printf '$ '; m B; sleep 1; echo true; m C; m 'D;0'; m A; printf '$ '; m B; sleep 600";
+        m A; printf '$ '; m B; until [ -e \"$FUXN_PANE/go\" ]; do sleep 0.05; done; echo true; m C; m 'D;0'; m A; printf '$ '; m B; sleep 600";
     let pane = session.start("quiet", &["sh", "-c", quiet]);
     until("the first command is done", || read(&pane.join("marks")).lines().count() == 6);
     let run_in = |name: &str, pane: &Path, edit: String| {
@@ -585,6 +605,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     assert_eq!(run("S-c"), "");
     until("the editor was given the output", || read(&out) == "e\u{301}界\n");
     assert_eq!(read(&session.0.join("out.at")), "line-1\n");
+    fs::write(pane.join("go"), "").unwrap();
     until("the second command is done", || read(&pane.join("marks")).lines().count() == 10);
     assert_eq!(
         run("S-c"),
@@ -596,16 +617,15 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     let editor =
         || fs::read_dir(session.0.join("main")).unwrap().flatten().find(|pane| pane.path().join("text").exists());
     until("the editor has its file", || editor().is_some());
-    assert_eq!(run_in("x/y", &editor().unwrap().path(), String::new()), "");
-    let left = || fs::read_dir(&session.0).unwrap().flatten().filter(|file| file.file_name() != "out.at").count();
-    let before = left();
+    let closing = editor().unwrap().path();
+    assert_eq!(run_in("x/y", &closing, String::new()), "");
     until("the pane and its file are gone", || {
-        fs::read_dir(&session.0).unwrap().flatten().all(|file| {
-            let name = file.file_name().to_string_lossy().into_owned();
-            !name.starts_with(".text.") && !name.starts_with(".closed.")
-        })
+        !closing.exists()
+            && fs::read_dir(&session.0).unwrap().flatten().all(|file| {
+                let name = file.file_name().to_string_lossy().into_owned();
+                !name.starts_with(".text.") && !name.starts_with(".closed.")
+            })
     });
-    assert!(left() <= before);
 }
 
 #[test]
@@ -630,7 +650,7 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     let asks = inner.start("asks", &["sh", "-c", asking]);
     let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
     until("it is told they are in force", || shown(&asks) == "^[[?11u" && fact(&asks, "modes") == "keys11");
-    fs::write(inner.0.join("main/layout"), "* row(asks plain) focus=asks\n").unwrap();
+    lay(&inner.0, "* row(asks plain) focus=asks\n");
     until("the viewer asked its terminal for them", || fact(&view, "modes").contains("keys11"));
     // A key typed: its press and its release reach the program. One held down stays down for now.
     fs::write(view.join("in"), "\x1b[97;1:1u\x1b[97;1:3u\x1b[120;1:1u").unwrap();
@@ -764,7 +784,7 @@ fn a_link_a_program_makes_is_a_line_of_links_and_the_viewer_draws_it_inside_its_
     until("the link is the pane's", || read(&left.join("links")) == format!("{above}3 34 10 {address}\n"));
     assert!(!read(&left.join("screen.styled")).contains("\x1b]"));
     fs::create_dir_all(inner.0.join("main")).unwrap();
-    fs::write(inner.0.join("main/layout"), "* row(left right) focus=right\n").unwrap();
+    lay(&inner.0, "* row(left right) focus=right\n");
     // (Whatever ran before the viewer left a link open on its terminal: no cell of the viewer's is part of it.)
     let viewer = format!("printf '\\033]8;;http://open/\\033\\\\'; exec {} view", env!("CARGO_BIN_EXE_fux"));
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];

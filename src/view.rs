@@ -388,9 +388,12 @@ impl View {
                 // or 3 for good) or not set but known (2), which is then turned on.
                 // The window's own focus: for the pane that has the keys, if it asked to be told.
                 name if name.starts_with("focus:") => {
+                    // (To the pane that was told it has the keys, whichever the layout names by now.)
                     self.window = name == "focus:I";
-                    if self.told_focus.is_some() {
-                        self.typed.extend_from_slice(raw);
+                    if let Some(pane) = self.told_focus.clone() {
+                        self.send();
+                        let input = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(pane.join("in"));
+                        let _ = input.and_then(|mut input| input.write(raw));
                     }
                 }
                 name if name.starts_with("mode:2027;") && !self.joins => {
@@ -544,6 +547,8 @@ impl View {
     /// One key: a script if the key's file is one, a menu if it is a
     /// directory, and otherwise the key goes to the pane.
     fn key(&mut self, name: &str, raw: &[u8]) {
+        // (A key comes from a window that has the keys, whatever it last told of its focus.)
+        self.window = true;
         // A program may have asked to be told when keys are let go and held (the kitty
         // protocol's flag 2), and the terminal then tells the viewer too. A key belongs, until it
         // is let go, to whoever got its press, and only a press makes it someone's: a repeat or a
@@ -595,8 +600,13 @@ impl View {
             }
             _ if menu.is_none() => {
                 self.typed.extend_from_slice(raw);
+                // (Its release is the pane's only if the program there asks to be told of
+                // releases now: a key typed to one that does not is typed, and no more.)
                 let directory = self.session.join(&self.workspace).join(self.focus.as_deref().unwrap_or_default());
-                Went::Pane(directory.clone(), program(&directory).0)
+                match program(&directory) {
+                    (pid, true) if pid != 0 => Went::Pane(directory, pid),
+                    _ => Went::Viewer(None),
+                }
             }
             _ => Went::Viewer(None),
         };
@@ -613,7 +623,7 @@ impl View {
     /// it, if that pane's program is still the one that got it and still asks to be told of keys
     /// let go. Who a pane is, is read when it matters: nothing the viewer remembers of it is asked.
     fn pass(&mut self, directory: &Path, pid: u32, raw: &[u8]) {
-        if program(directory) == (pid, true) {
+        if pid != 0 && program(directory) == (pid, true) {
             self.send();
             let input = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(directory.join("in"));
             let _ = input.and_then(|mut input| input.write(raw));
@@ -820,7 +830,8 @@ impl View {
                     _ => 0,
                 };
             }
-            self.numbers = self.links.iter().zip(1..).map(|(address, number)| (address.clone(), number)).collect();
+            self.numbers =
+                self.links.iter().zip(1..=u16::MAX).map(|(address, number)| (address.clone(), number)).collect();
         }
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
@@ -1270,10 +1281,10 @@ fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Ce
 /// and held (flag 2 of the `keys` word in `modes`), as the files say now.
 fn program(directory: &Path) -> (u32, bool) {
     let fact = |name: &str| {
-        let mut text = String::new();
+        let mut bytes = Vec::new();
         let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(directory.join(name));
-        let _ = file.map(|file| file.take(256).read_to_string(&mut text));
-        text
+        let _ = file.map(|file| file.take(256).read_to_end(&mut bytes));
+        String::from_utf8_lossy(&bytes).into_owned()
     };
     let pid = fact("status").lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0);
     let keys = fact("modes").split_whitespace().find_map(|word| word.strip_prefix("keys")?.parse::<u8>().ok());

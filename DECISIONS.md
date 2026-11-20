@@ -924,6 +924,55 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
       are one replacement of `notice` (the number says how many); a cursor
       move away and back does not part a character from a mark printed
       after it; the files of a pane are read one after another (D59).
+- **D70. The fix check of D69 (1 Opus, 1 gpt-6.2-astra; one pass).** Opus
+  found no must-fix; astra twelve, by tracing. Changed:
+  - marks: a mark that waited at a row's end where a wide character later
+    left the last cell empty counted that cell (the cut landed inside the
+    character): a mark is never past its row's text. `ED 1` takes the mark
+    right after what it erased too (an output's end survived on new text).
+    A mark at a row's end stays on that side of the wrap through a resize
+    (it moved to the next row's start, and an inserted line then parted it
+    from its text). Marks on rows pushed off the bottom (insert line,
+    scroll down) are after what stays, not before it (both reviewers).
+  - the viewer: a window's focus report goes to the pane that was told it
+    has the keys, not to whichever the layout names by then; a key typed
+    means the window has the keys (the window could stay "without" for
+    good after a program stopped asking while it was away: Opus); a
+    release is owed only to a program that asked for releases when it got
+    the press (a letter typed to a shell was "let go" in the program
+    started there later), and never to a program whose number could not be
+    read; the link table's renumbering cannot overflow at 65,535.
+  - the holder: the directory is written whenever the program says it (the
+    file is the program's to write too, so "same as last time" is not
+    known); a missing file ends the holder only if the pane's `in` is gone
+    as well; a full reset does not start the 2026 count again.
+  - scripts: `.edit` puts the line in before the file (a path with `%l` in
+    it was changed); a helper's file that is in its pane's folder is not
+    removed by name when the helper ends (the folder goes; a moved pane's
+    old name may be another helper's by then); the picker compares names
+    as text (`010` and `10`).
+  - tests: the layout file is replaced in one step and a new pane's place
+    is waited for (the CI failure of this series' first push: a plain
+    write read half-way by the viewer, which then made a layout of its
+    own); the close test waits for the pane's folder to go; the fixture
+    that printed after a second waits for a file instead.
+  - Not done, and why: a wide character that a one-column screen turns
+    into a blank changes the bytes of its line, and a mark after it is
+    then two bytes late (a one-column pane is no place to read output);
+    the first megabytes of a line that never ends are cut from `history`
+    at a forced turn-over, and marks in that line then count from a start
+    that is gone; a last screen that cannot be written for two seconds is
+    given up with a line in `log`, and `fux wait` then prints what is on
+    disk (a FIFO planted as `state.new` blocks the holder, as it did
+    before this series); rows a resize set aside do not come back once
+    the row they went on in was erased (history's line was ended there);
+    lines dropped at the 4 MiB bound of unwritten history lose their
+    marks' numbers (D64); blank lines at the very end of an output with an
+    empty prompt after them are not in the copy; a notice written after
+    the viewer's first look that comes with a pane moved in is passed on
+    once; an editor whose path has a space cannot be named in `EDITOR` or
+    `FUXN_EDIT`; panes started before this series have `marks` in cells
+    (pre-release: start them again).
 
 ## The old fux3's bugs: which classes are gone
 

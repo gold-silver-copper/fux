@@ -308,6 +308,21 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
     assert_eq!(cleared.marks(), "0 0 output\n0 0 end 3\n0 0 prompt\n0 5 command\n");
     let reset = crate::tests::term(9, 3, &format!("x\r\n{c}old!{d}\x1bc{a}NEXT>"));
     assert_eq!(reset.marks(), "0 0 output\n0 0 end 3\n0 0 prompt\n");
+    // A mark is never inside a character: where a wide one, written later, left the row's last
+    // cell empty, a mark that waited there is before the character.
+    let padded = crate::tests::term(5, 2, &format!("{c}abcd {d}\x1b[1;5H界"));
+    assert_eq!((padded.plain().as_str(), padded.marks().as_str()), ("abcd\n界\n", "0 0 output\n0 4 end 3\n"));
+    // Erased up to the cursor, an output's end right after the erased part is erased with it.
+    let before = crate::tests::term(9, 3, &format!("{c}old!{d}\x1b[1;4H\x1b[1J\x1b[HNEW!"));
+    assert_eq!(before.marks(), "0 0 output\n0 0 end 3\n");
+    // A mark that waits at a row's end stays on that side of the wrap when only the height
+    // changes; and marks on rows pushed off the bottom are after what stays, in their order.
+    let mut waits = crate::tests::term(4, 3, &format!("{c}abcd{d}$"));
+    assert!(waits.resize(4, 4));
+    waits.feed(b"\x1b[2;1H\x1b[LNEW");
+    assert_eq!((waits.plain().as_str(), waits.marks().as_str()), ("abcd\nNEW\n$\n\n", "0 0 output\n0 4 end 3\n"));
+    let pushed = crate::tests::term(8, 3, &format!("x\r\np:{c}KEEP\r\nz{d}\x1b[H\x1b[L"));
+    assert_eq!(pushed.marks(), "2 2 output\n2 8 end 3\n");
     // Only a prompt says that what was marked below it is gone, and only the four letters mark.
     let up = crate::tests::term(
         10,

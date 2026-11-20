@@ -677,7 +677,7 @@ impl Term {
         for (y, cells) in main.iter().enumerate().take(row + 1).skip(first) {
             // (A row that goes on is in the text whole, but for the gap a wide character left.)
             let gap = cells.last().is_some_and(|cell| cell.style.flags & PAD != 0);
-            let upto = if y < row { cells.len() - usize::from(gap) } else { col };
+            let upto = if y < row { cells.len() } else { col }.min(cells.len() - usize::from(gap));
             bytes += cells.iter().take(upto).map(Cell::bytes).sum::<usize>();
         }
         (line, bytes)
@@ -705,6 +705,11 @@ impl Term {
                 left -= cell.bytes();
             }
             last = (y, cells.len());
+            // (At a row's end rather than at the start of the row the line goes on in: where
+            // the cursor waits to wrap, which is where a mark is put.)
+            if left == 0 {
+                break;
+            }
         }
         Some(last)
     }
@@ -885,7 +890,7 @@ impl Term {
         let bottom = self.bottom;
         self.move_marks(|_, row, col| match row {
             row if row < from || row > bottom => At::Screen(row, col),
-            row if row + n > bottom => At::Screen(bottom, 0),
+            row if row + n > bottom => At::Screen(bottom, usize::MAX),
             row => At::Screen(row + n, col),
         });
         let Some(region) = self.grid.get_mut(from..=self.bottom) else {
@@ -1425,6 +1430,7 @@ impl Term {
                     next_picture: self.next_picture,
                     history_open: self.history_open,
                     gone: self.gone,
+                    syncs: self.syncs,
                     marks: std::mem::take(&mut self.marks),
                     colours: std::mem::take(&mut self.colours),
                     keyboard: self.keyboard,
@@ -1755,7 +1761,10 @@ impl Term {
                 1 => {
                     (0..row).for_each(|r| self.erase(r, 0, self.cols));
                     self.erase(row, 0, col + 1);
-                    self.move_marks(|_, r, c| if (r, c) <= (row, col) { At::Screen(0, 0) } else { At::Screen(r, c) });
+                    // (The place right after what was erased is its end too.)
+                    self.move_marks(
+                        |_, r, c| if (r, c) <= (row, col + 1) { At::Screen(0, 0) } else { At::Screen(r, c) },
+                    );
                 }
                 2 => {
                     (0..self.rows).for_each(|r| self.erase(r, 0, self.cols));
