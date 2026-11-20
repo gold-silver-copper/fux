@@ -407,7 +407,9 @@ cargo build --release --manifest-path tools/referee/old/Cargo.toml &&
 tools/referee/referee.py -v CASE` (`--witness tmux` if you have only tmux).
 It needs `xterm`, `Xvfb` and `tmux`; its files go under `$TMPDIR` (or
 `$XDG_RUNTIME_DIR`), and Xvfb, as every X server, puts its socket in
-`/tmp/.X11-unix` under a number from 90 up.
+`/tmp/.X11-unix`: under a number from 90 to 99 that the referee asks for and
+that has no socket or lock there, never one the server picks (a server that
+takes a desktop's number removes the desktop's socket when it ends).
 
 <!-- referee:departures -->
 | Cases | Differs from | In | What fux does, and why |

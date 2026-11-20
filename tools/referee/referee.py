@@ -168,7 +168,8 @@ def tmux(case, _):
 
 class Display:
     """An X server that draws nowhere, started once for the xterm witness. Its number is one the
-    referee asked for, far from a desktop's, and is used only while this very server lives."""
+    referee asked for, from 90 to 99 and with no socket or lock of that number there, and is used
+    only while this very server lives. `-displayfd` only says when it listens."""
 
     number = None
     process = None
@@ -176,6 +177,10 @@ class Display:
     @classmethod
     def get(cls):
         for number in range(90, 100) if cls.process is None else ():
+            # Never a number an X server may be using or have used, never one it picks itself:
+            # a server that takes a desktop's number removes the desktop's socket when it ends.
+            if os.path.lexists(f"/tmp/.X11-unix/X{number}") or os.path.lexists(f"/tmp/.X{number}-lock"):
+                continue
             read, write = os.pipe()
             command = ["Xvfb", f":{number}", "-displayfd", str(write), "-screen", "0", "4096x4096x24", "-nolisten", "tcp"]
             process = subprocess.Popen(command, pass_fds=[write], stderr=subprocess.DEVNULL)
@@ -189,7 +194,7 @@ class Display:
             process.kill()
             process.wait()
         if cls.process is None or cls.process.poll() is not None:
-            raise SystemExit("no Xvfb of the referee's own is running: xterm is not started on any other display")
+            raise SystemExit("no Xvfb of the referee's own is running (numbers 90 to 99): xterm is started on no other display. --witness old,tmux runs without it")
         return f":{cls.number}"
 
     @classmethod
