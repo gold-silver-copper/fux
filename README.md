@@ -80,11 +80,11 @@ in `FUXN_WS`.
 | `state` | what became of the program: `running`, `hungup`, `exited CODE` or `killed SIGNAL` |
 | `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
 | `top` | how many lines of the pane's text are before the screen's first row, counted since the pane began: the number, from 0, of the line that row is part of. (After `history` has become `history.1` twice, the oldest of them are in neither file) |
-| `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. A row that goes on in the next keeps the blanks at its end in `screen`, so joining the two gives the line as it was printed: with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
-| `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE COL KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it, if the shell gave one from 0 to 255). LINE is counted from the pane's first line, as `top` is, a line being what was printed up to its line break however many rows it takes: line `top` is the screen's first, a smaller number is in `history`, in `history.1` or older than both. COL is how many cells into the line the mark is. A prompt drawn above marks (the screen was cleared and the prompt drawn again) brings them to its line, in their order, and so does clearing the screen: what they marked is gone. The alternate screen has no marks, and `marks` are the shell's while it is shown. Lines that an insert, a delete or a scroll of part of the screen moves keep their marks' numbers, which then name other text. The last thousand; empty when the shell marks nothing |
+| `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. A row that goes on in the next keeps the blanks at its end in `screen` and in `screen.styled`, so joining the two gives the line as it was printed (a line feed onto a row that goes on does not end the line above, as in tmux: a shell moves down a wrapped command with one. A program that writes two lines over a wrapped one without erasing it leaves them one line): with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
+| `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE AT KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it, if the shell gave one from 0 to 255). LINE is counted from the pane's first line, as `top` is, a line being what was printed up to its line break however many rows it takes: line `top` is the screen's first, a smaller number is in `history`, in `history.1` or older than both. AT is how many bytes of the line's text are before the mark, as `history` and `screen` (its rows joined by `wraps`) have that text: `cut -b` and `LC_ALL=C awk` cut there, and never inside a character. A mark stays on its text: when lines are scrolled, inserted, deleted or wrapped anew its numbers follow. What is erased takes its marks to where the erased part begins, in their order (so does a prompt drawn again higher up, for the marks after it): an output that was cleared away is a pair of marks at one place, and nothing. The alternate screen has no marks, and `marks` are the shell's while it is shown. The last thousand; empty when the shell marks nothing |
 | `links` | the links on the screen (a program makes one with OSC 8, as `ls --hyperlink` does), a line each: `LINE COL LEN ADDRESS`. LINE is the line's number as in `marks`, COL how many cells from the start of the line's first row on the screen the link begins (a whole row for each row the line has above it there), LEN how many cells it has, in reading order (a row counts as many cells as `size` says, also where a wide character that did not fit left its last cell empty, which `screen` does not show; a wide character is two cells); a link that goes over a line break is a line for each line. ADDRESS is printable ASCII without blanks, 2,048 bytes at most: anything else is no link, an address with a control byte in it among them. A cell keeps its link when it scrolls on the screen and when the text is wrapped anew, and loses it when it is erased or written over; text in `history` has none. At most a thousand different addresses at a time (one more is no link, with a line in `log`), and a list of 256 KiB at most (the runs past that are left out); empty when there are none. The files are read one after another: a reader that reads `links` of one moment and `screen` of the next has, until the next change, a link on the text that was there before |
 | `pictures` | a line `pic-N.sixel ROW COL COLS ROWS` for each picture on the screen: the file, where it is, its size in cells |
-| `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts |
+| `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts, where a line ends (a line that never ends is cut at 8 MiB). When what the last line went on in is erased from the screen, the line is ended in `history` too |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
@@ -116,7 +116,7 @@ past that the program waits, as on any slow terminal. The holder keeps at most 6
 reading; past that it stops reading `in`, and once the FIFO's own buffer
 (the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
 cells. A program that says it is in the middle of drawing (mode 2026) is not
-written out until it says it is done, or half a second has passed. A screen keeps at most 8 pictures of at most 4 MiB of data each; a ninth drops the
+written out until it says it is done, or half a second has passed since it first said so with no end (saying it again does not start the half second again). A screen keeps at most 8 pictures of at most 4 MiB of data each; a ninth drops the
 oldest, with a line in `log`. History that cannot be written (a full disk)
 is lost, with a line in `log`. When the program ends, at most 4 MiB of what
 it wrote last is still read; a `resize` first draws, at the old size, up to
@@ -340,9 +340,10 @@ The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `x` then `y` close the pane (remove its directory), `h j k l` focus,
 `o` next pane, `n` `b` next and previous tab, `d` detach, `c` the pane's text
 in the editor, `C` (Shift-c) the last command's output in the editor (from
-the cell it began at to the cell it ended at, so without the prompt that
+where it began to where it ended, so without the prompt that
 follows an output with no line break; it says so if the command printed
-nothing) and `p` the editor at the prompt before this one, or at the only one
+nothing or its output was cleared away; of a long output that Ctrl-L or `clear` cut in two,
+the part that had scrolled into history is all there is, and it opens that) and `p` the editor at the prompt before this one, or at the only one
 (both for a shell that marks its prompts, and neither while the pane shows a
 program's own screen: for bash from 4.4 on, `PS1='\[\e]133;A\a\]'$PS1'\[\e]133;B\a\]'; PS0='\e]133;C\a';
 PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'`, the `printf` put first in a
@@ -351,7 +352,7 @@ workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
 TERM to the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
 (`p` a pane, `t` a tab, `w` a workspace: a list in a pane of its own, chosen
-with fzf, sk or fzy if one is installed and by number or name if none is; the
+with fzf, sk or fzy if one is installed and by number or name if none is (a number is a line of the list first, and a name only if the list has no such line); the
 workspace that holds the viewer's own pane is not offered, since a viewer
 that shows itself draws itself without end). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
@@ -380,9 +381,14 @@ terminal goes on in a second column.
 There is no copy mode: `C-b c` puts the pane's older history, its history and
 its screen in one private file and opens it in `$EDITOR` (which may hold
 arguments, split at spaces), else `$PAGER`, else `less`, in a new tab. `vi`, `vim`, `nvim`,
-`nano`, `emacs` and `less` are opened at the file's end; any other editor
-gets the file alone, as not every editor reads `+LINE`. The file is removed
-when the editor ends. Its tab goes too (the
+`nano`, `emacs`, `less`, `hx` and `helix` are opened at the file's end (and by the prompt
+keys at their line); any other editor
+gets the file alone, as not every editor reads `+LINE`. An editor behind a
+launcher of another name is one of those: say how yours is run in
+`FUXN_EDIT`, a command in which `%f` is the file and `%l` the line, set where
+the viewer is started (`export FUXN_EDIT='hx %f:%l'`, or your launcher in
+`hx`'s place; `keys/.edit` reads it and is yours to change). The file is in the editor pane's own folder and is removed
+when the editor ends, or with the pane if that is closed first. Its tab goes too (the
 pane removes its own folder, as a shell pane does), and the
 tab shown before it is shown again (the one you came from, unless you looked
 at another meanwhile); an editor that failed first waits for Enter, so that
@@ -533,8 +539,8 @@ Differences are left as they are:
 
 `ls "$(fux dir)"` lists the workspaces (tmux's sessions); `fux view NAME`
 attaches to one and `C-b d` detaches; `C-b t n` starts the first shell in an
-empty one. Tabs are tmux's windows. There is no chooser and no "last tab"
-key: both would be scripts.
+empty one. Tabs are tmux's windows. The choosers are `C-b f p`, `f t` and
+`f w` (a pane, a tab, a workspace); there is no "last tab" key: it would be a script.
 
 ## Whose rules it follows
 
@@ -648,6 +654,12 @@ the addresses on the focused pane.
 
 ## Left out
 
+A shell's own redraw after its pane is made narrower: bash draws a long
+command you have not entered yet a second time below the first (it clears
+and redraws as if nothing had been wrapped anew; tmux shows the same). Ctrl-L
+or Enter tidies it.
+
+
 Of the mouse, the UTF-8 and urxvt report forms
 (1005, 1015: programs get the SGR form or the oldest one), dragging a line
 to resize, and any menu use;
@@ -657,8 +669,8 @@ taken, without effect) and asking for the cursor's (OSC 12 with `?`) and the que
 answered with no xterm version in it); the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
 more than ten
 parts in one character (a letter with twelve marks loses the last three,
-and the pane's `log` says so); choosers and prompts (renaming
-and picking from a list would be scripts); a copy mode (`C-b c` is the
+and the pane's `log` says so); prompts (renaming
+would be a script); a copy mode (`C-b c` is the
 editor on the pane's text); Windows. `clear` clears the screen, not the
 `history` file (`CSI 3 J` is ignored).
 

@@ -474,9 +474,13 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     assert_eq!(shown(&quits), "^[[I");
     let bell = inner.start("bell", &["sh", "-c", "sleep 0.7; printf '\\007'; sleep 600"]);
     until("the bell is a notice with no words", || read(&bell.join("notice")) == "1\n");
+    // A pane that is new, and has something to notice at once: that is new too.
+    inner.start("quick", &["sh", "-c", "printf '\\033]9;done at once\\007'; sleep 600"]);
+    until("the viewer passed it on", || read(&view.join("notice")).ends_with(" quick: done at once\n"));
     // A program in the middle of drawing (mode 2026) is not shown until it is done: half a
-    // frame is never seen. One that never says it is done is shown after half a second.
-    let draws = inner.start("draws", &["sh", "-c", "printf '\\033[?2026hhalf'; sleep 0.3; printf ' whole\\033[?2026l'; sleep 0.3; printf '\\033[?2026h stuck'; sleep 600"]);
+    // frame is never seen. One that never says it is done is shown after half a second, however
+    // often it says that it draws.
+    let draws = inner.start("draws", &["sh", "-c", "printf '\\033[?2026hhalf'; sleep 0.3; printf ' whole\\033[?2026l'; sleep 0.3; printf '\\033[?2026h stuck'; while sleep 0.1; do printf '\\033[?2026h'; done"]);
     let start = Instant::now();
     while !read(&draws.join("screen")).contains("stuck") {
         assert!(!read(&draws.join("screen")).starts_with("half\n"), "half a frame was shown");
@@ -562,27 +566,46 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     let (text, line) = key("c");
     assert_eq!((text.lines().count(), text.lines().last()), (line, Some("$")));
     // A command that prints nothing has no output to open, and the key says so; one whose
-    // output does not end its line has that output, without the prompt that follows on the line.
+    // output does not end its line has that output, every character of it whole, without the
+    // prompt that follows on the line. (And the editor is run as `FUXN_EDIT` says.)
     let quiet = "m() { printf '\\033]133;%s\\007' \"$1\"; }; \
-        m A; printf '$ '; m B; echo printf; m C; printf hello; m 'D;0'; \
+        m A; printf '$ '; m B; echo printf; m C; printf 'e\\314\\201\\347\\225\\214'; m 'D;0'; \
         m A; printf '$ '; m B; sleep 1; echo true; m C; m 'D;0'; m A; printf '$ '; m B; sleep 600";
     let pane = session.start("quiet", &["sh", "-c", quiet]);
     until("the first command is done", || read(&pane.join("marks")).lines().count() == 6);
-    let run = |name: &str| {
+    let run_in = |name: &str, pane: &Path, edit: String| {
         let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
         let mut script = Command::new(keys.join("C-b").join(name));
-        script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("EDITOR", session.0.join("vim"));
+        script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("FUXN_EDIT", edit);
         script.env("OUT", &out).env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main");
-        String::from_utf8(script.env("FUXN_PANE", &pane).output().unwrap().stdout).unwrap()
+        String::from_utf8(script.env("FUXN_PANE", pane).output().unwrap().stdout).unwrap()
     };
+    let run = |name: &str| run_in(name, &pane, format!("{} line-%l %f", session.0.join("vim").display()));
     let _ = fs::remove_file(&out);
     assert_eq!(run("S-c"), "");
-    until("the editor was given the output", || read(&out) == "hello\n");
+    until("the editor was given the output", || read(&out) == "e\u{301}界\n");
+    assert_eq!(read(&session.0.join("out.at")), "line-1\n");
     until("the second command is done", || read(&pane.join("marks")).lines().count() == 10);
     assert_eq!(
         run("S-c"),
         "nothing of the last command's output is here (it printed none, or the screen was cleared)\n"
     );
+    // An editor still open when its pane is closed with the close key: the file it was given is
+    // in the pane's own folder, and goes with it.
+    assert_eq!(run_in("c", &pane, "tail -f %f".into()), "");
+    let editor =
+        || fs::read_dir(session.0.join("main")).unwrap().flatten().find(|pane| pane.path().join("text").exists());
+    until("the editor has its file", || editor().is_some());
+    assert_eq!(run_in("x/y", &editor().unwrap().path(), String::new()), "");
+    let left = || fs::read_dir(&session.0).unwrap().flatten().filter(|file| file.file_name() != "out.at").count();
+    let before = left();
+    until("the pane and its file are gone", || {
+        fs::read_dir(&session.0).unwrap().flatten().all(|file| {
+            let name = file.file_name().to_string_lossy().into_owned();
+            !name.starts_with(".text.") && !name.starts_with(".closed.")
+        })
+    });
+    assert!(left() <= before);
 }
 
 #[test]

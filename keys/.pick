@@ -4,6 +4,8 @@
 # one is installed and from a numbered list if none is, and COMMAND is run
 # with its KEY as the last argument. The file is removed.
 list=$1; shift
+# (The list is in this pane's own folder from here on: it goes with the pane however that is closed.)
+mv "$list" "$FUXN_PANE/list" 2>/dev/null && list=$FUXN_PANE/list
 trap 'rm -f "$list"' EXIT
 finder=
 for f in fzf sk fzy; do command -v "$f" >/dev/null 2>&1 && { finder=$f; break; }; done
@@ -13,11 +15,13 @@ else
   awk '{ printf "%3d  %s\n", NR, $0 }' "$list"
   printf 'which (its number or its name)? '
   IFS= read -r n
+  # (A number is a line of the list; one that is no line's number is a name, as any other word is.)
   case $n in
     '') exit ;;
-    *[!0-9]*) line=$(awk -F '\t' -v name="$n" '$1 == name' "$list" | head -n 1) ;;
+    *[!0-9]*) line= ;;
     *) line=$(sed -n "${n}p" "$list") ;;
   esac
+  [ -n "$line" ] || line=$(name=$n awk -F '\t' '$1 == ENVIRON["name"]' "$list" | head -n 1)
 fi
 [ -n "$line" ] || exit
 "$@" "${line%%	*}"

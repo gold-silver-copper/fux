@@ -140,6 +140,11 @@ impl Cell {
     pub fn spill(&self) -> usize {
         spread(self.ch, &self.more).saturating_sub(width(self.ch, &self.more))
     }
+    /// How many bytes its text is.
+    fn bytes(&self) -> usize {
+        let more = self.more.iter().filter(|&&m| m != '\0').map(|m| m.len_utf8()).sum::<usize>();
+        if self.ch == '\0' { 0 } else { self.ch.len_utf8() + more }
+    }
     pub fn push_text(&self, out: &mut String) {
         if self.ch != '\0' {
             out.push(self.ch);
@@ -156,6 +161,15 @@ pub struct Picture {
     pub col: usize,
     pub cols: usize,
     pub rows: usize,
+}
+
+/// Where a mark is: on the main screen, a row and a column, for as long as its row is there
+/// (what is done to the screen's rows is done to it); a line of the pane's text and how many
+/// bytes into it, once the row has gone into history.
+#[derive(Clone, Copy, PartialEq)]
+enum At {
+    Screen(usize, usize),
+    Text(usize, usize),
 }
 
 /// What the emulator produces besides the screen, for the holder to take all at once.
@@ -264,18 +278,19 @@ pub struct Term {
     /// the link that what is printed now is part of.
     links: Vec<String>,
     link: u16,
-    /// The marks a shell put at its prompts (OSC 133): line, cells into it, kind, exit code. The last thousand.
-    marks: Vec<(usize, usize, &'static str, Option<u8>)>,
+    /// The marks a shell put at its prompts (OSC 133): where, kind, exit code. The last thousand.
+    marks: Vec<(At, &'static str, Option<u8>)>,
     /// (How many of them are in the rows the last resize sent there.)
     above_lines: usize,
-    /// The last row that went to history was not ended: its line goes on in the screen's first row.
-    history_open: bool,
+    /// The last row that went to history was not ended: its line goes on in the screen's first
+    /// row. With how many bytes of that line history has.
+    history_open: Option<usize>,
     /// The rows the last resize sent to history, while they are still its last lines: a later
     /// resize that has room takes them back. With them, how many bytes they are there and
     /// whether history's line was open before them.
     above: Vec<Vec<Cell>>,
     above_bytes: usize,
-    above_open: bool,
+    above_open: Option<usize>,
     /// A line feed is the text wrapping into the next row.
     wrapping: bool,
     joiner: Joiner,
@@ -361,10 +376,10 @@ impl Term {
             links: Vec::new(),
             link: 0,
             above_lines: 0,
-            history_open: false,
+            history_open: None,
             above: Vec::new(),
             above_bytes: 0,
-            above_open: false,
+            above_open: None,
             wrapping: false,
             joiner: Joiner::default(),
             state: State::Ground,
@@ -427,18 +442,21 @@ impl Term {
     /// A row's text as history keeps it. A row that goes on in the next is not ended, so history
     /// holds whole lines however they were wrapped; `open` says the line before was left so, and
     /// a row that does not go on from it ends it first (what it went on in was erased).
-    fn row_history(row: &[Cell], goes_on: bool, open: &mut bool, out: &mut String) {
-        if *open && !continues(row) {
+    fn row_history(row: &[Cell], goes_on: bool, open: &mut Option<usize>, out: &mut String) {
+        if open.is_some() && !continues(row) {
             out.push('\n');
+            *open = None;
         }
+        let start = out.len();
         if goes_on {
             let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
             row.iter().take(row.len() - usize::from(gap)).for_each(|cell| cell.push_text(out));
+            *open = Some(open.unwrap_or(0) + out.len() - start);
         } else {
             Term::row_text(row, out);
             out.push('\n');
+            *open = None;
         }
-        *open = goes_on;
     }
 
     /// For tests: the main screen's text as lines (rows that go on joined), all of it and the part
@@ -451,7 +469,7 @@ impl Term {
             let goes_on = main.get(y + 1).is_some_and(|next| continues(next));
             if y == row {
                 before.clone_from(&all);
-                if open && !continues(cells) {
+                if open.is_some() && !continues(cells) {
                     before.push('\n');
                 }
                 let upto = self.col + usize::from(self.wrap_pending);
@@ -495,10 +513,15 @@ impl Term {
     pub fn styled(&self) -> String {
         let mut out = String::new();
         let plain = Style::default();
-        for row in &self.grid {
+        for (y, row) in self.grid.iter().enumerate() {
             // (The marks are no looks.)
             let look = |cell: &Cell| Cell { style: Style { flags: cell.style.flags & !MARKS, ..cell.style }, ..*cell };
-            let used = row.iter().rposition(|c| look(c) != Cell::blank(plain)).map_or(0, |last| last + 1);
+            // (A row that goes on in the next keeps the blanks at its end, as in `plain`.)
+            let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
+            let used = match self.grid.get(y + 1).is_some_and(|next| continues(next)) {
+                true => row.len() - usize::from(gap),
+                false => row.iter().rposition(|c| look(c) != Cell::blank(plain)).map_or(0, |last| last + 1),
+            };
             let (mut style, mut joiner) = (plain, Joiner::default());
             for cell in row.iter().take(used).filter(|cell| cell.ch != '\0') {
                 if look(cell).style != style {
@@ -566,7 +589,7 @@ impl Term {
     /// and one more that history has the start of, if what it went on in was erased.
     pub fn top(&self) -> usize {
         let first = if self.alt { self.other.first() } else { self.grid.first() };
-        self.gone + usize::from(self.history_open && !first.is_some_and(|row| continues(row)))
+        self.gone + usize::from(self.history_open.is_some() && !first.is_some_and(|row| continues(row)))
     }
 
     /// The number of a link's address in the table, which keeps at most `LINKS_MAX`: when it is
@@ -637,19 +660,98 @@ impl Term {
         out
     }
 
-    /// The shell's marks, a line each: `LINE COL KIND`, and the command's exit code after `end`.
+    /// The main screen's rows, whichever screen is shown.
+    fn main(&self) -> &[Vec<Cell>] {
+        if self.alt { &self.other } else { &self.grid }
+    }
+
+    /// Where in the pane's text a place on the main screen is: its line's number, and how many
+    /// bytes of the line's text are before it (those history has of it among them).
+    fn text_place(&self, row: usize, col: usize) -> (usize, usize) {
+        let main = self.main();
+        let row = row.min(main.len().saturating_sub(1));
+        let goes_on = |y: usize| main.get(y).is_some_and(|cells| continues(cells));
+        let first = (1..=row).rev().find(|&y| !goes_on(y)).unwrap_or(0);
+        let line = self.top() + (1..=first).filter(|&y| !goes_on(y)).count();
+        let mut bytes = if first == 0 && goes_on(0) { self.history_open.unwrap_or(0) } else { 0 };
+        for (y, cells) in main.iter().enumerate().take(row + 1).skip(first) {
+            // (A row that goes on is in the text whole, but for the gap a wide character left.)
+            let gap = cells.last().is_some_and(|cell| cell.style.flags & PAD != 0);
+            let upto = if y < row { cells.len() - usize::from(gap) } else { col };
+            bytes += cells.iter().take(upto).map(Cell::bytes).sum::<usize>();
+        }
+        (line, bytes)
+    }
+
+    /// The place on the main screen of a line of the pane's text and so many bytes into it, if
+    /// that is on the screen (and not in history, or nowhere).
+    fn screen_place(&self, line: usize, bytes: usize) -> Option<(usize, usize)> {
+        let main = self.main();
+        let goes_on = |y: usize| main.get(y).is_some_and(|cells| continues(cells));
+        let mut number = self.top();
+        let first = (0..main.len()).find(|&y| {
+            number += usize::from(y > 0 && !goes_on(y));
+            number == line && (y > 0 || !goes_on(0) || self.history_open.is_some())
+        })?;
+        let before = if first == 0 && goes_on(0) { self.history_open.unwrap_or(0) } else { 0 };
+        let mut left = bytes.checked_sub(before)?;
+        let mut last = (first, 0);
+        for (y, cells) in main.iter().enumerate().skip(first).take_while(|(y, _)| *y == first || goes_on(*y)) {
+            let gap = goes_on(y + 1) && cells.last().is_some_and(|cell| cell.style.flags & PAD != 0);
+            for (x, cell) in cells.iter().enumerate().take(cells.len() - usize::from(gap)) {
+                if left < cell.bytes() || (left == 0 && cell.ch != '\0') {
+                    return Some((y, x));
+                }
+                left -= cell.bytes();
+            }
+            last = (y, cells.len());
+        }
+        Some(last)
+    }
+
+    /// The shell's marks, a line each: `LINE AT KIND`, and the command's exit code after `end`.
     pub fn marks(&self) -> String {
-        let line = |(line, col, kind, code): &(usize, usize, &str, Option<u8>)| match code {
-            Some(code) => format!("{line} {col} {kind} {code}\n"),
-            None => format!("{line} {col} {kind}\n"),
-        };
-        self.marks.iter().map(line).collect()
+        let mut out = String::new();
+        for (at, kind, code) in &self.marks {
+            let (line, bytes) = match *at {
+                At::Screen(row, col) => self.text_place(row, col),
+                At::Text(line, bytes) => (line, bytes),
+            };
+            let _ = write!(out, "{line} {bytes} {kind}");
+            let _ = writeln!(out, "{}", code.map_or(String::new(), |code| format!(" {code}")));
+        }
+        out
+    }
+
+    /// What is done to rows `from..=to` of the main screen is done to the marks on them: `to`
+    /// says where a mark at a row and column goes.
+    fn move_marks(&mut self, to: impl Fn(&Term, usize, usize) -> At) {
+        if self.alt {
+            return;
+        }
+        let moved = self.marks.iter().map(|mark| match mark.0 {
+            At::Screen(row, col) => to(self, row, col),
+            text => text,
+        });
+        let moved: Vec<At> = moved.collect();
+        self.marks.iter_mut().zip(moved).for_each(|(mark, at)| mark.0 = at);
+    }
+
+    /// When a line that history has the start of no longer goes on in the screen's first row
+    /// (that row was erased), history's line is ended there.
+    fn settle(&mut self) {
+        if self.history_open.is_some() && !self.main().first().is_some_and(|row| continues(row)) {
+            self.out.history.push('\n');
+            (self.gone, self.history_open) = (self.gone + 1, None);
+            // (What comes after them in history makes the rows a resize sent there stay there.)
+            self.above.clear();
+        }
     }
 
     /// The rows of the screen that go on from the row above (the text wrapped into them), as
     /// numbers from 0: what `plain` cannot say. The first row may go on from history's last line.
     pub fn wraps(&self) -> String {
-        let open = self.history_open && !self.alt;
+        let open = self.history_open.is_some() && !self.alt;
         let rows = self.grid.iter().enumerate().filter(|(y, row)| continues(row) && (*y > 0 || open));
         rows.map(|(y, _)| y.to_string()).collect::<Vec<String>>().join(" ")
     }
@@ -731,6 +833,18 @@ impl Term {
         let n = n.min(self.bottom + 1 - from.min(self.bottom));
         let blank = vec![self.blank(); self.cols];
         let kept = from == 0 && !self.alt;
+        // A mark on a row that goes into history is from then on a place in the text; on a row
+        // that is dropped, it is where the rows that stay begin; on a row that moves, it moves.
+        let bottom = self.bottom;
+        self.move_marks(|term, row, col| match row {
+            row if row < from || row > bottom => At::Screen(row, col),
+            row if row >= from + n => At::Screen(row - n, col),
+            _ if kept => {
+                let (line, bytes) = term.text_place(row, col);
+                At::Text(line, bytes)
+            }
+            _ => At::Screen(from, 0),
+        });
         if kept {
             // What comes after them in history makes the rows a resize sent there stay there.
             self.above.clear();
@@ -746,7 +860,7 @@ impl Term {
             if kept && self.out.history.len() < HISTORY_PENDING_MAX {
                 Term::row_history(row, goes_on, &mut self.history_open, &mut self.out.history);
             } else if kept {
-                (full, self.history_open) = (true, false);
+                (full, self.history_open) = (true, None);
             }
             row.clone_from(&blank);
         }
@@ -768,6 +882,12 @@ impl Term {
     fn scroll_down(&mut self, from: usize, n: usize) {
         let n = n.min(self.bottom + 1 - from.min(self.bottom));
         let blank = vec![self.blank(); self.cols];
+        let bottom = self.bottom;
+        self.move_marks(|_, row, col| match row {
+            row if row < from || row > bottom => At::Screen(row, col),
+            row if row + n > bottom => At::Screen(bottom, 0),
+            row => At::Screen(row + n, col),
+        });
         let Some(region) = self.grid.get_mut(from..=self.bottom) else {
             return;
         };
@@ -1002,6 +1122,16 @@ impl Term {
         if (cols, rows) == (self.cols, self.rows) {
             return true;
         }
+        // (The marks on the screen are places in the text while it is wrapped anew.)
+        let texts = self.marks.iter().map(|mark| match mark.0 {
+            At::Screen(row, col) => {
+                let (line, bytes) = self.text_place(row, col);
+                At::Text(line, bytes)
+            }
+            text => text,
+        });
+        let texts: Vec<At> = texts.collect();
+        self.marks.iter_mut().zip(texts).for_each(|(mark, at)| mark.0 = at);
         let blank = Cell::blank(Style::default());
         let (main, other) = if self.alt { (&self.other, &self.grid) } else { (&self.grid, &self.other) };
         let (main_pictures, other_pictures) =
@@ -1107,6 +1237,13 @@ impl Term {
         self.history_open = open;
         (self.cols, self.rows) = (cols, rows);
         (self.top, self.bottom) = (0, rows - 1);
+        self.settle();
+        let places = self.marks.iter().map(|mark| match mark.0 {
+            At::Text(line, bytes) => self.screen_place(line, bytes).map_or(mark.0, |(row, col)| At::Screen(row, col)),
+            screen => screen,
+        });
+        let places: Vec<At> = places.collect();
+        self.marks.iter_mut().zip(places).for_each(|(mark, at)| mark.0 = at);
         true
     }
 
@@ -1131,6 +1268,7 @@ impl Term {
         for &byte in bytes {
             self.byte(byte);
         }
+        self.settle();
     }
 
     fn byte(&mut self, byte: u8) {
@@ -1292,6 +1430,7 @@ impl Term {
                     keyboard: self.keyboard,
                     ..Term::new(self.cols, self.rows)
                 };
+                self.move_marks(|_, _, _| At::Screen(0, 0));
             }
             _ => {}
         }
@@ -1439,7 +1578,7 @@ impl Term {
             }
             // A shell marks its prompts: `133;A` where a prompt starts, `B` where the command
             // typed begins, `C` where its output begins, `D[;CODE]` where it ended. Each is kept
-            // as the number of the line the cursor is on, counted from the pane's first line.
+            // as the place the cursor is at.
             "133" if !self.alt => {
                 let kind = match rest.split(';').next() {
                     Some("A") => "prompt",
@@ -1449,25 +1588,21 @@ impl Term {
                     _ => return,
                 };
                 let code = rest.split(';').nth(1).filter(|_| kind == "end").and_then(|code| code.parse::<u8>().ok());
-                let below = self.grid.iter().take(self.row + 1).skip(1).filter(|row| !continues(row)).count();
-                let line = self.top() + below;
-                // How far into its line: a whole row for each row of the line above the cursor's.
-                let above = self.grid.iter().take(self.row + 1).rev().take_while(|row| continues(row)).count();
-                let col = above.min(self.row) * self.cols + self.col + usize::from(self.wrap_pending);
-                // A prompt above a mark says that mark's text is there no more (the prompt was
-                // drawn again higher up): the mark is kept, at this line, so that what was
-                // marked before is still in its order, with nothing between. Only a prompt says
-                // so: a program that moved up and ended has erased nothing.
+                let here = At::Screen(self.row, self.col + usize::from(self.wrap_pending));
+                // A prompt before a mark says that mark's text is there no more (the prompt was
+                // drawn again higher up): the mark is kept, at the prompt's place, so that what
+                // was marked before is still in its order, with nothing between. Only a prompt
+                // says so: a program that moved up and ended has erased nothing.
                 if kind == "prompt" {
-                    self.marks.iter_mut().filter(|mark| mark.0 > line).for_each(|mark| (mark.0, mark.1) = (line, 0));
+                    let (row, col) = (self.row, self.col + usize::from(self.wrap_pending));
+                    self.move_marks(|_, r, c| if (r, c) > (row, col) { here } else { At::Screen(r, c) });
+                    // (A prompt drawn again in its place is one prompt.)
+                    while self.marks.last().is_some_and(|last| last.0 == here && matches!(last.1, "prompt" | "command"))
+                    {
+                        self.marks.pop();
+                    }
                 }
-                // (A prompt drawn again in its place is one prompt.)
-                while kind == "prompt"
-                    && self.marks.last().is_some_and(|last| last.0 == line && matches!(last.2, "prompt" | "command"))
-                {
-                    self.marks.pop();
-                }
-                self.marks.push((line, col, kind, code));
+                self.marks.push((here, kind, code));
                 let extra = self.marks.len().saturating_sub(MARKS_MAX);
                 self.marks.drain(..extra);
             }
@@ -1609,23 +1744,25 @@ impl Term {
                 }
                 self.wrap_pending = false;
             }
+            // (The marks on what is erased are, in their order, where the erased part begins:
+            // what they marked is gone, and they mark nothing of what is written there next.)
             (0 | b'?', 0, b'J') => match self.arg(0, 0) {
                 0 => {
                     self.erase(row, col, self.cols);
                     (row + 1..self.rows).for_each(|r| self.erase(r, 0, self.cols));
+                    self.move_marks(|_, r, c| At::Screen(r.min(row), if (r, c) > (row, col) { col } else { c }));
                 }
                 1 => {
                     (0..row).for_each(|r| self.erase(r, 0, self.cols));
                     self.erase(row, 0, col + 1);
+                    self.move_marks(|_, r, c| if (r, c) <= (row, col) { At::Screen(0, 0) } else { At::Screen(r, c) });
                 }
                 2 => {
                     (0..self.rows).for_each(|r| self.erase(r, 0, self.cols));
-                    // A screen that was cleared is not given back what a resize took off its top,
-                    // and the marks that were on it are all at its first line now.
+                    self.move_marks(|_, _, _| At::Screen(0, 0));
+                    // A screen that was cleared is not given back what a resize took off its top.
                     if !self.alt {
                         self.above.clear();
-                        let top = self.top();
-                        self.marks.iter_mut().filter(|mark| mark.0 > top).for_each(|mark| (mark.0, mark.1) = (top, 0));
                     }
                 }
                 _ => {}
@@ -1835,7 +1972,7 @@ impl Term {
             7 => self.autowrap = on,
             25 => self.cursor_shown = on,
             1004 => self.focus = on,
-            2026 => (self.sync, self.syncs) = (on, self.syncs.wrapping_add(u32::from(on))),
+            2026 => (self.sync, self.syncs) = (on, self.syncs.wrapping_add(u32::from(on && !self.sync))),
             47 => self.set_alt(on, false),
             1047 => {
                 if !on && self.alt {

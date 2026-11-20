@@ -3,9 +3,9 @@
 # group: Panes
 # A shell that marks its prompts (OSC 133) says where a command's output starts
 # and ends: the pane's `marks` has, for each mark, the line's number counted from
-# the pane's first line and how many cells into the line it is. The text from the
-# last `output` mark to the `end` after it (or to the end of the text, if the
-# command still runs) is opened in the editor.
+# the pane's first line and how many bytes into the line's text it is. The text
+# from the last `output` mark to the `end` after it (or to the end of the text,
+# if the command still runs) is opened in the editor.
 [ -n "$FUXN_PANE" ] || exit 0
 [ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
 case " $(cat "$FUXN_PANE/modes" 2>/dev/null) " in *" alt "*) echo "this pane shows a program's own screen: the marks are of the shell's"; exit ;; esac
@@ -14,12 +14,12 @@ umask 077
 add=$("$FUXN_KEYS/.text" "$f") || { rm -f "$f"; exit; }
 set -- $(awk '$3 == "output" { from = $1 " " $2; to = "" } $3 == "end" && from != "" && to == "" { to = $1 " " $2 } END { print from, to }' "$FUXN_PANE/marks")
 [ -n "$1" ] || { rm -f "$f"; echo "no command has run here yet"; exit; }
-# From the output mark's line and cell to the end mark's line and cell (cells are
-# taken for characters: right unless the two lines have wide characters before
-# the marks). A line older than the files is the file's first.
+[ "$1 $2" != "$3 $4" ] || { rm -f "$f"; echo "nothing of the last command's output is here (it printed none, or the screen was cleared)"; exit; }
+# From the output mark's line and byte to the end mark's (bytes, so `LC_ALL=C`:
+# a mark is never inside a character). A line older than the files is the file's first.
 first=$(($1 + add)) last=${3:+$(($3 + add))}
 [ -z "$last" ] || [ "$last" -ge 1 ] || { rm -f "$f"; echo "the last command's output is no longer kept"; exit; }
-awk -v first="$first" -v from="$2" -v last="${last:-0}" -v to="${4:-0}" '
+LC_ALL=C awk -v first="$first" -v from="$2" -v last="${last:-0}" -v to="${4:-0}" '
   NR < first || (last && NR > last) { next }
   { line = $0 }
   last && NR == last { if (to == 0) next; line = substr(line, 1, to) }

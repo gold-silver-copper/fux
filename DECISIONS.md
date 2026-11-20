@@ -820,6 +820,110 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     holds 127 runs of the longest addresses, thousands of ordinary ones;
     a thousand addresses are "at a time" as the program prints, so text
     that is about to scroll still holds its own (the tester's count).
+- **D69. The second look at the night's work** (message 13: four reviewers by
+  area and two README-only testers on the whole of D59 to D68; one fix
+  series). Fixed by the rule behind each group; where an earlier entry says
+  otherwise, this one is the newer.
+  - **A mark is on its text** (their findings on marks after a clear, an
+    erased row, a wrap, history, wide characters). On the screen a mark is a
+    row and a column, and what is done to the rows is done to it: scrolled,
+    inserted, deleted, it moves with its row; what is erased (`ED`, a
+    reset) takes its marks to where the erased part begins, in their order;
+    wrapped anew, it is a place in the text for the while. When its row
+    goes into history it becomes a line's number and bytes into the line.
+    `marks` is `LINE AT KIND [EXIT]`, AT in bytes of the line's text, the
+    part history has of the line counted (history's unfinished line keeps
+    its length for that) and the cell a wide character left empty at a
+    row's end not. Bytes, not cells or characters: a script cuts text, and
+    `cut -b` and `LC_ALL=C awk` cut bytes the same on every system, never
+    inside a character, where cells need a table of widths no shell has.
+    The last-output key cuts so; equal marks are "nothing here". This
+    replaces D64's `COL` in cells and its clamping by line number, and
+    D62's "insert and delete move the text and not the mark". `links` stays
+    in cells: it is for drawing.
+  - **History's last line ends when what it went on in is erased**, then and
+    not at the next scroll; `screen.styled` keeps the blanks at a wrap as
+    `screen` does.
+  - **Mode 2026's half second** runs from the first begin with no end since
+    (D63 started it again at every begin, which a program that repeats the
+    begin could use to never be shown; two frames back to back still have
+    a clock each, since an end lies between them).
+  - **Everything a publish writes is a fact**: title, clipboard, directory
+    and notice go through the same written-if-changed list as the others,
+    so a failed replacement of one fails the round and is tried again, and
+    the same directory said twice is written once (a clipboard set again
+    is written again: the terminal's may be another's by now). The last
+    publish is tried for two seconds before `fux wait` can return.
+  - **A new pane's first notice is new** if it was written after the viewer
+    first looked at the workspace (by the file's time, with 20 ms for the
+    clock's grain); one that came with a pane moved in is old, as before.
+  - **A helper's file is in its pane's folder** (`.edit`'s text, `.pick`'s
+    list: moved there by the pane's own program), so it goes with the pane
+    however that is closed.
+  - **How the editor takes a line is a setting**: `FUXN_EDIT`, a command
+    with `%f` and `%l`, read by `keys/.edit`; `hx` and `helix` are known
+    (`file:line`). The owner's `EDITOR` is a launcher, which hides what it
+    runs; it was not run here, so whether it passes `file:line` on to
+    helix is his to try.
+  - **Keys held and let go** (the keyboard reviewer's four, each proved by
+    a failing test first; a helper's work): when the keys leave a pane
+    with a key of its still down, the viewer itself tells that pane the
+    key is let go, and what the terminal still tells of that key reaches
+    no pane. Not "keep the terminal's flags while a key is down": that
+    waits for a release that may never come (a modifier held as the window
+    manager takes the keys), and a plain shell would get escape codes
+    meanwhile. Who a pane's program is, and whether it asks for releases,
+    is read from its files when a key is passed, not remembered; only a
+    press makes a key someone's; a held key runs again the script its
+    press ran, in that menu only; a sign pressed as itself and let go by
+    its key's number is one key. This replaces D66's "wherever the keys
+    are by then" and its "pane whose press was seen before its pid was
+    known".
+  - **The viewer draws every cell as its own character** (links, a helper's
+    work): a cell that a terminal would join to the one before it is sent
+    with U+200B in front, as `screen.styled` has it, so two linked
+    characters side by side keep an address each and nothing joins the
+    line between tiles; any link is closed before the first frame; the
+    table of addresses keeps the ones on the terminal and numbers them
+    anew when it must (D67's "emptied and all drawn anew" is gone); the
+    copy has its extra column only where there is room (D68's 500th
+    column); the list of links ends at the first run that would pass the
+    bound.
+  - Small: the terminal's report modes are sent when they change, not with
+    every frame; focus reports follow the window (a pane is not told twice
+    that the keys left, nor that it has them while the window has not);
+    a number typed at a numbered list is a line first and a name only if
+    no line has it; the TERM key works on a program that was hung up and
+    still runs; OSC 7 with `127.0.0.1` or `[::1]` is this machine; the
+    keys test changes the layout by the command and says what the viewer
+    showed when it waits in vain (the CI failure seen once was not
+    reproduced; this removes the likelier cause).
+  - **Not fixed, and why** (each in the README where a user would look):
+    - bash draws a long pending command twice after its pane is made
+      narrower. Neither the reflow nor the size it is told is wrong: bash
+      clears and redraws counting rows up from the cursor as if nothing
+      had been wrapped anew. tmux 3.8 on the same steps shows the same two
+      copies whenever the prompt is not on the screen's first rows (there
+      its copies happen to be in history). Not wrapping the cursor's line
+      would lose text at a narrowing, which is worse.
+    - a line feed onto a row that goes on from the one above does not end
+      the line above (a program that writes `first\r\nLAST!` over a
+      wrapped line leaves one line). bash moves down inside a wrapped
+      command with a line feed, so ending the line there would break
+      every long command at the next resize; tmux keeps the wrap too.
+    - a long output cut in two by Ctrl-L or `clear` opens as the part that
+      had scrolled into history: that part is still the output's, and the
+      rest is gone from the pane.
+    - a line that never ends passes `history`'s 4 MiB and is cut at 8 MiB
+      (by design: a file ends where a line ends).
+    - a release the pane's full `in` refuses is lost; a key's sequence cut
+      by a read after 1,024 bytes is two keys; a held letter is typed into
+      a next pane that asked for no flags (the terminal sends plain
+      letters then, as without fux); more than 65,535 different addresses
+      on one terminal leave the surplus unlinked; ten notices in one write
+      are one replacement of `notice` (the number says how many); a cursor
+      move away and back does not part a character from a mark printed
+      after it; the files of a pane are read one after another (D59).
 
 ## The old fux3's bugs: which classes are gone
 

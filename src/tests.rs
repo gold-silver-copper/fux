@@ -287,6 +287,27 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
     // A mark in a line that wraps says how far into the line it is.
     let wrapped = crate::tests::term(4, 3, &format!("{a}$ {b}abcdef{c}"));
     assert_eq!(wrapped.marks(), "0 0 prompt\n0 2 command\n0 8 output\n");
+    // How far is counted in bytes of the line's text, those history has of it too, and not the
+    // cell a wide character left empty at a row's end: wrapped anew, a mark is where it was.
+    let mut gone = crate::tests::term(5, 2, &format!("{a}$ {b}x\r\n{c}012345678901234567890{d}"));
+    assert!(gone.marks().ends_with("1 0 output\n1 21 end 3\n"), "{}", gone.marks());
+    let mut wide = crate::tests::term(5, 3, &format!("{c}1234界{d}$"));
+    assert_eq!((wide.marks().as_str(), wide.wraps().as_str()), ("0 0 output\n0 7 end 3\n", "1"));
+    assert!(wide.resize(12, 3) && gone.resize(30, 4) && gone.resize(5, 2));
+    assert_eq!((wide.marks().as_str(), wide.wraps().as_str()), ("0 0 output\n0 7 end 3\n", ""));
+    assert!(gone.marks().ends_with("1 0 output\n1 21 end 3\n"), "{}", gone.marks());
+    // A mark is on its text: when a line above it becomes two (the first row of a wrapped line
+    // is erased), the mark's line is one further on, as its text is.
+    let mut split = crate::tests::term(6, 6, &format!("abcdefghij\r\n{a}$ {b}go\r\n{c}RESULT\r\n{d}"));
+    assert_eq!(split.marks(), "1 0 prompt\n1 2 command\n2 0 output\n3 0 end 3\n");
+    split.feed(b"\x1b7\x1b[1;1H\x1b[2K\x1b8");
+    assert_eq!(split.marks(), "2 0 prompt\n2 2 command\n3 0 output\n4 0 end 3\n");
+    // What is erased takes its marks to where the erased part begins, in their order: an output
+    // on the first row, the screen cleared, and the next prompt is no part of that output.
+    let cleared = crate::tests::term(9, 3, &format!("{c}old!{d}\x1b[H\x1b[2J{a}NEXT>{b}"));
+    assert_eq!(cleared.marks(), "0 0 output\n0 0 end 3\n0 0 prompt\n0 5 command\n");
+    let reset = crate::tests::term(9, 3, &format!("x\r\n{c}old!{d}\x1bc{a}NEXT>"));
+    assert_eq!(reset.marks(), "0 0 output\n0 0 end 3\n0 0 prompt\n");
     // Only a prompt says that what was marked below it is gone, and only the four letters mark.
     let up = crate::tests::term(
         10,
@@ -803,12 +824,14 @@ fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_
     flags.keyboard = crate::term::KEYS;
     flags.feed(b"\x1b[=65536u\x1b[?u\x1b[=65535u\x1b[?u");
     assert_eq!(flags.take().reply, b"\x1b[?0u\x1b[?31u");
-    // A row that goes on in the next keeps the blank at its end; when what a line of history
-    // went on in is erased, the screen's first row is the next line, and not listed.
+    // A row that goes on in the next keeps the blank at its end, in both screens; when what a
+    // line of history went on in is erased, history's line ends there and then, and the screen's
+    // first row is the next line, and not listed.
+    assert_eq!(crate::tests::term(5, 2, "abc  DEF").styled(), "abc  \nDEF\n");
     let mut spaced = crate::tests::term(3, 2, "ab cd");
     assert_eq!((spaced.plain().as_str(), spaced.wraps().as_str()), ("ab \ncd\n", "1"));
     spaced.feed(b"efg\x1b[1;1H\x1b[2KXYZ");
-    assert_eq!((spaced.take().history.as_str(), spaced.plain().as_str()), ("ab ", "XYZ\nfg\n"));
+    assert_eq!((spaced.take().history.as_str(), spaced.plain().as_str()), ("ab \n", "XYZ\nfg\n"));
     assert_eq!((spaced.wraps().as_str(), spaced.top()), ("", 1));
 }
 

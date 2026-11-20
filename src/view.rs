@@ -117,6 +117,10 @@ struct View {
     /// The pictures on the terminal now: file, column, row, columns, rows, and whose holder's.
     drawn: Vec<Drawn>,
     cursor: String,
+    /// What the terminal was last asked to report (the mouse, its window's focus).
+    modes: String,
+    /// Whether the terminal's window has the keys, as far as it told.
+    window: bool,
     /// The pane that had the focus at the last look, and its `clipboard` file as it was then.
     copied: Option<(PathBuf, Stamp)>,
     /// The title this viewer gave its own terminal, if any.
@@ -201,6 +205,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         written: Vec::new(),
         drawn: Vec::new(),
         cursor: String::new(),
+        modes: String::new(),
+        window: true,
         title: None,
         copied: None,
         carry: Vec::new(),
@@ -382,6 +388,7 @@ impl View {
                 // or 3 for good) or not set but known (2), which is then turned on.
                 // The window's own focus: for the pane that has the keys, if it asked to be told.
                 name if name.starts_with("focus:") => {
+                    self.window = name == "focus:I";
                     if self.told_focus.is_some() {
                         self.typed.extend_from_slice(raw);
                     }
@@ -469,7 +476,10 @@ impl View {
                 let _ = file.map(|file| file.take(256).read_to_string(&mut modes));
                 modes.split_whitespace().any(|word| word == "focus")
             };
-            for (pane, report) in [(self.told_focus.take().filter(asks), "\x1b[O"), (now.clone(), "\x1b[I")] {
+            // (While the window itself is without the keys, the one was told so already and the
+            // other is told when the window has them again.)
+            let told = self.told_focus.take().filter(|pane| self.window && asks(pane));
+            for (pane, report) in [(told, "\x1b[O"), (now.clone().filter(|_| self.window), "\x1b[I")] {
                 let input =
                     pane.map(|pane| OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(pane.join("in")));
                 let _ = input.map(|input| input.and_then(|mut input| input.write_all(report.as_bytes())));
@@ -494,8 +504,14 @@ impl View {
         if self.notices.len() > 4000 {
             self.notices.clear();
         }
-        // (A workspace looked at for the first time: what is there is old, and is not rung.)
-        let first = self.notices.insert(key(""), (None, false)).is_none();
+        // (A workspace looked at for the first time: what is there is old, and is not rung. When
+        // that was is kept, as a file's time is.)
+        // (A file's time may be some milliseconds behind the clock's.)
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        let now = now.saturating_sub(Duration::from_millis(20));
+        let started = (0, now.as_secs() as i64, i64::from(now.subsec_nanos()));
+        let first = !self.notices.contains_key(&key(""));
+        let since = self.notices.entry(key("")).or_insert((Some(started), false)).0;
         for name in layout.tabs.iter().flat_map(|tab| tab.panes()) {
             let file = directory.join(name).join("notice");
             let stamp: Stamp =
@@ -504,8 +520,10 @@ impl View {
             if known.is_some_and(|(was, _)| was == stamp) {
                 continue;
             }
-            // (One that came with its pane is old too.)
-            let new = stamp.is_some() && !first && known.is_some();
+            // (One that came with its pane is old too, if it was written before the workspace
+            // was first looked at: a pane moved here. A new pane's first is new.)
+            let after = stamp.zip(since).is_some_and(|(stamp, since)| (stamp.1, stamp.2) > (since.1, since.2));
+            let new = stamp.is_some() && !first && (known.is_some() || after);
             self.notices.insert(key(name), (stamp, stamp.is_some() && self.focus.as_deref() != Some(name)));
             if new {
                 let mut text = Vec::new();
@@ -809,7 +827,7 @@ impl View {
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
         let mut live = 0;
         let mut title = None;
-        let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l");
+        let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
         let mut wants_focus = None;
         let mut keys = 0;
         for (name, body) in &tiles {
@@ -934,7 +952,6 @@ impl View {
                 }
                 // And is told when this terminal's window gains and loses the keys, if it asked.
                 if pane.term.focus && live {
-                    modes.push_str("\x1b[?1004h");
                     wants_focus = Some(pane_directory.clone());
                 }
                 // And tells keys as that program asked (the kitty protocol), if the terminal can.
@@ -1079,7 +1096,7 @@ impl View {
         if cursor.is_empty() {
             cursor.push_str("\x1b[?25l");
         }
-        cursor.push_str(&modes);
+        modes.push_str(if wants_focus.is_some() { "\x1b[?1004h" } else { "\x1b[?1004l" });
         self.tell(wants_focus);
         self.leave(self.focus.as_ref().map(|name| directory.join(name)).as_deref());
         if self.keyboard != 0 {
@@ -1202,11 +1219,14 @@ impl View {
             out.push_str(&title.as_ref().map_or("\x1b[23;2t\x1b[22;2t".into(), |title| format!("\x1b]2;{title}\x07")));
             self.title = title;
         }
-        if out.is_empty() && cursor == self.cursor {
+        if out.is_empty() && cursor == self.cursor && modes == self.modes {
             return Ok(false);
         }
-        self.cursor = cursor;
-        self.tty.write_all(format!("\x1b[?2026h\x1b[?25l{out}\x1b[m{}\x1b[?2026l", self.cursor).as_bytes())?;
+        // (What the terminal is to report is said when it changes, not with every frame: a
+        // terminal may answer the asking itself.)
+        let set = if modes == self.modes { "" } else { modes.as_str() };
+        self.tty.write_all(format!("\x1b[?2026h\x1b[?25l{out}\x1b[m{cursor}{set}\x1b[?2026l").as_bytes())?;
+        (self.cursor, self.modes) = (cursor, modes);
         Ok(true)
     }
 }

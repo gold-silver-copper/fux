@@ -49,7 +49,10 @@ struct Holder {
     _slave: File,
     pid: u32,
     /// The facts as they were written last, each in its file: one is written again only when it changes.
-    facts: Vec<(&'static str, String)>,
+    facts: Vec<(&'static str, Option<Vec<u8>>)>,
+    /// What the program said last of its title, clipboard, directory and what to notice: facts
+    /// as the others, each in its file, or (the directory of another machine) no file.
+    said: Vec<(&'static str, Option<Vec<u8>>)>,
     /// What the `status` file says.
     status: String,
     /// The last round of writing failed.
@@ -73,8 +76,6 @@ struct Holder {
     told: (Option<Stamp>, Option<Stamp>),
     /// The `history` file ends in the middle of a line.
     history_open: bool,
-    /// The title in the `title` file.
-    title: String,
     logged: usize,
 }
 
@@ -165,6 +166,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         _slave: slave,
         pid,
         facts: Vec::new(),
+        said: Vec::new(),
         status: String::new(),
         failing: false,
         noticed: 0,
@@ -178,7 +180,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         session,
         told: (None, None),
         history_open: false,
-        title: String::new(),
         logged: 0,
     };
     for name in odd {
@@ -221,7 +222,7 @@ impl Holder {
             let since = published.elapsed();
             // A program in the middle of drawing (mode 2026) is not shown until it says it is done,
             // or half a second has gone by: one that never says so cannot freeze its pane.
-            // (Each time it says so anew, the half second starts anew.)
+            // (The half second runs from the first time it said so with no end since.)
             let again = std::mem::replace(&mut self.syncs, self.term.syncs) != self.term.syncs;
             self.drawing = match self.drawing {
                 _ if !self.term.sync => None,
@@ -298,8 +299,15 @@ impl Holder {
                     }
                 }
                 (self.master, self.state) = (None, state);
-                if let Err(e) = self.publish() {
-                    self.log(&format!("cannot write the last screen (the program {}): {e}", self.state));
+                // The last screen is tried for two seconds, so that who waits for the pane's end
+                // finds all of it; what cannot be written by then is said in the log.
+                let tried = Instant::now();
+                while let Err(e) = self.publish() {
+                    if tried.elapsed() > Duration::from_secs(2) || e.kind() == ErrorKind::NotFound {
+                        self.log(&format!("cannot write the last screen (the program {}): {e}", self.state));
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
                 }
                 return Ok(());
             }
@@ -520,7 +528,7 @@ impl Holder {
             |p: &crate::term::Picture| format!("pic-{}.sixel {} {} {} {}\n", p.id, p.row, p.col, p.cols, p.rows);
         let term = &mut self.term;
         let shown = if term.cursor_shown { "shown" } else { "hidden" };
-        let facts = [
+        let mut facts: Vec<(&'static str, Option<Vec<u8>>)> = [
             ("top", format!("{}\n", term.top())),
             ("wraps", format!("{}\n", term.wraps())),
             ("marks", term.marks()),
@@ -531,37 +539,30 @@ impl Holder {
             ("modes", format!("{}\n", term.words())),
             ("state", format!("{}\n", self.state)),
             ("status", self.status.clone()),
-        ];
-        for (name, text) in facts {
-            if !self.facts.iter().any(|(fact, was)| *fact == name && *was == text) {
-                replace(name, text.as_bytes())?;
-                self.facts.retain(|(fact, _)| *fact != name);
-                self.facts.push((name, text));
-            }
-        }
-        // The title is one line, rewritten only when it changes; the clipboard is the bytes the program set.
-        if let Some(title) = self.pending.title.take().filter(|title| *title != self.title) {
-            match replace("title", format!("{title}\n").as_bytes()) {
-                Ok(()) => self.title = title,
-                Err(e) => self.log(&format!("the title could not be written: {e}")),
-            }
-        }
-        if let Some(Err(e)) = self.pending.clipboard.take().map(|bytes| replace("clipboard", &bytes)) {
-            self.log(&format!("the clipboard could not be written: {e}"));
+        ]
+        .into_iter()
+        .map(|(name, text)| (name, Some(text.into_bytes())))
+        .collect();
+        // What the program said: the title is one line; the clipboard is the bytes it set, and
+        // set again is written again (what is on the terminal's clipboard may be another's by now).
+        let mut said = Vec::new();
+        said.extend(self.pending.title.take().map(|title| ("title", Some(format!("{title}\n").into_bytes()))));
+        if let Some(bytes) = self.pending.clipboard.take() {
+            self.facts.retain(|(fact, _)| *fact != "clipboard");
+            said.push(("clipboard", Some(bytes)));
         }
         // The directory the program says it is in: kept if it is one of this machine (no host
-        // named, or this one's name), and forgotten if it is another machine's (a shell at the
-        // far end of ssh): a path of there means nothing here.
+        // named, or this one's name or address), and forgotten if it is another machine's (a
+        // shell at the far end of ssh): a path of there means nothing here.
         if let Some((host, path)) = self.pending.cwd.take() {
             let same = |name: &str| name.eq_ignore_ascii_case(&host);
-            let here = host.is_empty() || same("localhost") || sys::host().is_some_and(|name| same(&name));
-            let written = match (here, path.starts_with('/')) {
-                (true, true) => replace("cwd", format!("{path}\n").as_bytes()),
-                (true, false) => Ok(()),
-                (false, _) => fs::remove_file("cwd"),
-            };
-            if let Err(e) = written.or_else(|e| if e.kind() == ErrorKind::NotFound { Ok(()) } else { Err(e) }) {
-                self.log(&format!("the directory could not be written: {e}"));
+            let here = host.is_empty()
+                || ["localhost", "127.0.0.1", "[::1]"].into_iter().any(same)
+                || sys::host().is_some_and(|name| same(&name));
+            match (here, path.starts_with('/')) {
+                (true, true) => said.push(("cwd", Some(format!("{path}\n").into_bytes()))),
+                (true, false) => {}
+                (false, _) => said.push(("cwd", None)),
             }
         }
         // What the program wanted noticed last: a number that grows with each one (so that the
@@ -569,8 +570,23 @@ impl Holder {
         if let Some(text) = self.pending.notice.take() {
             self.noticed = self.noticed.wrapping_add(std::mem::take(&mut self.pending.notices).max(1));
             let line = format!("{} {text}", self.noticed).trim_end().to_string() + "\n";
-            if let Err(e) = replace("notice", line.as_bytes()) {
-                self.log(&format!("a notice could not be written: {e}"));
+            said.push(("notice", Some(line.into_bytes())));
+        }
+        for (name, bytes) in said {
+            self.said.retain(|(fact, _)| *fact != name);
+            self.said.push((name, bytes));
+        }
+        facts.extend(self.said.iter().cloned());
+        // (One that cannot be written fails the round, which is tried again: the newest of each.)
+        for (name, bytes) in facts {
+            if !self.facts.iter().any(|(fact, was)| *fact == name && *was == bytes) {
+                match &bytes {
+                    Some(bytes) => replace(name, bytes)?,
+                    None => fs::remove_file(name)
+                        .or_else(|e| if e.kind() == ErrorKind::NotFound { Ok(()) } else { Err(e) })?,
+                }
+                self.facts.retain(|(fact, _)| *fact != name);
+                self.facts.push((name, bytes));
             }
         }
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
