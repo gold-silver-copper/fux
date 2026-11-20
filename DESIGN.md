@@ -28,12 +28,12 @@ fux3 is a view over the filesystem and pane daemons. Everything else follows.
 
 | File | Lines | What |
 |---|---|---|
-| `src/sys.rs` | ~190 | the system calls std lacks, declared by hand: a pty, `poll`, `mkfifo`, a new session with a controlling terminal, window size, raw mode. The only `unsafe` |
-| `src/term.rs`, `width.rs` | ~1,130 | the terminal emulator: parser, grid, colours, wide and combining characters, scroll regions, the alternate screen, queries, sixel taken whole |
-| `src/holder.rs` | ~350 | one pane: the pty, the emulator, the files, the two FIFOs, one `poll` loop |
-| `src/layout.rs` | ~470 | the layout file: read, settle against the folders, edit, place tiles |
-| `src/view.rs`, `keys.rs` | ~670 | the viewer: draw what changed, name keys, run scripts |
-| `src/main.rs` | ~200 | the command line: `dir`, `start`, `wait`, `view`, `layout` |
+| `src/sys.rs` | ~200 | the system calls std lacks, declared by hand: a pty, `poll`, `mkfifo`, a new session with a controlling terminal, window size, raw mode. The only `unsafe` |
+| `src/term.rs`, `width.rs` | ~1,300 | the terminal emulator: parser, grid, colours, wide and combining characters, scroll regions, the alternate screen, queries, sixel taken whole |
+| `src/holder.rs` | ~440 | one pane: the pty, the emulator, the files, the two FIFOs, one `poll` loop |
+| `src/layout.rs` | ~510 | the layout file: read, settle against the folders, edit, place tiles |
+| `src/view.rs`, `keys.rs` | ~900 | the viewer: draw what changed, name keys, run scripts, pass the mouse on |
+| `src/main.rs` | ~230 | the command line: `dir`, `start`, `wait`, `view`, `layout` |
 | `keys/` | ~170 | the default key scripts, plain `sh` |
 
 ## How it works

@@ -12,6 +12,7 @@ use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::os::unix::process::ExitStatusExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -71,8 +72,9 @@ fn fifo(name: &str) -> io::Result<(File, File)> {
 }
 
 /// Replaces a file in one step, so a reader sees the old one or the new one.
-pub fn replace(name: &str, content: &[u8]) -> io::Result<()> {
-    let new = format!("{name}.new");
+pub fn replace(name: impl AsRef<Path>, content: &[u8]) -> io::Result<()> {
+    let mut new = name.as_ref().as_os_str().to_owned();
+    new.push(".new");
     fs::write(&new, content)?;
     fs::rename(&new, name)
 }
@@ -83,14 +85,16 @@ pub fn replace(name: &str, content: &[u8]) -> io::Result<()> {
 pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // The first size is COLUMNS x LINES when the starter set them (the viewer
     // does, for key scripts), and 80x24 otherwise. `resize` changes it later.
-    let mut odd = None;
-    let mut number = |name: &'static str, or: u16| match std::env::var(name).ok().map(|n| n.parse::<u16>()) {
-        Some(Ok(n)) if (1..=SIZE_MAX).contains(&usize::from(n)) => n,
-        Some(_) => {
-            odd = Some(name);
-            or
-        }
+    let mut odd = Vec::new();
+    let mut number = |name: &'static str, or: u16| match std::env::var_os(name) {
         None => or,
+        Some(value) => match value.to_str().and_then(|n| n.parse::<u16>().ok()) {
+            Some(n) if (1..=SIZE_MAX).contains(&usize::from(n)) => n,
+            _ => {
+                odd.push(name);
+                or
+            }
+        },
     };
     let (cols, rows) = (number("COLUMNS", 80), number("LINES", 24));
     let size = Winsize { cols, rows, xpixel: cols * 10, ypixel: rows * 20 };
@@ -122,7 +126,9 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         let _ = end_writer.write_all(state.as_bytes());
     });
     waiter.map_err(|e| format!("cannot start a thread: {e}"))?;
+    // The command as `status` shows it: without control characters, and its first 4,096 characters.
     let command = plain(&command.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
+    let command: String = command.chars().take(4096).collect();
     let mut holder = Holder {
         term: Term::new(usize::from(cols), usize::from(rows)),
         master: Some(master),
@@ -137,7 +143,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         told: String::new(),
         logged: 0,
     };
-    if let Some(name) = odd {
+    for name in odd {
         holder.log(&format!("{name} is not a number from 1 to {SIZE_MAX}: the pane starts at {cols}x{rows}"));
     }
     // The FIFOs are there for as long as this function runs, and not after.
@@ -146,20 +152,23 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     let result = result.and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended));
     let _ = fs::remove_file("in");
     let _ = fs::remove_file("ctl");
-    result
+    // A directory that is gone is how a pane is closed: no failure, and nothing to say.
+    result.or_else(|why| if why == GONE { Ok(()) } else { Err(why) })
 }
 
 impl Holder {
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
-        // What an earlier holder of this pane left is this one's to replace.
+        self.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
+        // What an earlier holder of this pane left goes now that this one's
+        // screen has replaced the one that named it: its history and its pictures.
         let _ = fs::remove_file("history.1");
         File::create("history").map_err(|e| format!("cannot make history: {e}"))?;
         for old in fs::read_dir(".").into_iter().flatten().flatten().map(|entry| entry.file_name()) {
-            if old.to_str().is_some_and(|name| name.starts_with("pic-") && name.ends_with(".sixel")) {
+            let number = old.to_str().and_then(|name| name.strip_prefix("pic-")?.strip_suffix(".sixel"));
+            if number.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
                 let _ = fs::remove_file(old);
             }
         }
-        self.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
 
         let mut buffer = vec![0u8; 64 << 10];
         let (mut dirty, mut published, mut looked, mut budget) = (false, Instant::now(), Instant::now(), READ_BUDGET);
@@ -190,7 +199,8 @@ impl Holder {
                 wanted.push((master.as_raw_fd(), read | write));
                 wanted.push((input.as_raw_fd(), if self.input.len() < INPUT_MAX { sys::POLLIN } else { 0 }));
             }
-            let wait = if dirty || budget == 0 { PUBLISH_EVERY.saturating_sub(since) } else { LOOK_EVERY };
+            let look = LOOK_EVERY.saturating_sub(looked.elapsed());
+            let wait = if dirty || budget == 0 { PUBLISH_EVERY.saturating_sub(since) } else { look };
             let events = sys::wait(&wanted, wait.as_millis() as i32 + 1).map_err(|e| format!("cannot wait: {e}"))?;
             let event = |i: usize| events.get(i).copied().unwrap_or(0);
             if event(1) != 0 {
@@ -225,9 +235,11 @@ impl Holder {
                 }
                 (self.master, self.state) = (None, state);
                 // The end is in `status` even when the last screen cannot be written.
-                if let Err(e) = self.publish().and(self.tell()) {
+                if let Err(e) = self.publish() {
                     self.log(&format!("cannot write the last screen: {e}"));
-                    let _ = self.tell();
+                }
+                if let Err(e) = self.tell() {
+                    self.log(&format!("cannot write status (the program {}): {e}", self.state));
                 }
                 return Ok(());
             }
@@ -240,12 +252,13 @@ impl Holder {
     fn log(&mut self, line: &str) {
         const FULL: &str = "the log is full: nothing more is written here";
         let line = plain(line);
+        // Only what was written counts, so a write that fails does not close the log.
         if self.logged + line.len() + 1 + FULL.len() < LOG_MAX {
-            self.logged += line.len() + 1;
-            let _ = writeln!(io::stderr(), "{line}");
-        } else if self.logged < LOG_MAX {
+            if writeln!(io::stderr(), "{line}").is_ok() {
+                self.logged += line.len() + 1;
+            }
+        } else if self.logged < LOG_MAX && writeln!(io::stderr(), "{FULL}").is_ok() {
             self.logged = LOG_MAX;
-            let _ = writeln!(io::stderr(), "{FULL}");
         }
     }
 
@@ -259,9 +272,9 @@ impl Holder {
         if self.input.len() + reply.len() <= INPUT_MAX {
             self.input.extend_from_slice(&reply);
         } else {
-            self.term.refused = Some("an answer to the program was dropped: 64 KiB were waiting for it");
+            self.term.refused.push("an answer to the program was dropped: 64 KiB were waiting for it");
         }
-        if let Some(refused) = self.term.refused.take() {
+        for refused in std::mem::take(&mut self.term.refused) {
             self.log(refused);
         }
         if self.term.history.len() > READ_BUDGET {
@@ -340,12 +353,13 @@ impl Holder {
     /// written are lost, and the log says so: they are not kept to try again.
     fn history(&mut self) {
         let lines = std::mem::take(&mut self.term.history);
-        if fs::metadata("history").is_ok_and(|m| m.len() > HISTORY_MAX) {
-            let _ = fs::rename("history", "history.1");
-        }
-        let file = OpenOptions::new().append(true).create(true).open("history");
+        let rotated = match fs::metadata("history") {
+            Ok(m) if m.len() > HISTORY_MAX => fs::rename("history", "history.1"),
+            _ => Ok(()),
+        };
+        let file = rotated.and_then(|()| OpenOptions::new().append(true).create(true).open("history"));
         if let Err(e) = file.and_then(|mut file| file.write_all(lines.as_bytes())) {
-            self.log(&format!("{} bytes of history were lost: {e}", lines.len()));
+            self.log(&format!("history was lost (some or all of {} bytes): {e}", lines.len()));
         }
     }
 
@@ -377,7 +391,7 @@ impl Holder {
         let placed =
             |p: &crate::term::Picture| format!(" pic=pic-{}.sixel@{},{}+{}x{}", p.id, p.row, p.col, p.cols, p.rows);
         let pictures: String = self.term.pictures.iter().map(placed).collect();
-        self.version += 1;
+        self.version = self.version.wrapping_add(1);
         let term = &self.term;
         let modes = [
             (term.cursor_shown, "cursor"),

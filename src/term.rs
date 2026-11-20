@@ -160,7 +160,7 @@ pub struct Term {
     utf8_left: u8,
     /// The smallest character this many bytes may encode: a longer spelling of a smaller one is refused.
     utf8_min: u32,
-    /// The sequence being read has more parameters than are kept: it will be ignored.
+    /// The sequence being read is malformed or has more parameters than are kept: it will be ignored.
     too_long: bool,
     dcs: Vec<u8>,
     dcs_was: State,
@@ -174,8 +174,8 @@ pub struct Term {
     next_picture: u32,
     /// The size of a cell in pixels, to know how many cells a picture covers.
     pub cell: (usize, usize),
-    /// What was last dropped for being over a bound, for the holder's log.
-    pub refused: Option<&'static str>,
+    /// What was dropped for being over a bound, for the holder's log (the last few of each kind).
+    pub refused: Vec<&'static str>,
 }
 
 impl Term {
@@ -227,7 +227,7 @@ impl Term {
             other_pictures: Vec::new(),
             next_picture: 1,
             cell: (10, 20),
-            refused: None,
+            refused: Vec::new(),
         }
     }
 
@@ -345,19 +345,23 @@ impl Term {
         let Some(region) = self.grid.get_mut(from..=self.bottom) else {
             return;
         };
+        let mut full = false;
         for row in region.iter_mut().take(n) {
             if from == 0 && !self.alt {
                 if self.history.len() < HISTORY_PENDING_MAX {
                     Term::row_text(row, &mut self.history);
                     self.history.push('\n');
                 } else {
-                    self.refused = Some("lines were not kept in history: 4 MiB of it were waiting to be written");
+                    full = true;
                 }
             }
             row.clone_from(&blank);
         }
         region.rotate_left(n);
         self.scroll_pictures(from, n, true);
+        if full {
+            self.refuse("lines were not kept in history: 4 MiB of it were waiting to be written");
+        }
     }
 
     /// Moves rows `from..=bottom` down by `n`, blank rows coming in at `from`.
@@ -564,9 +568,16 @@ impl Term {
         (0..rows).for_each(|row| self.tidy(row));
     }
 
+    /// Notes a refusal for the log, once until the holder has taken it.
+    fn refuse(&mut self, why: &'static str) {
+        if !self.refused.contains(&why) {
+            self.refused.push(why);
+        }
+    }
+
     fn respond(&mut self, text: &str) {
         if self.reply.len() + text.len() > REPLY_MAX {
-            self.refused = Some("an answer to the program was dropped: 4096 bytes of answers were waiting");
+            self.refuse("an answer to the program was dropped: 4096 bytes of answers were waiting");
         } else {
             self.reply.extend_from_slice(text.as_bytes());
         }
@@ -594,7 +605,7 @@ impl Term {
                     if self.dcs.len() < PICTURE_MAX {
                         self.dcs.push(byte);
                     } else {
-                        self.refused = Some("a picture over 4 MiB was dropped");
+                        self.refuse("a picture over 4 MiB was dropped");
                         self.dcs = Vec::new();
                         self.state = State::Skip;
                     }
@@ -708,8 +719,10 @@ impl Term {
             b'>' => self.app_keypad = false,
             b'c' => {
                 // A full reset. History stays, and picture numbers go on, so no file's name is used twice.
-                let (cell, history, next_picture) = (self.cell, std::mem::take(&mut self.history), self.next_picture);
-                *self = Term { cell, history, next_picture, ..Term::new(self.cols, self.rows) };
+                let (cell, history, refused) =
+                    (self.cell, std::mem::take(&mut self.history), std::mem::take(&mut self.refused));
+                *self =
+                    Term { cell, history, refused, next_picture: self.next_picture, ..Term::new(self.cols, self.rows) };
             }
             _ => {}
         }
@@ -749,12 +762,12 @@ impl Term {
         let cols = width.div_ceil(self.cell.0.max(1)).max(1);
         let rows = height.div_ceil(self.cell.1.max(1)).max(1);
         if cols > SIZE_MAX || rows > SIZE_MAX {
-            self.refused = Some("a picture over 500 cells wide or high was dropped");
+            self.refuse("a picture over 500 cells wide or high was dropped");
             return;
         }
         if self.pictures.len() >= PICTURES_MAX {
             self.pictures.remove(0);
-            self.refused = Some("a screen keeps 8 pictures: the oldest was dropped for a new one");
+            self.refuse("a screen keeps 8 pictures: the oldest was dropped for a new one");
         }
         let mut whole = Vec::with_capacity(data.len() + 4);
         whole.extend_from_slice(b"\x1bP");
@@ -779,6 +792,8 @@ impl Term {
 
     fn csi(&mut self, byte: u8) {
         match byte {
+            // After an intermediate byte only the last byte may come: anything else spoils the sequence.
+            b'0'..=b'?' if self.inter != 0 => self.too_long = true,
             b'0'..=b'9' => {
                 let digit = u16::from(byte - b'0');
                 self.param = Some(self.param.unwrap_or(0).saturating_mul(10).saturating_add(digit));
@@ -794,14 +809,15 @@ impl Term {
                 if byte >= 0x40 {
                     self.state = State::Ground;
                     if self.too_long {
-                        self.refused = Some("a control sequence with more than 32 parameters was ignored");
+                        self.refuse("a control sequence that was malformed or had more than 32 parameters was ignored");
                     } else {
                         self.dispatch(byte);
                     }
                 }
             }
             // `?` and its like count only before the parameters; elsewhere the sequence means nothing.
-            b'<'..=b'?' => self.private = if self.params.is_empty() && self.param.is_none() { byte } else { 0xff },
+            b'<'..=b'?' if self.params.is_empty() && self.param.is_none() && self.private == 0 => self.private = byte,
+            b'<'..=b'?' => self.too_long = true,
             0x20..=0x2f => self.inter = byte,
             _ => self.state = State::Ground,
         }
@@ -901,7 +917,7 @@ impl Term {
             (0, 0, b'S') => self.scroll_up(self.top, n),
             (0, 0, b'T') => self.scroll_down(self.top, n),
             (0, 0, b'b') => {
-                for _ in 0..n.min(self.cols * self.rows) {
+                for _ in 0..n {
                     self.print(self.last);
                 }
             }

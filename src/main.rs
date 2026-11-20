@@ -50,10 +50,13 @@ fn make_dir(path: &Path) -> std::io::Result<()> {
     DirBuilder::new().mode(0o700).create(path)
 }
 
-/// A line on standard output. A reader that has left is no reason for a word.
-fn say(line: &[u8]) {
+/// A line on standard output. A reader that has left is no reason for a word; any other failure is.
+fn say(line: &[u8]) -> Result<(), String> {
     let mut out = std::io::stdout();
-    let _ = out.write_all(line).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush());
+    match out.write_all(line).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush()) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(format!("cannot write the answer: {e}")),
+        _ => Ok(()),
+    }
 }
 
 /// At most 64 KiB of a small file of ours, as text.
@@ -124,8 +127,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
         Ok(()) => {
             // Our copy of the lock goes before anything that could wait.
             drop(lock);
-            say(dir.as_os_str().as_bytes());
-            Ok(())
+            say(dir.as_os_str().as_bytes())
         }
         Err(why) => {
             // A folder made for a pane that never was is not left behind. We
@@ -155,7 +157,8 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
     // program stays until then, and for good if this start fails.
     let ours = format!("holder {}\n", holder.id());
     loop {
-        let ended = holder.try_wait().map_err(|e| e.to_string())?.is_some();
+        // An error here is the end too: there is nothing left to wait for.
+        let ended = !matches!(holder.try_wait(), Ok(None));
         if read_some(&dir.join("status")).contains(&ours) {
             return Ok(());
         }
@@ -179,17 +182,13 @@ fn wait(args: &[OsString]) -> Result<(), String> {
     lock.lock_shared().map_err(|e| format!("{}: {e}", dir.display()))?;
     let status = read_some(&dir.join("status"));
     drop(lock);
-    say(status.trim_end().as_bytes());
-    Ok(())
+    say(status.trim_end().as_bytes())
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
     let rest = args.get(1..).unwrap_or(&[]);
     match args.first().and_then(|a| a.to_str()) {
-        Some("dir") => {
-            say(session()?.as_os_str().as_bytes());
-            Ok(())
-        }
+        Some("dir") => say(session()?.as_os_str().as_bytes()),
         Some("start") => start(rest),
         Some("wait") => wait(rest),
         Some("view") => {
@@ -207,24 +206,19 @@ fn run(args: &[OsString]) -> Result<(), String> {
             let words: Vec<String> = rest.iter().map(|word| word.to_string_lossy().into_owned()).collect();
             let text =
                 layout::command(&session()?.join(workspace), &words.iter().map(String::as_str).collect::<Vec<_>>())?;
-            if words.is_empty() {
-                say(text.trim_end().as_bytes());
-            }
-            Ok(())
+            if words.is_empty() { say(text.trim_end().as_bytes()) } else { Ok(()) }
         }
         Some("hold") => match rest.split_first() {
             Some((cwd, program)) => holder::hold(program, cwd),
             None => Err("hold is started by `fux3 start`".into()),
         },
-        Some("help" | "--help" | "-h") => {
-            say(USAGE.as_bytes());
-            Ok(())
-        }
+        Some("help" | "--help" | "-h") => say(USAGE.as_bytes()),
         _ => Err(format!("usage:\n{USAGE}")),
     }
 }
 
 fn main() -> ExitCode {
+    sys::own_children();
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,

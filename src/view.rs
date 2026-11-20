@@ -57,6 +57,10 @@ struct View {
     focus: Option<String>,
     /// Where each pane's screen was drawn last, for the mouse.
     tiles: Vec<(String, Rect)>,
+    /// A mouse button is down: for the focused program (true), or in a click that only moved the focus (false).
+    held: Option<bool>,
+    /// Keys wait for the next look at the layout.
+    pause: bool,
     /// The open menu: its directory and its entries.
     menu: Option<(PathBuf, Vec<(String, String)>)>,
     message: String,
@@ -120,6 +124,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         panes: HashMap::new(),
         focus: None,
         tiles: Vec::new(),
+        held: None,
+        pause: false,
         menu: None,
         message: String::new(),
         sixel: false,
@@ -268,7 +274,7 @@ impl View {
                 name if name.starts_with("terminal:") => self.sixel = name.split([':', '?', ';']).any(|n| n == "4"),
                 name => self.key(name, raw),
             }
-            if self.waiting.is_some() {
+            if self.waiting.is_some() || std::mem::take(&mut self.pause) {
                 break;
             }
         }
@@ -297,33 +303,53 @@ impl View {
 
     /// A mouse report from the terminal. It goes to the focused pane's
     /// program, counted from its own tile's corner and in the form it asked
-    /// for; a press on another tile gives that one the keys.
+    /// for. A press on another tile gives that one the keys, and nothing more.
     fn mouse(&mut self, report: &str) {
         let release = report.ends_with('m');
         let mut numbers = report.trim_end_matches(['M', 'm']).split(';').filter_map(|n| n.parse::<usize>().ok());
         let (Some(button), Some(x), Some(y)) = (numbers.next(), numbers.next(), numbers.next()) else { return };
+        // A press: not a move (32), not the wheel (64), a button down; Shift, Alt and Ctrl (4, 8, 16) aside.
+        let press = !release && button & 0x60 == 0 && button & 3 != 3;
+        if self.held == Some(false) {
+            // The rest of a click that only moved the focus is nobody's.
+            self.held = if release { None } else { self.held };
+            return;
+        }
         let inside = |r: &Rect| (r.x + 1..=r.x + r.w).contains(&x) && (r.y + 1..=r.y + r.h).contains(&y);
-        let Some((name, body)) = self.tiles.iter().find(|(_, body)| inside(body)).cloned() else { return };
-        if self.focus.as_ref() != Some(&name) {
-            if !release && button < 3 {
-                let _ = layout::command(&self.session.join(&self.workspace), &["focus", &name]);
+        let over = self.tiles.iter().find(|(_, body)| inside(body)).map(|(name, _)| name.clone());
+        if self.held.is_none() && over != self.focus {
+            if let Some(name) = over.filter(|_| press) {
+                let _ = layout::command(&self.session.join(&self.workspace), &["pane", &name]);
+                // Keys typed after the click are for the pane it chose: they wait for the next look at the layout.
+                (self.held, self.pause) = (Some(false), true);
             }
             return;
         }
-        let Some(term) = self.panes.get(&name).map(|pane| &pane.term) else { return };
-        let (x, y) = (x - body.x, y - body.y);
+        let focused = self.tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name));
+        let Some((term, body)) = focused.and_then(|(name, body)| Some((&self.panes.get(name)?.term, *body))) else {
+            return;
+        };
+        // A button held stays that program's until it is let go: a drag out of the tile is reported at its edge.
+        self.held = if press {
+            Some(true)
+        } else if release {
+            None
+        } else {
+            self.held
+        };
+        let (x, y) = (x.clamp(body.x + 1, body.x + body.w) - body.x, y.clamp(body.y + 1, body.y + body.h) - body.y);
         // The oldest kind of report (9) knows only presses of the three buttons.
-        if term.mouse == 0 || (term.mouse == 9 && (release || button > 2)) {
+        if term.mouse == 0 || (term.mouse == 9 && !press) {
             return;
         }
-        let old = |n: usize| u8::try_from(n + 32).ok();
         if term.mouse_sgr {
-            self.typed
-                .extend_from_slice(format!("\x1b[<{button};{x};{y}{}", if release { 'm' } else { 'M' }).as_bytes());
-        } else if let (Some(button), Some(x), Some(y)) =
-            (old(if release { button | 3 } else { button }), old(x), old(y))
-        {
-            self.typed.extend_from_slice(&[0x1b, b'[', b'M', button, x, y]);
+            let end = if release { 'm' } else { 'M' };
+            self.typed.extend_from_slice(format!("\x1b[<{button};{x};{y}{end}").as_bytes());
+        } else if let Ok(button) = u8::try_from(button) {
+            // The old form: a release is button 3 with the modifiers, and a place past 223 is sent as 0.
+            let old = |n: usize| u8::try_from(n).ok().and_then(|n| n.checked_add(32)).unwrap_or(0);
+            let button = if release { 3 | (button & 0x1c) } else { button };
+            self.typed.extend_from_slice(&[0x1b, b'[', b'M', button.saturating_add(32), old(x), old(y)]);
         }
     }
 
@@ -344,13 +370,13 @@ impl View {
         script.env("FUX3C_DIR", &self.session).env("FUX3C_WS", &self.workspace).env("FUX3C_KEYS", &self.keys);
         script.env("FUX3C_PANE", pane.unwrap_or_default()).env("FUX3C_VIEW", &self.ctl_path).env("PATH", path);
         // A pane a script starts begins at the size of the whole view, right for a new tab.
-        script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.saturating_sub(1).to_string());
+        script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.to_string());
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
             Ok(child) => {
                 self.waiting = Some((child.id(), Instant::now()));
                 self.scripts.push(child);
             }
-            Err(e) => self.message = format!("{}: {e}", file.display()),
+            Err(e) => self.message = format!("{}: {e}", file.file_name().unwrap_or_default().to_string_lossy()),
         }
     }
 
@@ -373,6 +399,7 @@ impl View {
     /// Looks at the files and draws what changed. Says whether anything did.
     fn frame(&mut self) -> io::Result<bool> {
         let mut size = sys::winsize(&self.tty)?;
+        let cell_size = (size.xpixel / size.cols.max(1), size.ypixel / size.rows.max(1));
         // A terminal larger than the largest pane is drawn in its top left corner.
         (size.cols, size.rows) = (size.cols.min(SIZE_MAX as u16), size.rows.min(SIZE_MAX as u16));
         let (w, h) = (usize::from(size.cols), usize::from(size.rows));
@@ -406,7 +433,7 @@ impl View {
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
-        let cell_size = (size.xpixel / size.cols.max(1), size.ypixel / size.rows.max(1));
+        let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
         for (name, body) in &tiles {
             let pane = self.panes.entry(name.clone()).or_insert_with(Pane::new);
             let pane_directory = directory.join(name);
@@ -460,10 +487,9 @@ impl View {
                 let (cursor_keys, keypad) = (pane.term.app_cursor, pane.term.app_keypad);
                 cursor.push_str(if cursor_keys { "\x1b[?1h" } else { "\x1b[?1l" });
                 cursor.push_str(if keypad { "\x1b=" } else { "\x1b>" });
-                // And reports the mouse when, and as far as, that program asked (always in the SGR form).
-                cursor.push_str("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
-                if pane.term.mouse != 0 {
-                    cursor.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.term.mouse));
+                // And reports the mouse when, and as far as, a living program asked (always in the SGR form).
+                if pane.term.mouse != 0 && pane.input.is_some() && pane.state == "running" {
+                    modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.term.mouse));
                 }
             }
             for (file, row, col, cols, rows) in &pane.pictures {
@@ -502,8 +528,12 @@ impl View {
         // A notice sits in the bottom right corner until the next key: what is
         // wrong with the layout file, what a script said, or that there are no panes.
         let hint = format!("no panes in {}: keys are scripts in {}", self.workspace, self.keys.display());
+        let hidden =
+            self.focus.as_ref().filter(|focus| !tiles.is_empty() && !tiles.iter().any(|(name, _)| name == *focus));
+        let hidden = hidden.map(|focus| format!("{focus} has the keys but no room to be shown")).unwrap_or_default();
         let (note, style) = match &wrong {
             Some(wrong) => (wrong, colour(9, Some(236), 0)),
+            None if !hidden.is_empty() => (&hidden, colour(9, Some(236), 0)),
             None if tiles.is_empty() && self.message.is_empty() => (&hint, colour(11, Some(236), 0)),
             None => (&self.message, colour(11, Some(236), 0)),
         };
@@ -526,13 +556,26 @@ impl View {
                 .collect();
             let typed = typed.join(" ");
             let mut left = cells(&format!(" {} ", self.workspace), colour(250, Some(236), BOLD));
-            for (i, tab) in layout.tabs.iter().enumerate() {
-                let style = if i == layout.current { colour(0, Some(2), BOLD) } else { bar };
-                left.extend(cells(&format!(" {} ", tab.focus), style));
-            }
-            let right = cells(&format!("{typed} …"), colour(0, Some(11), BOLD));
+            let labels = layout.tabs.iter().enumerate().map(|(i, tab)| {
+                cells(&format!(" {} ", tab.focus), if i == layout.current { colour(0, Some(2), BOLD) } else { bar })
+            });
+            let labels: Vec<Vec<Cell>> = labels.collect();
+            // On the right: what there is to say, or else the keys typed so far.
+            let right = if note.is_empty() {
+                cells(&format!("{typed} …"), colour(0, Some(11), BOLD))
+            } else {
+                cells(&format!(" {note} "), style)
+            };
+            let right: Vec<Cell> = right.into_iter().take(w * 3 / 4).collect();
             put(&mut back, w, 0, last, w, &cells(&" ".repeat(w), bar));
-            put(&mut back, w, 0, last, w.saturating_sub(right.len() + 2), &left);
+            // As many tabs as fit, the one shown among them.
+            let room = w.saturating_sub(right.len() + 2);
+            let fits = |first: usize| {
+                left.len() + labels.iter().take(layout.current + 1).skip(first).map(Vec::len).sum::<usize>() <= room
+            };
+            let first = (0..=layout.current).find(|first| fits(*first)).unwrap_or(layout.current);
+            left.extend(labels.iter().skip(first).flatten());
+            put(&mut back, w, 0, last, room, &left);
             put(&mut back, w, w.saturating_sub(right.len() + 1), last, right.len(), &right);
             let room = last.saturating_sub(1);
             let shown = if entries.len() > room { room.saturating_sub(1) } else { entries.len() };
@@ -542,22 +585,26 @@ impl View {
             if shown < entries.len() {
                 lines.push((format!("▼ {} more", entries.len() - shown), DIM));
             }
-            let width = (lines.iter().map(|(line, _)| line.chars().count()).max().unwrap_or(0) + 2).min(w);
-            for (i, (text, flags)) in lines.iter().enumerate() {
+            // The box is as wide as its longest line, in cells, and a cell more on each side.
+            let lines: Vec<Vec<Cell>> = lines
+                .iter()
+                .map(|(text, flags)| cells(&format!(" {text}"), Style { flags: *flags, ..panel }))
+                .collect();
+            let width = (lines.iter().map(Vec::len).max().unwrap_or(0) + 1).min(w);
+            for (i, line) in lines.iter().enumerate() {
                 let y = last.saturating_sub(lines.len()) + i;
-                put(
-                    &mut back,
-                    w,
-                    w - width,
-                    y,
-                    width,
-                    &cells(&format!(" {text:<width$}"), Style { flags: *flags, ..panel }),
-                );
+                put(&mut back, w, w - width, y, width, &cells(&" ".repeat(width), panel));
+                put(&mut back, w, w - width, y, width, line);
             }
             cursor = String::new();
         }
         if cursor.is_empty() {
             cursor.push_str("\x1b[?25l");
+        }
+        cursor.push_str(&modes);
+        // A menu is drawn over the panes, pictures and all: none is drawn while one is open.
+        if self.menu.is_some() {
+            pictures.clear();
         }
 
         // Pictures are pixels over cells: when one comes, goes or is written
@@ -601,7 +648,11 @@ impl View {
                 let _ = file.map(|file| file.take(PICTURE_MAX as u64 + 8).read_to_end(&mut bytes));
                 let inside = bytes.strip_prefix(b"\x1bP").and_then(|rest| rest.strip_suffix(b"\x1b\\"));
                 // Only one whole sixel picture is passed on: nothing else in the file can reach the terminal.
-                if let Some(inside) = inside.filter(|inside| inside.iter().all(|b| (0x20..=0x7e).contains(b))) {
+                let sixel =
+                    |inside: &&[u8]| inside.iter().find(|b| !(b.is_ascii_digit() || **b == b';')) == Some(&b'q');
+                if let Some(inside) =
+                    inside.filter(|inside| inside.iter().all(|b| (0x20..=0x7e).contains(b))).filter(sixel)
+                {
                     out.push_str(&format!("\x1b[{};{}H\x1bP{}\x1b\\", y + 1, x + 1, String::from_utf8_lossy(inside)));
                 }
             }
@@ -637,6 +688,14 @@ fn cells(text: &str, style: Style) -> Vec<Cell> {
 /// past the screen's width `w`; a wide character that would be cut is a blank.
 fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Cell]) {
     let room = room.min(w.saturating_sub(x));
+    // What is written over the right half of a wide character takes its left half with it.
+    if room > 0
+        && x > 0
+        && back.get(y * w + x).is_some_and(|under| under.ch == '\0')
+        && let Some(left) = back.get_mut(y * w + x - 1)
+    {
+        left.ch = ' ';
+    }
     for (i, cell) in cells.iter().enumerate().take(room) {
         let cut = i + 1 == room && cells.get(i + 1).is_some_and(|next| next.ch == '\0');
         if let Some(slot) = back.get_mut(y * w + x + i) {

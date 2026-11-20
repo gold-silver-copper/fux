@@ -98,10 +98,20 @@ impl Node {
             Node::Pane(name) => return into.push((name.clone(), area)),
             Node::Split(row, parts) => (*row, parts),
         };
-        let gaps = parts.len().saturating_sub(1);
-        let room = if row { area.w } else { area.h }.saturating_sub(gaps);
-        let total: usize = parts.iter().map(|p| p.1.max(1) as usize).sum();
-        let mut sizes: Vec<usize> = parts.iter().map(|p| room * p.1.max(1) as usize / total.max(1)).collect();
+        // Each part shown has at least one cell, and a line between it and the
+        // next: parts there is no room for are not placed at all.
+        let length = if row { area.w } else { area.h };
+        let shown = parts.len().min(length.div_ceil(2));
+        let room = length.saturating_sub(shown.saturating_sub(1));
+        let total: usize = parts.iter().take(shown).map(|p| p.1.max(1) as usize).sum();
+        let mut sizes: Vec<usize> =
+            parts.iter().take(shown).map(|p| (room * p.1.max(1) as usize / total.max(1)).max(1)).collect();
+        while sizes.iter().sum::<usize>() > room {
+            match sizes.iter_mut().max() {
+                Some(largest) if *largest > 1 => *largest -= 1,
+                _ => break,
+            }
+        }
         let mut spare = room.saturating_sub(sizes.iter().sum());
         for size in &mut sizes {
             *size += usize::from(spare > 0);
@@ -195,8 +205,8 @@ fn tree(words: &mut std::iter::Peekable<std::vec::IntoIter<String>>, depth: usiz
         Node::Pane(_) => word.split_once(':').map(|(_, share)| share.to_string()),
         Node::Split(..) => words.next_if(|w| w.starts_with(':')).map(|w| w.trim_start_matches(':').to_string()),
     };
-    let share = share.map_or(Ok(1), |s| s.parse::<u32>().map_err(|_| format!("'{s}' is not a share")))?;
-    Ok((node, share.clamp(1, 10000)))
+    let share = share.map_or(Some(1), |s| s.parse::<u32>().ok().filter(|n| (1..=10000).contains(n)));
+    Ok((node, share.ok_or("a share is a number from 1 to 10000")?))
 }
 
 pub fn parse(text: &str) -> Result<Layout, String> {
@@ -289,7 +299,12 @@ impl Layout {
             Ok(folders) => {
                 let names = folders.flatten().filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()));
                 let names = names.filter_map(|entry| entry.file_name().into_string().ok());
-                layout.settle(names.filter(|name| is_name(name)).take(PANES_MAX).collect());
+                let names: Vec<String> = names.filter(|name| is_name(name)).take(PANES_MAX + 1).collect();
+                if names.len() > PANES_MAX {
+                    (layout, wrong) =
+                        (Layout::default(), Some(format!("more than {PANES_MAX} panes in one workspace")));
+                }
+                layout.settle(names.into_iter().take(PANES_MAX).collect());
             }
             Err(e) => (layout, wrong) = (Layout::default(), Some(format!("{}: {e}", workspace.display()))),
         }
@@ -382,7 +397,8 @@ impl Layout {
                 let at = step(panes.iter().position(|p| *p == tab.focus).unwrap_or(0), way, panes.len())?;
                 tab.focus = panes.get(at).map(|name| name.to_string()).unwrap_or_default();
             }
-            ["focus", name] => {
+            // `pane NAME` is `focus NAME` for a pane whose name is a direction's word.
+            ["focus" | "pane", name] => {
                 let at = self
                     .tabs
                     .iter()
@@ -483,7 +499,9 @@ pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {
     }
     let (file, text) = (workspace.join("layout"), layout.print());
     if old != text {
-        replace(&file.to_string_lossy(), text.as_bytes()).map_err(|e| format!("{}: {e}", file.display()))?;
+        // What is written must be what the next reading takes: an edit that nests too deep is refused here.
+        parse(&text)?;
+        replace(&file, text.as_bytes()).map_err(|e| format!("{}: {e}", file.display()))?;
     }
     Ok(text)
 }

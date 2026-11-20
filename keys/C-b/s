@@ -3,4 +3,6 @@
 p=$(fux3 start "$FUX3C_WS/") || exit
 fux3 layout split col "${p##*/}"
 # When the shell ends, its pane goes: that is this script's choice, not fux3's.
-(fux3 wait "$p" >/dev/null; rm -rf "$p") >/dev/null 2>&1 &
+h=$(sed -n 2p "$p/status")
+# ...unless another pane has that name by then: only the pane of the holder we waited for is removed.
+(fux3 wait "$p" >/dev/null; [ "$(sed -n 2p "$p/status" 2>/dev/null)" = "$h" ] && rm -rf "$p") >/dev/null 2>&1 &

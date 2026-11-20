@@ -27,7 +27,9 @@ pub fn next(bytes: &[u8], whole: bool) -> Option<(usize, String)> {
             Some(b'[') => {
                 // A sequence not yet whole waits for its end, however long that takes to come.
                 let Some(end) = bytes.iter().skip(2).position(|b| (0x40..=0x7e).contains(b)) else {
-                    return (bytes.len() > 64).then(|| (bytes.len(), String::new()));
+                    // Alt-[ alone, with nothing after it for a moment, is that key; more than that waits.
+                    let alone = (whole && bytes.len() == 2).then(|| (2, "M-[".to_string()));
+                    return alone.or((bytes.len() > 64).then(|| (bytes.len(), String::new())));
                 };
                 let parameters = String::from_utf8_lossy(bytes.get(2..end + 2)?).into_owned();
                 Some((end + 3, sequence(&parameters, *bytes.get(end + 2)?)))

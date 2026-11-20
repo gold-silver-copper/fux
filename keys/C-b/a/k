@@ -1,3 +1,5 @@
 #!/bin/sh
 # send TERM to the running command
-pid=$(sed -n "s/^pid //p" "$FUX3C_PANE/status") && [ -n "$pid" ] && kill -TERM "$pid"
+# Only while it runs: the number of a program that ended may be another's by now.
+grep -q '^state running' "$FUX3C_PANE/status" 2>/dev/null || { echo "no program is running in this pane"; exit; }
+kill -TERM "$(sed -n 's/^pid //p' "$FUX3C_PANE/status")"

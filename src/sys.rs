@@ -16,6 +16,7 @@ use std::process::Command;
 mod os {
     use std::ffi::{c_int, c_ulong};
     pub const O_NONBLOCK: c_int = 0o4000;
+    pub const SIGCHLD: c_int = 17;
     pub const TIOCSCTTY: c_ulong = 0x540E;
     pub const TIOCGWINSZ: c_ulong = 0x5413;
     pub const TIOCSWINSZ: c_ulong = 0x5414;
@@ -25,6 +26,7 @@ mod os {
 mod os {
     use std::ffi::{c_int, c_uint, c_ulong};
     pub const O_NONBLOCK: c_int = 0x0004;
+    pub const SIGCHLD: c_int = 20;
     pub const TIOCSCTTY: c_ulong = 0x2000_7461;
     pub const TIOCGWINSZ: c_ulong = 0x4008_7468;
     pub const TIOCSWINSZ: c_ulong = 0x8008_7467;
@@ -125,16 +127,24 @@ pub fn new_session(command: &mut Command, tty: bool) {
             check(setsid())?;
             if tty {
                 check(ioctl(0, os::TIOCSCTTY, 0 as c_int))?;
-                // Every signal back to its default (0): the program starts as on
-                // any new terminal, whatever whoever started the pane ignored.
-                // A hangup, Ctrl-C and Ctrl-Z must be able to reach it.
-                for number in 1..32 {
-                    signal(number, 0);
-                }
+            }
+            // The classic signals (1 to 31) back to their defaults (0): what is
+            // started runs as on any new terminal, whatever whoever started it
+            // ignored. A hangup, Ctrl-C and Ctrl-Z must be able to reach a
+            // program, and a holder must be told of its program's end.
+            for number in 1..32 {
+                signal(number, 0);
             }
             Ok(())
         });
     }
+}
+
+/// Makes sure this process is told of its children's ends, even when
+/// whoever started it had that signal ignored (waiting for a child then fails).
+pub fn own_children() {
+    // SAFETY: signal with the default handler (0) for SIGCHLD, before any thread starts.
+    unsafe { signal(os::SIGCHLD, 0) };
 }
 
 pub fn set_winsize(tty: &File, size: Winsize) -> io::Result<()> {

@@ -75,8 +75,9 @@ Append-only.
   its holder is up when `status` names that holder.** Two starts of one name,
   a start and the tidying after a failed one, and a restart that fails no
   longer touch each other's files. The old status is not removed first.
-- **D24. Every signal is at its default for a pane's program** (D7 said
-  SIGHUP only): Ctrl-C must work in a pane started by something that ignores
+- **D24. The classic signals (1 to 31) are at their defaults for a pane's
+  program and for its holder** (D7 said SIGHUP only), and `fux3` itself takes
+  SIGCHLD's default, so that a starter which ignored it changes nothing: Ctrl-C must work in a pane started by something that ignores
   SIGINT.
 - **D25. Keys typed after a key with a script wait for the script, two
   seconds at most.** Found by a tester: `C-b C-b a b c` arrived as `a b c ^B`.
@@ -112,6 +113,27 @@ Append-only.
 - **D32. fux's default keys** where this viewer has the action; `.about` and
   `.repeat` in a menu's directory give its name and fux's repeating maps.
   The `less`-only history key and the tab numbers went: fux has neither.
+
+- **D33. Review round 2 (the last): what was fixed and what was not.**
+  Fixed: a starter that ignores SIGCHLD; a repeat longer than the screen; a
+  malformed control sequence (now ignored whole); refusals kept until logged;
+  status and last screen reported apart; the removed-directory deadline; what
+  an earlier holder left kept until the new screen is written; output errors
+  of the command line; the log's accounting; a failed history rotation; in
+  the new parts: a wide character under an overlay, the menu's width in
+  cells, a pane with no room, an edit that nests too deep, the mouse (a
+  gesture stays with its press, modifiers, the old report form, reporting off
+  when the program is gone, keys after a focus click), `LINES`, Alt-[, the
+  editor script (never a missing line, its failure shown, `less +G`), the
+  waiting clean-up (only the pane it waited for), TERM only to a running
+  program. Not taken, with why: a `resize` reads up to 1 MiB outside the
+  512 KiB budget (bounded, and it is what closes the resize race of D31);
+  picture files can pile up while every screen write fails (it needs a disk
+  that refuses the screens and takes the pictures); realtime signals stay as
+  inherited; no answer to "what else is hidden" past `▼ N more` in a short
+  terminal's menu; the cursor is not hidden under a notice. One round 2
+  report (the emulator's) was cut off after its table of verdicts: its three
+  "not closed" rows are fixed as the table words them.
 
 ## The old fux3's bugs: which classes are gone
 

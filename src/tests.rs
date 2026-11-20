@@ -110,7 +110,7 @@ fn what_is_malformed_changes_nothing_and_what_is_cut_leaves_no_half() {
     assert_eq!(term.styled().lines().next(), Some("A\u{fffd}B\x1b[0;31mRX\x1b[m"));
     // `?` after a parameter is no private mode, and 33 parameters are no command (and the log hears of it).
     term.feed(format!("\x1b[0;?25l\x1b[{}0m", "1;".repeat(32)).as_bytes());
-    assert!(term.cursor_shown && term.refused.is_some());
+    assert!(term.cursor_shown && !term.refused.is_empty());
     // Deleting across two wide characters leaves blanks, not a character made of two halves.
     term.feed("\x1b[m\x1b[2;1H漢界X\x1b[2;2H\x1b[2P".as_bytes());
     assert_eq!(term.plain().lines().nth(1), Some("  X"));
@@ -153,7 +153,7 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     term.feed(b"\x1b[1;4Hx");
     assert!(term.pictures.is_empty());
     term.feed(b"\x1bPq~~\x1b\\\n\n\n\n\n");
-    assert!(term.pictures.is_empty() && term.refused.is_none());
+    assert!(term.pictures.is_empty() && term.refused.is_empty());
     // Its size is the larger of what it says and what it paints: here 40 pixels, 4 cells, not 1.
     term.feed(b"\x1b[H\x1bPq\"1;1;10;6!40~\x1b\\");
     assert_eq!(term.pictures.first().map(|p| (p.cols, p.rows)), Some((4, 1)));
@@ -195,6 +195,17 @@ fn a_layout_follows_the_panes_that_exist_and_edits_act_on_the_focused_pane() {
     assert!(layout.edit(&["split", "row", "nobody"]).is_err());
     layout.edit(&["size", "col", "9223372036854775807"]).expect("size");
     assert_eq!(layout.print(), "* col(a:10000 new:50) focus=a\n  b focus=b\n");
+    // What an edit writes, the next reading takes: 40 splits deep is refused, as is a share out of range.
+    assert!(parse("row(a:20000 b)").is_err());
+    // A row with more parts than columns shows those it has room for, each with a cell, lines between.
+    let crowded = parse("* row(a b c d e) focus=a\n").expect("a layout");
+    let tiles = crowded.tabs.first().expect("a tab").tiles(Rect { x: 0, y: 0, w: 5, h: 2 });
+    assert_eq!(tiles.iter().map(|(_, r)| (r.x, r.w)).collect::<Vec<_>>(), [(0, 1), (2, 1), (4, 1)]);
+    // A pane named like a direction is reached with `pane`.
+    let mut named = parse("* row(a left) focus=left\n").expect("a layout");
+    named.edit(&["pane", "a"]).expect("pane");
+    named.edit(&["pane", "left"]).expect("pane");
+    assert_eq!(named.print(), "* row(a left) focus=left\n");
     assert!(parse(&format!("{}a{}", "row(".repeat(40), ")".repeat(40))).is_err());
 }
 
@@ -214,6 +225,7 @@ fn keys_have_the_names_of_their_files() {
         (b"\x1bOP", "f1"),
         // The keypad's 0 in application mode is the program's, not F1.
         (b"\x1bOp", ""),
+        (b"\x1b[", "M-["),
         (b"\x1bx", "M-x"),
         (b"\x1b", "esc"),
         (b"/", "slash"),

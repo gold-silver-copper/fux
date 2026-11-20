@@ -24,7 +24,7 @@ printf 'echo hi\n' > "$D/main/build/in"; cat "$D/main/build/screen"     # plain 
 ls "$D" "$D/main"                           # workspaces are folders, panes are folders in them
 fux3 view                                   # tiles, tabs, workspaces; vim, less and htop work in a pane
 # a key is a script: C-b then `v` runs an executable file you can read and replace
-cat ~/.config/fux3c/keys/C-b/v
+cat ~/.config/fux3c/keys/C-b/v              # or under $FUX3C_KEYS or $XDG_CONFIG_HOME, if you set them
 echo kill > "$D/main/build/ctl"             # hangs up the program; what Unix does next is what happens
 ```
 
@@ -49,8 +49,9 @@ two never see each other's panes, whichever binary is called `fux3`.
 | `fux3 view [WORKSPACE]` | the viewer |
 | `fux3 layout [EDIT…]` | prints the layout of workspace `$FUX3C_WS` (default `main`), or edits it (below) |
 
-Names are letters, digits, `.`, `_` and `-`, at most 64, not starting with a
-dot; a pane cannot be called `layout` or `layout.new`.
+Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
+with a dot; a pane cannot be called `layout` or `layout.new`, in any case of
+letters.
 
 ## A pane's files
 
@@ -60,7 +61,7 @@ dot; a pane cannot be called `layout` or `layout.new`.
 | `ctl` | FIFO, one command a line: `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]` |
 | `screen` | line 1 says what rows cannot; then one line of plain text per row |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code |
-| `status` | `pid N` (the program), `holder N`, `state running` (or `hungup`, `exited CODE`, `killed SIGNAL`), `command …`. Written after the screen that shows the same state |
+| `status` | `pid N` (the program), `holder N`, `state running` (or `hungup`, `exited CODE`, `killed SIGNAL`), `command …` (its first 4,096 characters). Written after the screen that shows the same state |
 | `history` | plain text of the lines that scrolled off the top. Past 4 MiB it becomes `history.1` and a new one starts |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture over 4 MiB, history it could not write); stops at 64 KiB |
@@ -71,7 +72,7 @@ Line 1 of both screens:
 pid=4242 state=running v=17 size=80x24 cursor=3,8 shape=0 modes=cursor,paste pic=pic-1.sixel@0,0+12x3
 ```
 
-`v` grows by one with every change written; `cursor` is row,column from 0;
+`v` grows by one with every change written (and would start again at 0); `cursor` is row,column from 0;
 `state` is `status`'s, with `:` for its space (`exited:0`);
 `modes` lists what is on (`cursor` shown, `appcursor`, `keypad`, `paste`,
 `alt` screen); each `pic=` is a file, its row and column, and its size in
@@ -79,19 +80,20 @@ cells. A screen file is replaced in one step (written as `screen.new`, then
 renamed), so a reader sees a whole old one or a whole new one.
 
 **Bounds.** The screens are replaced at most 40 times a second, so a flood
-(`yes`) costs at most 80 file replacements and 40 appends to `history` a
-second; the holder reads at most 512 KiB of output between two of them, and
+(`yes`) costs at most 80 file replacements a second, and an append to
+`history` with each pair (one more whenever 512 KiB of it wait); the holder reads at most 512 KiB of output between two of them, and
 past that the program waits, as on any slow terminal. The holder keeps at most 64 KiB of typed bytes for a program that is not
 reading; past that it stops reading `in`, and once the FIFO's own buffer
 (the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
-cells and keeps at most 8 pictures of at most 4 MiB each; a ninth drops the
+cells and keeps at most 8 pictures of at most 4 MiB of data each; a ninth drops the
 oldest, with a line in `log`. History that cannot be written (a full disk)
 is lost, with a line in `log`. When the program ends, at most 4 MiB of what
-it wrote last is still read.
+it wrote last is still read; a `resize` first draws, at the old size, up to
+1 MiB of what the program had already written.
 
 The program runs with `TERM=xterm-256color` and `FUX3C_PANE` (its pane's
 directory), in the directory `fux3 start` was run in, with the rest of that
-environment, signals at their defaults. Its first size is `COLUMNS`x`LINES`
+environment, the signals 1 to 31 at their defaults. Its first size is `COLUMNS`x`LINES`
 if the starter set them (each 1 to 500; otherwise `log` says so), else 80x24.
 
 Is a pane alive? Its holder keeps a lock on the directory for as long as it
@@ -111,14 +113,16 @@ viewers of the same workspace share it, focus included:
 ```
 
 One tab a line. `row(…)` puts its parts side by side, `col(…)` stacks them,
-`:N` is a part's share, `*` marks the tab shown, `focus=` is the pane that
+`:N` is a part's share (1 to 10000; rows and columns nest at most 32 deep), `*` marks the tab shown, `focus=` is the pane that
 gets the keys, `zoom` shows it alone. A folder the file does not place gets a
-tab of its own; a name with no folder is dropped. `fux3 layout EDIT` makes
+tab of its own; a name with no folder is dropped. A part there is no room
+for (more parts than cells) is not drawn, and the viewer says so if it has
+the keys. A workspace shows at most 1,000 panes. `fux3 layout EDIT` makes
 one edit:
 
 `split row|col PANE` (put PANE beside or below the focused pane) ·
-`focus left|right|up|down|next|prev|PANE` (a pane named like a direction is
-reached by the direction's meaning, not its name) · `tab next|prev|N` · `break`
+`focus left|right|up|down|next|prev|PANE` · `pane PANE` (the same, for a
+pane named like a direction) · `tab next|prev|N` · `break`
 (the focused pane to its own tab) · `swap next|prev` · `size row|col +N|-N` ·
 `zoom` · `rotate` · `arrange row|col|grid|main`
 
@@ -144,7 +148,7 @@ names differ by more than case, for macOS); `C-b`, `M-x`, `enter`, `tab`,
 
 A script gets `FUX3C_DIR` (the session), `FUX3C_WS` (the workspace shown),
 `FUX3C_PANE` (the focused pane's directory), `FUX3C_KEYS`, `FUX3C_VIEW`,
-`COLUMNS` and `LINES` (the size of a pane that fills the view), and this
+`COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has), and this
 `fux3` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; a script that
 takes longer puts its work in the background, as the defaults do.
@@ -186,8 +190,9 @@ gone, says so in the corner of its own last row (`exited 0`, `lost`).
 
 **The mouse** passes through. When the focused pane's program asks for mouse
 reports, the viewer asks your terminal for the same and forwards each one to
-that pane, counted from its tile's corner. A click on another tile gives that
-tile the keys. The viewer uses the mouse for nothing else, and when the
+that pane, counted from its tile's corner; a drag that leaves the tile is
+reported at its edge until the button is let go. A click on another tile
+gives that tile the keys and is not passed on. The viewer uses the mouse for nothing else, and when the
 focused program does not ask, your terminal's own selection works as ever.
 
 Pictures: when the terminal says it draws sixel, a pane's picture is drawn in
@@ -227,8 +232,8 @@ fux3 adds nothing to stop these. What happens is what Unix does:
 - **Don't run the viewer in a pane of the workspace it shows.** It draws its
   own pane as one of its tiles and asks it to be that small. In a pane of
   another workspace or session it is fine.
-- **Don't put other folders in a workspace**: every folder there is shown as
-  a pane. Files are fine.
+- **Don't put other folders in a workspace**: every folder there with a
+  pane's kind of name is shown as a pane. Files are fine.
 - **Don't write nonsense to `layout`**: the viewer says what is wrong in the corner
   of its last row and shows every pane as a tab until it is fixed.
 

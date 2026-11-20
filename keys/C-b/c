@@ -4,13 +4,15 @@
 # opened at its end in $EDITOR, else $PAGER, else less; removed when that ends.
 [ -n "$FUX3C_PANE" ] || exit 0
 f=$(mktemp "$FUX3C_DIR/.text.XXXXXX") || exit
-{
-  cat "$FUX3C_PANE/history.1" "$FUX3C_PANE/history" 2>/dev/null
-  # The screen without its first line and without the blank rows at its end.
-  tail -n +2 "$FUX3C_PANE/screen" | awk '{ row[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) print row[i] }'
-} > "$f"
-n=$(wc -l < "$f")
-if [ -n "$EDITOR" ]; then show="$EDITOR +$n"; else show="${PAGER:-less +G}"; fi
-p=$(fux3 start "$FUX3C_WS/" -- sh -c '$1 "$2"; rm -f "$2"' sh "$show" "$f") || { rm -f "$f"; exit; }
-fux3 layout focus "${p##*/}"
-(fux3 wait "$p" >/dev/null; rm -rf "$p" "$f") >/dev/null 2>&1 &
+# The screen is read first, without its first line and the blank rows at its end:
+# a line that scrolls off meanwhile is then there twice, never missing.
+screen=$(tail -n +2 "$FUX3C_PANE/screen" | awk '{ row[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) print row[i] }')
+{ cat "$FUX3C_PANE/history.1" "$FUX3C_PANE/history" 2>/dev/null; printf '%s\n' "$screen"; } > "$f"
+n=$(($(wc -l < "$f")))
+if [ -n "$EDITOR" ]; then show="$EDITOR +$n"; else show=${PAGER:-less}; fi
+case $show in less|*/less) show="$show +G" ;; esac
+# The file goes when the editor ends; the tab too, unless the editor failed (its words stay to be read).
+p=$(fux3 start "$FUX3C_WS/" -- sh -c '$1 "$2"; code=$?; rm -f "$2"; exit $code' sh "$show" "$f") || { rm -f "$f"; exit; }
+fux3 layout pane "${p##*/}"
+h=$(sed -n 2p "$p/status")
+(fux3 wait "$p" | grep -q '^state exited 0' && [ "$(sed -n 2p "$p/status" 2>/dev/null)" = "$h" ] && rm -rf "$p"; rm -f "$f") >/dev/null 2>&1 &
