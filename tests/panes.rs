@@ -202,6 +202,18 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     until("the panes have their tiles' sizes", || {
         width("one") == Some("40x24".into()) && width("two") == Some("39x24".into())
     });
+    // A character the terminal outside may draw wider than fux counts it (three people who are one
+    // family here) is not drawn where that could reach past its tile's edge: a `?` stands in each of
+    // its columns, while the pane's own screen keeps it. One that is wide everywhere is drawn.
+    let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+    fs::write(inner.0.join("main/one/in"), format!("clear; printf '\\033[9;39H{family}\\033[11;39H\u{6f22}\\n'\r"))
+        .unwrap();
+    until("the family is in its pane and a stand-in in the viewer", || {
+        read(&inner.0.join("main/one/screen")).contains(family)
+            && screen().contains("??│")
+            && screen().contains("\u{6f22}│")
+            && !screen().contains(family)
+    });
     // A program that asks for the mouse gets it, counted from its own tile's corner (the tile starts at column 42).
     fs::write(view.join("in"), "printf '\\033[?1000h\\033[?1006h'; cat -v\r").unwrap();
     until("the pane's line 1 says so", || read(&inner.0.join("main/two/screen")).contains("mouse1000,mousesgr"));

@@ -380,3 +380,65 @@ fn a_resize_under_the_alternate_screen_keeps_the_main_screens_lines() {
     below.feed(b"\x1b[?1049l");
     assert!((below.peek().history.clone() + &below.plain()).contains("TOP") && below.plain().contains("BOTTOM"));
 }
+
+#[test]
+fn text_is_cut_into_characters_exactly_as_unicodes_own_test_file_says() {
+    let mut cases = 0;
+    for line in include_str!("../tests/GraphemeBreakTest.txt").lines() {
+        let Some((case, _)) = line.split_once('#').filter(|(case, _)| !case.trim().is_empty()) else { continue };
+        // "÷ 0020 × 0308 ÷": the mark before a character says whether it joins the one before.
+        let mut joiner = crate::width::Joiner::default();
+        let mut words = case.split_whitespace();
+        while let (Some(mark), Some(code)) = (words.next(), words.next()) {
+            let c = char::from_u32(u32::from_str_radix(code, 16).unwrap()).unwrap();
+            assert_eq!(joiner.joins(c), mark == "×", "{line}");
+        }
+        cases += 1;
+    }
+    assert!(cases > 700, "{cases}");
+}
+
+#[test]
+fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
+    let named = [
+        ("a flag", "\u{1f1ef}\u{1f1f5}", 2),
+        ("a family", "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}", 2),
+        ("a skin tone", "\u{1f44d}\u{1f3fd}", 2),
+        ("Hangul from jamo", "\u{1100}\u{1161}\u{11a8}", 2),
+        ("a Devanagari conjunct", "\u{915}\u{94d}\u{937}", 2),
+        ("a letter with a mark that takes room", "\u{915}\u{93e}", 2),
+        ("an emoji asked for as text", "\u{1f600}\u{fe0e}", 2),
+        ("a heart asked for as a picture", "\u{2764}\u{fe0f}", 2),
+        ("a keycap", "1\u{fe0f}\u{20e3}", 2),
+        ("three marks", "e\u{301}\u{302}\u{303}", 1),
+        ("an ambiguous one", "\u{a7}", 1),
+        ("a joiner after a letter", "x\u{200d}", 1),
+    ];
+    for (name, text, columns) in named {
+        // In `screen`: the text whole, and the next character right after its columns.
+        let first = term(12, 2, &format!("a{text}|"));
+        assert_eq!((first.plain(), first.col), (format!("a{text}|\n\n"), columns + 2), "{name}");
+        assert_eq!(first.cell_at(0, 1).map(|cell| cell.wide()), Some(columns == 2), "{name}");
+        // Through `screen.styled`, read back: the same cells.
+        let mut second = Term::new(12, 2);
+        second.feed(first.styled().lines().next().unwrap().as_bytes());
+        assert_eq!((second.plain(), second.col), (first.plain(), first.col), "{name}");
+        // At a row's end it wraps whole, a joiner at the very end too.
+        let end = term(4, 2, &format!("abc{text}|"));
+        let wrapped = if columns == 2 { format!("abc\n{text}|\n") } else { format!("abc{text}\n|\n") };
+        assert_eq!(end.plain(), wrapped, "{name}");
+    }
+    // Characters put side by side stay two when read back; one that is too long loses its end, and says so.
+    let apart = term(8, 1, "\u{1f1ef}\x1b[1;3H\u{1f1f5}\x1b[1;5H\u{915}\u{94d}\x1b[1;6H\u{937}");
+    let mut back = Term::new(8, 1);
+    back.feed(apart.styled().lines().next().unwrap().as_bytes());
+    assert_eq!(
+        (0..8).map(|x| back.cell_at(0, x)).collect::<Vec<_>>(),
+        (0..8).map(|x| apart.cell_at(0, x)).collect::<Vec<_>>()
+    );
+    let mut long = term(8, 1, &format!("e{}", "\u{301}".repeat(12)));
+    assert_eq!(long.plain().chars().count(), 10 + 1);
+    assert_eq!(long.take().refused.len(), 1);
+    // A program that asks is told clusters are always on.
+    assert_eq!(term(8, 1, "\x1b[?2027$p").take().reply, b"\x1b[?2027;3$y");
+}

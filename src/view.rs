@@ -6,7 +6,7 @@
 
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
-use crate::term::{BOLD, Cell, Color, DIM, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode};
+use crate::term::{BOLD, Cell, Color, DIM, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode};
 use crate::width::width;
 use crate::{is_name, keys};
 use std::collections::HashMap;
@@ -489,6 +489,14 @@ impl View {
                     // Half a wide character at the tile's edge is drawn as a blank.
                     let cut = x + 1 == body.w && pane.term.cell_at(y, x + 1).is_some_and(|next| next.ch == '\0');
                     cell.ch = if cut { ' ' } else { cell.ch };
+                    // A character your terminal may draw wider than fux counts it (it may not join what
+                    // fux joins) would there reach past the tile's edge: a `?` stands in each of its columns.
+                    let first = x - usize::from(cell.ch == '\0' && x > 0);
+                    if let Some(whole) = pane.term.cell_at(y, first).filter(|c| c.spill() > 0)
+                        && first + 1 + usize::from(whole.wide()) + whole.spill() > body.w
+                    {
+                        cell = Cell { ch: '?', more: ['\0'; MORE], style: cell.style };
+                    }
                     if let Some(slot) = back.get_mut((body.y + y) * w + body.x + x) {
                         *slot = cell;
                     }
@@ -579,7 +587,7 @@ impl View {
                 (false, false) => '─',
             };
             let near = focus.is_some_and(|f| x + 1 >= f.x && x <= f.x + f.w && y + 1 >= f.y && y <= f.y + f.h);
-            *cell = Cell { ch, marks: ['\0'; 2], style: colour(if near { 2 } else { 240 }, None, 0) };
+            *cell = Cell { ch, more: ['\0'; MORE], style: colour(if near { 2 } else { 240 }, None, 0) };
         }
         // A notice sits in the bottom right corner until the next key: what is
         // wrong with the layout file, what a script said, or that there are no panes.
@@ -694,26 +702,42 @@ impl View {
         }
         let mut style = None;
         let mut at = None;
+        // The cells from here to `again` are sent whether they changed or not: a character before
+        // them may have been drawn over them.
+        let mut again = 0;
         for (i, (new, old)) in back.iter().zip(self.front.iter_mut()).enumerate() {
-            if new == old {
+            let (x, y) = (i % w.max(1), i / w.max(1));
+            again = if x == 0 { 0 } else { again };
+            if new == old && i >= again {
                 continue;
             }
             *old = *new;
-            let (x, y) = (i % w.max(1), i / w.max(1));
             redraw |= pictures.iter().any(|p| (p.1..p.1 + p.3).contains(&x) && (p.2..p.2 + p.4).contains(&y));
             if new.ch == '\0' {
                 continue;
             }
+            let place = format!("\x1b[{};{}H", y + 1, x + 1);
             if at != Some(i) {
-                out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+                out.push_str(&place);
             }
             if style != Some(new.style) {
                 new.style.sgr(&mut out);
                 style = Some(new.style);
             }
+            // Your terminal's idea of a character's columns may not be fux's. One of several parts
+            // that takes two is drawn over two blanks, should it come out narrower; the cells one
+            // may come out over are sent after it; and after anything but plain ASCII the next
+            // cell is placed by its row and column.
+            let plain = new.more.first() == Some(&'\0');
+            if new.wide() && !plain {
+                out.push_str("  ");
+                out.push_str(&place);
+            }
             new.push_text(&mut out);
-            // After anything but plain ASCII, the terminal's idea of the column may not be ours.
-            at = new.ch.is_ascii().then_some(i + 1);
+            if new.spill() > 0 {
+                again = i + 1 + usize::from(new.wide()) + new.spill();
+            }
+            at = (new.ch.is_ascii() && plain).then_some(i + 1);
         }
         if redraw {
             for (file, x, y, ..) in &pictures {
@@ -754,12 +778,12 @@ impl View {
 fn cells(text: &str, style: Style) -> Vec<Cell> {
     let mut cells = Vec::new();
     for ch in text.chars().map(|c| if c.is_control() { '?' } else { c }) {
-        let wide = match width(ch) {
+        let wide = match width(ch, &[]) {
             0 => continue,
             cells => cells == 2,
         };
-        cells.push(Cell { ch, marks: ['\0'; 2], style });
-        cells.extend(wide.then_some(Cell { ch: '\0', marks: ['\0'; 2], style }));
+        cells.push(Cell { ch, more: ['\0'; MORE], style });
+        cells.extend(wide.then_some(Cell { ch: '\0', more: ['\0'; MORE], style }));
     }
     cells
 }

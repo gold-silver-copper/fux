@@ -2,7 +2,7 @@
 //! queries programs wait on, keeps the lines that scroll off the top, and
 //! takes sixel pictures whole. It knows nothing of files or processes.
 
-use crate::width::width;
+use crate::width::{Joiner, spread, width};
 use std::fmt::Write as _;
 
 /// The most bytes one picture may have; a longer one is dropped and noted.
@@ -67,23 +67,33 @@ impl Style {
     }
 }
 
+/// A character can have this many parts after its first; more are dropped.
+pub const MORE: usize = 9;
+
 /// One character cell. `ch` is NUL in the second half of a wide character.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cell {
     pub ch: char,
-    /// Up to two combining marks; more are dropped.
-    pub marks: [char; 2],
+    /// The rest of the character (the cluster): marks, joiners and what they join.
+    pub more: [char; MORE],
     pub style: Style,
 }
 
 impl Cell {
     pub fn blank(style: Style) -> Cell {
-        Cell { ch: ' ', marks: ['\0'; 2], style: Style { bg: style.bg, ..Style::default() } }
+        Cell { ch: ' ', more: ['\0'; MORE], style: Style { bg: style.bg, ..Style::default() } }
+    }
+    pub fn wide(&self) -> bool {
+        width(self.ch, &self.more) == 2
+    }
+    /// How many columns more than its own another terminal may give this character.
+    pub fn spill(&self) -> usize {
+        spread(self.ch, &self.more).saturating_sub(width(self.ch, &self.more))
     }
     pub fn push_text(&self, out: &mut String) {
         if self.ch != '\0' {
             out.push(self.ch);
-            out.extend(self.marks.iter().filter(|&&m| m != '\0'));
+            out.extend(self.more.iter().filter(|&&m| m != '\0'));
         }
     }
 }
@@ -169,6 +179,9 @@ pub struct Term {
     shift: bool,
     saved: [Saved; 2],
     last: char,
+    /// Where the character printed last is, and what the next one needs to know to join it.
+    cluster: (usize, usize),
+    joiner: Joiner,
     state: State,
     params: Vec<(u16, bool)>,
     param: Option<u16>,
@@ -228,6 +241,8 @@ impl Term {
             shift: false,
             saved: [Saved::default(); 2],
             last: '\0',
+            cluster: (0, 0),
+            joiner: Joiner::default(),
             state: State::Ground,
             params: Vec::new(),
             param: None,
@@ -290,12 +305,16 @@ impl Term {
         let plain = Style::default();
         for row in &self.grid {
             let used = row.iter().rposition(|c| *c != Cell::blank(plain)).map_or(0, |last| last + 1);
-            let mut style = plain;
-            for cell in row.iter().take(used) {
-                if cell.style != style && cell.ch != '\0' {
+            let (mut style, mut joiner) = (plain, Joiner::default());
+            for cell in row.iter().take(used).filter(|cell| cell.ch != '\0') {
+                // Two characters that would read back as one are kept apart by saying the style again.
+                if cell.style != style || joiner.joins(cell.ch) {
                     style = cell.style;
                     style.sgr(&mut out);
+                    joiner = Joiner::default();
+                    joiner.joins(cell.ch);
                 }
+                cell.more.iter().take_while(|&&c| c != '\0').for_each(|&c| _ = joiner.joins(c));
                 cell.push_text(&mut out);
             }
             if style != plain {
@@ -375,10 +394,9 @@ impl Term {
         for i in 0..cells.len() {
             let next_is_half = cells.get(i + 1).is_some_and(|c| c.ch == '\0');
             let Some(cell) = cells.get_mut(i) else { return };
-            let wide = width(cell.ch) == 2;
+            let wide = cell.wide();
             if (cell.ch == '\0' && !lead) || (wide && !next_is_half) {
-                cell.ch = ' ';
-                cell.marks = ['\0'; 2];
+                *cell = Cell { style: cell.style, ..Cell::blank(cell.style) };
             }
             lead = wide && next_is_half;
         }
@@ -489,11 +507,46 @@ impl Term {
         if self.graphics.get(usize::from(self.shift)) == Some(&true) {
             c = line_drawing(c);
         }
-        let wide = match width(c) {
-            0 => return self.add_mark(c),
-            w => w == 2,
+        if self.joiner.joins(c) {
+            return self.join(c);
+        }
+        match width(c, &[]) {
+            // A mark or a joiner with nothing to go on: it has no place on a screen.
+            0 => self.joiner = Joiner::default(),
+            columns => {
+                self.last = c;
+                self.place(Cell { ch: c, more: ['\0'; MORE], style: self.style }, columns == 2, self.insert);
+            }
+        }
+    }
+
+    /// Adds `c` to the character printed last: it is the same cluster (UAX #29).
+    fn join(&mut self, c: char) {
+        let (row, col) = self.cluster;
+        let Some(cell) = self.grid.get_mut(row).and_then(|r| r.get_mut(col)) else { return };
+        let (whole, was_wide) = (*cell, cell.wide());
+        let Some(slot) = cell.more.iter_mut().find(|m| **m == '\0') else {
+            return self.refuse("a character lost its end: it had more than ten parts");
         };
-        self.last = c; // Even if it finds no room below: REP then repeats what was sent, as in xterm.
+        *slot = c;
+        let grown = *cell;
+        if grown.wide() && !was_wide {
+            // U+FE0F asked an emoji for its picture, which takes a second column: the
+            // character is put again, and at a row's end it wraps whole.
+            if self.cols < 2 || (col + 2 > self.cols && !self.autowrap) {
+                *cell = whole;
+                return;
+            }
+            if col + 2 > self.cols {
+                *cell = Cell::blank(whole.style);
+            }
+            (self.col, self.wrap_pending) = (col, false);
+            self.place(grown, true, false);
+        }
+    }
+
+    /// Puts a character at the cursor, on the next row if this one has no room, and moves on.
+    fn place(&mut self, new: Cell, wide: bool, insert: bool) {
         if wide && self.cols < 2 {
             return;
         }
@@ -508,12 +561,9 @@ impl Term {
         }
         let (row, col) = (self.row, self.col);
         let cells = 1 + usize::from(wide);
-        if self.insert
-            && let Some(rest) = self.grid.get_mut(row).and_then(|r| r.get_mut(col..))
-        {
+        if insert && let Some(rest) = self.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
             rest.rotate_right(cells.min(rest.len()));
         }
-        let style = self.style;
         let blank = self.blank();
         if let Some(line) = self.grid.get_mut(row) {
             // What this overwrites may be half of a wide character: blank the other half.
@@ -526,36 +576,24 @@ impl Term {
                 *half = blank;
             }
             if let Some(cell) = line.get_mut(col) {
-                *cell = Cell { ch: c, marks: ['\0'; 2], style };
+                *cell = new;
             }
             if let Some(cell) = line.get_mut(col + 1).filter(|_| wide) {
-                *cell = Cell { ch: '\0', marks: ['\0'; 2], style };
+                *cell = Cell { ch: '\0', more: ['\0'; MORE], style: new.style };
             }
         }
-        if self.insert {
+        if insert {
             self.tidy(row);
         }
         if !self.pictures.is_empty() {
             self.pictures
                 .retain(|p| !((p.row..p.row + p.rows).contains(&row) && (p.col..p.col + p.cols).contains(&col)));
         }
+        self.cluster = (row, col);
         self.col += cells;
         if self.col >= self.cols {
             self.col = self.cols - 1;
             self.wrap_pending = self.autowrap;
-        }
-    }
-
-    fn add_mark(&mut self, mark: char) {
-        let mut col = if self.wrap_pending { self.col } else { self.col.saturating_sub(1) };
-        if self.cell_at(self.row, col).is_some_and(|c| c.ch == '\0') {
-            col = col.saturating_sub(1);
-        }
-        let row = self.row;
-        if let Some(slot) =
-            self.grid.get_mut(row).and_then(|r| r.get_mut(col)).and_then(|c| c.marks.iter_mut().find(|m| **m == '\0'))
-        {
-            *slot = mark;
         }
     }
 
@@ -610,6 +648,7 @@ impl Term {
         if (cols, rows) == (self.cols, self.rows) {
             return;
         }
+        self.interrupt();
         let blank = Cell::blank(Style::default());
         if self.alt {
             std::mem::swap(&mut self.grid, &mut self.other);
@@ -713,7 +752,10 @@ impl Term {
             }
             _ => match byte {
                 0x1b => self.state = State::Escape,
-                0x18 | 0x1a => (self.state, self.last) = (State::Ground, '\0'),
+                0x18 | 0x1a => {
+                    self.state = State::Ground;
+                    self.interrupt();
+                }
                 0x00..=0x1f => self.control(byte),
                 0x7f => {}
                 _ => match self.state {
@@ -755,8 +797,14 @@ impl Term {
         }
     }
 
+    /// Something other than text came: the next character starts anew, and REP has nothing to repeat.
+    fn interrupt(&mut self) -> char {
+        self.joiner = Joiner::default();
+        std::mem::take(&mut self.last)
+    }
+
     fn control(&mut self, byte: u8) {
-        self.last = '\0';
+        self.interrupt();
         match byte {
             0x08 => {
                 self.col = self.col.saturating_sub(1);
@@ -784,7 +832,7 @@ impl Term {
     fn escape(&mut self, byte: u8) {
         self.state = State::Ground;
         if byte != b'[' {
-            self.last = '\0';
+            self.interrupt();
         }
         match byte {
             b'[' => {
@@ -973,7 +1021,7 @@ impl Term {
         let n = self.arg(0, 1);
         let (row, col) = (self.row, self.col);
         // What REP repeats: the character printed just before it, with nothing between (as xterm).
-        let printed = std::mem::take(&mut self.last);
+        let printed = self.interrupt();
         match (self.private, self.inter, last) {
             (0, 0, b'A') => self.move_rows(n, false),
             (0, 0, b'B') => self.move_rows(n, true),
@@ -1060,7 +1108,7 @@ impl Term {
                 for _ in 0..n * usize::from(printed != '\0') {
                     self.print(printed);
                 }
-                self.last = '\0';
+                self.interrupt();
             }
             (0, 0, b'c') => self.respond("\x1b[?62;4;22c"),
             (b'>', 0, b'c') => self.respond("\x1b[>1;10;0c"),
@@ -1105,7 +1153,9 @@ impl Term {
                     2004 => Some(self.paste),
                     _ => None,
                 };
-                self.respond(&format!("\x1b[?{mode};{}$y", set.map_or(0, |on| 2 - u8::from(on))));
+                // Text is always cut into grapheme clusters (2027): permanently set.
+                let answer = if mode == 2027 { 3 } else { set.map_or(0, |on| 2 - u8::from(on)) };
+                self.respond(&format!("\x1b[?{mode};{answer}$y"));
             }
             (0, b'!', b'p') => {
                 // A soft reset: modes and the scroll region back to how they start.
