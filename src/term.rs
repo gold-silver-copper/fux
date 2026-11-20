@@ -1351,7 +1351,15 @@ impl Term {
         let held = self.above.len();
         places.iter_mut().for_each(|place| place.0 += held);
         let old: Vec<Vec<Cell>> = self.above.iter().chain(main).cloned().collect();
-        let mut wrapped = reflow(&old, cols, &mut places);
+        // While a shell reads a command (its last mark is `command`), the line being typed is cut
+        // or padded, not wrapped anew: the shell draws it again counting rows as it left them.
+        let typing = !self.alt && self.marks.last().is_some_and(|mark| matches!(mark.1, "prompt" | "command"));
+        let keep = places.first().filter(|_| typing).map_or(0..0, |&(row, ..)| {
+            let start = (0..=row).rev().find(|&y| old.get(y).is_none_or(|r| !continues(r))).unwrap_or(0);
+            let end = (row + 1..old.len()).find(|&y| old.get(y).is_some_and(|r| !continues(r))).unwrap_or(old.len());
+            start..end
+        });
+        let mut wrapped = reflow(&old, cols, &mut places, keep);
         let at = |i: usize| places.get(i).map_or((0, 0), |place| (place.0, place.1));
         // Blank rows below the cursor go first; a row with something on it is never dropped:
         // rows go to history from the top, and the cursor with them if text below it needs the room.
@@ -2486,7 +2494,12 @@ fn continues(row: &[Cell]) -> bool {
 /// with whether it waits to wrap at its row's end, and come back as rows and
 /// columns of the new; the first is the cursor, whose line is taken to reach
 /// as far as it stands.
-fn reflow(old: &[Vec<Cell>], cols: usize, places: &mut [(usize, usize, bool)]) -> Vec<Vec<Cell>> {
+fn reflow(
+    old: &[Vec<Cell>],
+    cols: usize,
+    places: &mut [(usize, usize, bool)],
+    keep: std::ops::Range<usize>,
+) -> Vec<Vec<Cell>> {
     let blank = Cell::blank(Style::default());
     let text = |cell: &Cell| {
         cell.ch != ' ' || cell.more.first() != Some(&'\0') || cell.style.flags & !MARKS != 0 || cell.link != 0
@@ -2496,10 +2509,10 @@ fn reflow(old: &[Vec<Cell>], cols: usize, places: &mut [(usize, usize, bool)]) -
     let mut lines: Vec<(Vec<Cell>, Cell)> = Vec::new();
     let mut origin: Vec<(usize, usize)> = Vec::new();
     for (y, row) in old.iter().enumerate() {
-        if lines.is_empty() || !continues(row) {
+        if lines.is_empty() || !continues(row) || keep.contains(&y) {
             lines.push((Vec::new(), blank));
         }
-        let goes_on = old.get(y + 1).is_some_and(|next| continues(next));
+        let goes_on = old.get(y + 1).is_some_and(|next| continues(next)) && !keep.contains(&y);
         let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
         let mut used = match goes_on {
             true => row.len() - usize::from(gap),
@@ -2507,6 +2520,10 @@ fn reflow(old: &[Vec<Cell>], cols: usize, places: &mut [(usize, usize, bool)]) -
         };
         if places.first().is_some_and(|cursor| cursor.0 == y) && !goes_on {
             used = used.max(places.first().map_or(0, |cursor| cursor.1).min(row.len()));
+        }
+        if keep.contains(&y) {
+            // Cut, never inside a wide character.
+            used = used.min(cols - usize::from(row.get(cols).is_some_and(|half| half.ch == '\0')));
         }
         let number = lines.len().saturating_sub(1);
         let Some((line, fill)) = lines.last_mut() else { continue };

@@ -1298,6 +1298,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - The viewer also asks its terminal for the cursor's colour at start and
     keeps it in `colours` (a line `cursor`), so "give back" has something
     to go back to.
+- **D90. The command being typed is not wrapped anew** (message 23, step
+  6; the panel 8 of 8 in its second round). This reverses D69's "not
+  fixed": there bash's doubled command after a narrowing was left as
+  bash's own, since not wrapping the cursor's line would lose text. The
+  shell's own mark removes the objection: where the last OSC 133 mark is
+  a prompt's or a command's (a command is being typed, nothing of it has
+  run), the rows of that line are cut or padded at a resize instead of
+  wrapped, so the shell's redraw, which counts rows up from the cursor as
+  it left them, lands on them clean. What is cut is text the shell is
+  about to draw again; finished output is above the prompt and is wrapped
+  as ever. Without marks nothing changes, and with the command's output
+  begun (mark `output`) nothing changes either.
+  - Tried with a real bash at 30 columns made 17 and back: one command
+    line with marks, the doubled one without.
 
 ## The old fux3's bugs: which classes are gone
 

@@ -765,6 +765,33 @@ fn lines_of(text: &str) -> String {
 }
 
 #[test]
+fn the_command_being_typed_is_not_wrapped_anew_where_the_shell_marks_its_prompt() {
+    // A shell that marks its prompt (OSC 133) draws its command line again after a resize,
+    // counting rows up from the cursor as it left them. So while a command is being typed
+    // (the last mark is a prompt's), that line's rows are cut or padded, not wrapped anew:
+    // the shell's own drawing lands on them. Everything above is wrapped as ever.
+    let (a, b) = ("\x1b]133;A\x07", "\x1b]133;B\x07");
+    let typed = format!("a line of output that is long\r\n{a}p> {b}echo abcdefghijabcdefghij");
+    let mut marked = term(20, 6, &typed);
+    assert_eq!(marked.plain(), "a line of output tha\nt is long\np> echo abcdefghijab\ncdefghij\n\n\n");
+    assert!(marked.resize(12, 6));
+    // (The output above is whole, in more rows; the command's two rows are two rows, cut.)
+    assert_eq!(marked.plain(), "a line of ou\ntput that is\n long\np> echo abcd\ncdefghij\n\n");
+    assert_eq!((marked.row, marked.col, marked.wraps().as_str()), (4, 8, "1 2"));
+    // What the shell then draws (bash: to the line's start, erase, a row up, erase, the line
+    // again) is one command line, once.
+    marked.feed(format!("\r\x1b[K\r\x1b[A\x1b[K\r{a}p> {b}echo abcdefghijabcdefghij").as_bytes());
+    assert_eq!(marked.plain(), "a line of ou\ntput that is\n long\np> echo abcd\nefghijabcdef\nghij\n");
+    // With no marks, or once the command runs (its output has begun), nothing is different:
+    // every line is wrapped anew, and no text is lost.
+    for running in [typed.replace(a, "").replace(b, ""), format!("{typed}\x1b]133;C\x07")] {
+        let mut plain = term(20, 6, &running);
+        assert!(plain.resize(12, 6));
+        assert!(plain.plain().ends_with("p> echo abcd\nefghijabcdef\nghij\n"), "{:?}", plain.plain());
+    }
+}
+
+#[test]
 fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     // The case that lost 40 characters of 123: a line of 120, narrowed to 40 columns and widened back.
     let long: String = (0..120).map(|n| char::from(b'a' + n % 26)).collect();

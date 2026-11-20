@@ -793,10 +793,14 @@ the addresses on the focused pane.
 
 ## Left out
 
-A shell's own redraw after its pane is made narrower: bash draws a long
-command you have not entered yet a second time below the first (it clears
-and redraws as if nothing had been wrapped anew; tmux shows the same). Ctrl-L
-or Enter tidies it.
+A shell that does not mark its prompt, after its pane is made narrower: bash
+draws a long command you have not entered yet a second time below the first
+(it clears and redraws as if nothing had been wrapped anew; tmux shows the
+same). Ctrl-L or Enter tidies it. With prompt marks (OSC 133: the bash lines
+are with the `C-b C` key, above) it does not happen: while a command is
+being typed, that line is not wrapped anew at a resize (its rows are cut or
+padded where they are, as kitty and Ghostty do), and the shell's own redraw
+lands on it clean. Everything above the prompt is wrapped anew as always.
 
 
 Of the mouse, the UTF-8 and urxvt report forms
