@@ -80,15 +80,34 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     told.feed(asks.as_bytes());
     let answers = "\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]4;1;rgb:cccc/0000/0000\x1b\\";
     assert_eq!(String::from_utf8(told.take().reply).unwrap(), answers.to_string() + &da);
+    // `10` with two parts asks for the foreground and then the background; a part that would set
+    // a colour is passed over; the cursor's colour (`11`'s second part) is not told; a line that
+    // is no colour (not six hex digits) is no answer.
+    told.feed(b"\x1b]10;?;?\x07\x1b]10;#ffffff;?\x07\x1b]11;#ffffff;?\x07");
+    let both = "\x1b]10;rgb:d0d0/d0d0/d0d0\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07";
+    assert_eq!(String::from_utf8(told.take().reply).unwrap(), both);
+    told.colours = "background #+12345\nforeground #d0d0d\n7 cc0000\n".into();
+    told.feed(b"\x1b]11;?\x07\x1b]10;?\x07\x1b]4;7;?\x07");
+    assert!(told.take().reply.is_empty());
+    // A person's file: blanks do not matter, capitals neither, and of two lines for a colour the last counts.
+    told.colours = "background #000000\n  background\t#FDF6E3  # paper\r\n".into();
+    told.feed(b"\x1b]11;?\x07");
+    assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]11;rgb:fdfd/f6f6/e3e3\x07");
+    told.colours = "foreground #d0d0d0\nbackground #1c1c1c\n".into();
     // Setting a colour is taken and changes nothing; a reset keeps what was told.
     told.feed(b"\x1b]11;#ffffff\x07\x1b]4;1;rgb:00/00/00\x07\x1b]104\x07\x1b]111\x07\x1bc\x1b]11;?\x07x");
     assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]11;rgb:1c1c/1c1c/1c1c\x07");
     assert_eq!(told.plain(), "x\n\n");
     // The viewer reads its terminal's answers as answers, not as keys.
     use crate::keys::next;
-    assert_eq!(next(b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\x", false), Some((25, "answer:11;rgb:1c1c/1c1c/1c1c".into())));
-    assert_eq!(next(b"\x1b]4;1;rgb:cc/00/00\x07", false), Some((19, "answer:4;1;rgb:cc/00/00".into())));
-    assert_eq!((next(b"\x1b]11;rgb:1c", false), next(b"\x1b]", true)), (None, Some((2, "M-]".into()))));
+    assert_eq!(
+        next(b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\x", false, true),
+        Some((25, "answer:11;rgb:1c1c/1c1c/1c1c".into()))
+    );
+    assert_eq!(next(b"\x1b]4;1;rgb:cc/00/00\x07", false, true), Some((19, "answer:4;1;rgb:cc/00/00".into())));
+    // An answer that comes in pieces waits for its end; when nothing was asked, Alt-] is a key at once.
+    assert_eq!((next(b"\x1b]11;rgb:1c", false, true), next(b"\x1b]", false, true)), (None, None));
+    assert_eq!(next(b"\x1b]x\x07", false, false), Some((2, "M-]".into())));
 }
 
 #[test]
@@ -461,7 +480,7 @@ fn when_the_tab_shown_goes_the_tab_shown_before_it_is_shown() {
 
 #[test]
 fn keys_have_the_names_of_their_files() {
-    let name = |bytes: &[u8]| crate::keys::next(bytes, true);
+    let name = |bytes: &[u8]| crate::keys::next(bytes, true, false);
     for (bytes, expected) in [
         (&b"\x02"[..], "C-b"),
         (b"v", "v"),
@@ -485,7 +504,7 @@ fn keys_have_the_names_of_their_files() {
     ] {
         assert_eq!(name(bytes), Some((bytes.len(), expected.to_string())));
     }
-    assert_eq!(crate::keys::next(b"\x1b[20", true), None, "half a sequence waits for the rest, however long");
+    assert_eq!(crate::keys::next(b"\x1b[20", true, false), None, "half a sequence waits for the rest, however long");
 }
 
 #[test]

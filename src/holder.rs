@@ -11,8 +11,9 @@ use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::process::ExitStatusExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -30,8 +31,7 @@ const INPUT_MAX: usize = 64 << 10;
 const HISTORY_MAX: u64 = 4 << 20;
 const CTL_LINE_MAX: usize = 256;
 const LOG_MAX: usize = 64 << 10;
-/// The session's file of what the colours are, from a pane's folder.
-const COLOURS: &str = "../../colours";
+
 /// A holder looks this often whether its directory is still there.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
 const GONE: &str = "the pane's directory is gone";
@@ -52,8 +52,9 @@ struct Holder {
     state: String,
     /// What the emulator produced and the next publish writes: history, pictures, a title, a clipboard.
     pending: Out,
-    /// When the `colours` file read last was written.
-    colours: Option<std::time::SystemTime>,
+    /// The session's file of what the colours are, and which one was read last.
+    colours_file: PathBuf,
+    colours: Option<(std::time::SystemTime, u64, u64)>,
     /// The `history` file ends in the middle of a line.
     history_open: bool,
     /// The title in the `title` file.
@@ -98,6 +99,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     };
     // `fux start` says under what name the pane's directory was started.
     let pane = std::env::var_os(name!("PANE")).ok_or("hold is started by `fux start`")?;
+    // (The session is two folders up from the pane, by the name the pane was started under.)
+    let colours_file = Path::new(&pane).ancestors().nth(2).unwrap_or(Path::new("")).join("colours");
     let mut child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
@@ -151,6 +154,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         pictures: Vec::new(),
         state: "running".into(),
         pending: Out::default(),
+        colours_file,
         colours: None,
         history_open: false,
         title: String::new(),
@@ -284,11 +288,16 @@ impl Holder {
         };
         // What the colours are is in the session's `colours` file, two folders up, if a viewer
         // (or a person) wrote one: read again when it has changed, 16 KiB of it at most.
-        let stamp = fs::metadata(COLOURS).and_then(|file| file.modified()).ok();
+        // (A file, not something that only has a file's name; told apart from the one read last
+        // by when it was written, how long it is and which file it is.)
+        let stamp = fs::metadata(&self.colours_file).ok().filter(|file| file.is_file());
+        let stamp = stamp.and_then(|file| Some((file.modified().ok()?, file.len(), file.ino())));
         if stamp != self.colours {
-            let mut text = String::new();
-            let _ = File::open(COLOURS).map(|file| file.take(16 << 10).read_to_string(&mut text));
-            (self.colours, self.term.colours) = (stamp, text);
+            let mut text = Vec::new();
+            if stamp.is_some() {
+                let _ = File::open(&self.colours_file).map(|file| file.take(16 << 10).read_to_end(&mut text));
+            }
+            (self.colours, self.term.colours) = (stamp, String::from_utf8_lossy(&text).into_owned());
         }
         self.term.feed(buffer.get(..n).unwrap_or(&[]));
         self.collect();

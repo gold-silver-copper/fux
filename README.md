@@ -129,15 +129,19 @@ background #1c1c1c
 1 #cc0000
 ```
 
-(`foreground`, `background`, or a palette number from 0 to 255, then
-`#rrggbb`). The viewer asks its terminal once when it starts and writes the
-file with what it is told; two viewers on terminals of different colours do
-not agree, and the one that started last is believed. A pane's holder
-answers a program's question (OSC 10, 11, and 4 with `?`) from that file,
-with or without a viewer, and says nothing about a colour the file has no
-line for: a program is never told a colour that someone made up. A program
-that sets a colour (OSC 4, 10, 11 with a value, 104, 110, 111) is heard and
-changes nothing.
+(`foreground`, `background`, or a palette number from 0 to 255, then `#` and
+six hex digits; of two lines for one colour the last counts, a line that is
+anything else counts for nothing, and 16 KiB of the file are read). The
+viewer asks its terminal once when it starts, gives it a second to answer,
+and writes the file with what it was told, in place of the one that was
+there, yours too; a terminal that tells of no colour leaves the file as it
+is. Two viewers on terminals of different colours do not agree: the one that
+wrote last is believed. A pane's holder answers a program's question (OSC
+10, 11, and 4 with `?`) from that file, with or without a viewer, and says
+nothing about a colour the file has no line for: a program is never told a
+colour that someone made up. A program that sets a colour (OSC 4, 10, 11
+with a value, 104, 110, 111) is heard and changes nothing. No workspace or
+pane can be named `colours`.
 
 Is a pane alive? Its holder keeps a lock on the directory for as long as it
 lives: `flock -n "$D/main/build" true` fails while it does (Linux), and

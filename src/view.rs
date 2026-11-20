@@ -7,7 +7,7 @@
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
 use crate::term::{BOLD, Cell, Color, DIM, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode};
-use crate::{is_name, keys, replace};
+use crate::{is_name, keys};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -15,7 +15,7 @@ use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The most key scripts running at once; one more is refused with a message.
 const SCRIPTS_MAX: usize = 32;
@@ -73,8 +73,9 @@ struct View {
     message: String,
     /// Whether the terminal said it draws sixel pictures.
     sixel: bool,
-    /// What the terminal has said its colours are, while it is still being asked.
-    colours: Option<String>,
+    /// While the terminal is still being asked what it is like: since when, and the colours it
+    /// has told of.
+    colours: Option<(Instant, String)>,
     /// The pictures on the terminal now: file, column, row, columns, rows, and whose holder's.
     drawn: Vec<Drawn>,
     cursor: String,
@@ -145,7 +146,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         menu: None,
         message: String::new(),
         sixel: false,
-        colours: Some(String::new()),
+        colours: Some((Instant::now(), String::new())),
         drawn: Vec::new(),
         cursor: String::new(),
         title: None,
@@ -227,6 +228,10 @@ impl View {
                 self.carry.extend_from_slice(buffer.get(..n).unwrap_or(&[]));
                 active = Instant::now();
             }
+            // The terminal is given a second to say what it is like.
+            if self.colours.as_ref().is_some_and(|(since, _)| since.elapsed() > Duration::from_secs(1)) {
+                self.told();
+            }
             if self.waiting.is_none() && !self.carry.is_empty() {
                 // When nothing at all happened for a moment, a lone ESC is the Escape key.
                 self.keys(events.iter().all(|e| *e == 0));
@@ -280,7 +285,10 @@ impl View {
                 at += END.len();
                 continue;
             }
-            let Some((length, name)) = keys::next(rest, whole) else { break };
+            // While the terminal is being asked what it is like, its answers may come in pieces:
+            // nothing is taken for a key until it is whole, and a string is an answer.
+            let asking = self.colours.is_some();
+            let Some((length, name)) = keys::next(rest, whole && !asking, asking) else { break };
             let raw = rest.get(..length).unwrap_or(&[]);
             at += length;
             match name.as_str() {
@@ -294,10 +302,7 @@ impl View {
                     // It was asked last: the colours the terminal told of before it are all it
                     // will tell. They go into the session's `colours` file, from which every
                     // pane's program is answered; the viewer that wrote last is believed.
-                    let colours = std::mem::take(&mut self.colours);
-                    if let Some(told) = colours.filter(|told| !told.is_empty()) {
-                        let _ = replace(self.session.join("colours"), told.as_bytes());
-                    }
+                    self.told();
                 }
                 name if name.starts_with("answer:") => self.colour(name.trim_start_matches("answer:")),
                 name => self.key(name, raw),
@@ -315,19 +320,38 @@ impl View {
     fn colour(&mut self, answer: &str) {
         let Some((which, value)) = answer.split_once(";rgb:") else { return };
         let name = match which.split_once(';') {
-            None if which == "10" => "foreground",
-            None if which == "11" => "background",
-            Some(("4", index)) if index.parse::<u8>().is_ok() => index,
+            None if which == "10" => "foreground".to_string(),
+            None if which == "11" => "background".to_string(),
+            Some(("4", index)) if index.parse::<u8>().is_ok_and(|n| n.to_string() == index) => index.to_string(),
             _ => return,
         };
         // Each part is one to four hex digits of however many bits: its first eight are kept.
         let part = |part: &str| {
             let full = (1u32 << (4 * part.len().clamp(1, 4))) - 1;
-            u32::from_str_radix(part, 16).ok().filter(|_| part.len() <= 4).map(|value| value * 255 / full)
+            let hex = (1..=4).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_hexdigit());
+            u32::from_str_radix(part, 16).ok().filter(|_| hex).map(|value| value * 255 / full)
         };
-        let parts: Vec<u32> = value.split('/').filter_map(part).collect();
-        if let (Some(told), [r, g, b]) = (&mut self.colours, parts.as_slice()) {
+        // Three parts, each a number, or it is no answer; and no more is kept than was asked.
+        let parts: Vec<Option<u32>> = value.split('/').map(part).collect();
+        if let (Some((_, told)), [Some(r), Some(g), Some(b)]) = (&mut self.colours, parts.as_slice())
+            && told.len() < 8 << 10
+        {
             told.push_str(&format!("{name} #{r:02x}{g:02x}{b:02x}\n"));
+        }
+    }
+
+    /// The terminal has said all it will of what it is like (it answered the last question, or
+    /// a second went by): the colours it told of go into the session's `colours` file, from
+    /// which every pane's program is answered. If it told of none, the file is left as it is.
+    /// The file is written whole under a name of this viewer's own and then given its name, so
+    /// of two viewers the last to write is believed.
+    fn told(&mut self) {
+        if let Some((_, told)) = self.colours.take().filter(|(_, told)| !told.is_empty()) {
+            let own = self.session.join(format!(".colours.{}", std::process::id()));
+            let written = fs::write(&own, told).and_then(|()| fs::rename(&own, self.session.join("colours")));
+            if let Err(e) = written {
+                self.message = format!("cannot write {}: {e}", self.session.join("colours").display());
+            }
         }
     }
 

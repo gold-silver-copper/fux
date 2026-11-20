@@ -17,7 +17,8 @@ const PARAMS_MAX: usize = 32;
 pub const SIZE_MAX: usize = 500;
 /// The most history kept between two looks by the holder; lines past it are dropped and noted.
 const HISTORY_PENDING_MAX: usize = 4 << 20;
-const REPLY_MAX: usize = 4096;
+/// (Room for an answer to every question about a colour that a viewer asks at its start.)
+const REPLY_MAX: usize = 16 << 10;
 /// The most cells of rows that a resize sent to history are kept to come back at the next one.
 const ABOVE_MAX: usize = 100_000;
 
@@ -938,7 +939,7 @@ impl Term {
 
     fn respond(&mut self, text: &str) {
         if self.out.reply.len() + text.len() > REPLY_MAX {
-            self.refuse("an answer to the program was dropped: 4096 bytes of answers were waiting");
+            self.refuse("an answer to the program was dropped: 16 KiB of answers were waiting");
         } else {
             self.out.reply.extend_from_slice(text.as_bytes());
         }
@@ -1166,22 +1167,38 @@ impl Term {
                 self.out.title = Some(self.title.clone());
             }
             "4" | "10" | "11" => {
-                // `4 ; N ; ?` may come several times in one string; the others ask once.
-                let mut words = rest.split(';');
-                while let Some(word) = words.next() {
-                    let (name, asked) = match number {
-                        "4" => (word.parse::<u8>().map_or(String::new(), |n| n.to_string()), words.next() == Some("?")),
-                        "10" => ("foreground".to_string(), word == "?"),
-                        _ => ("background".to_string(), word == "?"),
+                // `4` takes pairs of a palette number and what to do with it; `10` and `11` take
+                // one part each for the colours from theirs on (`10;?;?` asks for both). A part
+                // that is `?` asks; any other would set the colour, and changes nothing.
+                let mut parts = rest.split(';');
+                for count in 0.. {
+                    let (name, which, part) = match (number, count) {
+                        ("4", _) => match parts.next().map(|index| index.parse::<u8>()) {
+                            Some(Ok(n)) => (n.to_string(), format!("4;{n}"), parts.next()),
+                            Some(Err(_)) => (String::new(), String::new(), parts.next()),
+                            None => break,
+                        },
+                        ("10", 0) => ("foreground".to_string(), "10".to_string(), parts.next()),
+                        ("10", 1) | ("11", 0) => ("background".to_string(), "11".to_string(), parts.next()),
+                        _ => break,
                     };
-                    let line = |line: &str| line.strip_prefix(name.as_str())?.strip_prefix(" #").map(str::to_string);
-                    let value =
-                        self.colours.lines().find_map(line).filter(|hex| hex.len() == 6 && asked && !name.is_empty());
-                    if let Some(value) = value.and_then(|hex| u32::from_str_radix(&hex, 16).ok()) {
+                    // Told from the last line that starts with that name, if what follows the
+                    // name is a colour (`#` and six hex digits; blanks around them do not matter).
+                    let line = |line: &str| {
+                        let mut words = line.split_whitespace();
+                        (words.next() == Some(name.as_str())).then(|| words.next().unwrap_or_default().to_string())
+                    };
+                    let told =
+                        self.colours.lines().rev().filter(|_| part == Some("?") && !name.is_empty()).find_map(line);
+                    let told = told.as_deref().and_then(|told| told.strip_prefix('#'));
+                    let told = told.filter(|hex| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+                    if let Some(value) = told.and_then(|hex| u32::from_str_radix(hex, 16).ok()) {
                         let [_, r, g, b] = value.to_be_bytes();
-                        let which = if number == "4" { format!("4;{name}") } else { number.to_string() };
                         let end = if self.bel { "\x07" } else { "\x1b\\" };
                         self.respond(&format!("\x1b]{which};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}"));
+                    }
+                    if part.is_none() || self.out.reply.len() >= REPLY_MAX {
+                        break;
                     }
                 }
             }

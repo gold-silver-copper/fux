@@ -19,8 +19,9 @@ pub const DEFAULT: &[(&str, &str)] = scripts!(
 /// The key at the start of `bytes`: how many bytes it is and its name. The
 /// name is empty for a sequence that is no key we know (it is passed on as
 /// it is). `None` when more bytes are needed to tell; with `whole`, no more
-/// are coming, and what is there is taken as it stands.
-pub fn next(bytes: &[u8], whole: bool) -> Option<(usize, String)> {
+/// are coming, and what is there is taken as it stands. With `answers`, the
+/// terminal was asked something it answers in a string, and such a string is read as one.
+pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)> {
     let first = *bytes.first()?;
     if first == 0x1b {
         return match bytes.get(1) {
@@ -37,7 +38,7 @@ pub fn next(bytes: &[u8], whole: bool) -> Option<(usize, String)> {
             }
             // The terminal's answer to a question asked in a string (what a colour is): not a
             // key, but ours to read. It ends with BEL or ESC `\\`.
-            Some(b']') => {
+            Some(b']') if answers => {
                 let bel = bytes.iter().position(|b| *b == 7).map(|at| (at, at + 1));
                 let st = bytes.windows(2).skip(1).position(|pair| pair == b"\x1b\\").map(|at| (at + 1, at + 3));
                 let end = bel.into_iter().chain(st).min();
@@ -54,7 +55,7 @@ pub fn next(bytes: &[u8], whole: bool) -> Option<(usize, String)> {
                 Some(_) => Some((3, String::new())),
             },
             Some(_) => {
-                let (length, name) = next(bytes.get(1..)?, true)?;
+                let (length, name) = next(bytes.get(1..)?, true, false)?;
                 Some((length + 1, if name.is_empty() { name } else { format!("M-{name}") }))
             }
         };

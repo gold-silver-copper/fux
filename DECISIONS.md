@@ -469,6 +469,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   nvim: `:set background?` is `light` on a light file and `dark` on a dark
   one; with no file each keeps its own default.
 
+- **D56. The fix check of D55 (1 Opus, 1 gpt-6.2-astra, a tester; one pass).**
+  Fixed: an answer from the viewer's terminal that came in two reads could
+  be taken for keys (Alt-], Escape, then text typed into a pane). While the
+  terminal is being asked, nothing is taken for a key until it is whole and
+  a string is an answer; afterwards a string is not looked for, so Alt-] is
+  a key at once. The asking ends at the terminal's answer to "what are you"
+  or after one second (D55 had no timer; the order asked for a bounded
+  wait, and a terminal that never answers must not keep the file from being
+  written). The file is written under a name of the viewer's own and then
+  renamed (two viewers shared `colours.new`). `10;?;?` asks for foreground
+  and background. A FIFO or a directory named `colours` is not opened (it
+  froze the holder); the file is told apart by time, length and inode; it
+  is found from the pane's own name, not through `..` (a workspace that is
+  a link). The emulator's bound on waiting answers went from 4 to 16 KiB: a
+  viewer inside a pane asks 258 questions at once and lost the palette's
+  upper part. An answer must be three hex numbers. A person's file may have
+  blanks and capitals, and its last line for a colour counts. `colours` is
+  no name for a workspace or a pane.
+  Kept: the holder looks at the file's state before each read of the
+  program's output (one system call; not measured as a cost); answers in
+  the 8-bit form of a terminal set to send C1 controls are not read.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.
