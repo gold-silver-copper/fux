@@ -57,12 +57,12 @@ struct Pane {
     title: String,
 }
 
-/// Where the press of a key went: to the viewer itself (and whether it ran a script), or to
-/// a pane (its workspace, its name, its program).
+/// Where the press of a key went: to the viewer itself (and the script it ran, if it ran one),
+/// or to a pane (its directory and its program).
 #[derive(Clone)]
 enum Went {
-    Viewer(bool),
-    Pane(String, String, u32),
+    Viewer(Option<PathBuf>),
+    Pane(PathBuf, u32),
 }
 
 struct View {
@@ -222,6 +222,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     let result = view.tty.write_all((START.to_string() + &asked + "\x1b[c").as_bytes()).and_then(|()| view.run(&ctl));
+    // The keys leave with the viewer: a key that is down in a pane is let go there.
+    view.leave(None);
     // The pane that was told it has the keys is told that it has them no more.
     view.tell(None);
     if view.joined {
@@ -329,6 +331,9 @@ impl View {
     /// for a moment, so a lone ESC is the Escape key.
     fn keys(&mut self, whole: bool) {
         let bytes = std::mem::take(&mut self.carry);
+        // The keys are for the pane the layout says has them now, which a command may have
+        // changed since it was last drawn.
+        self.focus = Layout::load(&self.session.join(&self.workspace)).1.tab().map(|tab| tab.focus.clone());
         let wants_paste = self.focus.as_ref().and_then(|f| self.panes.get(f)).is_some_and(|pane| pane.term.paste);
         let mut at = 0;
         while let Some(rest) = bytes.get(at..).filter(|rest| !rest.is_empty()) {
@@ -523,25 +528,33 @@ impl View {
     fn key(&mut self, name: &str, raw: &[u8]) {
         // A program may have asked to be told when keys are let go and held (the kitty
         // protocol's flag 2), and the terminal then tells the viewer too. A key belongs, until it
-        // is let go, to whoever got its press. The viewer's own (the prefix, a key of a menu):
-        // its repeats and its release go nowhere. A pane's: they go to that pane, whichever pane
-        // has the keys by then and whether a menu is open or not. A release with no press goes
-        // nowhere. While a menu is open, a modifier key by itself is nothing.
+        // is let go, to whoever got its press, and only a press makes it someone's: a repeat or a
+        // release with no press goes nowhere. The viewer's own (the prefix, a key of a menu): its
+        // repeats and its release go nowhere. A pane's: they go to that pane, whether a menu is
+        // open or not. While a menu is open, a modifier key by itself is nothing.
         let event = keys::event(raw);
-        let repeats = self.menu.as_ref().is_some_and(|(directory, _)| directory.join(".repeat").exists());
-        if let Some((id, kind, modifier)) = event {
-            let went = self.down.iter().find(|(key, _)| *key == id).map(|(_, went)| went.clone());
+        // (A sign may be told by its own number when pressed and by its key's when let go.)
+        let same = |key: &(u32, u8)| event.is_some_and(|(id, sign, ..)| *key == id || Some(*key) == sign);
+        if let Some((_, _, kind, modifier)) = event {
+            let went = self.down.iter().find(|(key, _)| same(key)).map(|(_, went)| went.clone());
             if kind != 2 {
-                self.down.retain(|(key, _)| *key != id);
+                self.down.retain(|(key, _)| !same(key));
             }
             match (kind, went) {
-                (2 | 3, Some(Went::Pane(workspace, name, pid))) => return self.pass(&workspace, &name, pid, raw),
-                // (Held in a menu that stays open, a key that ran a script there runs it again: to resize, say.)
-                (2, Some(Went::Viewer(script))) if script && repeats => {}
+                (1, _) => {}
+                (2 | 3, Some(Went::Pane(directory, pid))) => return self.pass(&directory, pid, raw),
+                // Held, a key does again what its press did, there and only there: the script it
+                // ran in a menu that stays open (to resize, say), while that menu is the one open.
+                (2, Some(Went::Viewer(Some(script)))) => {
+                    let menu = self.menu.as_ref().map(|(directory, _)| directory.as_path());
+                    if menu.is_some() && menu == script.parent() && script.with_file_name(".repeat").exists() {
+                        self.send();
+                        self.script(&script);
+                    }
+                    return;
+                }
                 // (And what is no press, repeat or release is nothing.)
-                (2, Some(Went::Viewer(_))) | (0 | 3.., _) => return,
-                // (A repeat whose press was not seen is a press.)
-                _ => {}
+                _ => return,
             }
             if modifier && self.menu.is_some() {
                 return;
@@ -553,53 +566,54 @@ impl View {
         let went = match fs::metadata(&file) {
             Ok(kind) if !name.is_empty() && kind.is_dir() => {
                 self.menu = Some((file.clone(), menu_entries(&file)));
-                Went::Viewer(false)
+                Went::Viewer(None)
             }
             Ok(kind) if !name.is_empty() && kind.is_file() => {
                 self.send();
                 self.script(&file);
                 // A menu with a file `.repeat` in it stays for the next key (to resize, say), until a key it has not.
                 self.menu = menu.filter(|(directory, _)| directory.join(".repeat").exists());
-                Went::Viewer(true)
+                Went::Viewer(Some(file))
             }
             _ if menu.is_none() => {
                 self.typed.extend_from_slice(raw);
-                let name = self.focus.clone().unwrap_or_default();
-                let pid = self.panes.get(&name).map_or(0, |pane| pane.pid);
-                Went::Pane(self.workspace.clone(), name, pid)
+                let directory = self.session.join(&self.workspace).join(self.focus.as_deref().unwrap_or_default());
+                Went::Pane(directory.clone(), program(&directory).0)
             }
-            _ => Went::Viewer(false),
+            _ => Went::Viewer(None),
         };
         // Which keys are down is remembered for their releases: the last 64.
-        if let Some((id, _, _)) = event {
-            self.down.retain(|(key, _)| *key != id);
+        if let Some((id, ..)) = event {
+            self.down.retain(|(key, _)| !same(key));
             let extra = (self.down.len() + 1).saturating_sub(64);
             self.down.drain(..extra);
             self.down.push((id, went));
         }
     }
 
-    /// A key's repeat or release goes to the pane that got its press, if that pane's program is
-    /// still the one that got it.
-    fn pass(&mut self, workspace: &str, name: &str, pid: u32, raw: &[u8]) {
-        let directory = self.session.join(workspace).join(name);
-        let shown = self.panes.get(name).filter(|_| workspace == self.workspace).map(|pane| pane.pid);
-        let now = shown.unwrap_or_else(|| {
-            let mut status = String::new();
-            let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(directory.join("status"));
-            let _ = file.map(|file| file.take(256).read_to_string(&mut status));
-            status.lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0)
-        });
-        if name.is_empty() || now != pid {
-            return;
+    /// A key's repeat or release goes to the pane that got its press, after what was typed before
+    /// it, if that pane's program is still the one that got it and still asks to be told of keys
+    /// let go. Who a pane is, is read when it matters: nothing the viewer remembers of it is asked.
+    fn pass(&mut self, directory: &Path, pid: u32, raw: &[u8]) {
+        if program(directory) == (pid, true) {
+            self.send();
+            let input = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(directory.join("in"));
+            let _ = input.and_then(|mut input| input.write(raw));
         }
-        if workspace == self.workspace && self.focus.as_deref() == Some(name) {
-            // (In its order among what else is typed.)
-            self.typed.extend_from_slice(raw);
-        } else if let Ok(mut input) =
-            OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(directory.join("in"))
-        {
-            let _ = input.write(raw);
+    }
+
+    /// The keys are with the pane `has` now, or with none: a key that is down in another pane is
+    /// let go there, so that a press is followed by its release (the terminal, asked for the next
+    /// pane's flags or left to itself, may never tell of it, or tell of it in another form), and
+    /// what the terminal still tells of that key reaches no pane.
+    fn leave(&mut self, has: Option<&Path>) {
+        for at in 0..self.down.len() {
+            if let Some(((code, last), Went::Pane(directory, pid))) = self.down.get(at).cloned()
+                && Some(directory.as_path()) != has
+            {
+                self.pass(&directory, pid, format!("\x1b[{code};1:3{}", char::from(last)).as_bytes());
+                self.down.get_mut(at).into_iter().for_each(|(_, went)| *went = Went::Viewer(None));
+            }
         }
     }
 
@@ -1067,6 +1081,7 @@ impl View {
         }
         cursor.push_str(&modes);
         self.tell(wants_focus);
+        self.leave(self.focus.as_ref().map(|name| directory.join(name)).as_deref());
         if self.keyboard != 0 {
             cursor.push_str(&format!("\x1b[={keys}u"));
         }
@@ -1229,6 +1244,20 @@ fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Ce
             *slot = if cut { Cell::blank(cell.style) } else { *cell };
         }
     }
+}
+
+/// Who a pane's program is (the pid in `status`) and whether it asks to be told of keys let go
+/// and held (flag 2 of the `keys` word in `modes`), as the files say now.
+fn program(directory: &Path) -> (u32, bool) {
+    let fact = |name: &str| {
+        let mut text = String::new();
+        let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(directory.join(name));
+        let _ = file.map(|file| file.take(256).read_to_string(&mut text));
+        text
+    };
+    let pid = fact("status").lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0);
+    let keys = fact("modes").split_whitespace().find_map(|word| word.strip_prefix("keys")?.parse::<u8>().ok());
+    (pid, keys.unwrap_or(0) & 2 != 0)
 }
 
 impl Pane {

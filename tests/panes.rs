@@ -40,10 +40,15 @@ fn read(path: &Path) -> String {
 }
 
 /// Waits up to 20 seconds for something to become true.
-fn until(what: &str, mut ready: impl FnMut() -> bool) {
+fn until(what: &str, ready: impl FnMut() -> bool) {
+    until_or(what, String::new, ready);
+}
+
+/// The same, and when it does not become true, says what `more` has to say of it.
+fn until_or(what: &str, more: impl Fn() -> String, mut ready: impl FnMut() -> bool) {
     let start = Instant::now();
     while !ready() {
-        assert!(start.elapsed() < Duration::from_secs(20), "timed out waiting until {what}");
+        assert!(start.elapsed() < Duration::from_secs(20), "timed out waiting until {what}{}", more());
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -325,8 +330,18 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
     let early = inner.start("early", &["sh", "-c", asking]);
     let plain = inner.start("plain", &["sh", "-c", "stty raw -echo; exec cat -vt"]);
     until("the first answer", || read(&early.join("screen")).contains("^[[?0u"));
-    fs::create_dir_all(inner.0.join("main")).unwrap();
-    fs::write(inner.0.join("main/layout"), "* row(early plain) focus=early\n").unwrap();
+    // The layout is changed as a person changes it, by `fux layout`, which takes the lock the viewer takes.
+    let layout = |edits: &[&[&str]]| {
+        for edit in edits {
+            let out = inner.fux().arg("layout").args(*edit).output().unwrap();
+            assert!(out.status.success(), "layout {edit:?}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        read(&inner.0.join("main/layout"))
+    };
+    assert_eq!(
+        layout(&[&["split", "row", "plain", "beside", "early"], &["pane", "early"]]),
+        "* row(early plain) focus=early\n"
+    );
     // The terminal the viewer finds has flags of its own on its alternate screen (4), and after
     // the viewer it is asked what it has.
     let view = format!(
@@ -338,14 +353,29 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
     let view = outer.start("view", &["sh", "-c", &view]);
     let modes = |pane: &Path| fact(pane, "modes");
     let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
+    // (When the viewer is waited for in vain, what its pane says is printed.)
+    let seen = || {
+        format!(
+            ": the viewer's pane has modes {:?}, state {:?} and shows\n{}",
+            modes(&view),
+            fact(&view, "state"),
+            read(&view.join("screen"))
+        )
+    };
     // The viewer learns what its terminal takes and says so for the session. A program that
     // asks from then on has its flags in force, on its own `modes` and, asked of the terminal,
     // on the viewer's.
     until("the session knows", || read(&inner.0.join("keyboard")) == "5\n");
     let asks = inner.start("asks", &["sh", "-c", asking]);
     until("the second answer", || shown(&asks).contains("^[[?1u") && modes(&asks).contains("keys1"));
-    fs::write(inner.0.join("main/layout"), "* row(asks plain) focus=asks\n  early focus=early\n").unwrap();
-    until("the viewer asked its terminal for them", || modes(&view).contains("keys1"));
+    let edits: [&[&str]; 4] =
+        [&["split", "row", "asks", "beside", "plain"], &["swap", "prev"], &["pane", "early"], &["break"]];
+    assert_eq!(layout(&edits), "- row(asks plain) focus=asks\n* early focus=early\n");
+    assert_eq!(layout(&[&["pane", "asks"]]), "* row(asks plain) focus=asks\n- early focus=early\n");
+    // (And has drawn the last of the edits: the pane has its half of the terminal.)
+    until_or("the viewer asked its terminal for them", seen, || {
+        modes(&view).contains("keys1") && fact(&asks, "size") == "40 24"
+    });
     // Ctrl-I is not Tab and Shift-Enter is not Enter: each reaches the program as it was sent.
     fs::write(view.join("in"), "a\x1b[105;5ub\tc\x1b[13;2ud\r").unwrap();
     until("the keys arrive apart", || shown(&asks).ends_with("^[[?1ua^[[105;5ub^Ic^[[13;2ud^M"));
@@ -353,13 +383,13 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
     fs::write(view.join("in"), "\x1b[98;5uo").unwrap();
     until("the other pane has the keys", || read(&inner.0.join("main/layout")).contains("focus=plain"));
     // That program asked for nothing: the terminal is put back to telling keys the old way.
-    until("the viewer took the flags back", || !modes(&view).contains("keys"));
+    until_or("the viewer took the flags back", seen, || !modes(&view).contains("keys"));
     fs::write(view.join("in"), "x\ty").unwrap();
     until("plain keys arrive", || shown(&plain) == "x^Iy");
     assert!(shown(&asks).ends_with("d^M"), "{}", shown(&asks));
     // Back on the pane that asked, they are in force again.
     fs::write(view.join("in"), "\x02o").unwrap();
-    until("the flags are asked for again", || modes(&view).contains("keys1"));
+    until_or("the flags are asked for again", seen, || modes(&view).contains("keys1"));
     // The program that was told "none" before the viewer came still gets keys the old way: what
     // it was told stays true.
     assert!(!modes(&early).contains("keys") && shown(&early) == "^[[?0u", "{}", modes(&early));
@@ -596,12 +626,15 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     fs::write(view.join("in"), "\x1b[111;1:1u\x1b[111;1:3u").unwrap();
     until("the other pane has the keys", || read(&inner.0.join("main/layout")).contains("focus=plain"));
     until("the terminal is asked for no flags", || !fact(&view, "modes").contains("keys"));
-    // The key that was held all this while repeats and is let go: its press went to the first
-    // pane, and so do these. A release of a key nobody pressed goes nowhere. What is typed
-    // here arrives here.
+    // The keys left the first pane with a key of its still down: it is told there that the key
+    // is let go, at once (this terminal, asked for no flags now, would never tell of it). What
+    // the terminal still tells of that key reaches no pane, nor does a release of a key nobody
+    // pressed. What is typed here arrives here.
+    until("the first pane's key is let go there", || shown(&asks) == format!("{held}^[[120;1:3u"));
     fs::write(view.join("in"), "\x1b[120;1:2u\x1b[120;1:3u\x1b[121;1:3uz").unwrap();
     until("the plain pane has what was typed there", || shown(&plain) == "z");
-    until("the first has its key back", || shown(&asks) == format!("{held}^[[120;1:2u^[[120;1:3u"));
+    assert_eq!(shown(&asks), format!("{held}^[[120;1:3u"));
+    let held = format!("{held}^[[120;1:3u");
     // A key the viewer took whose release never came (the terminal tells of none without the
     // flag) does not take a later press of that key for its own: the prefix, then the menu's key,
     // and `b` typed in the pane that has the keys again, down and up.
@@ -610,8 +643,82 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     fs::write(view.join("in"), "\x1b[111;1:1u\x1b[111;1:3u").unwrap();
     until("the first pane has the keys", || fact(&view, "modes").contains("keys11"));
     fs::write(view.join("in"), "\x1b[98;1:1u\x1b[98;1:3u").unwrap();
-    until("b went down and up", || shown(&asks) == format!("{held}^[[120;1:2u^[[120;1:3u^[[98;1:1u^[[98;1:3u"));
+    until("b went down and up", || shown(&asks) == format!("{held}^[[98;1:1u^[[98;1:3u"));
+    // Only a press makes a key someone's: a repeat with no press goes nowhere, and so does the
+    // release after it. A sign sent as itself when pressed and as a sequence when let go (the
+    // number of its key, then its own) is one key.
+    fs::write(view.join("in"), "\x1b[119;1:2u\x1b[119;1:3u!\x1b[49:33;2:3u").unwrap();
+    let held = format!("{held}^[[98;1:1u^[[98;1:3u!^[[49:33;2:3u");
+    until("the sign went down and up", || shown(&asks) == held);
+    // The viewer leaves with a key down in the pane: the pane is told that it is let go.
+    fs::write(view.join("in"), "\x1b[99;1:1u").unwrap();
+    until("c is down", || shown(&asks) == format!("{held}^[[99;1:1u"));
+    let ctl = fs::read_dir(&inner.0)
+        .unwrap()
+        .flatten()
+        .find(|entry| entry.file_name().to_string_lossy().starts_with(".view."));
+    fs::write(ctl.unwrap().path(), "quit\n").unwrap();
+    until("c is let go", || shown(&asks) == format!("{held}^[[99;1:1u^[[99;1:3u"));
     assert_eq!(shown(&plain), "z");
+}
+
+#[test]
+fn a_held_key_does_again_what_its_press_did_and_there_only_and_a_program_started_anew_gets_none_of_it() {
+    let (outer, inner) = (Session::new("houter"), Session::new("hinner"));
+    let keys = inner.0.join(".keys");
+    // Two menus that stay open, with the same key in both.
+    for menu in ["r", "m"] {
+        fs::create_dir_all(keys.join("C-b").join(menu)).unwrap();
+        fs::write(keys.join("C-b").join(menu).join(".repeat"), "").unwrap();
+        let script = keys.join("C-b").join(menu).join("h");
+        fs::write(&script, format!("#!/bin/sh\n# act\necho {menu} >> \"$FUXN_KEYS/ran\"\n")).unwrap();
+        Command::new("chmod").arg("+x").arg(script).status().unwrap();
+    }
+    fs::create_dir_all(&outer.0).unwrap();
+    fs::write(outer.0.join("keyboard"), "31\n").unwrap();
+    fs::create_dir_all(&inner.0).unwrap();
+    fs::write(inner.0.join("keyboard"), "31\n").unwrap();
+    let asking = ["sh", "-c", "stty raw -echo; printf '\\033[>11u\\033[?u'; exec cat -vt"];
+    let (first, second) = (inner.start("first", &asking), inner.start("second", &asking));
+    let layout = |edit: &[&str]| assert!(inner.fux().arg("layout").args(edit).status().unwrap().success());
+    layout(&["pane", "first"]);
+    let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &viewer[..]].concat());
+    let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
+    until("the viewer asked its terminal for the flags", || fact(&view, "modes").contains("keys11"));
+    // A key (down and up) for each of: the prefix, a menu, Escape; and `h` down, held, up.
+    let tap = |key: &str| format!("\x1b[{key}:1u\x1b[{key}:3u");
+    let (prefix, escape, h) = (tap("98;5"), tap("27;1"), ["\x1b[104;1:1u", "\x1b[104;1:2u", "\x1b[104;1:3u"]);
+    let ran = || read(&keys.join("ran"));
+    // Held in the one menu, the key acts again there.
+    fs::write(view.join("in"), format!("{prefix}{}{}{}", tap("114;1"), h[0], h[1])).unwrap();
+    until("the key acted twice", || ran() == "r\nr\n");
+    // Still held when that menu is closed and the other opened, it does nothing in the other:
+    // not what it did before, and not what a press would do there. Pressed there, it does.
+    fs::write(view.join("in"), format!("{escape}{prefix}{}{}{}{}{}", tap("109;1"), h[1], h[2], h[0], h[2])).unwrap();
+    until("the key acted in the other menu", || ran().ends_with("m\n"));
+    // A key goes down in the first pane, and the other tab is shown: the key is let go there,
+    // and a key typed right after the command that showed it is the second pane's.
+    fs::write(view.join("in"), format!("{escape}\x1b[97;1:1u")).unwrap();
+    until("the key is down", || shown(&first) == "^[[?11u^[[97;1:1u");
+    assert_eq!(ran(), "r\nr\nm\n");
+    layout(&["tab", "next"]);
+    fs::write(view.join("in"), tap("122;1")).unwrap();
+    until("the second pane has the keys", || shown(&second) == "^[[?11u^[[122;1:1u^[[122;1:3u");
+    until("the key is let go in the first", || shown(&first) == "^[[?11u^[[97;1:1u^[[97;1:3u");
+    // The first pane's program ends and another is started under its name, in the tab that is
+    // not shown: what the terminal tells of the key after that is nothing to the new program.
+    fs::write(first.join("ctl"), "kill\n").unwrap();
+    until("the program has ended", || fact(&first, "state") != "running");
+    inner.start("first", &asking);
+    until("the new program is told its flags", || {
+        fact(&first, "state") == "running" && shown(&first).ends_with("^[[?11u")
+    });
+    let new = shown(&first);
+    fs::write(view.join("in"), format!("\x1b[97;1:2u\x1b[97;1:3u{}", tap("121;1"))).unwrap();
+    until("the second pane has the next key", || shown(&second).ends_with("^[[121;1:1u^[[121;1:3u"));
+    assert_eq!(shown(&first), new);
 }
 
 #[test]

@@ -188,13 +188,21 @@ those too. A key belongs, until it is let go, to whoever got its press. A key
 the viewer took for itself (the prefix, a key of a menu) is its own to the
 end: its repeats and its release reach no program. (Held in a menu that
 stays open, as the resize menu does, a key that did something there does it
-again.) A key that went to a pane is that pane's: its repeats and its
-release go there too, also after the keys have moved to another pane and
-while a menu is open, unless the pane's program has ended or been started
-anew meanwhile. A release whose press nobody got goes nowhere. While a menu
-is open, Shift, Ctrl and their like by themselves, and the locks, do
-nothing: they neither choose nor close it. (The viewer knows of the last 64
-keys that are down.)
+again, while that menu is the one open: in no other.) A key that went to a
+pane is that pane's: its repeats and its release go there too, also while a
+menu is open, unless the pane's program has ended, been started anew or
+stopped asking meanwhile (the pane's `status` and `modes` are read then).
+When the keys leave a pane with a key of its still down (another pane or
+workspace gets them, or the viewer leaves), the viewer tells that pane
+itself that the key is let go, since the terminal, asked for the next pane's
+flags, may never tell: a press is followed by its release. What the terminal
+still tells of that key in the protocol's form reaches no pane; if the next
+pane asked for no flags, the terminal sends a held letter as plain letters,
+and those are typed there as they would be without fux. Only a press makes a
+key someone's: a repeat or a release whose press nobody got goes nowhere.
+While a menu is open, Shift, Ctrl and their like by themselves, and the
+locks, do nothing: they neither choose nor close it. (The viewer knows of
+the last 64 keys that are down.)
 
 The viewer reads both forms and gives a key one name in both, so `C-b` and
 the keys in the keys directory are found whatever the focused program asked
@@ -205,8 +213,10 @@ sign it is, which it does under flag 4 and not under flag 1 alone (there the
 key is `M-S-3`); the keypad's keys are named as the keys they double. Two
 keys that the old form cannot tell apart have two names in the new one:
 Ctrl-I is `C-i` and no longer `tab`, Ctrl-Backspace is `C-backspace` and no
-longer `C-h`. Keys typed in the same instant as a key that moves the focus
-may reach the next pane in the form the last one asked for. `keyboard` is
+longer `C-h`. Who has the keys is read from `layout` when keys come, so a
+key typed right after `fux layout focus …` is the new pane's; until the
+viewer has drawn once more, it may reach that pane in the form the last one
+asked for. `keyboard` is
 no name for a workspace or a pane either.
 
 Is a pane alive? Its holder keeps a lock on the directory for as long as it

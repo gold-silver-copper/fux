@@ -93,25 +93,31 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)>
     Some((length, name))
 }
 
+/// A key as the kitty protocol tells of it: its number and its sequence's last byte.
+pub type Key = (u32, u8);
+
 /// What a key's sequence says beyond its name, in the kitty protocol's forms: which key it is
-/// (its number and the sequence's last byte), whether it is pressed (1), held and repeating (2)
-/// or let go (3), and whether it is a modifier key by itself (Shift, Ctrl and their like, and the
-/// locks).
+/// (its number and the sequence's last byte), the same for the sign it gives with Shift if that
+/// is told, whether it is pressed (1), held and repeating (2) or let go (3), and whether it is a
+/// modifier key by itself (Shift, Ctrl and their like, and the locks).
 /// A character by itself is a press of its key (a terminal may send a letter's press so and its
-/// release as a sequence). `None` for other bytes: a key in the old form, of which no more is told.
-pub fn event(raw: &[u8]) -> Option<((u32, u8), u8, bool)> {
+/// release as a sequence: a sign is then known by its own number first and by its key's after).
+/// `None` for other bytes: a key in the old form, of which no more is told.
+pub fn event(raw: &[u8]) -> Option<(Key, Option<Key>, u8, bool)> {
     let mut text = std::str::from_utf8(raw).ok()?.chars();
     if let (Some(only), None) = (text.next(), text.next())
         && !only.is_control()
     {
-        return Some(((only.to_lowercase().next().map_or(0, u32::from), b'u'), 1, false));
+        return Some(((only.to_lowercase().next().map_or(0, u32::from), b'u'), None, 1, false));
     }
     let (last, inside) = raw.strip_prefix(b"\x1b[")?.split_last()?;
     let mut fields = std::str::from_utf8(inside).ok()?.split(';');
-    let code = fields.next()?.split(':').next()?.parse::<u32>().unwrap_or(1);
+    let mut faces = fields.next()?.split(':').map(|n| n.parse::<u32>().ok());
+    let (code, sign) = (faces.next()?.unwrap_or(1), faces.next().flatten());
     let kind = fields.next().and_then(|held| held.split(':').nth(1)?.parse::<u8>().ok()).unwrap_or(1);
     matches!(last, b'u' | b'~' | b'A'..=b'H' | b'P'..=b'S').then_some((
         (code, *last),
+        sign.map(|sign| (sign, *last)),
         kind,
         *last == b'u' && matches!(code, 57358..=57360 | 57441..=57454),
     ))
