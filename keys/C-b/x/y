@@ -1,6 +1,5 @@
 #!/bin/sh
 # yes, close this pane
-# Removing the directory is what ends a pane; `kill` first only makes it prompt.
+# Removing the directory is what ends a pane: the holder sees it go and hangs up.
 [ -n "$FUXN_PANE" ] || exit 0
-[ -p "$FUXN_PANE/ctl" ] && echo kill 1<>"$FUXN_PANE/ctl"
 rm -rf "$FUXN_PANE"

@@ -4,9 +4,8 @@
 n=1
 while [ -e "$FUXN_DIR/w$n" ] && [ "$n" -lt 1000 ]; do n=$((n + 1)); done
 mkdir "$FUXN_DIR/w$n" || exit
-p=$(fux start "w$n/") || exit
+# The pane's shell runs inside a wrapper that removes the pane's folder when the
+# shell ends: that is this script's choice, not fux's. A shell killed outright
+# leaves its folder, for the close key or `rm -r`.
+p=$(fux start "w$n/" -- sh -c '"${SHELL:-sh}"; rm -rf "$FUXN_PANE"') || exit
 echo "workspace w$n"
-# When the shell ends, its pane goes: that is this script's choice, not fux's.
-h=$(sed -n 2p "$p/status")
-# ...unless another pane has that name by then: only the pane of the holder we waited for is removed.
-(fux wait "$p" >/dev/null; [ "$(sed -n 2p "$p/status" 2>/dev/null)" = "$h" ] && rm -rf "$p") >/dev/null 2>&1 &

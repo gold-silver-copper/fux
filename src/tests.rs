@@ -264,3 +264,60 @@ fn keys_have_the_names_of_their_files() {
     }
     assert_eq!(crate::keys::next(b"\x1b[20", true), None, "half a sequence waits for the rest, however long");
 }
+
+#[test]
+fn a_screen_file_reads_back_as_the_terminal_that_wrote_it() {
+    let mut term = Term::new(12, 4);
+    term.feed("\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[4 q\x1b[31m漢x\x1b[m e\u{301}\x1b[2;3H".as_bytes());
+    let file = format!("pid=1 {}\n{}", term.header(), term.styled());
+    let mut back = Term::from_screen(&file, |_, _| {});
+    assert_eq!(back.header(), term.header());
+    assert_eq!((back.plain(), back.styled()), (term.plain(), term.styled()));
+}
+
+#[test]
+fn a_wide_character_cut_by_a_resize_goes_whole_on_both_screens() {
+    // One on the screen shown, one on the screen behind the alternate one.
+    let mut term = Term::new(4, 2);
+    term.feed("AB界\x1b[?1049hCD界".as_bytes());
+    term.resize(3, 2);
+    assert_eq!(term.plain(), "\nCD\n");
+    term.feed(b"\x1b[?1049l");
+    assert_eq!(term.plain(), "AB\n\n");
+}
+
+#[test]
+fn a_program_is_told_which_mouse_reports_are_on() {
+    let term = term(20, 2, "\x1b[?1002h\x1b[?1002$p\x1b[?1000$p\x1b[?1006$p");
+    assert_eq!(String::from_utf8_lossy(&term.reply), "\x1b[?1002;1$y\x1b[?1000;2$y\x1b[?1006;2$y");
+}
+
+#[test]
+fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour() {
+    let (mut flat, mut deep) =
+        (parse("* row(a b c:4) focus=a\n").expect("flat"), parse("* col(d row(a b c:4)) focus=a\n").expect("deep"));
+    flat.edit(&["size", "row", "+5"]).expect("size");
+    deep.edit(&["size", "row", "+5"]).expect("size");
+    assert_eq!(
+        (flat.print(), deep.print()),
+        ("* row(a:21 b:16 c:66) focus=a\n".into(), "* col(d row(a:21 b:16 c:66)) focus=a\n".into())
+    );
+    // The focus is on d by now; the new pane still goes beside the pane it was asked for.
+    let mut layout = parse("* row(a b) focus=b\n  d focus=d\n  n focus=n\n").expect("a layout");
+    layout.edit(&["split", "col", "n", "beside", "a"]).expect("split");
+    assert_eq!(layout.print(), "* row(col(a n) b) focus=n\n  d focus=d\n");
+    assert!(layout.edit(&["split", "col", "n", "beside", "nobody"]).is_err());
+    // In a view with room for one of three, the one drawn is the one that has the keys.
+    let crowded = parse("* row(a b c) focus=c\n").expect("a layout");
+    let tiles = crowded.tabs.first().expect("a tab").tiles(Rect { x: 0, y: 0, w: 1, h: 3 });
+    assert_eq!(tiles.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["c"]);
+}
+
+#[test]
+fn a_resize_under_the_alternate_screen_keeps_the_main_screens_lines() {
+    let mut term = Term::new(10, 8);
+    term.feed(b"l1\r\nl2\r\nl3\r\nl4\r\nl5\r\n\x1b[?1047h");
+    term.resize(10, 3);
+    term.feed(b"\x1b[?1047l");
+    assert_eq!(term.history.clone() + &term.plain(), "l1\nl2\nl3\nl4\nl5\n\n");
+}

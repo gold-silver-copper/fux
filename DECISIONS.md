@@ -191,6 +191,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   switch to the plain names is those three lines and one `sed` over `keys/`,
   the README and the tests, which spell the variables out.
 
+- **D42. After a panel of eight read the code (2026-11-19): eleven defects
+  fixed, six changes made, no split into crates.** The first line of a screen
+  file is the emulator's to write and read (`Term::header`,
+  `Term::from_screen`). `boundary.sh`, run by CI, compiles the emulator, the
+  system calls and the key names each as a crate of its own: that is what
+  keeps a later split cheap. The close key only removes the folder (`kill`
+  and then `rm -rf` raced the holder's last writes and left a dead folder).
+  The viewer opens a pane's `in` by its path for every write, and tells a
+  lost pane by the lock on its folder. `split … beside PANE` lets the split
+  keys name the pane they were pressed on. In a view too small for every
+  tile, the focused pane is among those drawn. `fux wait` reads the status
+  of the folder it locked, by entering it (one more system call, `fchdir`).
+  A layout file may be 160 KiB, which a thousand longest names need, and an
+  edit is refused if what it would write is over that.
+- **D43. A default shell pane removes itself** (the orchestrator's call after
+  a 4 to 4 vote: it removes mechanism and adds none). The key scripts start
+  the shell inside a one-line wrapper that removes `$FUXN_PANE` when the
+  shell ends, and no longer leave a process waiting to remove the folder,
+  which could remove a pane started again under the same name. The editor
+  key does the same. The price, in the README: a shell or editor killed
+  outright leaves its folder (and the editor its text file).
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

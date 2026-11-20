@@ -98,10 +98,10 @@ fn say(line: &[u8]) -> Result<(), String> {
 }
 
 /// At most 64 KiB of a small file of ours, as text.
-fn read_some(path: &Path) -> String {
+fn read_some(path: &Path) -> std::io::Result<String> {
     let mut bytes = Vec::new();
-    let _ = File::open(path).map(|file| file.take(64 << 10).read_to_end(&mut bytes));
-    String::from_utf8_lossy(&bytes).into_owned()
+    File::open(path)?.take(64 << 10).read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn start(args: &[OsString]) -> Result<(), String> {
@@ -201,11 +201,11 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
     loop {
         // An error here is the end too: there is nothing left to wait for.
         let ended = !matches!(holder.try_wait(), Ok(None));
-        if read_some(&dir.join("status")).contains(&ours) {
+        if read_some(&dir.join("status")).is_ok_and(|status| status.contains(&ours)) {
             return Ok(());
         }
         if ended {
-            let log = read_some(&dir.join("log"));
+            let log = read_some(&dir.join("log")).unwrap_or_default();
             let why = log.lines().last().unwrap_or("the holder ended without a word");
             return Err(why.trim_start_matches("fux: ").to_string());
         }
@@ -219,10 +219,11 @@ fn wait(args: &[OsString]) -> Result<(), String> {
     };
     let dir = Path::new(dir);
     // The holder locks its directory for as long as it lives. The status is
-    // read before our own lock goes, so it is that holder's and no later one's.
+    // read in that same directory before our own lock goes, even if it was renamed.
     let lock = File::open(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     lock.lock_shared().map_err(|e| format!("{}: {e}", dir.display()))?;
-    let status = read_some(&dir.join("status"));
+    sys::enter_directory(&lock).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let status = read_some(Path::new("status")).map_err(|e| format!("{}/status: {e}", dir.display()))?;
     drop(lock);
     say(status.trim_end().as_bytes())
 }

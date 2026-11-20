@@ -13,7 +13,7 @@ A terminal multiplexer that is a view over directories.
   a directory inside it is a menu.
 
 One package, no dependencies: the system calls, the terminal emulator, the
-character widths and sixel are all here, in about 3,000 lines of Rust.
+character widths and sixel are all here, in about 3,800 lines of Rust.
 Linux and macOS.
 
 ```sh
@@ -88,6 +88,8 @@ pid=4242 state=running v=17 size=80x24 cursor=3,8 shape=0 modes=cursor,paste pic
 `v` grows by one with every change written (and would start again at 0); `cursor` is row,column from 0;
 `state` is `status`'s, with `:` for its space (`exited:0`);
 `modes` lists what is on (`cursor` shown, `appcursor`, `keypad`, `paste`,
+`mouse9`, `mouse1000`, `mouse1002` or `mouse1003` with `mousesgr`: the mouse
+reports the program asked for,
 `alt` screen); each `pic=` is a file, its row and column, and its size in
 cells. A screen file is replaced in one step (written as `screen.new`, then
 renamed), so a reader sees a whole old one or a whole new one.
@@ -136,11 +138,11 @@ shown, as `cd -` would (a tab goes when its last pane's folder is removed,
 not when a program merely ends); an edit that ends on another tab moves the mark. It
 is in the file, so two viewers agree. A folder the file does not place gets a
 tab of its own; a name with no folder is dropped. A part there is no room
-for (more parts than cells) is not drawn, and the viewer says so if it has
-the keys. A workspace shows at most 1,000 panes. `fux layout EDIT` makes
+for (more parts than cells) is hidden. The focused pane gets a cell even
+then. A workspace shows at most 1,000 panes. `fux layout EDIT` makes
 one edit:
 
-`split row|col PANE` (put PANE beside or below the focused pane) ·
+`split row|col PANE [beside ANCHOR]` (put PANE beside or below ANCHOR, defaulting to the focused pane) ·
 `focus left|right|up|down|next|prev|PANE` · `pane PANE` (the same, for a
 pane named like a direction) · `tab next|prev|N|-` (`-`: the tab shown before) · `break`
 (the focused pane to its own tab) · `swap next|prev` · `size row|col +N|-N` ·
@@ -189,8 +191,11 @@ in the editor, `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
 workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
 TERM to the program), `g` arrange (`r c g m`, `t` turn). Whether a pane
-closes when its shell exits is the script's choice too: the defaults run
-`fux wait` in the background and remove the directory.
+closes when its shell exits is the script's choice too: the defaults start
+the shell inside `sh -c '"${SHELL:-sh}"; rm -rf "$FUXN_PANE"'`, so a pane
+removes its own folder when its shell ends. A shell killed outright (or hung
+up with `kill`) never reaches the `rm`: its folder stays, saying `killed`,
+until the close key or `rm -r` takes it.
 
 In a menu's directory, a file `.about` holds the words shown for it in the
 menu above, and a file `.repeat` keeps the menu open after each key (until a
@@ -208,7 +213,8 @@ its screen in one private file and opens it in `$EDITOR` (which may hold
 arguments, split at spaces), else `$PAGER`, else `less`, in a new tab. `vi`, `vim`, `nvim`,
 `nano`, `emacs` and `less` are opened at the file's end; any other editor
 gets the file alone, as not every editor reads `+LINE`. The file is removed
-when the editor ends. If it ended well (exit 0) its tab goes too, and the
+when the editor ends. If it ended well (exit 0) its tab goes too (the
+pane removes its own folder, as a shell pane does), and the
 tab shown before it is shown again (the one you came from, unless you looked
 at another meanwhile); if it failed, its tab stays with what it said.
 
@@ -292,7 +298,8 @@ fux adds nothing to stop these. What happens is what Unix does:
   to close one. `rm -r` of a workspace ends all its panes.
 - **Don't `mv` a live pane across filesystems** (that is a copy and an `rm`).
   Within one, the pane simply has the new name; the program's `FUXN_PANE`
-  still says the old one, and so does a key script that waits to remove it.
+  still says the old one, so a default shell pane that was moved no longer
+  removes its folder when its shell ends.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `status` goes on saying `running` and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain

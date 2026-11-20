@@ -44,8 +44,6 @@ struct Pane {
     pictures: Vec<(String, usize, usize, usize, usize)>,
     /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
     asked: (u32, usize, usize, (u16, u16)),
-    /// `in`, open for writing while a holder reads it.
-    input: Option<File>,
 }
 
 struct View {
@@ -202,19 +200,8 @@ impl View {
             };
             // Typed bytes are not read while 64 KiB of them wait for a script.
             let typing = if self.carry.len() < TYPED_MAX { sys::POLLIN } else { 0 };
-            let mut wanted = vec![(self.tty.as_raw_fd(), typing), (ctl.as_raw_fd(), sys::POLLIN)];
-            let writers: Vec<(String, i32)> = self
-                .panes
-                .iter()
-                .filter_map(|(name, pane)| Some((name.clone(), pane.input.as_ref()?.as_raw_fd())))
-                .collect();
-            wanted.extend(writers.iter().map(|(_, fd)| (*fd, 0)));
+            let wanted = [(self.tty.as_raw_fd(), typing), (ctl.as_raw_fd(), sys::POLLIN)];
             let events = sys::wait(&wanted, timeout)?;
-            // A writer with an event has lost its reader: the holder is gone.
-            for ((name, _), _) in writers.iter().zip(events.iter().skip(2)).filter(|(_, event)| **event != 0) {
-                self.panes.remove(name);
-                active = Instant::now();
-            }
             if events.first().is_some_and(|e| *e != 0) {
                 let n = (&self.tty).read(&mut buffer)?;
                 if n == 0 {
@@ -397,14 +384,14 @@ impl View {
     /// Writes what was typed to the focused pane's `in`, without waiting.
     fn send(&mut self) {
         let typed = std::mem::take(&mut self.typed);
-        let Some((name, pane)) = self.focus.as_ref().and_then(|f| Some((f, self.panes.get_mut(f)?))) else { return };
-        if typed.is_empty() {
-            return;
-        }
-        match pane.input.as_ref().map(|mut input| input.write(&typed)) {
-            Some(Ok(n)) if n == typed.len() => {}
-            Some(Ok(_)) | Some(Err(_)) => self.message = format!("{name} is not reading: what you typed was dropped"),
-            None => self.message = format!("{name} has ended: nothing reads what you type"),
+        let Some(name) = self.focus.as_ref().filter(|_| !typed.is_empty()) else { return };
+        // Resolve the name again: a live pane can have moved since the last frame.
+        let path = self.session.join(&self.workspace).join(name).join("in");
+        let input = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(path);
+        match input.and_then(|mut input| input.write(&typed)) {
+            Ok(n) if n == typed.len() => {}
+            Ok(n) => self.message = format!("{name}: only {n} of {} typed bytes were queued", typed.len()),
+            Err(e) => self.message = format!("{name}: {e}: what you typed was dropped"),
         }
     }
 
@@ -492,7 +479,13 @@ impl View {
                 }
             }
             // A pane whose program ended, or whose holder is gone, says so in its last row's corner.
-            let state = match (pane.input.is_some(), pane.state.as_str()) {
+            let live = pane.state == "running"
+                && OpenOptions::new()
+                    .read(true)
+                    .custom_flags(sys::O_NONBLOCK)
+                    .open(&pane_directory)
+                    .is_ok_and(|dir| matches!(dir.try_lock_shared(), Err(fs::TryLockError::WouldBlock)));
+            let state = match (live, pane.state.as_str()) {
                 (true, "running") => String::new(),
                 (false, "running") => " lost ".into(),
                 (_, "") => " no pane here ".into(),
@@ -511,7 +504,7 @@ impl View {
                 cursor.push_str(if cursor_keys { "\x1b[?1h" } else { "\x1b[?1l" });
                 cursor.push_str(if keypad { "\x1b=" } else { "\x1b>" });
                 // And reports the mouse when, and as far as, a living program asked (always in the SGR form).
-                if pane.term.mouse != 0 && pane.input.is_some() && pane.state == "running" {
+                if pane.term.mouse != 0 && live {
                     modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.term.mouse));
                 }
             }
@@ -551,12 +544,8 @@ impl View {
         // A notice sits in the bottom right corner until the next key: what is
         // wrong with the layout file, what a script said, or that there are no panes.
         let hint = format!("no panes in {}: keys are scripts in {}", self.workspace, self.keys.display());
-        let hidden =
-            self.focus.as_ref().filter(|focus| !tiles.is_empty() && !tiles.iter().any(|(name, _)| name == *focus));
-        let hidden = hidden.map(|focus| format!("{focus} has the keys but no room to be shown")).unwrap_or_default();
         let (note, style) = match &wrong {
             Some(wrong) => (wrong, colour(9, Some(236), 0)),
-            None if !hidden.is_empty() => (&hidden, colour(9, Some(236), 0)),
             None if tiles.is_empty() && self.message.is_empty() => (&hint, colour(11, Some(236), 0)),
             None => (&self.message, colour(11, Some(236), 0)),
         };
@@ -759,15 +748,11 @@ impl Pane {
             state: String::new(),
             pictures: Vec::new(),
             asked: (0, 0, 0, (0, 0)),
-            input: None,
         }
     }
 
-    /// Reads the pane's screen if its file changed, and opens `in` if a holder reads it.
+    /// Reads the pane's screen if its file changed.
     fn read(&mut self, directory: &Path) {
-        if self.input.is_none() {
-            self.input = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(directory.join("in")).ok();
-        }
         let file = directory.join("screen.styled");
         let seen = fs::metadata(&file).ok().map(|m| (m.ino(), m.mtime(), m.mtime_nsec(), m.len()));
         if seen == self.seen {
@@ -778,45 +763,24 @@ impl Pane {
         let mut bytes = Vec::new();
         let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(&file);
         let _ = file.map(|file| file.take(STYLED_MAX).read_to_end(&mut bytes));
-        let text = String::from_utf8_lossy(&bytes);
-        let mut lines = text.lines();
-        let mut cursor = (0, 0);
         self.pictures.clear();
         self.state.clear();
-        self.term = Term::new(1, 1);
-        self.term.cursor_shown = false;
-        // Line 1 says what the rows cannot: `key=value` words.
-        for (key, value) in lines.next().unwrap_or_default().split(' ').filter_map(|word| word.split_once('=')) {
-            let numbers: Vec<usize> = value.split(['x', ',', '@', '+']).filter_map(|n| n.parse().ok()).collect();
+        let (pid, state, pictures) = (&mut self.pid, &mut self.state, &mut self.pictures);
+        self.term = Term::from_screen(&String::from_utf8_lossy(&bytes), |key, value| {
+            let numbers: Vec<usize> = value.split(['@', ',', '+', 'x']).filter_map(|n| n.parse().ok()).collect();
             match (key, numbers.as_slice()) {
-                ("pid", [pid]) => self.pid = *pid as u32,
-                ("size", [cols, rows]) => self.term = Term::new(*cols, *rows),
-                ("cursor", [row, col]) => cursor = (*row, *col),
-                ("shape", [shape]) => self.term.cursor_shape = (*shape).min(6) as u8,
-                ("state", _) => self.state = value.replace(':', " "),
-                ("modes", _) => {
-                    let has = |mode: &str| value.split(',').any(|m| m == mode);
-                    self.term.cursor_shown = has("cursor");
-                    (self.term.app_cursor, self.term.app_keypad, self.term.paste) =
-                        (has("appcursor"), has("keypad"), has("paste"));
-                    let mouse = [9, 1000, 1002, 1003].into_iter().find(|mode| has(&format!("mouse{mode}")));
-                    (self.term.mouse, self.term.mouse_sgr) = (mouse.unwrap_or(0), has("mousesgr"));
-                }
+                ("pid", [n]) => *pid = *n as u32,
+                ("state", _) => *state = value.replace(':', " "),
                 // A picture is kept only if it lies on a screen of the largest size there is.
                 ("pic", [row, col, cols, rows]) if numbers.iter().all(|n| *n <= SIZE_MAX) => {
                     let name = value.split('@').next().unwrap_or_default();
                     if is_name(name) {
-                        self.pictures.push((name.into(), *row, *col, *cols, *rows));
+                        pictures.push((name.into(), *row, *col, *cols, *rows));
                     }
                 }
                 _ => {}
             }
-        }
-        for (row, line) in lines.enumerate().take(self.term.rows) {
-            self.term.feed(format!("\x1b[{};1H", row + 1).as_bytes());
-            self.term.feed(line.as_bytes());
-        }
-        (self.term.row, self.term.col) = cursor;
+        });
     }
 }
 

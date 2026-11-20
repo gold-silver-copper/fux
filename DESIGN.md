@@ -28,13 +28,13 @@ fux is a view over the filesystem and pane daemons. Everything else follows.
 
 | File | Lines | What |
 |---|---|---|
-| `src/sys.rs` | ~200 | the system calls std lacks, declared by hand: a pty, `poll`, `mkfifo`, a new session with a controlling terminal, window size, raw mode. The only `unsafe` |
-| `src/term.rs`, `width.rs` | ~1,300 | the terminal emulator: parser, grid, colours, wide and combining characters, scroll regions, the alternate screen, queries, sixel taken whole |
+| `src/sys.rs` | ~210 | the system calls std lacks, declared by hand: a pty, `poll`, `mkfifo`, a new session with a controlling terminal, window size, raw mode. The only `unsafe` |
+| `src/term.rs`, `width.rs` | ~1,360 | the terminal emulator: parser, grid, colours, wide and combining characters, scroll regions, the alternate screen, queries, sixel taken whole |
 | `src/holder.rs` | ~440 | one pane: the pty, the emulator, the files, the two FIFOs, one `poll` loop |
-| `src/layout.rs` | ~510 | the layout file: read, settle against the folders, edit, place tiles |
-| `src/view.rs`, `keys.rs` | ~900 | the viewer: draw what changed, name keys, run scripts, pass the mouse on |
-| `src/main.rs` | ~230 | the command line: `dir`, `start`, `wait`, `view`, `layout` |
-| `keys/` | ~170 | the default key scripts, plain `sh` |
+| `src/layout.rs` | ~560 | the layout file: read, settle against the folders, edit, place tiles |
+| `src/view.rs`, `keys.rs` | ~930 | the viewer: draw what changed, name keys, run scripts, pass the mouse on |
+| `src/main.rs` | ~280 | the command line: `dir`, `start`, `wait`, `view`, `layout` |
+| `keys/` | ~220 | the default key scripts, plain `sh` |
 
 ## How it works
 
@@ -57,7 +57,11 @@ folder is gone, the pane is gone: the holder leaves, which hangs up too.
 **Viewing.** The viewer has no channel to holders. It looks at files (every
 4 ms just after something happened, every 50 ms at rest), reads a pane's
 `screen.styled` when it changed, and parses it with the same emulator that
-wrote it. It sends keys with a write to `in` that never waits. It sets the
+wrote it. It sends keys with a write to `in` that never waits, opening it by
+its path each time, so that the pane typed into is the pane of that name
+now. A screen's first line is written and read by the emulator alone; the
+holder adds its own words (`pid`, `state`, `v`, `pic`) and the viewer reads
+only those. It sets the
 outer terminal's cursor-key, keypad and mouse modes to the focused program's,
 so key bytes pass through untouched and mouse reports need only their
 coordinates moved. Pictures are files the viewer passes on after

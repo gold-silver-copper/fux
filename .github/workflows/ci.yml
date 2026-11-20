@@ -19,3 +19,4 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked -- --test-threads 4
       - run: ./example.sh
+      - run: ./boundary.sh

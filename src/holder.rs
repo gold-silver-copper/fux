@@ -409,30 +409,14 @@ impl Holder {
             |p: &crate::term::Picture| format!(" pic=pic-{}.sixel@{},{}+{}x{}", p.id, p.row, p.col, p.cols, p.rows);
         let pictures: String = self.term.pictures.iter().map(placed).collect();
         self.version = self.version.wrapping_add(1);
-        let term = &self.term;
-        let modes = [
-            (term.cursor_shown, "cursor"),
-            (term.app_cursor, "appcursor"),
-            (term.app_keypad, "keypad"),
-            (term.paste, "paste"),
-            (term.alt, "alt"),
-        ];
-        let mut modes: Vec<String> = modes.iter().filter(|m| m.0).map(|m| m.1.to_string()).collect();
-        if term.mouse != 0 {
-            modes.push(format!("mouse{}{}", term.mouse, if term.mouse_sgr { ",mousesgr" } else { "" }));
-        }
         let header = format!(
-            "pid={} state={} v={} size={}x{} cursor={},{} shape={} modes={}{pictures}\n",
+            "pid={} state={} v={} {}{pictures}\n",
             self.pid,
             self.state.replace(' ', ":"),
             self.version,
-            term.cols,
-            term.rows,
-            term.row,
-            term.col,
-            term.cursor_shape,
-            if modes.is_empty() { "-".into() } else { modes.join(",") },
+            self.term.header()
         );
+        let term = &self.term;
         replace("screen", (header.clone() + &term.plain()).as_bytes())?;
         replace("screen.styled", (header + &term.styled()).as_bytes())?;
         // A picture neither screen has any more (the one shown, the one behind) has no reader left.

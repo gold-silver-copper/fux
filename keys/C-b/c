@@ -19,8 +19,8 @@ case ${1##*/} in
   vi|vim|nvim|nano|emacs) set -- "$@" "+$n" ;;
   less) set -- "$@" +G ;;
 esac
-# The file goes when the editor ends; the tab too, unless the editor failed (its words stay to be read).
-p=$(fux start "$FUXN_WS/" -- sh -c 'f=$1; shift; "$@" "$f"; code=$?; rm -f "$f"; exit $code' sh "$f" "$@") || { rm -f "$f"; exit; }
+# The file goes when the editor ends, and the tab with it unless the editor
+# failed (its words stay to be read): both done from inside the pane, by the
+# wrapper its program is. An editor killed outright leaves both.
+p=$(fux start "$FUXN_WS/" -- sh -c 'f=$1; shift; "$@" "$f"; code=$?; rm -f "$f"; [ "$code" -eq 0 ] && rm -rf "$FUXN_PANE"; exit "$code"' sh "$f" "$@") || { rm -f "$f"; exit; }
 fux layout pane "${p##*/}"
-h=$(sed -n 2p "$p/status")
-(fux wait "$p" | grep -q '^state exited 0' && [ "$(sed -n 2p "$p/status" 2>/dev/null)" = "$h" ] && rm -rf "$p"; rm -f "$f") >/dev/null 2>&1 &

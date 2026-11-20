@@ -43,7 +43,9 @@ pub struct Layout {
 
 /// The deepest rows and columns may nest, and the longest a layout file may be.
 const DEPTH_MAX: usize = 32;
-const FILE_MAX: u64 = 64 << 10;
+// Room for 1,000 maximum-length pane names and their focus names, even
+// allowing a full tree of weighted splits and a line header for every pane.
+const FILE_MAX: u64 = 160 << 10;
 /// The most panes of a workspace a layout places; more folders than that are not shown.
 const PANES_MAX: usize = 1000;
 
@@ -92,21 +94,29 @@ impl Node {
         }
     }
 
+    fn contains(&self, name: &str) -> bool {
+        match self {
+            Node::Pane(pane) => pane == name,
+            Node::Split(_, parts) => parts.iter().any(|(part, _)| part.contains(name)),
+        }
+    }
+
     /// Gives every pane its rectangle. Between two parts there is one column
     /// or one row that is neither's (the viewer draws a line there).
-    fn place(&self, area: Rect, into: &mut Vec<(String, Rect)>) {
+    fn place(&self, area: Rect, focus: &str, into: &mut Vec<(String, Rect)>) {
         let (row, parts) = match self {
             Node::Pane(name) => return into.push((name.clone(), area)),
             Node::Split(row, parts) => (*row, parts),
         };
         // Each part shown has at least one cell, and a line between it and the
-        // next: parts there is no room for are not placed at all.
+        // next. If focus would be hidden, give it the last available place.
         let length = if row { area.w } else { area.h };
         let shown = parts.len().min(length.div_ceil(2));
         let room = length.saturating_sub(shown.saturating_sub(1));
-        let total: usize = parts.iter().take(shown).map(|p| p.1.max(1) as usize).sum();
-        let mut sizes: Vec<usize> =
-            parts.iter().take(shown).map(|p| (room * p.1.max(1) as usize / total.max(1)).max(1)).collect();
+        let focused = parts.iter().skip(shown).find(|(part, _)| part.contains(focus));
+        let parts = parts.iter().take(shown - usize::from(focused.is_some())).chain(focused);
+        let total: usize = parts.clone().map(|p| p.1.max(1) as usize).sum();
+        let mut sizes: Vec<usize> = parts.clone().map(|p| (room * p.1.max(1) as usize / total.max(1)).max(1)).collect();
         while sizes.iter().sum::<usize>() > room {
             match sizes.iter_mut().max() {
                 Some(largest) if *largest > 1 => *largest -= 1,
@@ -119,9 +129,9 @@ impl Node {
             spare = spare.saturating_sub(1);
         }
         let mut at = if row { area.x } else { area.y };
-        for ((part, _), size) in parts.iter().zip(sizes) {
+        for ((part, _), size) in parts.zip(sizes) {
             let rect = if row { Rect { x: at, w: size, ..area } } else { Rect { y: at, h: size, ..area } };
-            part.place(rect, into);
+            part.place(rect, focus, into);
             at += size + 1;
         }
     }
@@ -137,25 +147,29 @@ impl Node {
         parts.iter_mut().any(|(part, _)| part.with_parent(name, edit))
     }
 
-    /// The share of the part of the nearest row (or column) that holds the pane.
-    fn share_mut(&mut self, name: &str, of_row: bool) -> Option<&mut u32> {
-        let Node::Split(row, parts) = self else { return None };
-        let row = *row;
-        let at = parts.iter().position(|(part, _)| {
+    /// Changes the share of the part in the nearest row (or column) that holds the pane.
+    fn change_share(&mut self, name: &str, of_row: bool, change: i64) -> bool {
+        let Node::Split(row, parts) = self else { return false };
+        let Some(at) = parts.iter().position(|(part, _)| {
             let mut names = Vec::new();
             part.panes(&mut names);
             names.contains(&name)
-        })?;
-        if parts.get_mut(at)?.0.share_mut(name, of_row).is_some() {
-            return parts.get_mut(at)?.0.share_mut(name, of_row);
+        }) else {
+            return false;
+        };
+        if parts.get_mut(at).is_some_and(|(part, _)| part.change_share(name, of_row, change)) {
+            return true;
         }
-        if row != of_row {
-            return None;
+        if *row != of_row {
+            return false;
         }
         // Shares become parts of a hundred, so that a step of 5 is a small one.
         let total: u32 = parts.iter().map(|p| p.1.max(1)).sum();
         parts.iter_mut().for_each(|p| p.1 = (p.1.max(1) * 100 / total).max(1));
-        parts.get_mut(at).map(|p| &mut p.1)
+        if let Some((_, share)) = parts.get_mut(at) {
+            *share = i64::from(*share).saturating_add(change).clamp(5, 10000) as u32;
+        }
+        true
     }
 }
 
@@ -169,7 +183,9 @@ impl Tab {
     /// Where each pane of the tab is drawn in `area`.
     pub fn tiles(&self, area: Rect) -> Vec<(String, Rect)> {
         let mut tiles = Vec::new();
-        self.root.place(area, &mut tiles);
+        if area.w > 0 && area.h > 0 {
+            self.root.place(area, &self.focus, &mut tiles);
+        }
         tiles
     }
 }
@@ -230,6 +246,10 @@ pub fn parse(text: &str) -> Result<Layout, String> {
         layout.tabs.push(tab);
     }
     Ok(layout)
+}
+
+fn check_file_size(bytes: usize) -> Result<(), String> {
+    (bytes as u64 <= FILE_MAX).then_some(()).ok_or_else(|| format!("the layout file is over {} KiB", FILE_MAX >> 10))
 }
 
 impl Layout {
@@ -314,11 +334,9 @@ impl Layout {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
             file => file.and_then(|file| file.take(FILE_MAX + 1).read_to_end(&mut bytes)),
         };
-        let text = String::from_utf8(bytes).map_err(|_| "the layout file is not text".to_string());
-        let text = text.and_then(|text| match read {
-            Ok(n) if n as u64 > FILE_MAX => Err("the layout file is over 64 KiB".into()),
-            Ok(_) => Ok(text),
-            Err(e) => Err(format!("the layout file cannot be read: {e}")),
+        let text = read.map_err(|e| format!("the layout file cannot be read: {e}")).and_then(|n| {
+            check_file_size(n)?;
+            String::from_utf8(bytes).map_err(|_| "the layout file is not text".to_string())
         });
         let (mut layout, mut wrong) = match text.as_ref().map_err(String::clone).and_then(|text| parse(text)) {
             Ok(layout) => (layout, None),
@@ -368,23 +386,31 @@ impl Layout {
             _ => Err(format!("'{word}' is not next or prev")),
         };
         match words {
-            ["split", way @ ("row" | "col"), name] => {
+            ["split", way @ ("row" | "col"), name, tail @ ..] => {
                 if !self.tabs.iter().any(|tab| tab.panes().contains(name)) {
                     return Err(format!("no pane {name} here"));
                 }
                 let row = *way == "row";
-                let beside = self.tab().map(|tab| tab.focus.clone()).filter(|focus| focus != name);
+                let beside = match tail {
+                    [] => self.tab().map(|tab| tab.focus.clone()).filter(|focus| focus != name),
+                    ["beside", pane] if pane != name && self.tabs.iter().any(|tab| tab.panes().contains(pane)) => {
+                        Some(pane.to_string())
+                    }
+                    ["beside", pane] => return Err(format!("cannot split pane {name} beside {pane}")),
+                    _ => return Err("split takes row|col PANE [beside ANCHOR]".into()),
+                };
                 self.remove(name);
                 let new = (Node::Pane(name.to_string()), 1);
-                let at = self.tabs.iter().position(|tab| Some(&tab.focus) == beside.as_ref());
-                let Some(tab) = at.and_then(|at| self.tabs.get_mut(at)) else {
+                let at =
+                    self.tabs.iter().position(|tab| beside.as_deref().is_some_and(|pane| tab.panes().contains(&pane)));
+                let Some((tab, beside)) = at.and_then(|at| self.tabs.get_mut(at)).zip(beside) else {
                     self.tabs.push(tab_of(name));
                     self.current = self.tabs.len() - 1;
                     return Ok(());
                 };
-                let focus = std::mem::replace(&mut tab.focus, name.to_string());
+                tab.focus = name.to_string();
                 let mut new = Some(new);
-                let found = tab.root.with_parent(&focus, &mut |parent_row, parts, at| {
+                let found = tab.root.with_parent(&beside, &mut |parent_row, parts, at| {
                     if *parent_row == row {
                         parts.extend(new.take());
                         parts.get_mut(at + 1..).into_iter().for_each(|rest| rest.rotate_right(1));
@@ -461,8 +487,9 @@ impl Layout {
                 let change = change.parse::<i64>().map_err(|_| format!("'{change}' is not a number like +5 or -5"))?;
                 let tab = self.tab_mut()?;
                 let focus = tab.focus.clone();
-                let share = tab.root.share_mut(&focus, *way == "row").ok_or(format!("this pane is in no {way}"))?;
-                *share = i64::from(*share).saturating_add(change).clamp(5, 10000) as u32;
+                if !tab.root.change_share(&focus, *way == "row", change) {
+                    return Err(format!("this pane is in no {way}"));
+                }
             }
             ["rotate"] => {
                 let tab = self.tab_mut()?;
@@ -523,6 +550,7 @@ pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {
     let (file, text) = (workspace.join("layout"), layout.print());
     if old != text {
         // What is written must be what the next reading takes: an edit that nests too deep is refused here.
+        check_file_size(text.len())?;
         parse(&text)?;
         replace(&file, text.as_bytes()).map_err(|e| format!("{}: {e}", file.display()))?;
     }

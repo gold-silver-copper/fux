@@ -76,6 +76,7 @@ unsafe extern "C" {
         winsize: *const Winsize,
     ) -> c_int;
     fn setsid() -> c_int;
+    fn fchdir(fd: c_int) -> c_int;
     fn signal(signal: c_int, handler: usize) -> usize;
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
@@ -145,6 +146,12 @@ pub fn new_session(command: &mut Command, tty: bool) {
 pub fn own_children() {
     // SAFETY: signal with the default handler (0) for SIGCHLD, before any thread starts.
     unsafe { signal(os::SIGCHLD, 0) };
+}
+
+/// Makes an already open directory the working directory of this process.
+pub fn enter_directory(directory: &File) -> io::Result<()> {
+    // SAFETY: fchdir takes the descriptor of the file we own.
+    check(unsafe { fchdir(directory.as_raw_fd()) }).map(drop)
 }
 
 pub fn set_winsize(tty: &File, size: Winsize) -> io::Result<()> {

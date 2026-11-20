@@ -128,6 +128,8 @@ pub struct Term {
     grid: Vec<Vec<Cell>>,
     other: Vec<Vec<Cell>>,
     pub alt: bool,
+    /// The cursor's row on the main screen while the alternate one is shown.
+    main_row: usize,
     pub row: usize,
     pub col: usize,
     style: Style,
@@ -188,6 +190,7 @@ impl Term {
             other: grid.clone(),
             grid,
             alt: false,
+            main_row: 0,
             row: 0,
             col: 0,
             style: Style::default(),
@@ -274,6 +277,59 @@ impl Term {
             out.push('\n');
         }
         out
+    }
+
+    /// The modes line 1 of a screen file lists by name, and where each is kept.
+    fn modes(&mut self) -> [(&'static str, &mut bool); 5] {
+        [
+            ("cursor", &mut self.cursor_shown),
+            ("appcursor", &mut self.app_cursor),
+            ("keypad", &mut self.app_keypad),
+            ("paste", &mut self.paste),
+            ("alt", &mut self.alt),
+        ]
+    }
+
+    /// What line 1 of a screen file says of the terminal: `size= cursor= shape= modes=`.
+    pub fn header(&mut self) -> String {
+        let sgr = if self.mouse_sgr { ",mousesgr" } else { "" };
+        let mouse = (self.mouse != 0).then(|| format!("mouse{}{sgr}", self.mouse));
+        let on = self.modes().into_iter().filter(|m| *m.1).map(|m| m.0.to_string());
+        let modes: Vec<String> = on.chain(mouse).collect();
+        let modes = if modes.is_empty() { "-".into() } else { modes.join(",") };
+        format!(
+            "size={}x{} cursor={},{} shape={} modes={modes}",
+            self.cols, self.rows, self.row, self.col, self.cursor_shape
+        )
+    }
+
+    /// A terminal read back from a screen file (`header`'s words on line 1, then the rows of
+    /// `plain` or `styled`). Each word of line 1 that is not the terminal's goes to `other`.
+    pub fn from_screen(text: &str, mut other: impl FnMut(&str, &str)) -> Term {
+        let mut lines = text.lines();
+        let (mut term, mut cursor) = (Term::new(1, 1), (0, 0));
+        term.cursor_shown = false;
+        for (key, value) in lines.next().unwrap_or_default().split(' ').filter_map(|word| word.split_once('=')) {
+            let numbers: Vec<usize> = value.split(['x', ',']).filter_map(|n| n.parse().ok()).collect();
+            match (key, numbers.as_slice()) {
+                ("size", [cols, rows]) => term = Term::new(*cols, *rows),
+                ("cursor", [row, col]) => cursor = (*row, *col),
+                ("shape", [shape]) => term.cursor_shape = (*shape).min(6) as u8,
+                ("modes", _) => {
+                    let has = |mode: &str| value.split(',').any(|m| m == mode);
+                    term.modes().into_iter().for_each(|(name, on)| *on = has(name));
+                    term.mouse = [9, 1000, 1002, 1003].into_iter().find(|m| has(&format!("mouse{m}"))).unwrap_or(0);
+                    term.mouse_sgr = has("mousesgr");
+                }
+                _ => other(key, value),
+            }
+        }
+        for (row, line) in lines.enumerate().take(term.rows) {
+            term.feed(format!("\x1b[{};1H", row + 1).as_bytes());
+            term.feed(line.as_bytes());
+        }
+        (term.row, term.col) = cursor;
+        term
     }
 
     // ---- the grid --------------------------------------------------------
@@ -506,6 +562,7 @@ impl Term {
             std::mem::swap(&mut self.grid, &mut self.other);
             std::mem::swap(&mut self.pictures, &mut self.other_pictures);
             self.alt = alt;
+            self.main_row = self.row;
         }
         if alt && clear {
             self.clear();
@@ -530,7 +587,7 @@ impl Term {
             std::mem::swap(&mut self.grid, &mut self.other);
         }
         // `grid` is the main screen here. Blank rows below the cursor go first.
-        let cursor = if self.alt { self.saved.first().map_or(0, |s| s.row) } else { self.row };
+        let cursor = if self.alt { self.main_row } else { self.row };
         while self.grid.len() > rows && self.grid.len() > cursor + 1 {
             self.grid.pop();
         }
@@ -543,13 +600,22 @@ impl Term {
             if let Some(saved) = self.saved.first_mut() {
                 saved.row = saved.row.saturating_sub(extra);
             }
+            self.main_row = self.main_row.saturating_sub(extra).min(rows - 1);
             std::mem::swap(&mut self.grid, &mut self.other);
         } else {
             self.row = self.row.saturating_sub(extra);
         }
         for grid in [&mut self.grid, &mut self.other] {
             grid.resize(rows, Vec::new());
-            grid.iter_mut().for_each(|row| row.resize(cols, blank));
+            for row in grid {
+                // Cutting off a wide character's second cell blanks its first, on either screen.
+                if row.get(cols).is_some_and(|c| c.ch == '\0')
+                    && let Some(lead) = row.get_mut(cols - 1)
+                {
+                    *lead = Cell::blank(lead.style);
+                }
+                row.resize(cols, blank);
+            }
         }
         (self.cols, self.rows) = (cols, rows);
         (self.top, self.bottom) = (0, rows - 1);
@@ -565,7 +631,6 @@ impl Term {
                 fits
             });
         }
-        (0..rows).for_each(|row| self.tidy(row));
     }
 
     /// Notes a refusal for the log, once until the holder has taken it.
@@ -959,6 +1024,8 @@ impl Term {
                     7 => Some(self.autowrap),
                     25 => Some(self.cursor_shown),
                     47 | 1047 | 1049 => Some(self.alt),
+                    9 | 1000 | 1002 | 1003 => Some(usize::from(self.mouse) == mode),
+                    1006 => Some(self.mouse_sgr),
                     2004 => Some(self.paste),
                     _ => None,
                 };
