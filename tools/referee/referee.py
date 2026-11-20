@@ -14,7 +14,7 @@ All three are needed unless --witness names fewer. What is compared is the scree
 by row with blanks at the end cut, and the cursor's row and column; not colours, answers to
 questions, modes, the bell or the clipboard. A difference is known if the README's table of
 departures has a row for the case and the witness that says where it is (`text`, `cursor`, or
-both); any other makes the run fail, and so does a case that a witness could not be played.
+both; `or` between what different versions of a witness do); any other makes the run fail, and so does a case that a witness could not be played.
 Witnesses change between versions, so the table has a row if any version the referee was run
 with differs, and a row that does not differ here is noted. A case's lines:
 
@@ -300,11 +300,12 @@ def main():
                     if expected:
                         stale.append((name, witness))
                     continue
-                differing.append(witness + ("" if where == expected else " (NEW)"))
-                if where != expected:
+                listed = where in (expected or "").split(" or ")
+                differing.append(witness + ("" if listed else " (NEW)"))
+                if not listed:
                     row = f"says {expected}" if expected else "has no row for it"
                     new.append(f"{name} differs from {witness} in {where}, and the README's table {row}")
-                if verbose or where != expected:
+                if verbose or not listed:
                     print(f"--- {name}: fux, cursor {ours[1]}")
                     print("\n".join("  |" + row for row in ours[0]))
                     print(f"--- {name}: {witness}, cursor {theirs[1]}")

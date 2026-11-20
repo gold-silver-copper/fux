@@ -24,7 +24,7 @@ jobs:
   referee:
     # The same bytes to fux, xterm, tmux and the old emulator: fails on a difference the README's table lacks.
     # The table's rows depend on the witnesses' versions: this image's, until someone moves it on purpose.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
