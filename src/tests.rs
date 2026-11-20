@@ -202,6 +202,11 @@ fn a_colour_a_program_sets_is_its_panes_until_it_gives_it_back() {
     let (red, own, fg) = ("\x1b[0;31ma\x1b[m\n", "\x1b[0;38;2;1;2;3mc\x1b[m\n", "38;2;4;5;6");
     let styled = format!("{red}\x1b[0;{fg}mb\x1b[m\n{own}\x1b[0;{fg};48;2;7;8;9md   \x1b[m\n\ne\n");
     assert_eq!((pane.peek().history.as_str(), pane.peek().styled.as_str()), ("a\nb\nc\nd\n\ne\n", styled.as_str()));
+    // Only a row a resize sent there, which the next resize takes back, is told again: as it is then.
+    let mut pane = term(4, 2, "\x1b[31ma\x1b[m\r\nb");
+    assert!(pane.resize(4, 1) && pane.peek().styled == red);
+    pane.feed(b"\x1b]4;1;#010203\x07");
+    assert!(pane.resize(3, 1) && pane.peek().styled == own.replace('c', "a"), "{:?}", pane.peek().styled);
 }
 
 #[test]

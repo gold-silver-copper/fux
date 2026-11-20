@@ -48,7 +48,8 @@ type Drawn = (PathBuf, usize, usize, usize, usize, u32);
 
 /// What a frame is drawn from, other than the terminal's size: the workspace's folder, its
 /// layout and what is wrong with it, the message, what the terminal is like and whether its
-/// window has the keys, each tile's screen file (as `Pane::seen`) and whether its holder lives,
+/// window has the keys, each tile's screen file (as `Pane::seen`: a holder writes it anew after
+/// any fact of its pane, the cursor's colour among them) and whether its holder lives,
 /// and the focused pane's `clipboard` file.
 type From = (PathBuf, String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Seen, bool)>, Stamp);
 /// A screen file's inode, time and length.
