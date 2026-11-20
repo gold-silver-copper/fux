@@ -55,7 +55,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` (from `status` and `state`). When it returns, every file of the pane is the last there will be: wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
-| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it (also so that a write cannot hang on a dead pane), read it, wait, get a command's output and exit code, tell a live pane from a dead one, rename, end and clean up, see what the viewer shows, with the manners and the hazards. It is `src/help-agents.txt`, in the binary; every command on it is run, in order, by `tools/help-agents.sh` (CI, both systems) |
+| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it (also so that a write cannot hang on a dead pane), read it, wait, get a command's output and exit code, tell a live pane from a dead one, rename (all in plain sh, with the risks said; exact forms for those who have perl in a section of their own), end and clean up, see what the viewer shows, with the manners and the hazards. It is `src/help-agents.txt`, in the binary; every command on it is run, in order, by `tools/help-agents.sh` (CI, both systems) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot, and not `-` alone; a pane cannot be called `layout` or
@@ -398,7 +398,12 @@ what it said can be read.
 There is no zoom either: a pane shown alone is a tab with one pane. If you
 want the key, these two scripts are it (`keys/C-b/z` and `keys/C-b/S-z`).
 The first takes the focused pane to a tab of its own and keeps its old tab's
-line in the pane's folder; the second writes that line back.
+line in the pane's folder; the second writes that line back. (`fux layout`
+is the way to change a layout that needs nothing else and loses no edit. The
+second script edits the file by hand, which `fux layout` has no edit for, and
+so takes the same lock itself: sh has no way to, and it uses perl for that
+one line. Without perl, leave the line out: the edit is then as safe as any
+hand edit, lost if a pane comes or goes in the same instant.)
 
 ```sh
 #!/bin/sh
@@ -422,7 +427,7 @@ fi
 # and the pane's own line goes.
 [ -f "$FUXN_PANE/alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
 ws=$FUXN_DIR/$FUXN_WS me=${FUXN_PANE##*/}
-# Under the lock `fux layout` takes (flock on the workspace's folder), by way of perl, which Linux and macOS both have.
+# Under the lock `fux layout` takes (flock on the workspace's folder), by way of perl (optional: see above).
 [ -n "$LOCKED" ] || LOCKED=1 exec perl -e 'use Fcntl ":flock"; open(D, "<", shift) && flock(D, LOCK_EX) or die; exit(system({ $ARGV[0] } @ARGV) >> 8)' "$ws" "$0"
 awk -v me="$me" '
   function names(line, into,    n, i, w) {

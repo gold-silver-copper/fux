@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs every command of `fux help agents` (its lines indented by four blanks), in order, as one
 # shell session in a session directory of its own; any command that fails, fails this. CI runs
-# it on Linux and macOS.
+# it on Linux and macOS. The page's section "IF YOU HAVE PERL" is run only where perl is found
+# (CI's machines have it on both systems): the rest must hold without it.
 # usage: tools/help-agents.sh [path to fux]   (default: target/release/fux)
 set -eu
 fux=$(cd "$(dirname "${1:-target/release/fux}")" && pwd)/fux
@@ -9,7 +10,14 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/bin" && ln -s "$fux" "$work/bin/fux"
 "$fux" help | grep -q 'fux help agents'
-"$fux" help agents | sed -n 's/^    \([^ ]\)/\1/p' > "$work/page.sh"
+perl=; ! command -v perl > /dev/null 2>&1 || perl=1
+# (The section runs from its heading to the next line that is all capitals.)
+section='/^IF YOU HAVE PERL/ { skip = 1 } /^[A-Z][A-Z ,]*$/ { skip = 0 }'
+"$fux" help agents | awk -v perl="$perl" "$section"' !(skip && !perl)' | sed -n 's/^    \([^ ]\)/\1/p' > "$work/page.sh"
+# Nothing outside that section names perl or python.
+if "$fux" help agents | awk "$section"' !skip' | grep -n -i -e perl -e python; then
+  echo "help-agents: perl or python outside the optional section" >&2; exit 1
+fi
 [ "$(wc -l < "$work/page.sh")" -ge 40 ]
 unset FUXN_PANE FUXN_WS FUXN_KEYS FUXN_EDIT
 (cd "$work" && PATH="$work/bin:$PATH" FUXN_DIR="$work/d" FUXN_KEYS="$work/keys" EDITOR=true sh -eux page.sh) > "$work/out" 2> "$work/trace" || {
@@ -20,7 +28,10 @@ for said in '^exit code 3$' '^<<t1:[1-9][0-9]*>>$' ' end 1$' '^/$' '^state kille
   'something of pane stubborn still runs' '^nothing of it is left$' 'col(row(ls w1) w2)' '│' '^command sh -c pwd; exec sleep 600$'; do
   grep -q -- "$said" "$work/out" || { cat "$work/out" >&2; echo "help-agents: no '$said'" >&2; exit 1; }
 done
+if [ -n "$perl" ]; then
+  grep -q '^refused at once$' "$work/out" && grep -q '^crash holds no lock$' "$work/out" || { cat "$work/out" >&2; echo "help-agents: the perl forms" >&2; exit 1; }
+fi
 [ -d "$work/d" ] && [ ! -e "$work/d/agent-demo" ] && [ ! -e "$work/d/agent-view" ]
 # (And nothing in the session but what the page says a viewer leaves.)
 [ -z "$(ls -A "$work/d" | grep -v -x -e keyboard -e colours)" ]
-echo "help-agents: ok ($(wc -l < "$work/page.sh" | tr -d ' ') lines run)"
+echo "help-agents: ok ($(wc -l < "$work/page.sh" | tr -d ' ') lines run${perl:+, the perl section among them})"

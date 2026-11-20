@@ -1067,6 +1067,15 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   Linux has it. What was given up: a write that reports a dead pane by
   itself, and an exact test on macOS. Both are run in the page's script
   against a holder killed with -9.
+- **D76. sh by default, perl as a documented alternative** (message 20; the
+  owner's words). The page teaches the sh forms and every example uses
+  them, with their three risks said where they are taught. A section near
+  the end, marked optional, has the exact forms for who has perl: `send`
+  (fails at once and says why) and `locked` (the directory's lock), and a
+  line for python. The page's script runs that section only where perl is
+  found, and checks that nothing outside it names perl or python. The
+  README's zoom-back script is treated the same: `fux layout` needs
+  nothing; the perl line is for a hand edit under the lock.
 
 ## The old fux3's bugs: which classes are gone
 

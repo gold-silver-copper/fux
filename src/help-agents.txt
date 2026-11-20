@@ -172,6 +172,21 @@ A viewer writes in the session `keyboard` and, only if its terminal answered, `c
 (what its terminal can do; harmless, left behind), its key scripts in $FUXN_KEYS (else
 ~/.config/fux-next/keys), and while it runs a FIFO `.view.PID` in the session.
 
+IF YOU HAVE PERL (optional: nothing else on this page needs it)
+The sh forms above have three risks: a write to a dead pane is lost without a word, a
+write can wait while 64 KiB are queued, and `alive` can be wrong long after a crash. With
+perl (Linux and macOS ship it) there are exact forms. A write that never waits and fails
+at once, saying why:
+    send() { perl -e 'use Fcntl; -p $ARGV[0] or die "$ARGV[0]: not a FIFO\n"; sysopen(F, $ARGV[0], O_WRONLY|O_NONBLOCK) or die "$ARGV[0]: $!\n"; local $/; defined syswrite(F, <STDIN>) or die "$ARGV[0]: $!\n"' "$1"; }
+    printf 'x' | send "$W/in"; printf 'x' | send "$X/in" || echo "refused at once"
+"not a FIFO" or "No such file": the pane ended or is gone; "No such device or address":
+no holder reads, the pane is dead; "Resource temporarily unavailable": alive, but its
+queue is full (try later). And alive by the lock the holder holds on the pane's directory
+while it lives, which no other process's number can fake:
+    locked() { perl -e 'use Fcntl ":flock"; open(D, "<", $ARGV[0]) or exit 1; exit(flock(D, LOCK_SH|LOCK_NB) ? 1 : 0)' "$1"; }
+    locked "$W"; locked "$X" || echo "crash holds no lock"
+In python: os.open(path, os.O_WRONLY | os.O_NONBLOCK) then os.write, and fcntl.flock.
+
 MANNERS AND CLEANING UP
 Work in workspaces of your own (agent-TASK). Never type into, resize, kill, rearrange or
 remove a pane you did not start, nor edit another workspace's layout. Before you remove,
