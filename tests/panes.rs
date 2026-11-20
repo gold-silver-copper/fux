@@ -455,6 +455,40 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     // (The interrupt empties what was typed after it: the next line waits until it is through.)
     fs::write(view.join("in"), "\x03").unwrap();
     until("the program is interrupted", || answers().contains("^G^C"));
+    // A colour a program sets is its pane's: its cells are drawn in it (direct colour: the whole
+    // tile in the background it set), and the terminal's cursor has the colour it set while its
+    // pane has the keys. The terminal's own colours are never set: the same palette number in
+    // the pane beside it is drawn as that number, on no background.
+    let set = "\\033]4;1;#123456\\007\\033]11;#654321\\007\\033]12;#abcdef\\007";
+    fs::write(view.join("in"), format!("printf '{set}\\033[31mr''ed\\033[m\\n'\r")).unwrap();
+    fs::write(inner.0.join("main/one/in"), "clear; printf '\\033[31mpl''ain\\033[m\\n'\r").unwrap();
+    let styled = || read(&view.join("screen.styled"));
+    let drawn = |text: &str| styled().lines().find_map(|line| Some(line.split_once(text)?.0.to_string()));
+    until_or("the pane is drawn in its colours, and the one beside it is not", styled, || {
+        let own = drawn("red").is_some_and(|before| before.ends_with("\x1b[0;38;2;18;52;86;48;2;101;67;33m"));
+        own && drawn("plain").is_some_and(|before| before.ends_with("\x1b[0;31m") && !before.contains("48;2"))
+    });
+    // (Every row of its tile, from the line between the panes to the tile's end.)
+    let whole = |row: &str| row.contains("48;2;101;67;33m") && !row.contains("\x1b[0m") && row.ends_with("\x1b[m");
+    assert!(styled().lines().all(|line| line.split_once('│').is_some_and(|(_, row)| whole(row))), "{}", styled());
+    assert_eq!(fact(&inner.0.join("main/two"), "cursor").split(' ').nth(4), Some("#abcdef"));
+    let cursor = || fact(&view, "cursor").split(' ').nth(4).map(str::to_string);
+    until("the terminal's cursor has the pane's colour", || cursor() == Some("#abcdef".into()));
+    lay(&inner.0, "* row(one two) focus=one\n");
+    until("the cursor has its own colour when the keys are another pane's", || cursor().is_none());
+    lay(&inner.0, "* row(one two) focus=two\n");
+    until("and the pane's when it has them again", || cursor() == Some("#abcdef".into()));
+    fs::write(view.join("in"), "\x02").unwrap();
+    until("its own while a menu is open", || cursor().is_none() && screen().contains("C-b …"));
+    fs::write(view.join("in"), "\x1b").unwrap();
+    until("the pane's after it", || cursor() == Some("#abcdef".into()));
+    // Given back, the colours are the terminal's again, for what is on the screen already too.
+    fs::write(view.join("in"), "printf '\\033]104\\007\\033]111\\007\\033]112\\007'\r").unwrap();
+    until_or("the pane is drawn as it was written", styled, || {
+        cursor().is_none()
+            && !styled().contains("48;2")
+            && drawn("red").is_some_and(|before| before.ends_with("\x1b[0;31m"))
+    });
     // A program that asks for the mouse gets it, counted from its own tile's corner (the tile starts at column 42).
     fs::write(view.join("in"), "printf '\\033[?1000h\\033[?1006h'; cat -v\r").unwrap();
     until("the pane's modes say so", || fact(&inner.0.join("main/two"), "modes").contains("mouse1000 mousesgr"));

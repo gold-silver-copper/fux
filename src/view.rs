@@ -71,6 +71,8 @@ struct Pane {
     asked: (u32, usize, usize, (u16, u16)),
     /// The title its program set (the `title` file), without control characters.
     title: String,
+    /// The colour its program gave the cursor, if any (the fifth word of `cursor`).
+    cursor_colour: Option<[u8; 3]>,
 }
 
 /// Where the press of a key went: to the viewer itself (and the script it ran, if it ran one),
@@ -142,6 +144,8 @@ struct View {
     /// The pictures on the terminal now: file, column, row, columns, rows, and whose holder's.
     drawn: Vec<Drawn>,
     cursor: String,
+    /// The colour this viewer gave its terminal's cursor, if any: the focused pane's own.
+    cursor_colour: Option<[u8; 3]>,
     /// What the terminal was last asked to report (the mouse, its window's focus).
     modes: String,
     /// Whether the terminal's window has the keys, as far as it told.
@@ -254,6 +258,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         written: Vec::new(),
         drawn: Vec::new(),
         cursor: String::new(),
+        cursor_colour: None,
         modes: String::new(),
         window: true,
         title: None,
@@ -272,10 +277,10 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // The alternate screen, pastes marked, and "what are you" (for sixel). On the way the
     // terminal is asked whether it takes the kitty keyboard protocol: flags are set with the old
     // ones kept (to give back at the end), read back, and put to none until a pane asks.
-    // The terminal is asked once what its colours are (the two it draws with and its palette),
+    // The terminal is asked once what its colours are (the two it draws with, its cursor's and its palette),
     // and last of all what it is: its answer to that ends the wait for the others.
     // (First a link is closed: whatever ran before may have left one open, and no cell here is part of it.)
-    const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
+    const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     view.write(START.to_string() + &asked + "\x1b[c");
     let result = view.run(&ctl, &wrote, &writer);
@@ -285,6 +290,10 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     view.tell(None);
     if view.joined {
         view.write("\x1b[?2027l".into());
+    }
+    // And the cursor has its terminal's own colour again, if a pane's was given it.
+    if view.cursor_colour.is_some() {
+        view.write("\x1b]112\x1b\\".into());
     }
     // All of it is written before the terminal is put back; what could not be is why the viewer stopped.
     view.out = None;
@@ -509,18 +518,13 @@ impl View {
         let name = match which.split_once(';') {
             None if which == "10" => "foreground".to_string(),
             None if which == "11" => "background".to_string(),
+            None if which == "12" => "cursor".to_string(),
             Some(("4", index)) if index.parse::<u8>().is_ok_and(|n| n.to_string() == index) => index.to_string(),
             _ => return,
         };
-        // Each part is one to four hex digits of however many bits: its first eight are kept.
-        let part = |part: &str| {
-            let full = (1u32 << (4 * part.len().clamp(1, 4))) - 1;
-            let hex = (1..=4).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_hexdigit());
-            u32::from_str_radix(part, 16).ok().filter(|_| hex).map(|value| value * 255 / full)
-        };
-        // Three parts, each a number, or it is no answer; and no more is kept than was asked.
-        let parts: Vec<Option<u32>> = value.split('/').map(part).collect();
-        if let (Some((_, told)), [Some(r), Some(g), Some(b)]) = (&mut self.colours, parts.as_slice())
+        // Three parts of one to four hex digits each, of which the first eight bits are kept,
+        // or it is no answer; and no more is kept than was asked.
+        if let (Some((_, told)), Some([r, g, b])) = (&mut self.colours, crate::term::colour(&format!("rgb:{value}")))
             && told.len() < 8 << 10
         {
             told.push_str(&format!("{name} #{r:02x}{g:02x}{b:02x}\n"));
@@ -964,6 +968,7 @@ impl View {
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
+        let mut cursor_colour = None;
         let mut live = 0;
         let mut title = None;
         let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
@@ -1082,6 +1087,7 @@ impl View {
             }
             // The outer terminal sends cursor and keypad keys the way the focused program asked for.
             if focused {
+                cursor_colour = pane.cursor_colour;
                 let (cursor_keys, keypad) = (pane.term.app_cursor, pane.term.app_keypad);
                 cursor.push_str(if cursor_keys { "\x1b[?1h" } else { "\x1b[?1l" });
                 cursor.push_str(if keypad { "\x1b=" } else { "\x1b>" });
@@ -1248,7 +1254,7 @@ impl View {
                     put(&mut back, w, right, y, width, line.map_or(&[], |line| line));
                 }
             }
-            cursor = String::new();
+            (cursor, cursor_colour) = (String::new(), None);
         }
         if cursor.is_empty() {
             cursor.push_str("\x1b[?25l");
@@ -1376,6 +1382,14 @@ impl View {
             out.push_str(&title.as_ref().map_or("\x1b[23;2t\x1b[22;2t".into(), |title| format!("\x1b]2;{title}\x07")));
             self.title = title;
         }
+        // This terminal's cursor has the colour the focused pane's program set (OSC 12) while that
+        // pane has the keys, and its own again (OSC 112) when it has them no more. No other colour
+        // of this terminal is ever set: what a pane's program set is in the pane's cells.
+        if cursor_colour != self.cursor_colour {
+            let own = |[r, g, b]: [u8; 3]| format!("\x1b]12;#{r:02x}{g:02x}{b:02x}\x1b\\");
+            out.push_str(&cursor_colour.map_or("\x1b]112\x1b\\".into(), own));
+            self.cursor_colour = cursor_colour;
+        }
         if out.is_empty() && cursor == self.cursor && modes == self.modes {
             return Ok(false);
         }
@@ -1458,6 +1472,7 @@ impl Pane {
             addresses: Vec::new(),
             asked: (0, 0, 0, (0, 0)),
             title: String::new(),
+            cursor_colour: None,
         }
     }
 
@@ -1522,6 +1537,7 @@ impl Pane {
         (self.term.row, self.term.col) = (at.0.unwrap_or(0).min(self.term.rows - 1), at.1.unwrap_or(0).min(cols - 1));
         self.term.cursor_shape =
             cursor.next().and_then(|shape| shape.parse().ok()).filter(|shape| *shape <= 6).unwrap_or(0);
+        self.cursor_colour = cursor.next().filter(|colour| colour.len() == 7).and_then(crate::term::colour);
         self.state = fact("state", 64).trim_end().to_string();
         let status = fact("status", 256);
         self.pid = status.lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0);
