@@ -143,6 +143,33 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
 }
 
 #[test]
+fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way() {
+    let session = Session::new("resize");
+    let lines: Vec<String> = (1..=8).map(|n| format!("line{n}-{}", "abcdefghij".repeat(n % 4 + 1))).collect();
+    let script = format!("printf '%s\\n' {}; printf ready; sleep 600", lines.join(" "));
+    let pane = session.start("p", &["sh", "-c", &script]);
+    let screen = || read(&pane.join("screen"));
+    let rows = || screen().split_once('\n').map(|(_, rows)| rows.to_string()).unwrap_or_default();
+    until("the program has printed", || screen().contains("\nready\n"));
+    let (before, history) = (rows(), read(&pane.join("history")));
+    // Narrow: lines wrap, rows leave by the top into `history`, and every line is whole in
+    // `history` and `screen` together (the screen's rows that go on are joined to tell).
+    for size in ["12 24", "7 24", "40 5", "80 24"] {
+        fs::write(pane.join("ctl"), format!("resize {size}\n")).unwrap();
+        until("the pane has the size", || screen().contains(&format!(" size={} ", size.replace(' ', "x"))));
+        let all = (read(&pane.join("history")) + &rows()).replace('\n', "");
+        assert_eq!(all, lines.concat() + "ready", "at {size}");
+    }
+    // Back at the size it had, with nothing printed between: the screen as it was, and
+    // `history` has given back what it was sent.
+    assert_eq!((rows(), read(&pane.join("history"))), (before, history));
+    // A size that is refused changes nothing and is in the log.
+    fs::write(pane.join("ctl"), "resize 0 5\n").unwrap();
+    until("the log says so", || read(&pane.join("log")).contains("resize"));
+    assert!(screen().contains(" size=80x24 "));
+}
+
+#[test]
 fn a_flood_is_published_a_bounded_number_of_times_and_loses_no_line() {
     let session = Session::new("flood");
     let pane = session.start("yes", &["sh", "-c", "yes | head -n 200000; echo done; sleep 600"]);
@@ -162,8 +189,8 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b")).unwrap();
     // The split key starts its pane at the size the viewer says the new tile will have; the
-    // program notes the size it found when it started.
-    let script = "#!/bin/sh\n# split\n# group: Panes\np=$(COLUMNS=${FUXN_ROW%x*} LINES=${FUXN_ROW#*x} fux start \"$FUXN_WS/two\" -- sh -c 'stty size > \"$FUXN_PANE/first\"; exec sh') && fux layout split row two\necho made $FUXN_KEYS\n";
+    // program notes the size it found when it started, before the pane has a tile at all.
+    let script = "#!/bin/sh\n# split\n# group: Panes\np=$(COLUMNS=${FUXN_ROW%x*} LINES=${FUXN_ROW#*x} fux start \"$FUXN_WS/two\" -- sh -c 'stty size > \"$FUXN_PANE/first\"; exec sh') && until [ -s \"$p/first\" ]; do sleep 0.01; done && fux layout split row two\necho made $FUXN_KEYS\n";
     fs::write(keys.join("C-b/v"), script).unwrap();
     fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>\"$FUXN_PANE/in\"\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/v")).arg(keys.join("C-b/e")).status().unwrap();

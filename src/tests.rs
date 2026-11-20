@@ -218,6 +218,49 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     );
     assert!(wide.resize(120, 10));
     assert_eq!((wide.plain(), wide.row, wide.col), (format!("{long}\nend\n\n\n\n\n\n\n\n\n"), 1, 3));
+    // A row erased from its start, or moved away, is no longer what the row above goes on in:
+    // widened, the two do not become one line. And one column is a size like any other.
+    let mut parted = term(4, 3, "abcdef\x1b[2;1H\x1b[Kxy");
+    assert!(parted.resize(8, 3) && parted.plain() == "abcd\nxy\n\n", "{:?}", parted.plain());
+    let mut emptied = term(4, 4, "abcdefghij\x1b[2;1H\x1b[2K");
+    assert!(emptied.resize(8, 4) && emptied.plain() == "abcd\n\nij\n\n", "{:?}", emptied.plain());
+    let mut moved = term(4, 3, "abcdef\x1b[2;1H\x1b[Lxy");
+    assert!(moved.resize(8, 3) && moved.plain() == "abcd\nxy\nef\n", "{:?}", moved.plain());
+    let mut thin = term(6, 4, "a\u{4e00}b\u{4e8c}c");
+    assert!(thin.resize(1, 4) && thin.resize(6, 4) && thin.lines().2);
+    assert_eq!(thin.peek().history.clone() + &thin.lines().0.replace([' ', '\n'], ""), "abc");
+    // A line whose first rows are in history, and whose rest is then cleared away, ends there:
+    // what is printed next is a line of its own.
+    let mut cleared = term(10, 2, "x\r\naaaaaaaaaabbbbb\r\n\x1b[H\x1b[2J$ ls\r\nfile\r\n");
+    assert_eq!(cleared.take().history, "x\naaaaaaaaaa\n$ ls\n");
+    // A line editor draws a long line again row by row: written over, it is one line still.
+    let mut drawn = term(5, 2, "abcdefg\x1b[1;5HX\x1b[2;1Hfg");
+    assert!(drawn.resize(10, 2) && drawn.plain() == "abcdXfg\n\n", "{:?}", drawn.plain());
+    // A saved cursor that waits at a row's end stays there; one in the blank part of a row is
+    // kept inside the row and does not wait; the cursor behind the alternate screen comes back
+    // to its column; a mark that comes after a resize still finds its letter.
+    let mut waits = term(4, 5, "ABCD\x1b7EF");
+    assert!(waits.resize(2, 5));
+    waits.feed(b"\x1b8");
+    assert_eq!((waits.row, waits.col, waits.plain().as_str()), (1, 1, "AB\nCD\nEF\n\n\n"));
+    let mut beside = term(20, 3, "ab\x1b[1;15H\x1b7\x1b[3;1H");
+    assert!(beside.resize(10, 3));
+    beside.feed(b"\x1b8X");
+    assert_eq!(beside.plain(), "ab       X\n\n\n");
+    let mut hidden = term(8, 5, "A\x1b[1;8H\x1b[?1049h");
+    assert!(hidden.resize(3, 5) && hidden.resize(8, 5));
+    hidden.feed(b"\x1b[?1049l");
+    assert_eq!((hidden.row, hidden.col), (0, 7));
+    let mut later = term(8, 3, "e");
+    assert!(later.resize(6, 3));
+    later.feed("\u{301}".as_bytes());
+    assert_eq!(later.plain(), "e\u{301}\n\n\n");
+    // A row that ends in coloured blanks stays one row, coloured to its new end; a blank that
+    // was given a colour of its own is in `screen.styled`.
+    let mut bar = term(8, 3, "\x1b[44m\x1b[K\x1b[m\r\nx");
+    assert!(bar.resize(4, 3) && bar.plain() == "\nx\n\n" && bar.peek().history.is_empty());
+    assert_eq!(bar.styled().lines().next(), Some("\x1b[0;44m    \x1b[m"));
+    assert!(term(4, 1, "\x1b[31m \x1b[m").styled().starts_with("\x1b[0;31m "));
     for seed in 0..300 {
         let next = &mut numbers(seed);
         let text = some_text(next);
@@ -233,27 +276,34 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
         term.feed(format!("\x1b[{};{}H", 1 + next(term.rows), 1 + next(term.cols - 1)).as_bytes());
         let (was, at, history) = (term.plain(), (term.row, term.col), term.peek().history.len());
         let (before, size) = (place(&term), (term.cols, term.rows));
+        let (mut there, mut quiet) = (true, true);
         for _ in 0..1 + next(4) {
             // (1) Every character printed is in the screen or in history, once and in order; (3) the cursor
             // stays on its character; (4) no character is cut in half.
+            let kept = term.peek().history.len();
             assert!(term.resize(2 + next(60), 1 + next(30)));
             assert_eq!(everything(&term), lines_of(&printed), "seed {seed}: at {}x{}", term.cols, term.rows);
             assert!(term.lines().2, "seed {seed}: a character in half at {}x{}", term.cols, term.rows);
-            if term.peek().history.len() == history {
+            // (Unless its own row had to go to history, to make room for text below it: then
+            // it is at the top, and on another character from then on.)
+            there &= term.row > 0 || term.peek().history.len() == kept;
+            quiet &= term.peek().history.len() == kept;
+            if there {
                 assert_eq!(place(&term), before, "seed {seed}: the cursor at {}x{}", term.cols, term.rows);
             }
         }
-        // (2) Back at the size it had, with nothing printed between and nothing gone to history: as it was.
+        // (2) Back at the size it had, with nothing printed between: as it was, the rows that
+        // went to history on the way taken back from it (if the cursor's own row did not go).
         assert!(term.resize(size.0, size.1));
-        if term.peek().history.len() == history {
+        if there {
+            assert_eq!(term.peek().history.len(), history, "seed {seed}: history, back at {size:?}");
             assert_eq!((term.plain(), (term.row, term.col)), (was, at), "seed {seed}: back at {size:?}");
-            // The saved cursor too, if it was on a character or right after one (in the blank
-            // part of a row or on an empty row it is only kept inside the screen).
+            // The saved cursor too, if its row never left the screen and it was on a character or
+            // right after one (in the blank part of a row or on an empty row it is only kept
+            // inside the screen).
             term.feed(b"\x1b8");
-            assert!(
-                place(&term) == saved_before || saved_before.ends_with([' ', '\n']),
-                "seed {seed}: the saved cursor"
-            );
+            let kept = !quiet || place(&term) == saved_before || saved_before.ends_with([' ', '\n']);
+            assert!(kept, "seed {seed}: the saved cursor");
         }
     }
 }

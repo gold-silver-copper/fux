@@ -141,6 +141,11 @@ def resize():
     case("resize", "alternate-narrow", "20x6", feed(b"main text here\x1b[?1049h" + line[:20] + b"\r\n" + line[20:35]), "resize 10x6")
     case("resize", "alternate-leave-after", "20x6", feed(b"main text that is long\x1b[?1049halt"), "resize 10x6", feed(b"\x1b[?1049l"))
     case("resize", "region-then-resize", "20x6", feed(labels + b"\x1b[2;4r"), "resize 20x4", feed(b"\x1b[4;1H\nZ"))
+    full = b"\r\n".join(bytes([c]) * 30 for c in b"ABC") + b"\r\nDDDDD"
+    case("resize", "narrow-and-back-full-screen", "30x6", feed(full), "resize 10x6", "resize 30x6")
+    case("resize", "overwrite-last-column", "10x5", feed(b"abcdefghijKLMNOPQRST\x1b[1;10HZ"), "resize 20x5")
+    case("resize", "erased-row-in-line", "10x5", feed(b"abcdefghijKLMNOPQRSTuvw\x1b[2;1H\x1b[2K"), "resize 30x5")
+    case("resize", "cursor-above-text", "20x4", feed(b"0123456789ABCDEFGHIJ\x1b[1;3H"), "resize 4x4")
     case("resize", "hard-lines-narrow", "20x6", feed(b"one\r\ntwo two two two\r\nthree"), "resize 8x6")
 
 

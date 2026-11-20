@@ -50,6 +50,8 @@ struct Holder {
     state: String,
     /// What the emulator produced and the next publish writes: history, pictures, a title, a clipboard.
     pending: Out,
+    /// The `history` file ends in the middle of a line.
+    history_open: bool,
     /// The title in the `title` file.
     title: String,
     logged: usize,
@@ -145,6 +147,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         pictures: Vec::new(),
         state: "running".into(),
         pending: Out::default(),
+        history_open: false,
         title: String::new(),
         logged: 0,
     };
@@ -289,6 +292,20 @@ impl Holder {
             out.refused.push("an answer to the program was dropped: 64 KiB were waiting for it");
         }
         out.refused.into_iter().for_each(|refused| self.log(refused));
+        // A resize took rows back from history's end: from what waits to be written, then from the file.
+        let waiting = self.pending.history.len().saturating_sub(out.unhistory);
+        let written = (out.unhistory - (self.pending.history.len() - waiting)) as u64;
+        if self.pending.history.is_char_boundary(waiting) {
+            self.pending.history.truncate(waiting);
+        }
+        if written > 0 {
+            let cut = OpenOptions::new().write(true).open("history");
+            let cut = cut.and_then(|file| file.set_len(file.metadata()?.len().saturating_sub(written)));
+            if let Err(e) = cut {
+                self.log(&format!("history keeps {written} bytes that are on the screen again: {e}"));
+            }
+            self.history_open = false;
+        }
         self.pending.history.push_str(&out.history);
         self.pending.pictures.append(&mut out.pictures);
         self.pending.title = out.title.or(self.pending.title.take());
@@ -369,10 +386,15 @@ impl Holder {
     /// written are lost, and the log says so: they are not kept to try again.
     fn history(&mut self) {
         let lines = std::mem::take(&mut self.pending.history);
+        // A file is put aside where a line ends, so that no line is in two files (one that
+        // never ends is cut when the file is twice its size).
         let rotated = match fs::metadata("history") {
-            Ok(m) if m.len() > HISTORY_MAX => fs::rename("history", "history.1"),
+            Ok(m) if m.len() > HISTORY_MAX && (!self.history_open || m.len() > 2 * HISTORY_MAX) => {
+                fs::rename("history", "history.1")
+            }
             _ => Ok(()),
         };
+        self.history_open = !lines.ends_with('\n');
         let file = rotated.and_then(|()| OpenOptions::new().append(true).create(true).open("history"));
         if let Err(e) = file.and_then(|mut file| file.write_all(lines.as_bytes())) {
             self.log(&format!("history was lost (some or all of {} bytes): {e}", lines.len()));

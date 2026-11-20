@@ -75,7 +75,7 @@ in `FUXN_WS`.
 | `screen` | line 1 says what rows cannot; then one line of plain text per row |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them |
 | `status` | `holder N` and `command …` (its first 4,096 characters): written once, when the pane starts. The program's number and state are on line 1 of the screens, and only there |
-| `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them. Past 4 MiB it becomes `history.1` and a new one starts |
+| `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
@@ -167,17 +167,23 @@ any terminal: bash counts each part of a joined character, so its cursor
 is off after an emoji with a skin tone here as in tmux, and stepping into a
 Devanagari conjunct, which is one character here, redraws it oddly.
 
-The viewer asks a pane once to take the size of its tile (through `ctl`). Two
+The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile changes. Two
 viewers with different sizes do not fight: the last to ask wins, and the
 other shows what fits.
 
 A resize wraps the main screen's text anew: a line that was wrapped is one
-line again at any width, no character is cut in two, and the cursor stays on
-its character. Rows that no longer fit above the cursor go to `history`,
-which does not give them back: a screen made taller gets blank rows at its
-bottom. The alternate screen (vim, less) is cut or padded, never wrapped,
-and nothing of it goes to history: its program draws it again. A size that
-is refused changes nothing and leaves a line in `log`.
+line again at any width, and no character is cut in two (on a screen one
+column wide, a wide character becomes a blank). Rows that no longer fit go
+to `history` from the top, and come back from it at the next resize that has
+room for them, if nothing has scrolled off in between: a tile made narrow
+for a moment is as it was when it is wide again, and `history` is then that
+much shorter at its end. What scrolled off stays in `history`: a screen made
+taller later gets blank rows at its bottom. The cursor stays on its
+character while that character's row is on the screen; if the text below it
+needs the room, that row goes too and the cursor is kept at the top. The
+alternate screen (vim, less) is cut or padded, never wrapped, and nothing of
+it goes to history: its program draws it again. A size that is refused
+changes nothing and leaves a line in `log`.
 
 ### Keys are scripts
 
@@ -202,7 +208,8 @@ A script gets `FUXN_DIR` (the session), `FUXN_WS` (the workspace shown),
 `FUXN_PANE` (the focused pane's directory), `FUXN_KEYS`, `FUXN_VIEW`,
 `COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has),
 `FUXN_ROW` and `FUXN_COL` (the size, as `COLSxROWS`, of the tile a split of the
-focused pane would make, side by side or one above the other: the split keys
+focused pane would make: `FUXN_ROW` side by side, as `C-b v` splits, `FUXN_COL`
+one above the other, as `C-b s` does; the split keys
 start their pane at that size, so its program is not drawn twice), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; a script that
@@ -484,11 +491,14 @@ takes a desktop's number removes the desktop's socket when it ends).
 | `unicode/bengali-vowel-sign-at-end`, `unicode/devanagari-at-end`, `unicode/devanagari-joiner-at-end`, `unicode/flag-at-end`, `unicode/flags-three-at-end`, `unicode/halfwidth-voiced-mark-at-end`, `unicode/keycap-at-end`, `unicode/prepend-at-end`, `unicode/tamil-at-end`, `unicode/tamil-vowel-sign-at-end`, `unicode/thai-at-end`, `unicode/vs16-at-end` | tmux | text, cursor | tmux joins fewer characters than UAX #29 does (a spacing mark, a conjunct; before 3.8 also a flag, a skin tone, U+FE0F): what it does not join it measures apart and cuts at a row's end |
 | `unicode/halfwidth-voiced-mark` | old | cursor | old measures the same cluster otherwise |
 | `unicode/halfwidth-voiced-mark-at-end` | old | text, cursor | old measures the same cluster otherwise |
-| `resize/region-then-resize` | old, tmux, xterm | text | What went to `history` stays there (it is a file): a screen made taller gets blank rows at its bottom, where the others bring rows back from their scrollback |
-| `resize/shorter-and-back`, `resize/taller` | old, tmux, xterm | text, cursor | What went to `history` stays there (it is a file): a screen made taller gets blank rows at its bottom, where the others bring rows back from their scrollback |
+| `resize/region-then-resize` | old, tmux, xterm | text | When the text below the cursor no longer fits, rows go to `history` from the top, the cursor's row among them, and the cursor is kept at the top: no text is lost. The others keep the cursor's row and cut rows off the bottom (tmux: off the top) |
+| `resize/cursor-above-text` | old, xterm | text | When the text below the cursor no longer fits, rows go to `history` from the top, the cursor's row among them, and the cursor is kept at the top: no text is lost. The others keep the cursor's row and cut rows off the bottom (tmux: off the top) |
+| `resize/cursor-above-text` | tmux | text, cursor | When the text below the cursor no longer fits, rows go to `history` from the top, the cursor's row among them, and the cursor is kept at the top: no text is lost. The others keep the cursor's row and cut rows off the bottom (tmux: off the top) |
+| `resize/taller` | old, tmux, xterm | text, cursor | What scrolled off into `history` stays there (it is a file other programs read): a screen made taller gets blank rows at its bottom, where the others bring rows back from their scrollback |
+| `resize/overwrite-last-column` | tmux | cursor | After a line is wrapped anew the cursor is on the character it was on; tmux reports it at the line's end |
 | `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow`, `resize/narrow-cursor-mid-line`, `resize/narrow-wide-and-back`, `resize/narrow-wide-characters` | tmux | text, cursor | Narrowed, the screen keeps every row it has room for; tmux sends rows above the cursor to its history though the screen has room, and does not get them back when widened |
 | `resize/narrow-full-screen` | xterm | text | The main screen's text is wrapped anew, as in tmux and the old emulator; xterm cuts rows at the right and loses what it cut |
-| `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow`, `resize/narrow-cursor-mid-line`, `resize/narrow-wide-characters`, `resize/widen` | xterm | text, cursor | The main screen's text is wrapped anew, as in tmux and the old emulator; xterm cuts rows at the right and loses what it cut |
+| `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow`, `resize/narrow-cursor-mid-line`, `resize/narrow-wide-characters`, `resize/overwrite-last-column`, `resize/widen` | xterm | text, cursor | The main screen's text is wrapped anew, as in tmux and the old emulator; xterm cuts rows at the right and loses what it cut |
 <!-- referee:end -->
 
 ## Left out

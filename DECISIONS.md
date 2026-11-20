@@ -402,6 +402,57 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     its tile's. The holder still draws what a program wrote before a resize
     at the old size first; nothing waits or retries.
 
+- **D54. The fix check of D53 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  Both reviewers traced the same root: the mark was on the wrong row. "This
+  row goes on in the next" stayed true of a row after the next one was
+  erased, deleted or scrolled away, so unrelated rows were joined at the next
+  resize and in history (`clear` after long output made a line that never
+  was), and writing a row's last cell by a cursor move ended a line that a
+  line editor was only drawing again.
+  - The mark is now on the first cell of the row that goes on *from the one
+    above* (as kitty keeps it). Erasing that cell ends the line by itself;
+    writing over it keeps it; rows that get a new neighbour (insert and
+    delete line, a scroll in a region) lose it; a row erased whole is an
+    empty line of its own. History leaves a line open when its rest is on
+    the screen, and ends it when the next row to arrive does not go on from
+    it. The holder rotates `history` where a line ends.
+  - A decision, since two of the ordered properties cannot both hold: when
+    the text below the cursor no longer fits, rows go to history from the
+    top, the cursor's own row among them, and the cursor is kept at the top
+    of the screen. The other way (tmux, xterm: cut rows off the bottom)
+    keeps the cursor on its character and loses text. Text is not lost; the
+    README says when the cursor moves, and the test checks the cursor
+    whenever its row is still on the screen.
+  - Also fixed: a saved cursor that waits to wrap stays at its row's end, and
+    one in the blank part of a row is kept inside the row without waiting;
+    behind the alternate screen the saved cursor is the main screen's cursor
+    and comes back to its column; the character printed last is carried
+    through a resize, so a mark that arrives after it still joins; a picture
+    moves with the cells it was over (two of its corners are followed) or
+    goes; a row that ends in coloured blanks stays one row and is coloured
+    to its new end; one column: a row is never longer than the screen. The
+    size named for a split is taken beside the same pane the script splits
+    beside. The start-size test waits for the program's note before it
+    splits.
+  - The tester's largest point: a tile made narrow for a moment (a split
+    opened and closed) left half its pane blank, because rows that went to
+    history never came back. Now the rows a resize sends to history are also
+    kept (cells and all, a screen's worth at most), until something scrolls
+    off after them or the screen is cleared. The next resize wraps them along
+    with the screen: what fits comes back, history is told how many bytes to
+    take off its end (`Out::unhistory`; the holder cuts what waits to be
+    written, then the file), and what still does not fit is given to history
+    again. At every moment each character is in `screen` or in `history`,
+    once. Narrowing and widening back is exact, cursor and history included,
+    whenever the cursor's own row stayed on the screen (the test's 300 seeds;
+    a test through a pane's files).
+  - Kept, and said in the README: what scrolled off stays in history; a
+    wide character on a one-column screen becomes a blank; a space printed
+    in a row's last column, with the cursor put back on it and a wide
+    character printed there, is taken for the gap that character leaves;
+    one resize may put more than 4 MiB of rows into the history that waits
+    to be written (at most one screen's worth, written at once).
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

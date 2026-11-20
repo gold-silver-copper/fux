@@ -1,0 +1,3 @@
+size 10x5
+feed abcdefghijKLMNOPQRST\x1b[1;10HZ
+resize 20x5

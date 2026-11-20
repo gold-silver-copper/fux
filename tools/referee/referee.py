@@ -306,7 +306,10 @@ def main():
             differing = []
             for witness, (play, binary) in witnesses.items():
                 try:
-                    theirs = play(case, binary)
+                    try:
+                        theirs = play(case, binary)
+                    except Unplayed:
+                        theirs = play(case, binary)  # Once more: an X server or a terminal may fail to start once.
                 except Unplayed as error:
                     new.append(f"{name} could not be played to {witness}: {error}")
                     continue

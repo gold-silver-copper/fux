@@ -391,7 +391,12 @@ impl View {
             // A pane no folder can be named after is split off in a copy of the layout.
             let mut split = layout.clone();
             split.tabs.push(layout::Tab { root: layout::Node::Pane("\0".into()), focus: "\0".into() });
-            let tile = split.edit(&["split", way, "\0"]).ok().and_then(|()| {
+            // Beside the pane the script is told of, as the split keys split: the same pane for both.
+            let words: &[&str] = match &self.focus {
+                Some(focus) => &["split", way, "\0", "beside", focus],
+                None => &["split", way, "\0"],
+            };
+            let tile = split.edit(words).ok().and_then(|()| {
                 split.tab()?.tiles(area).into_iter().find(|(pane, _)| pane == "\0").map(|(_, tile)| tile)
             });
             let tile = tile.unwrap_or(area);

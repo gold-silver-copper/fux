@@ -1,0 +1,3 @@
+size 20x4
+feed 0123456789ABCDEFGHIJ\x1b[1;3H
+resize 4x4
