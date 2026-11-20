@@ -84,7 +84,7 @@ in `FUXN_WS`.
 | `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. A row that goes on in the next keeps the blanks at its end in `screen` and in `screen.styled`, so joining the two gives the line as it was printed (a line feed onto a row that goes on does not end the line above, as in tmux: a shell moves down a wrapped command with one. A program that writes two lines over a wrapped one without erasing it leaves them one line): with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
 | `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE AT KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it, if the shell gave one from 0 to 255). LINE is counted from the pane's first line, as `top` is, a line being what was printed up to its line break however many rows it takes: line `top` is the screen's first, a smaller number is in `history`, in `history.1` or older than both. AT is how many bytes of the line's text are before the mark, as `history` and `screen` (its rows joined by `wraps`) have that text: `cut -b` and `LC_ALL=C awk` cut there, and never inside a character. A mark stays on its text: when lines are scrolled, inserted, deleted or wrapped anew its numbers follow. What is erased takes its marks to where the erased part begins, in their order (so does a prompt drawn again higher up, for the marks after it): an output that was cleared away is a pair of marks at one place, and nothing. The alternate screen has no marks, and `marks` are the shell's while it is shown. The last thousand; empty when the shell marks nothing |
 | `links` | the links on the screen (a program makes one with OSC 8, as `ls --hyperlink` does), a line each: `LINE COL LEN ADDRESS`. LINE is the line's number as in `marks`, COL how many cells from the start of the line's first row on the screen the link begins (a whole row for each row the line has above it there), LEN how many cells it has, in reading order (a row counts as many cells as `size` says, also where a wide character that did not fit left its last cell empty, which `screen` does not show; a wide character is two cells); a link that goes over a line break is a line for each line. ADDRESS is printable ASCII without blanks, 2,048 bytes at most: anything else is no link, an address with a control byte in it among them. A cell keeps its link when it scrolls on the screen and when the text is wrapped anew, and loses it when it is erased or written over; text in `history` has none. At most a thousand different addresses at a time (one more is no link, with a line in `log`), and a list of 256 KiB at most (the runs past that are left out); empty when there are none. The files are read one after another: a reader that reads `links` of one moment and `screen` of the next has, until the next change, a link on the text that was there before |
-| `pictures` | a line `pic-N.sixel ROW COL COLS ROWS` for each picture on the screen: the file, where it is, its size in cells |
+| `pictures` | a line `pic-N.sixel ROW COL COLS ROWS` for each picture that has a row on the screen: the file, where its first row and column are, its size in cells. COLS and ROWS are the whole picture's, also where it goes past the screen's right edge or its last row; ROW is below 0 when rows of it have scrolled off the top (`-2`: its third row is on the screen's first) |
 | `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts, where a line ends (a line that never ends is cut at 8 MiB). That is looked at when lines are written, about 512 KiB at a time, so a file is about 4.5 MiB at most (see Bounds for the most it can be), and not while its last rows are those a resize sent there and may take back. When what the last line went on in is erased from the screen, the line is ended in `history` too |
 | `history.styled` | the same lines in the same order with their colours: text and SGR codes only, as `screen.styled` is beside `screen` (each row a line was wrapped in starts and ends in the default style; a blank that has a colour is kept at a line's end; U+200B where two characters that were two cells would read as one, as in `screen.styled`, also where two rows are joined; no links). Without the codes, those U+200B and the blanks at line ends it is `history`: `marks` count bytes in `history`, not in this one. It becomes `history.styled.1` when `history` becomes `history.1`, at the same line, which is when either file is past 4 MiB: lines full of colour codes are put aside sooner. A colour the program set is the pane's here too: a row is told as `screen.styled` had it when it left the screen (with a background of the program's own it is as wide as the pane was), and it is a record, not told again when a colour is set or given back later; only what a resize takes back is told anew, in the colours of then. What a resize takes back from `history` is taken back from it too. If one of the two files cannot be written, put aside or cut, `log` says so and this one is begun anew, empty and with no `history.styled.1`: from then on it has `history`'s last lines, never the colours of other lines. A line without colours is its text a second time (`seq 1 2000000` writes 14 MiB to each file, and takes 5% longer for it) |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
@@ -605,8 +605,28 @@ gives that tile the keys and is not passed on. The viewer uses the mouse for not
 focused program does not ask, your terminal's own selection works as ever.
 
 Pictures: when the terminal says it draws sixel, a pane's picture is drawn in
-its tile if it fits whole. Another protocol later is another file extension
-beside `.sixel` and a few lines in the viewer.
+its tile. One that fits is passed on as the program wrote it. Of one that
+does not fit (wider or taller than the tile, or with rows scrolled off the
+pane's top) the part inside the tile is drawn, at its place and never over
+the line between tiles or a neighbour: the viewer reads the picture
+(`src/sixel.rs`: raster attributes, colours in RGB and HLS, repeats), takes
+the pixels the tile's cells cover and writes those as a sixel picture of
+its own. The file stays whole, so the picture is whole again in a wider
+tile. A part is cut once and kept for as long as it is drawn. It has square
+pixels, and a pixel the program never painted stays unpainted in it (the
+part says that such pixels keep what is under them, whatever the picture
+said). No picture is drawn on your terminal's last row: a terminal may put
+the cursor under a picture and scroll everything to do so.
+
+A picture is cut within bounds: the 4 MiB a picture may have are read; the
+part is at most its cells times the size of a cell, and at most 8,388,608
+pixels (a screen of 3840 by 2160 has fewer); colour registers 0 to 255 and
+256 different colours; each column of six pixels painted four times over on
+average; 4 MiB of sixel written. A picture past one of these is not drawn
+(no stand-in is), and the viewer's corner says which, once for each part;
+so is one in a terminal that does not say how many pixels a cell has.
+Another protocol later is another file extension beside `.sixel` and a few
+lines in the viewer.
 
 ## Don't
 
@@ -820,10 +840,14 @@ would be a script); a copy mode (`C-b c` is the
 editor on the pane's text, `C-b M-c` is `less` on it in colour); Windows. `clear` clears the screen, not the
 `history` file (`CSI 3 J` is ignored).
 
-Pictures: one that does not fit its tile whole is not drawn. After a picture
+Pictures: a pixel shape other than square (sixel can ask for pixels twice
+as high as wide) is not kept: cells are counted as if pixels were square,
+and a part is written so. A picture that does not fit its tile and is past
+a bound above is not drawn at all. After a picture
 the cursor goes to the start of the line below it (a VT340 and xterm leave it on the
 picture's last row), so that a prompt does not write over it; a picture
-therefore needs a free row under it, and one as tall as the pane scrolls off.
+therefore needs a free row under it, and one as tall as the pane loses its
+first rows off the top (it is drawn without them).
 
 `TERM=xterm-256color` is the nearest honest name: keys reach the program
 exactly as your terminal sends them, and what that terminal description

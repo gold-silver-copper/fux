@@ -33,6 +33,7 @@ fux is a view over the filesystem and pane daemons. Everything else follows.
 | `src/holder.rs` | ~440 | one pane: the pty, the emulator, the files, the two FIFOs, one `poll` loop |
 | `src/layout.rs` | ~550 | the layout file: read, settle against the folders, edit, place tiles |
 | `src/view.rs`, `keys.rs` | ~970 | the viewer: draw what changed, name keys, run scripts, pass the mouse on |
+| `src/sixel.rs` | ~220 | the cutter of sixel pictures, for the viewer: reads one rectangle of a picture's pixels and writes it as a picture of its own, every step bounded |
 | `src/main.rs` | ~300 | the command line: `dir`, `start`, `wait`, `view`, `layout` |
 | `keys/` | ~230 | the default key scripts, plain `sh` |
 
@@ -67,7 +68,8 @@ look puts it right; it keeps the cursor inside the rows it read. It sets the
 outer terminal's cursor-key, keypad and mouse modes to the focused program's,
 so key bytes pass through untouched and mouse reports need only their
 coordinates moved. Pictures are files the viewer passes on after
-checking that each is one sixel string.
+checking that each is one sixel string; of one that does not fit its tile
+it writes the part inside the tile (`sixel.rs`).
 
 **Keys.** The viewer names each key and looks for a file of that name in the
 keys directory (or the open menu's directory). The layout is changed by the
