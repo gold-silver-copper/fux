@@ -1195,6 +1195,26 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     pane's screen during a flood. Every write that draws cells is one
     string inside mode 2026's brackets; no cause was found by reading,
     and it was not reproduced.
+- **D84. Colour in scrollback** (message 23, step 3; the panel 8 of 8; the
+  owner: keep both plain files). `history.styled` beside `history`: the
+  same lines in the same order, text and SGR only, each row written as
+  `screen.styled` writes it (one function), so with the codes taken out it
+  is `history` but for blanks at a line's end (a coloured bar stays a bar)
+  and the U+200B that keeps two characters apart. `marks` count bytes of
+  `history`, as before. Rows taken back after a resize and a line ended
+  by `settle` go through the one place that writes both.
+  - The two are put aside together, at the same line, when either passes
+    4 MiB: on the plain file's size alone, output with a colour at every
+    character would let the styled file grow twenty times that in a
+    session directory that is often memory. So lines dense with colour
+    keep less history.
+  - A line without colour costs its bytes a second time and one look at
+    its cells (a row of plain ASCII is copied, not put together again):
+    the flood went from 1.44 s to 1.51 s.
+  - `C-b M-c` pages a pane's text in colour: `.text FILE styled` joins the
+    styled files as it joins the plain ones, opened in `less -R` at its
+    end through `.edit`. Alt-c: beside `c` (the editor) and `C` (the last
+    output), and not Ctrl-c, which people press to back out of a prefix.
 
 ## The old fux3's bugs: which classes are gone
 
