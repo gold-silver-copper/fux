@@ -405,7 +405,7 @@ fn queries_are_answered_with_nobody_watching() {
     let term = term(80, 24, "\x1b[c\x1b[>c\x1b[5n\x1b[3;7H\x1b[6n\x1b[?2004$p\x1b[18t");
     assert_eq!(
         String::from_utf8_lossy(&term.peek().reply),
-        "\x1b[?62;4;22c\x1b[>1;10;0c\x1b[0n\x1b[3;7R\x1b[?2004;2$y\x1b[8;24;80t"
+        "\x1b[?62;4;22c\x1b[>70;0;0c\x1b[0n\x1b[3;7R\x1b[?2004;2$y\x1b[8;24;80t"
     );
 }
 
@@ -419,7 +419,7 @@ fn what_fux_is_and_can_do_is_answered_under_its_own_name_and_no_more() {
     named.name = "fux-next 1.2".into();
     named.feed(b"\x1b[>q\x1bc\x1b[>0q\x1b[>1q");
     assert_eq!(named.peek().reply, b"\x1bP>|fux-next 1.2\x1b\\\x1bP>|fux-next 1.2\x1b\\");
-    assert_eq!(said("\x1b[>c\x1b[>0c\x1b[>1c"), "\x1b[>1;10;0c\x1b[>1;10;0c");
+    assert_eq!(said("\x1b[>c\x1b[>0c\x1b[>1c"), "\x1b[>70;0;0c\x1b[>70;0;0c");
     // A capability by its terminfo name: each name is answered by itself, so one that is not
     // known cannot hide one that is; true colour and the curly underline are there.
     let asked = format!("\x1bP+q{};{};{}\x1b\\", hex("Tc"), hex("smglr"), hex("Smulx"));
@@ -439,17 +439,40 @@ fn what_fux_is_and_can_do_is_answered_under_its_own_name_and_no_more() {
         said("\x1b[2;4r\x1b[5 q\x1bP$qr\x1b\\\x1bP$q q\x1b\\\x1bP$qs\x1b\\"),
         "\x1bP1$r2;4r\x1b\\\x1bP1$r5 q\x1b\\\x1bP0$r\x1b\\"
     );
-    // The README's table is this table, and the agents' page names the same names.
-    let (readme, page) = (include_str!("../README.md"), include_str!("help-agents.txt"));
-    for (name, value) in crate::term::CAPS {
-        let shown = value.replace('\x1b', "\\E").replace('\x07', "\\a");
-        let row = if shown.is_empty() { format!("| `{name}` | yes |") } else { format!("| `{name}` | `{shown}` |") };
-        assert!(readme.contains(&row), "the README has no row {row}");
-        assert!(
-            page.split_whitespace().any(|word| word.trim_end_matches('.') == *name),
-            "the agents' page does not name {name}"
-        );
+    assert_eq!(said(&format!("\x1bP+q{}\x1b\\", "41;".repeat(40))), "\x1bP0+r\x1b\\");
+    // What DECRQSS says of the looks in force, fed back, gives the same looks; and the table's
+    // own sequences are ones the emulator takes (the curly underline, its colour, the shape).
+    for looks in ["1;2;3", "4:2;58:5:9", "4:5;58:2::1:2:3;7", "31;42", "95;107;9", "38;5;200;48;2;9;8;7;5;8", "21"] {
+        let mut first = term(20, 5, &format!("\x1b[{looks}mx\x1bP$qm\x1b\\"));
+        let answer = String::from_utf8_lossy(&first.take().reply).into_owned();
+        let body = answer.trim_start_matches("\x1bP1$r").trim_end_matches("\x1b\\");
+        let again = term(20, 5, &format!("\x1b[{body}x"));
+        assert_eq!(again.styled(), first.styled(), "{looks}: {answer:?}");
     }
+    let shaped = term(20, 5, "\x1b[4:3m\x1b[58:2::1:2:3mx\x1b[5 q\x1b[0 q");
+    assert!(
+        shaped.styled().starts_with("\x1b[0;4m\x1b[4:3;58:2::1:2:3mx") && shaped.cursor_shape == 0,
+        "{:?}",
+        shaped.styled()
+    );
+    // The README's table is this table, row for row, and the agents' page lists the same names.
+    let (readme, page) = (include_str!("../README.md"), include_str!("help-agents.txt"));
+    let rows: Vec<String> = crate::term::CAPS
+        .iter()
+        .map(|(name, value)| match value.replace('\x1b', "\\E").as_str() {
+            "" => format!("| `{name}` | yes |"),
+            shown => format!("| `{name}` | `{shown}` |"),
+        })
+        .collect();
+    assert!(
+        readme.contains(&format!("| Name | Value |\n|---|---|\n{}\n\n", rows.join("\n"))),
+        "the README's table of capabilities"
+    );
+    let names: Vec<&str> = crate::term::CAPS.iter().map(|(name, _)| *name).collect();
+    assert!(
+        page.split_whitespace().collect::<Vec<_>>().join(" ").contains(&format!("{}.", names.join(" "))),
+        "the agents' page"
+    );
 }
 
 #[test]

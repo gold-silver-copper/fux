@@ -39,8 +39,7 @@ pub const CAPS: &[(&str, &str)] = &[
     ("Smulx", "\x1b[4:%p1%dm"),
     ("Setulc", "\x1b[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%dm"),
     ("Ss", "\x1b[%p1%d q"),
-    ("Se", "\x1b[2 q"),
-    ("Ms", "\x1b]52;%p1%s;%p2%s\x07"),
+    ("Se", "\x1b[0 q"),
 ];
 /// How many of a shell's marks are kept.
 const MARKS_MAX: usize = 1000;
@@ -1594,7 +1593,9 @@ impl Term {
     /// One reply per name, including an unknown name in the middle of a list.
     fn report_caps(&mut self, request: &[u8]) {
         if request.len() > 2048 || request.iter().filter(|&&c| c == b';').count() >= 32 {
-            self.refuse("a capability query over 2048 bytes or 32 names was dropped");
+            // (Too much for one question: it is said to be not valid, so nobody waits for more.)
+            self.refuse("a capability query over 2048 bytes or 32 names was not answered name by name");
+            self.respond("\x1bP0+r\x1b\\");
             return;
         }
         for name in request.split(|&b| b == b';') {
@@ -1983,7 +1984,7 @@ impl Term {
                 let answer = format!("\x1bP>|{}\x1b\\", self.name);
                 self.respond(&answer);
             }
-            (b'>', 0, b'c') if self.params.len() == 1 && self.arg(0, 0) == 0 => self.respond("\x1b[>1;10;0c"),
+            (b'>', 0, b'c') if self.params.len() == 1 && self.arg(0, 0) == 0 => self.respond("\x1b[>70;0;0c"),
             (0, 0, b'g') => match self.arg(0, 0) {
                 0 => {
                     if let Some(stop) = self.tabs.get_mut(col) {

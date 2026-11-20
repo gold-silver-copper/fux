@@ -138,10 +138,12 @@ itself and for itself, with nobody watching:
 | Asked | Answered |
 |---|---|
 | `CSI > q` (XTVERSION) | `fux-next VERSION` |
-| `CSI c`, `CSI > c` (device attributes) | `CSI ? 62;4;22 c` (a VT220 with sixel and colour) and `CSI > 1;10;0 c`: a class, and a version number that is no other terminal's, so nothing a program knows of xterm's, tmux's or kitty's versions is turned on |
+| `CSI c`, `CSI > c` (device attributes) | `CSI ? 62;4;22 c` (a VT220 with sixel and colour) and `CSI > 70;0;0 c`: a kind of terminal no other gives (xterm is 41, tmux 84, Ghostty 1 with version 10), so nothing a program knows of another terminal's versions is turned on |
 | `DCS $ q … ST` (DECRQSS) | what the emulator keeps: `m` (the colours and looks in force, in the form with colons), `r` (the scroll region), `SP q` (the cursor's shape); "not valid" for anything else |
-| `DCS + q NAMES ST` (XTGETTCAP) | each name by itself, from the table below; "not valid" for every other name, so a name fux does not know never hides one it does |
+| `DCS + q NAMES ST` (XTGETTCAP) | each name by itself, from the table below; "not valid" for every other name, so a name fux does not know never hides one it does (more than 32 names or 2,048 bytes in one question are one "not valid") |
 
+| Name | Value |
+|---|---|
 | `TN` | `xterm-256color` |
 | `name` | `xterm-256color` |
 | `Co` | `256` |
@@ -153,16 +155,26 @@ itself and for itself, with nobody watching:
 | `Smulx` | `\E[4:%p1%dm` |
 | `Setulc` | `\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%dm` |
 | `Ss` | `\E[%p1%d q` |
-| `Se` | `\E[2 q` |
-| `Ms` | `\E]52;%p1%s;%p2%s\a` |
+| `Se` | `\E[0 q` |
 
 That is all of it: true colour, the kinds and the colour of an underline, the
-cursor's shape, setting the clipboard. What is not there fux does not do
+cursor's shape (`Se` gives it back to your terminal's own). Setting the
+clipboard works (OSC 52 with `c`) and is not in the table: the capability's
+name, `Ms`, promises a choice of clipboard and a way to read it, and fux has
+neither. What is not there fux does not do
 (left and right margins among them: `CSI ? 69 $ p` is answered "not known"),
 and a program that asks first does not turn it on. A pane's program also has
 `COLORTERM=truecolor` in its environment, which is what many read instead of
 asking. `TERM` stays `xterm-256color`: fux has no terminal description of
-its own to install, and claims no other terminal's.
+its own to install, and claims no other terminal's. Three things follow.
+The viewer passes 24-bit colours on as they are, so on a terminal that has
+none of them (few are left) set `COLORTERM=` for the program yourself. A
+program that goes by `TERM` alone may use what an xterm has and fux has not:
+a nested tmux sets the cursor's colour (heard, without effect) and needs
+`set -as terminal-features 'xterm-256color:usstyle'` to pass curly
+underlines on. And an answer nobody reads is typed text, as on any terminal:
+a program that asks and ends at once leaves it on its last screen, and one
+that asks from a shell's prompt finds it on the command line.
 
 What colours has the terminal? Programs ask (vim, Neovim and others, to
 choose a light or a dark theme), and a pane has no terminal of its own to
@@ -588,7 +600,7 @@ does something else is a row below with a case that shows it.
 
 | Question | Authority |
 | --- | --- |
-| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6, 9, 21, 58 and 59 and the colon forms of 4 (the kinds of underline), 38, 48 and 58, modes 1004 (focus) and 2026 (drawing), OSC 7, 8, 9, 777, 99 and 133, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
+| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6 (kept as 5), 9, 21, 58 and 59 and the colon forms of 4 (the kinds of underline), 38, 48 and 58, modes 1004 (focus) and 2026 (drawing), OSC 7, 8, 9, 777, 99 and 133, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. A character goes on while the cursor is where its last part left it and its cell is unchanged: a change of colour or a title between a letter and its accent does not part them (`grep --color` does this), a move or an erase does |
 | How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). An emoji with U+FE0F in its character is two. A control, U+2028 and U+2029 among them, and a mark or joiner with no character to join, takes no cell and is dropped |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports, the kitty keyboard protocol) | Its own specification |

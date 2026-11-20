@@ -301,7 +301,8 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
             // What is quoted may be anything: no control codes, and not without end.
-            let why: String = plain(&why).chars().take(1000).collect();
+            // (Line by line: the usage is several.)
+            let why: String = why.lines().map(plain).collect::<Vec<_>>().join("\n").chars().take(1000).collect();
             let _ = writeln!(std::io::stderr(), "fux: {why}");
             ExitCode::FAILURE
         }

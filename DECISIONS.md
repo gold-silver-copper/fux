@@ -1122,6 +1122,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     thing for programs not to know.
   - In the table only what the emulator does; `Ms` because setting the
     clipboard works (reading it is refused, as before).
+- **D80. The fix check of D79 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  - The second device attributes are `70;0;0` now: `1;10;0`, which D79
+    kept and called no other terminal's, is Ghostty's (sol, from the
+    panel's own record). 70 is a first number no terminal known here gives;
+    a program that goes by the number finds no terminal it knows.
+  - `Ms` is out of the table (both reviewers): the name promises a choice
+    of clipboard, which fux drops, and Neovim takes it as a clipboard it
+    can also read, and then waits ten seconds at each paste for an answer
+    fux refuses to give. Setting the clipboard still works; the README
+    says why the name is not there.
+  - `Se` is `CSI 0 SP q` (the outer terminal's own shape, which is what 0
+    means to the viewer), not xterm's `2`.
+  - A question too long to answer name by name is one "not valid" (the
+    tester: 33 names got no word at all). The README's table has its
+    header, and the test holds it row for row; DECRQSS's answer is fed
+    back in the test and must give the same looks.
+  - Said in the README, not changed: `COLORTERM=truecolor` is true of the
+    pane and not of every outer terminal, and the viewer does not convert
+    (few terminals are left without; a conversion table is not worth its
+    lines until someone has one); a program that goes by `TERM` alone
+    (a nested tmux) may use what an xterm has; an unread answer is typed
+    text; SGR 6 is kept as 5.
 
 ## The old fux3's bugs: which classes are gone
 
