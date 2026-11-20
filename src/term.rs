@@ -3,6 +3,7 @@
 //! takes sixel pictures whole. It knows nothing of files or processes.
 
 use crate::width::{Joiner, plain, spread, width};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 /// The most bytes one picture may have; a longer one is dropped and noted.
@@ -127,6 +128,37 @@ impl Style {
         }
     }
 }
+
+/// A colour as a program or a terminal gives one, its first eight bits of each part: `#` and
+/// 3, 6, 9 or 12 hex digits (the high bits, as X reads them), or `rgb:R/G/B` with one to four
+/// hex digits each (a part of the whole). No other form is one: no name, no `rgbi:`.
+pub fn colour(text: &str) -> Option<[u8; 3]> {
+    let (parts, scaled): (Vec<&str>, bool) = match (text.strip_prefix("rgb:"), text.strip_prefix('#')) {
+        (Some(parts), _) => (parts.split('/').collect(), true),
+        (_, Some(hex)) if hex.is_ascii() && hex.len().is_multiple_of(3) => {
+            let each = hex.len() / 3;
+            (vec![hex.get(..each)?, hex.get(each..2 * each)?, hex.get(2 * each..)?], false)
+        }
+        _ => return None,
+    };
+    let value = |part: &&str| {
+        let bits = 4 * part.len() as u32;
+        let hex = (1..=4).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_hexdigit());
+        let n = u32::from_str_radix(part, 16).ok().filter(|_| hex)?;
+        u8::try_from(if scaled { n * 0xffff / ((1 << bits) - 1) } else { n << (16 - bits) } >> 8).ok()
+    };
+    match parts.as_slice() {
+        [r, g, b] => Some([value(r)?, value(g)?, value(b)?]),
+        _ => None,
+    }
+}
+
+/// Where a pane keeps a colour its program set that is no palette number's (those are 0 to
+/// 255): the two it draws with by default, and the cursor's (OSC 10, 11, 12).
+const FOREGROUND: u16 = 256;
+const BACKGROUND: u16 = 257;
+const CURSOR: u16 = 258;
+type Own = BTreeMap<u16, [u8; 3]>;
 
 /// A character can have this many parts after its first; more are dropped.
 pub const MORE: usize = 9;
@@ -357,6 +389,11 @@ pub struct Term {
     /// (`foreground`, `background`, a palette number) and `#rrggbb`. A program that asks for a
     /// colour is answered from here, and not at all if its line is missing.
     pub colours: String,
+    /// The colours this pane's program set (OSC 4, 10, 11, 12), by palette number, `FOREGROUND`,
+    /// `BACKGROUND` or `CURSOR`: 259 at most, and one set for both screens. They are the pane's:
+    /// its cells are shown in them and a question is answered with them, until the program
+    /// gives them back (OSC 104, 110 to 112, a full reset). The cells stay as they were written.
+    own: Own,
     /// The string being ended ended with BEL, not ESC `\`: an answer to it ends the same way.
     bel: bool,
 }
@@ -437,6 +474,7 @@ impl Term {
             titles: Vec::new(),
             cell: (10, 20),
             colours: String::new(),
+            own: BTreeMap::new(),
             bel: false,
         }
     }
@@ -488,10 +526,12 @@ impl Term {
     /// holds whole lines however they were wrapped; `open` says the line before was left so, and
     /// a row that does not go on from it ends it first (what it went on in was erased).
     /// `styled` gets the same row with its looks, and a line's end wherever `out` gets one;
-    /// `joiner` is what the open line's last character is to this row's first.
+    /// `joiner` is what the open line's last character is to this row's first, `own` the colours
+    /// the program set, in which the row is told as it is now: history is not told again later.
     fn row_history(
         row: &[Cell],
         goes_on: bool,
+        own: &Own,
         (open, joiner): (&mut Option<usize>, &mut Joiner),
         out: &mut String,
         styled: &mut String,
@@ -519,13 +559,15 @@ impl Term {
             |cell: &Cell| cell.ch.is_ascii() && cell.more.first() == Some(&'\0') && cell.link == 0 && !looks(cell);
         let text = out.get(start..).unwrap_or_default();
         let first = text.chars().next().is_some_and(|first| joiner.clone().joins(first));
-        if !first && row.iter().all(bare) {
+        // (With a default colour of the program's own no cell is without a look.)
+        let plain = !own.contains_key(&FOREGROUND) && !own.contains_key(&BACKGROUND);
+        if !first && plain && row.iter().all(bare) {
             styled.push_str(text);
             // (No ASCII character joins the one before it: the last one is all the next row needs.)
             *joiner = Joiner::default();
             text.chars().next_back().map(|last| joiner.joins(last));
         } else {
-            Term::row_styled(row, goes_on, joiner, styled);
+            Term::row_styled(row, goes_on, own, joiner, styled);
         }
         if !goes_on {
             out.push('\n');
@@ -549,7 +591,8 @@ impl Term {
                 let upto = self.col + usize::from(self.wrap_pending);
                 cells.iter().take(upto).for_each(|cell| cell.push_text(&mut before));
             }
-            Term::row_history(cells, goes_on, (&mut open, &mut Joiner::default()), &mut all, &mut String::new());
+            let open = (&mut open, &mut Joiner::default());
+            Term::row_history(cells, goes_on, &self.own, open, &mut all, &mut String::new());
         }
         let whole = [&self.grid, &self.other].iter().all(|grid| {
             grid.len() == self.rows
@@ -582,30 +625,54 @@ impl Term {
         out
     }
 
+    /// The cursor's colour, if the program set one (OSC 12).
+    pub fn cursor_colour(&self) -> Option<[u8; 3]> {
+        self.own.get(&CURSOR).copied()
+    }
+
     /// The screen with colours: text and SGR codes only, each row on a line
-    /// that starts and ends in the default style.
+    /// that starts and ends in the default style. A colour the program set for a palette number
+    /// or for the two it draws with by default is told as what it set (direct colour), wherever
+    /// a cell has that number or that default: so with a background of its own every cell of
+    /// the screen has it, the blank ones too, and every row is as long as the screen is wide.
     pub fn styled(&self) -> String {
         let mut out = String::new();
         for (y, row) in self.grid.iter().enumerate() {
             let goes_on = self.grid.get(y + 1).is_some_and(|next| continues(next));
-            Term::row_styled(row, goes_on, &mut Joiner::default(), &mut out);
+            Term::row_styled(row, goes_on, &self.own, &mut Joiner::default(), &mut out);
             out.push('\n');
         }
         out
     }
 
     /// A row with its looks, from the default style to the default style, and no line's end.
-    /// `joiner` is what came before the row in its line, and then what the row leaves.
-    fn row_styled(row: &[Cell], goes_on: bool, joiner: &mut Joiner, out: &mut String) {
+    /// `own` are the colours the program set: a cell that has such a palette number or default
+    /// is told in that colour. `joiner` is what came before the row in its line, and then what
+    /// the row leaves.
+    fn row_styled(row: &[Cell], goes_on: bool, own: &Own, joiner: &mut Joiner, out: &mut String) {
         let plain = Style::default();
-        // (The marks are no looks, and a link is none here: the file has no links.)
-        let look =
-            |cell: &Cell| Cell { style: Style { flags: cell.style.flags & !MARKS, ..cell.style }, link: 0, ..*cell };
+        let own = |color: Color, default: Option<u16>| {
+            let slot = match color {
+                Color::Default => default,
+                Color::Indexed(n) => Some(u16::from(n)),
+                Color::Rgb(..) => None,
+            };
+            slot.and_then(|slot| own.get(&slot)).map_or(color, |[r, g, b]| Color::Rgb(*r, *g, *b))
+        };
+        // (A blank at a row's end is not told for a foreground of its own alone: it shows none.)
+        let blank = Cell { style: Style { fg: own(Color::Default, Some(FOREGROUND)), ..plain }, ..Cell::blank(plain) };
+        // (The marks are no looks, and a link is none here: the file has no links. An underline
+        // with no colour of its own has the text's.)
+        let look = |cell: &Cell| {
+            let Style { fg, bg, ul, flags } = cell.style;
+            let (fg, bg, ul) = (own(fg, Some(FOREGROUND)), own(bg, Some(BACKGROUND)), own(ul, None));
+            Cell { style: Style { fg, bg, ul, flags: flags & !MARKS }, link: 0, ..*cell }
+        };
         // (A row that goes on in the next keeps the blanks at its end, as in `plain`.)
         let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
         let used = match goes_on {
             true => row.len() - usize::from(gap),
-            false => row.iter().rposition(|c| look(c) != Cell::blank(plain)).map_or(0, |last| last + 1),
+            false => row.iter().rposition(|c| look(c) != blank).map_or(0, |last| last + 1),
         };
         let mut style = plain;
         for cell in row.iter().take(used).filter(|cell| cell.ch != '\0') {
@@ -972,8 +1039,9 @@ impl Term {
             return;
         };
         let (mut full, before) = (false, self.out.history.len());
-        // (Blanks that have a colour are a row's looks to its end.)
-        let cut = blank == Cell::blank(Style::default());
+        // (Blanks that have a colour are a row's looks to its end: also the background's, if the
+        // program set one of its own.)
+        let cut = blank == Cell::blank(Style::default()) && !self.own.contains_key(&BACKGROUND);
         for i in 0..n {
             // (The row the text is just wrapping out of has no next row yet.)
             let goes_on = region.get(i + 1).map_or(self.wrapping, |next| continues(next));
@@ -985,7 +1053,7 @@ impl Term {
             if kept && self.out.history.len().max(self.out.styled.len()) < HISTORY_PENDING_MAX {
                 let text = row.get(..used.max(1)).filter(|_| cut && !goes_on).unwrap_or(row);
                 let (out, open) = (&mut self.out, (&mut self.history_open, &mut self.history_joiner));
-                Term::row_history(text, goes_on, open, &mut out.history, &mut out.styled);
+                Term::row_history(text, goes_on, &self.own, open, &mut out.history, &mut out.styled);
             } else if kept {
                 // (A row that is not kept ends the line it would have gone on, in both texts.)
                 if self.history_open.take().is_some() {
@@ -1314,7 +1382,7 @@ impl Term {
                 continue;
             }
             let goes_on = wrapped.get(y + 1).is_some_and(|next| continues(next));
-            Term::row_history(row, goes_on, (&mut open, &mut joiner), &mut history, &mut styled);
+            Term::row_history(row, goes_on, &self.own, (&mut open, &mut joiner), &mut history, &mut styled);
         }
         let above: Vec<Vec<Cell>> = wrapped.drain(..up).skip(keep).collect();
         wrapped.resize(rows, vec![blank; cols]);
@@ -1742,7 +1810,7 @@ impl Term {
     }
 
     /// An operating system command: a title (0, 2), the clipboard (52), or a question about a
-    /// colour (4, 10, 11 with `?`). No other is kept: setting a colour changes nothing.
+    /// colour (4, 10, 11, 12 with `?`) or a colour set for this pane (the same with a value).
     fn command(&mut self, text: &str) {
         let (number, rest) = text.split_once(';').unwrap_or((text, ""));
         match number {
@@ -1754,42 +1822,67 @@ impl Term {
                 }
                 self.out.title = Some(self.title.clone());
             }
-            "4" | "10" | "11" => {
-                // `4` takes pairs of a palette number and what to do with it; `10` and `11` take
-                // one part each for the colours from theirs on (`10;?;?` asks for both). A part
-                // that is `?` asks; any other would set the colour, and changes nothing.
+            "4" | "10" | "11" | "12" => {
+                // `4` takes pairs of a palette number and what to do with it; `10`, `11` and `12`
+                // take one part each for the colours from theirs on (`10;?;?` asks for the
+                // foreground and the background). A part that is `?` asks; any other sets the
+                // colour for this pane, if it is one.
                 let mut parts = rest.split(';');
-                for count in 0.. {
-                    let (name, which, part) = match (number, count) {
-                        ("4", _) => match parts.next().map(|index| index.parse::<u8>()) {
-                            Some(Ok(n)) => (n.to_string(), format!("4;{n}"), parts.next()),
-                            Some(Err(_)) => (String::new(), String::new(), parts.next()),
+                let first = FOREGROUND + number.parse::<u16>().map_or(0, |number| number.saturating_sub(10));
+                for slot in first.. {
+                    let (slot, part) = match number {
+                        "4" => match parts.next().map(|index| index.parse::<u8>()) {
+                            Some(Ok(n)) => (Some(u16::from(n)), parts.next()),
+                            Some(Err(_)) => (None, parts.next()),
                             None => break,
                         },
-                        ("10", 0) => ("foreground".to_string(), "10".to_string(), parts.next()),
-                        ("10", 1) | ("11", 0) => ("background".to_string(), "11".to_string(), parts.next()),
+                        _ if slot <= CURSOR => (Some(slot), parts.next()),
                         _ => break,
                     };
-                    // Told from the last line that starts with that name, if what follows the
-                    // name is a colour (`#` and six hex digits; blanks around them do not matter).
-                    let line = |line: &str| {
-                        let mut words = line.split_whitespace();
-                        (words.next() == Some(name.as_str())).then(|| words.next().unwrap_or_default().to_string())
+                    let (name, which) = match slot {
+                        Some(FOREGROUND) => ("foreground".to_string(), "10".to_string()),
+                        Some(BACKGROUND) => ("background".to_string(), "11".to_string()),
+                        Some(CURSOR) => ("cursor".to_string(), "12".to_string()),
+                        Some(n) => (n.to_string(), format!("4;{n}")),
+                        None => Default::default(),
                     };
-                    let told =
-                        self.colours.lines().rev().filter(|_| part == Some("?") && !name.is_empty()).find_map(line);
-                    let told = told.as_deref().and_then(|told| told.strip_prefix('#'));
-                    let told = told.filter(|hex| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
-                    if let Some(value) = told.and_then(|hex| u32::from_str_radix(hex, 16).ok()) {
-                        let [_, r, g, b] = value.to_be_bytes();
-                        let end = if self.bel { "\x07" } else { "\x1b\\" };
-                        self.respond(&format!("\x1b]{which};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}"));
+                    match (slot, part) {
+                        // Told what the program set; or else from the last line that starts with
+                        // that name, if what follows the name is a colour (`#` and six hex
+                        // digits; blanks around them do not matter).
+                        (Some(slot), Some("?")) => {
+                            let line = |line: &str| {
+                                let mut words = line.split_whitespace();
+                                let told = |told: &str| Some(told).filter(|told| told.len() == 7).and_then(colour);
+                                (words.next() == Some(name.as_str())).then(|| words.next().and_then(told))
+                            };
+                            let told = || self.colours.lines().rev().find_map(line).flatten();
+                            if let Some([r, g, b]) = self.own.get(&slot).copied().or_else(told) {
+                                let end = if self.bel { "\x07" } else { "\x1b\\" };
+                                let answer = format!("rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}");
+                                self.respond(&format!("\x1b]{which};{answer}{end}"));
+                            }
+                        }
+                        (Some(slot), Some(set)) => match colour(set) {
+                            Some(rgb) => _ = self.own.insert(slot, rgb),
+                            None => self.refuse("a colour was not set: it was not `#` with hex digits or `rgb:R/G/B`"),
+                        },
+                        _ => {}
                     }
                     if part.is_none() || self.out.reply.len() >= REPLY_MAX {
                         break;
                     }
                 }
             }
+            // The colours are given back: every palette number or those named (104), the
+            // foreground (110), the background (111), the cursor's (112).
+            "104" if rest.is_empty() => self.own.retain(|slot, _| *slot >= FOREGROUND),
+            "104" => {
+                rest.split(';').filter_map(|n| n.parse::<u8>().ok()).for_each(|n| _ = self.own.remove(&u16::from(n)))
+            }
+            "110" => _ = self.own.remove(&FOREGROUND),
+            "111" => _ = self.own.remove(&BACKGROUND),
+            "112" => _ = self.own.remove(&CURSOR),
             // The directory the program is in: `file://HOST/PATH`, the path's odd bytes as `%XX`.
             "7" => {
                 let named = rest.starts_with("file://");

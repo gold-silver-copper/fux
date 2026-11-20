@@ -131,6 +131,80 @@ fn what_a_program_writes_never_puts_a_control_code_of_its_own_in_a_file() {
 }
 
 #[test]
+fn a_colour_a_program_sets_is_its_panes_until_it_gives_it_back() {
+    let mut pane = Term::new(4, 2);
+    pane.colours = "foreground #d0d0d0\nbackground #1c1c1c\n1 #cc0000\n".into();
+    let answers = |pane: &mut Term, asks: &str| {
+        pane.feed(asks.as_bytes());
+        String::from_utf8(pane.take().reply).unwrap().replace("\x1b]", " ").replace('\x07', "")
+    };
+    // Text in palette colour 1 on colour 2, an underline in colour 3, and text in the defaults.
+    pane.feed(b"\x1b[31;42;4;58:5:3ma\x1b[mb\r\n\x1b[7mc");
+    let before = pane.styled();
+    assert_eq!(before, "\x1b[0;4;31;42m\x1b[58:5:3ma\x1b[0mb\n\x1b[0;7mc\x1b[m\n");
+    // The program sets colours in every form there is, several in one string, asking in between:
+    // each is told as it was set (its first eight bits; `#f80` is f0 88 00 as X reads it, and
+    // `rgb:f/8/0` is ff 88 00), and what it did not set is told as before.
+    let told = answers(&mut pane, "\x1b]4;1;#ff8000;2;rgb:1/22/333;1;?;2;?;3;?;3;rgb:ffff/0000/8000;3;?\x07");
+    assert_eq!(told, " 4;1;rgb:ffff/8080/0000 4;2;rgb:1111/2222/3333 4;3;rgb:ffff/0000/8080");
+    let told = answers(&mut pane, "\x1b]10;#f80;rgb:f/8/0;#123456789abc\x07\x1b]10;?;?;?;?\x07\x1b]12;?\x07");
+    assert_eq!(told, " 10;rgb:f0f0/8080/0000 11;rgb:ffff/8888/0000 12;rgb:1212/5656/9a9a 12;rgb:1212/5656/9a9a");
+    assert_eq!(pane.cursor_colour(), Some([0x12, 0x56, 0x9a]));
+    // The cells are as they were written, and are shown in the colours set, text that was there
+    // before among it: direct colour for a palette number that was set and for the two defaults,
+    // so that every cell of the screen has the background, the blank ones too.
+    let (fg, bg) = ("38;2;240;128;0", "48;2;255;136;0");
+    let first = format!("\x1b[0;4;38;2;255;128;0;48;2;17;34;51m\x1b[58:2::255:0:128ma\x1b[0;{fg};{bg}mb  \x1b[m\n");
+    assert_eq!(pane.styled(), format!("{first}\x1b[0;7;{fg};{bg}mc\x1b[0;{fg};{bg}m   \x1b[m\n"));
+    assert_eq!(pane.plain(), "ab\nc\n");
+    // The alternate screen has the same colours; what the program asks about its looks is what it wrote.
+    pane.feed(b"\x1b[?1049h\x1b[H\x1b[0;31mz");
+    assert!(pane.styled().starts_with("\x1b[0;38;2;255;128;0;48;2;255;136;0mz"), "{:?}", pane.styled());
+    assert_eq!(answers(&mut pane, "\x1bP$qm\x1b\\\x1b[?1049l\x1b[m"), "\x1bP1$r0;31m\x1b\\");
+    // What is no colour sets nothing and is said once in the log: a name, `rgbi:`, a part too
+    // long or missing, a number that is no palette entry (passed over without a word).
+    let bad = "\x1b]4;1;red;2;rgbi:1/0/0;3;rgb:12345/0/0;3;rgb:0/0;3;#12345;3;#+1+2+3;256;#000000;x;#000000;1;?\x07";
+    assert_eq!(answers(&mut pane, &(bad.to_string() + "\x1b]11;\x07")), " 4;1;rgb:ffff/8080/0000");
+    assert_eq!(pane.take().refused.len(), 0);
+    pane.feed(b"\x1b]4;1;red\x07");
+    assert_eq!(pane.take().refused, ["a colour was not set: it was not `#` with hex digits or `rgb:R/G/B`"]);
+    // Given back one by one (104 with numbers, 110, 111, 112), a colour is the terminal's again.
+    let asks = "\x1b]4;1;?;2;?;3;?\x07\x1b]10;?;?;?\x07";
+    let told = answers(&mut pane, &format!("\x1b]104;1;x;300;3\x07\x1b]111\x07\x1b]112\x07{asks}"));
+    assert_eq!(told, " 4;1;rgb:cccc/0000/0000 4;2;rgb:1111/2222/3333 10;rgb:f0f0/8080/0000 11;rgb:1c1c/1c1c/1c1c");
+    assert_eq!(pane.cursor_colour(), None);
+    assert_eq!(
+        pane.styled().lines().next(),
+        Some("\x1b[0;4;31;48;2;17;34;51m\x1b[58:5:3ma\x1b[0;38;2;240;128;0mb\x1b[m")
+    );
+    // All 256 can be set, and no more is kept than those; 104 alone gives back the palette
+    // and 110 the foreground: the screen is published as it was at first.
+    let all: String = (0..300).map(|n| format!("\x1b]4;{n};#0000{:02x}\x07", n % 256)).collect();
+    assert_eq!(
+        answers(&mut pane, &(all + "\x1b]4;255;?;44;?\x07")),
+        " 4;255;rgb:0000/0000/ffff 4;44;rgb:0000/0000/2c2c"
+    );
+    assert_eq!(
+        answers(&mut pane, &format!("\x1b]104\x07\x1b]110\x07{asks}")),
+        " 4;1;rgb:cccc/0000/0000 10;rgb:d0d0/d0d0/d0d0 11;rgb:1c1c/1c1c/1c1c"
+    );
+    assert_eq!(pane.styled(), before);
+    // A full reset gives back all of them.
+    let told = answers(&mut pane, &format!("\x1b]4;1;#000001\x07\x1b]11;#000002\x07\x1b]12;#000003\x07\x1bc{asks}"));
+    assert_eq!(told, " 4;1;rgb:cccc/0000/0000 10;rgb:d0d0/d0d0/d0d0 11;rgb:1c1c/1c1c/1c1c");
+    assert_eq!((pane.styled(), pane.cursor_colour()), ("\n\n".to_string(), None));
+    // A row that leaves the screen is in the history with colours as it was on the screen then,
+    // and stays so: one that left before a colour was set, two after (a row of plain text among
+    // them), one as wide as the screen under a background of the pane's own, and a blank one and
+    // one of text after all were given back.
+    pane.feed(b"\x1b[31ma\x1b[m\r\nb\r\n\x1b]4;1;#010203\x07\x1b]10;#040506\x07\x1b[31mc\x1b[m\r\nd\r\n");
+    pane.feed(b"\x1b]11;#070809\x07\r\n\x1b]104\x07\x1b]110\x07\x1b]111\x07e\r\n\r\n");
+    let (red, own, fg) = ("\x1b[0;31ma\x1b[m\n", "\x1b[0;38;2;1;2;3mc\x1b[m\n", "38;2;4;5;6");
+    let styled = format!("{red}\x1b[0;{fg}mb\x1b[m\n{own}\x1b[0;{fg};48;2;7;8;9md   \x1b[m\n\ne\n");
+    assert_eq!((pane.peek().history.as_str(), pane.peek().styled.as_str()), ("a\nb\nc\nd\n\ne\n", styled.as_str()));
+}
+
+#[test]
 fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() {
     // Told nothing, the terminal says nothing: the answer to the next question comes alone.
     let asks = "\x1b]11;?\x07\x1b]10;?\x1b\\\x1b]4;1;?;7;?;300;?\x1b\\\x1b[c";
@@ -143,12 +217,15 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     told.feed(asks.as_bytes());
     let answers = "\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]4;1;rgb:cccc/0000/0000\x1b\\";
     assert_eq!(String::from_utf8(told.take().reply).unwrap(), answers.to_string() + &da);
-    // `10` with two parts asks for the foreground and then the background; a part that would set
-    // a colour is passed over; the cursor's colour (`11`'s second part) is not told; a line that
-    // is no colour (not six hex digits) is no answer.
-    told.feed(b"\x1b]10;?;?\x07\x1b]10;#ffffff;?\x07\x1b]11;#ffffff;?\x07");
+    // `10` with two parts asks for the foreground and then the background, and `11`'s second
+    // part for the cursor's colour, which is told if there is a line for it; a line that is no
+    // colour (not six hex digits) is no answer.
+    told.feed(b"\x1b]10;?;?\x07\x1b]11;?;?\x07");
     let both = "\x1b]10;rgb:d0d0/d0d0/d0d0\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07";
     assert_eq!(String::from_utf8(told.take().reply).unwrap(), both);
+    told.colours.push_str("cursor #ff8000\n");
+    told.feed(b"\x1b]12;?\x07");
+    assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]12;rgb:ffff/8080/0000\x07");
     told.colours = "background #+12345\nforeground #d0d0d\n7 cc0000\n".into();
     told.feed(b"\x1b]11;?\x07\x1b]10;?\x07\x1b]4;7;?\x07");
     assert!(told.take().reply.is_empty());
@@ -156,11 +233,7 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     told.colours = "background #000000\n  background\t#FDF6E3  # paper\r\n".into();
     told.feed(b"\x1b]11;?\x07");
     assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]11;rgb:fdfd/f6f6/e3e3\x07");
-    told.colours = "foreground #d0d0d0\nbackground #1c1c1c\n".into();
-    // Setting a colour is taken and changes nothing; a reset keeps what was told.
-    told.feed(b"\x1b]11;#ffffff\x07\x1b]4;1;rgb:00/00/00\x07\x1b]104\x07\x1b]111\x07\x1bc\x1b]11;?\x07x");
-    assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]11;rgb:1c1c/1c1c/1c1c\x07");
-    assert_eq!(told.plain(), "x\n\n");
+    assert_eq!(told.plain(), "\n\n");
     // The viewer reads its terminal's answers as answers, not as keys.
     use crate::keys::next;
     assert_eq!(

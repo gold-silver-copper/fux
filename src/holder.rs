@@ -625,6 +625,8 @@ impl Holder {
             |p: &crate::term::Picture| format!("pic-{}.sixel {} {} {} {}\n", p.id, p.row, p.col, p.cols, p.rows);
         let term = &mut self.term;
         let shown = if term.cursor_shown { "shown" } else { "hidden" };
+        // (The cursor's colour, if the program set one: a fifth word.)
+        let colour = term.cursor_colour().map_or(String::new(), |[r, g, b]| format!(" #{r:02x}{g:02x}{b:02x}"));
         let mut facts: Vec<(&'static str, Option<Vec<u8>>)> = [
             ("top", format!("{}\n", term.top())),
             ("wraps", format!("{}\n", term.wraps())),
@@ -632,7 +634,7 @@ impl Holder {
             ("links", term.links()),
             ("pictures", term.pictures.iter().map(placed).collect()),
             ("size", format!("{} {}\n", term.cols, term.rows)),
-            ("cursor", format!("{} {} {shown} {}\n", term.row, term.col, term.cursor_shape)),
+            ("cursor", format!("{} {} {shown} {}{colour}\n", term.row, term.col, term.cursor_shape)),
             ("modes", format!("{}\n", term.words())),
             ("state", format!("{}\n", self.state)),
             ("status", self.status.clone()),
