@@ -124,13 +124,45 @@ it wrote last is still read; a `resize` first draws, at the old size, up to
 1 MiB of what the program had already written.
 
 The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux-next`,
-`TERM_PROGRAM_VERSION` and `FUXN_PANE` (its pane's directory, whole path), in
+`TERM_PROGRAM_VERSION`, `COLORTERM=truecolor` and `FUXN_PANE` (its pane's directory, whole path), in
 the directory `fux start` was run in, with the rest of that environment and
 the signals 1 to 31 at their defaults. Of this program's own `FUXN_…` names
 it gets only `FUXN_PANE` and, if they were set, `FUXN_DIR` and `FUXN_KEYS`;
 and neither `COLUMNS` nor `LINES`, which the holder reads for itself: the
 pane's first size is `COLUMNS`x`LINES` if the starter set them (each 1 to
 500; otherwise `log` says so), else 80x24.
+
+What is this terminal, and what can it do? Programs ask, and fux answers as
+itself and for itself, with nobody watching:
+
+| Asked | Answered |
+|---|---|
+| `CSI > q` (XTVERSION) | `fux-next VERSION` |
+| `CSI c`, `CSI > c` (device attributes) | `CSI ? 62;4;22 c` (a VT220 with sixel and colour) and `CSI > 1;10;0 c`: a class, and a version number that is no other terminal's, so nothing a program knows of xterm's, tmux's or kitty's versions is turned on |
+| `DCS $ q … ST` (DECRQSS) | what the emulator keeps: `m` (the colours and looks in force, in the form with colons), `r` (the scroll region), `SP q` (the cursor's shape); "not valid" for anything else |
+| `DCS + q NAMES ST` (XTGETTCAP) | each name by itself, from the table below; "not valid" for every other name, so a name fux does not know never hides one it does |
+
+| `TN` | `xterm-256color` |
+| `name` | `xterm-256color` |
+| `Co` | `256` |
+| `colors` | `256` |
+| `RGB` | `8/8/8` |
+| `Tc` | yes |
+| `setrgbf` | `\E[38;2;%p1%d;%p2%d;%p3%dm` |
+| `setrgbb` | `\E[48;2;%p1%d;%p2%d;%p3%dm` |
+| `Smulx` | `\E[4:%p1%dm` |
+| `Setulc` | `\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%dm` |
+| `Ss` | `\E[%p1%d q` |
+| `Se` | `\E[2 q` |
+| `Ms` | `\E]52;%p1%s;%p2%s\a` |
+
+That is all of it: true colour, the kinds and the colour of an underline, the
+cursor's shape, setting the clipboard. What is not there fux does not do
+(left and right margins among them: `CSI ? 69 $ p` is answered "not known"),
+and a program that asks first does not turn it on. A pane's program also has
+`COLORTERM=truecolor` in its environment, which is what many read instead of
+asking. `TERM` stays `xterm-256color`: fux has no terminal description of
+its own to install, and claims no other terminal's.
 
 What colours has the terminal? Programs ask (vim, Neovim and others, to
 choose a light or a dark theme), and a pane has no terminal of its own to
@@ -671,8 +703,7 @@ Of the mouse, the UTF-8 and urxvt report forms
 to resize, and any menu use;
 a link's `id` (OSC 8: two runs with one address are two links to your terminal) and links in history; reading the clipboard (setting it
 works); changing a colour (OSC 4, 10, 11, 12 with a value, 104, 110, 111, 112:
-taken, without effect) and asking for the cursor's (OSC 12 with `?`) and the queries DECRQSS, XTGETTCAP and XTVERSION (and `CSI > c` is
-answered with no xterm version in it); the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
+taken, without effect) and asking for the cursor's (OSC 12 with `?`); the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
 more than ten
 parts in one character (a letter with twelve marks loses the last three,
 and the pane's `log` says so); prompts (renaming

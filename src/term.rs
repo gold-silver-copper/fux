@@ -24,6 +24,24 @@ const REPLY_MAX: usize = 16 << 10;
 /// and how many sets of flags a program can push aside on a screen.
 pub const KEYS: u8 = 31;
 const KEYS_KEPT: usize = 16;
+/// What a program is told when it asks for a capability by its terminfo name (XTGETTCAP): what
+/// this emulator does, and no more. A name that is not here is answered "not valid", each by
+/// itself. (The README has the same table; a test holds the two together.)
+pub const CAPS: &[(&str, &str)] = &[
+    ("TN", "xterm-256color"),
+    ("name", "xterm-256color"),
+    ("Co", "256"),
+    ("colors", "256"),
+    ("RGB", "8/8/8"),
+    ("Tc", ""),
+    ("setrgbf", "\x1b[38;2;%p1%d;%p2%d;%p3%dm"),
+    ("setrgbb", "\x1b[48;2;%p1%d;%p2%d;%p3%dm"),
+    ("Smulx", "\x1b[4:%p1%dm"),
+    ("Setulc", "\x1b[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%dm"),
+    ("Ss", "\x1b[%p1%d q"),
+    ("Se", "\x1b[2 q"),
+    ("Ms", "\x1b]52;%p1%s;%p2%s\x07"),
+];
 /// How many of a shell's marks are kept.
 const MARKS_MAX: usize = 1000;
 /// How many links' addresses are kept at a time.
@@ -1503,6 +1521,12 @@ impl Term {
             return;
         }
         match string.split_first().filter(|_| whole) {
+            Some((b'P', data)) if data.starts_with(b"$q") && !self.string_holed => {
+                self.report_setting(data.get(2..).unwrap_or_default());
+            }
+            Some((b'P', data)) if data.starts_with(b"+q") && !self.string_holed => {
+                self.report_caps(data.get(2..).unwrap_or_default());
+            }
             Some((b'P', data)) => {
                 let header = data.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
                 if data.get(header) == Some(&b'q') && data.iter().all(|b| (0x20..=0x7e).contains(b)) {
@@ -1511,6 +1535,100 @@ impl Term {
             }
             Some((b']', data)) => self.command(&String::from_utf8_lossy(data)),
             _ => {}
+        }
+    }
+
+    /// Report the selector's *current* setting. DECRPSS carries one CSI body.
+    fn report_setting(&mut self, selector: &[u8]) {
+        let body = match selector {
+            b"m" => {
+                let style = self.style;
+                let mut body = String::from("0");
+                for (bit, code) in [
+                    (BOLD, 1),
+                    (UNDERLINE, 4),
+                    (BLINK, 5),
+                    (REVERSE, 7),
+                    (HIDDEN, 8),
+                    (DIM, 2),
+                    (ITALIC, 3),
+                    (STRIKE, 9),
+                ] {
+                    if style.flags & bit == 0 {
+                        continue;
+                    }
+                    if bit == UNDERLINE
+                        && let Some(k) = [DOUBLE, CURLY, DOTTED, DASHED].iter().position(|k| style.flags & k != 0)
+                    {
+                        let _ = write!(body, ";4:{}", k + 2);
+                    } else {
+                        let _ = write!(body, ";{code}");
+                    }
+                }
+                for (color, code) in [(style.fg, 38u16), (style.bg, 48), (style.ul, 58)] {
+                    let _ = match color {
+                        Color::Default => Ok(()),
+                        Color::Indexed(n @ 0..8) if code != 58 => write!(body, ";{}", code - 8 + u16::from(n)),
+                        Color::Indexed(n @ 8..16) if code != 58 => write!(body, ";{}", code + 44 + u16::from(n)),
+                        Color::Indexed(n) => write!(body, ";{code}:5:{n}"),
+                        Color::Rgb(r, g, b) => write!(body, ";{code}:2::{r}:{g}:{b}"),
+                    };
+                }
+                body.push('m');
+                body
+            }
+            b"r" => format!("{};{}r", self.top + 1, self.bottom + 1),
+            b" q" => format!("{} q", self.cursor_shape),
+            _ => {
+                self.respond("\x1bP0$r\x1b\\");
+                return;
+            }
+        };
+        self.respond(&format!("\x1bP1$r{body}\x1b\\"));
+    }
+
+    /// One reply per name, including an unknown name in the middle of a list.
+    fn report_caps(&mut self, request: &[u8]) {
+        if request.len() > 2048 || request.iter().filter(|&&c| c == b';').count() >= 32 {
+            self.refuse("a capability query over 2048 bytes or 32 names was dropped");
+            return;
+        }
+        for name in request.split(|&b| b == b';') {
+            if name.is_empty()
+                || name.len() > 64
+                || !name.len().is_multiple_of(2)
+                || !name.iter().all(u8::is_ascii_hexdigit)
+            {
+                self.respond("\x1bP0+r\x1b\\");
+                continue;
+            }
+            let name = std::str::from_utf8(name).unwrap_or_default();
+            let decoded: Vec<u8> = name
+                .as_bytes()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .filter_map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+                .collect();
+            let known = std::str::from_utf8(&decoded).ok().and_then(|asked| CAPS.iter().find(|(cap, _)| *cap == asked));
+            let value = match known {
+                // (A capability that is a yes with no value.)
+                Some((_, "")) => {
+                    self.respond(&format!("\x1bP1+r{name}\x1b\\"));
+                    continue;
+                }
+                Some((_, value)) => *value,
+                None => {
+                    self.respond(&format!("\x1bP0+r{name}\x1b\\"));
+                    continue;
+                }
+            };
+            let mut reply = format!("\x1bP1+r{name}=");
+            for b in value.bytes() {
+                let _ = write!(reply, "{b:02X}");
+            }
+            reply.push_str("\x1b\\");
+            self.respond(&reply);
         }
     }
 
@@ -1857,7 +1975,10 @@ impl Term {
                 self.interrupt();
             }
             (0, 0, b'c') => self.respond("\x1b[?62;4;22c"),
-            (b'>', 0, b'c') => self.respond("\x1b[>1;10;0c"),
+            (b'>', 0, b'q') if self.params.len() == 1 && self.arg(0, 0) == 0 => {
+                self.respond(&format!("\x1bP>|{} {}\x1b\\", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION")));
+            }
+            (b'>', 0, b'c') if self.params.len() == 1 && self.arg(0, 0) == 0 => self.respond("\x1b[>1;10;0c"),
             (0, 0, b'g') => match self.arg(0, 0) {
                 0 => {
                     if let Some(stop) = self.tabs.get_mut(col) {
@@ -1913,7 +2034,7 @@ impl Term {
                 (self.top, self.bottom, self.style, self.link) = (0, self.rows - 1, Style::default(), 0);
                 self.saved = [Saved::default(); 2];
             }
-            (0, b' ', b'q') => self.cursor_shape = u8::try_from(self.arg(0, 0)).unwrap_or(0),
+            (0, b' ', b'q') if self.arg(0, 0) <= 6 => self.cursor_shape = self.arg(0, 0) as u8,
             (0, 0, b'r') => {
                 let (top, bottom) = (n - 1, self.arg(1, self.rows).min(self.rows) - 1);
                 if top < bottom {

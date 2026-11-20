@@ -147,6 +147,10 @@ keys as bytes; after each, wait for a changed frame or for the text you expect.
     printf 'less "%s/status"\r' "$P" > "$P/in"; seen alt "$P/modes"
     f=$(frame "$P"); printf '/pid\r' > "$P/in"; changed "$P" "$f"      # search; vim: printf '\033:wq\r'
     printf 'q' > "$P/in"; unseen alt "$P/modes"
+A program that asks what its terminal is gets fux's own answers: XTVERSION `fux-next N`;
+COLORTERM=truecolor in its environment; and by name (XTGETTCAP) only what fux does: TN name
+Co colors RGB Tc setrgbf setrgbb Smulx Setulc Ss Se Ms. So Neovim uses true colour and
+curly underlines with no setting, and nothing asks for what is not there.
 
 RESIZE, RENAME, RING, END
 `ctl` is a FIFO too, one command a line: resize COLS ROWS, notify WORDS, kill.

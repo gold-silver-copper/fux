@@ -138,7 +138,10 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
             .env(name!("PANE"), pane)
             .env_remove("COLUMNS")
             .env_remove("LINES");
-        child.env("TERM_PROGRAM", crate::TERM_PROGRAM).env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        child
+            .env("COLORTERM", "truecolor")
+            .env("TERM_PROGRAM", crate::TERM_PROGRAM)
+            .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         child.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
         sys::new_session(&mut child, true);
         child.spawn().map_err(|e| format!("cannot start {}: {e}", program.to_string_lossy()))?

@@ -410,6 +410,49 @@ fn queries_are_answered_with_nobody_watching() {
 }
 
 #[test]
+fn what_fux_is_and_can_do_is_answered_under_its_own_name_and_no_more() {
+    let said = |text: &str| String::from_utf8_lossy(&term(20, 5, text).peek().reply).into_owned();
+    let hex = |text: &str| text.bytes().map(|b| format!("{b:02X}")).collect::<String>();
+    // Its name and version (XTVERSION); a second device attributes answer that is no other
+    // terminal's; neither with parameters that ask something else.
+    assert_eq!(
+        said("\x1b[>q\x1b[>0q\x1b[>1q"),
+        format!("\x1bP>|fux-next {0}\x1b\\\x1bP>|fux-next {0}\x1b\\", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(said("\x1b[>c\x1b[>0c\x1b[>1c"), "\x1b[>1;10;0c\x1b[>1;10;0c");
+    // A capability by its terminfo name: each name is answered by itself, so one that is not
+    // known cannot hide one that is; true colour and the curly underline are there.
+    let asked = format!("\x1bP+q{};{};{}\x1b\\", hex("Tc"), hex("smglr"), hex("Smulx"));
+    let answer = format!(
+        "\x1bP1+r{}\x1b\\\x1bP0+r{}\x1b\\\x1bP1+r{}={}\x1b\\",
+        hex("Tc"),
+        hex("smglr"),
+        hex("Smulx"),
+        hex("\x1b[4:%p1%dm")
+    );
+    assert_eq!(said(&asked), answer);
+    assert_eq!(said("\x1bP+qzz\x1b\\"), "\x1bP0+r\x1b\\");
+    // What the emulator keeps is told (DECRQSS): the colours and the underline in force, the
+    // scroll region, the cursor's shape; anything else is "not valid".
+    assert_eq!(said("\x1b[4:3;38;2;1;2;3m\x1bP$qm\x1b\\"), "\x1bP1$r0;4:3;38:2::1:2:3m\x1b\\");
+    assert_eq!(
+        said("\x1b[2;4r\x1b[5 q\x1bP$qr\x1b\\\x1bP$q q\x1b\\\x1bP$qs\x1b\\"),
+        "\x1bP1$r2;4r\x1b\\\x1bP1$r5 q\x1b\\\x1bP0$r\x1b\\"
+    );
+    // The README's table is this table, and the agents' page names the same names.
+    let (readme, page) = (include_str!("../README.md"), include_str!("help-agents.txt"));
+    for (name, value) in crate::term::CAPS {
+        let shown = value.replace('\x1b', "\\E").replace('\x07', "\\a");
+        let row = if shown.is_empty() { format!("| `{name}` | yes |") } else { format!("| `{name}` | `{shown}` |") };
+        assert!(readme.contains(&row), "the README has no row {row}");
+        assert!(
+            page.split_whitespace().any(|word| word.trim_end_matches('.') == *name),
+            "the agents' page does not name {name}"
+        );
+    }
+}
+
+#[test]
 fn a_cursor_waiting_at_the_right_margin_moves_like_any_other() {
     // After a character in the last column the cursor waits there; a back-tab still goes back.
     let term = term(80, 3, "\x1b[1;80Hb\x1b[Z.");

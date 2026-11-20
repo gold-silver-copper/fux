@@ -1107,6 +1107,21 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   only the program can produce, never the typed words, which the echo
   puts on the screen too); and that a wait's limit counts tries, not
   seconds.
+- **D79. fux answers as fux** (message 23, step 1; the panel, 8 of 8).
+  XTVERSION says `fux-next VERSION`. XTGETTCAP answers from one table
+  (`CAPS` in `term.rs`; the README's table is held to it by a test), each
+  name by itself, "not valid" for every name not in it. DECRQSS tells what
+  the emulator keeps: SGR, the scroll region, the cursor's shape. The
+  pane's program has `COLORTERM=truecolor`. `TERM` stays
+  `xterm-256color`: fux installs no description, and `TN` says what
+  `TERM` says.
+  - The second device attributes stay `1;10;0`: class 1 as kitty, foot and
+    VTE give, and a version (10) below every number a program tests for
+    (vim wants xterm's 141 and more, tmux is 84, screen 83), so it is no
+    other terminal's and turns nothing on. A new number would be one more
+    thing for programs not to know.
+  - In the table only what the emulator does; `Ms` because setting the
+    clipboard works (reading it is refused, as before).
 
 ## The old fux3's bugs: which classes are gone
 
