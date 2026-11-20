@@ -110,8 +110,9 @@ copied while its pane was busy. So keep the cursor inside the rows you have,
 and take the rows that are there over what `size` says. The viewer does.
 When a pane is still, or ended, its files agree.
 
-**Bounds.** The screens are replaced at most 40 times a second, so a flood
-(`yes`) costs at most 80 file replacements a second, and an append to
+**Bounds.** While a program keeps writing, the screens are replaced at most 40 times a second, so a flood
+(`yes`) costs at most 80 file replacements a second (what a program wrote before it stopped for a
+millisecond is shown at once, though never within 4 ms of the last time), and an append to
 `history` with each pair (one more whenever 512 KiB of it wait); the holder reads at most 512 KiB of output between two of them, and
 past that the program waits, as on any slow terminal. The holder keeps at most 64 KiB of typed bytes for a program that is not
 reading; past that it stops reading `in`, and once the FIFO's own buffer

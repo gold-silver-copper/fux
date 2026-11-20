@@ -254,7 +254,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
 impl View {
     fn run(&mut self, ctl: &File) -> io::Result<()> {
         let mut buffer = vec![0u8; 16 << 10];
-        let mut active = Instant::now();
+        let (mut active, mut typed) = (Instant::now(), None::<Instant>);
         while !self.quit {
             // A key's script runs before the keys typed after it, as a command
             // in a shell does: they wait until it ends (and what it printed is
@@ -291,6 +291,8 @@ impl View {
             // Files are looked at often just after something happened and seldom at rest.
             let timeout = match active.elapsed().as_millis() {
                 _ if self.waiting.is_some() => 2,
+                // (A key's echo is a millisecond or two away.)
+                _ if typed.is_some_and(|at| at.elapsed() < Duration::from_millis(40)) => 1,
                 0..300 => 4,
                 300..3000 => 16,
                 _ => 50,
@@ -306,6 +308,7 @@ impl View {
                 }
                 self.carry.extend_from_slice(buffer.get(..n).unwrap_or(&[]));
                 active = Instant::now();
+                typed = Some(active);
             }
             // The terminal is given a second to say what it is like.
             // The terminal is given a second to say what it is like before that is written down

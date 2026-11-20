@@ -19,8 +19,10 @@ use std::time::{Duration, Instant};
 
 /// The terminal a pane claims to be: see the README for why this is honest.
 pub const TERM: &str = "xterm-256color";
-/// The screen files are replaced at most once in this long (40 times a second).
+/// While the program keeps writing, the screen files are replaced at most once in this long (40 times a second).
 const PUBLISH_EVERY: Duration = Duration::from_millis(25);
+/// What a program wrote before it went quiet is shown at once, but not sooner than this after the last time.
+const PUBLISH_QUIET: Duration = Duration::from_millis(4);
 /// The most output read from the program between two publishes; past it the
 /// program waits, as it would on any slow terminal.
 const READ_BUDGET: usize = 512 << 10;
@@ -223,6 +225,8 @@ impl Holder {
 
         let mut buffer = vec![0u8; 64 << 10];
         let (mut dirty, mut published, mut looked, mut budget) = (false, Instant::now(), Instant::now(), READ_BUDGET);
+        // The program had nothing more to say at the last look (a millisecond after what it said).
+        let mut quiet = false;
         loop {
             let since = published.elapsed();
             // A program in the middle of drawing (mode 2026) is not shown until it says it is done,
@@ -236,22 +240,23 @@ impl Holder {
             };
             let left = self.drawing.map_or(Duration::ZERO, |since| DRAWING_MAX.saturating_sub(since.elapsed()));
             let drawing = !left.is_zero() && self.master.is_some();
+            let every = if quiet && !self.failing { PUBLISH_QUIET } else { PUBLISH_EVERY };
             if since >= PUBLISH_EVERY {
                 budget = READ_BUDGET;
-                if dirty && !drawing {
-                    // What could not be written is tried again in the next round (and said once).
-                    let written = self.publish();
-                    match &written {
-                        // (A file that is not there means the pane is gone only if its `in` is.)
-                        Err(e) if e.kind() == ErrorKind::NotFound && fs::symlink_metadata("in").is_err() => {
-                            return Err(GONE.into());
-                        }
-                        Err(e) if !self.failing => self.log(&format!("cannot write the pane's files: {e}")),
-                        _ => {}
+            }
+            if since >= every && dirty && !drawing {
+                // What could not be written is tried again in the next round (and said once).
+                let written = self.publish();
+                match &written {
+                    // (A file that is not there means the pane is gone only if its `in` is.)
+                    Err(e) if e.kind() == ErrorKind::NotFound && fs::symlink_metadata("in").is_err() => {
+                        return Err(GONE.into());
                     }
-                    self.failing = written.is_err();
-                    (dirty, published) = (self.failing, Instant::now());
+                    Err(e) if !self.failing => self.log(&format!("cannot write the pane's files: {e}")),
+                    _ => {}
                 }
+                self.failing = written.is_err();
+                (dirty, published) = (self.failing, Instant::now());
             }
             // The directory is the pane: when it is gone, so is this.
             if looked.elapsed() >= LOOK_EVERY {
@@ -271,11 +276,14 @@ impl Holder {
             let wait = match dirty || budget == 0 {
                 // (While it draws there is nothing to write out, only more of it to read.)
                 true if drawing && budget > 0 => left.max(PUBLISH_EVERY.saturating_sub(since)).min(look),
-                true => PUBLISH_EVERY.saturating_sub(since),
+                // (Has it more to say? The millisecond the wait adds tells.)
+                true if budget > 0 && !drawing && !quiet => Duration::ZERO,
+                true => every.saturating_sub(since),
                 false => look,
             };
             let events = sys::wait(&wanted, wait.as_millis() as i32 + 1).map_err(|e| format!("cannot wait: {e}"))?;
             let event = |i: usize| events.get(i).copied().unwrap_or(0);
+            quiet = budget > 0 && event(2) & !sys::POLLOUT == 0;
             if event(1) != 0 {
                 self.commands(ctl, &mut buffer);
                 dirty = true;
