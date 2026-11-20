@@ -51,6 +51,36 @@ fn styled_history_has_historys_lines_with_their_looks() {
     assert!(cleared.peek().styled == kept && kept.matches('\n').count() == 3 && kept.contains("\x1b[0;31maaaa"));
     term.feed(b"\x1bc\x1b[33mafter\r\n\r\n\r\n");
     assert!(same_lines(&term) && term.peek().styled.ends_with("\x1b[0;33mafter\x1b[m\n\n"));
+    // Where a line's rows are joined, two characters that were two cells stay two: U+200B is
+    // between them as it is inside a row, also before a row that is copied as it is. A blank
+    // that is only part of a link is no look, and is cut at a line's end as in `history`.
+    let flag = crate::tests::term(2, 2, "a\u{1f1ef}X\x1b[2;1H\u{1f1f5}\r\n\r\n");
+    assert_eq!(flag.peek().styled, "a\u{1f1ef}\u{200b}\u{1f1f5}\n");
+    let prepend = crate::tests::term(2, 2, "abX\x1b[1;2H\u{600}\x1b[2;2H\r\n\r\n");
+    assert_eq!(prepend.peek().styled, "a\u{600}\u{200b}X\n");
+    let linked = crate::tests::term(4, 1, "x\x1b]8;;https://example.test\x07 \x1b]8;;\x07\r\n");
+    assert_eq!(linked.peek().styled, "x\n");
+}
+
+#[test]
+fn history_waiting_to_be_written_is_bounded_in_both_texts_and_a_row_refused_ends_its_line_in_both() {
+    // One line of 65,536 rows of one cell, each 82 bytes with its looks: past 4 MiB of those
+    // the rows are refused, the line is ended in both texts, and the next line is its own.
+    let looks = "\x1b[1;2;3;4:3;5;7;8;9;38;2;255;255;255;48;2;255;255;255;58;2;255;255;255m";
+    let mut term = term(1, 1, &format!("{looks}x\x1b[65535b\r\n"));
+    let first = term.take();
+    assert!(first.styled.len() < (4 << 20) + 100 && first.history.ends_with("x\n") && first.refused.len() == 1);
+    assert_eq!(first.history.matches('\n').count(), 1);
+    term.feed(b"\x1b[mY\r\n");
+    assert_eq!((term.peek().history.as_str(), term.peek().styled.as_str()), ("Y\n", "Y\n"));
+    // A resize is held to the same: 499 rows of 500 cells, each cell with colours of its own.
+    let cells = "\x1b[38;2;254;255;255ma\x1b[38;2;255;255;255ma".repeat(125_000);
+    let mut term = crate::tests::term(500, 500, &format!("\x1b[48;2;255;255;255m{cells}"));
+    assert!(term.resize(500, 1) && same_lines(&term) && term.peek().refused.len() == 1);
+    assert!(term.peek().styled.len() < (4 << 20) + (64 << 10), "{}", term.peek().styled.len());
+    // (The rows kept to come back do: what was given of them is taken back, and no more.)
+    let sent = term.take();
+    assert!(term.resize(500, 500) && term.peek().unstyled <= sent.styled.len() && term.plain().starts_with("aaa"));
 }
 
 #[test]

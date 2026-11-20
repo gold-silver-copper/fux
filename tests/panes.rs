@@ -86,6 +86,66 @@ fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
     assert!(bare(&styled_aside) == aside && bare(&styled) == history);
 }
 
+#[test]
+fn the_two_histories_keep_their_bounds_and_the_same_lines() {
+    let session = Session::new("pair");
+    let size = |pane: &Path, name: &str| fs::metadata(pane.join(name)).map_or(0, |file| file.len());
+    // Rows that are a colour and nothing else are a byte in `history` and a row's worth in
+    // `history.styled`: what waits to be written is counted by the longer, and so is a file.
+    // (The program says it is drawing, so nothing is published for half a second.)
+    let bar = "printf '\\033[?2026h\\033[44m'; yes '' | head -n 200000; printf '\\033[?2026l\\033[mdone'; sleep 600";
+    let mut start = session.fux();
+    start.env("COLUMNS", "100").env("LINES", "24").args(["start", "bar", "--", "sh", "-c", bar]);
+    let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let mut most = 0;
+    until("the bars are printed", || {
+        most = most.max(size(&pane, "history.styled")).max(size(&pane, "history.styled.1"));
+        read(&pane.join("screen")).contains("done")
+    });
+    assert!(most < 6 << 20 && size(&pane, "history.styled.1") > 4 << 20, "{most}");
+    // A file is not put aside while its last rows are a resize's to take back: they are taken
+    // back from it. (One line of 700,000 characters in rows of two, 4.2 MiB with its colours,
+    // then a row the smaller screen has no room for.)
+    let long = "printf '\\033[31m'; head -c 700000 /dev/zero | tr '\\0' a; printf 'b\\nZ'; sleep 600";
+    let mut start = session.fux();
+    start.env("COLUMNS", "2").env("LINES", "2").args(["start", "long", "--", "sh", "-c", long]);
+    let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let texts = |pane: &Path| (read(&pane.join("screen")), read(&pane.join("history")));
+    until("the line is printed", || texts(&pane).0 == "b\nZ\n" && size(&pane, "history") == 700_000);
+    assert!(size(&pane, "history.styled") > 4 << 20);
+    fs::write(pane.join("ctl"), "resize 2 1\n").unwrap();
+    until("the row is in history", || texts(&pane).0 == "Z\n" && texts(&pane).1.ends_with("ab\n"));
+    fs::write(pane.join("ctl"), "resize 2 2\n").unwrap();
+    until("the row is back", || texts(&pane).0 == "b\nZ\n" && size(&pane, "history") == 700_000);
+    let styled = read(&pane.join("history.styled"));
+    assert!(!pane.join("history.1").exists() && !pane.join("history.styled.1").exists());
+    assert!(bare(&styled) == texts(&pane).1 && styled.ends_with("\x1b[0;31maa\x1b[m"), "{}", styled.len());
+    // When one of the two cannot be written, `history` keeps what it can, the log says what
+    // was lost, and `history.styled` is begun anew: it has `history`'s last lines, and not
+    // older ones with a hole after them.
+    let lines = "p() { i=0; while [ $i -lt 40 ]; do printf '\\033[3%dm%s\\033[m\\n' $((i % 8)) $1$i; i=$((i + 1)); done; }; \
+        w() { until [ -e \"$FUXN_PANE/$1\" ]; do sleep 0.05; done; }; p one; w go1; p two; w go2; p three; sleep 600";
+    let pane = session.start("lost", &["sh", "-c", lines]);
+    let mode = |mode| {
+        fs::set_permissions(pane.join("history.styled"), std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap()
+    };
+    until("the first lines are in history", || texts(&pane).1.contains("one10\n"));
+    mode(0o000);
+    fs::write(pane.join("go1"), "").unwrap();
+    until("the log says what was lost", || {
+        texts(&pane).1.contains("two10\n") && read(&pane.join("log")).contains("history.styled was lost")
+    });
+    mode(0o600);
+    fs::write(pane.join("go2"), "").unwrap();
+    until("both are written again", || {
+        let (plain, styled) = (texts(&pane).1, bare(&read(&pane.join("history.styled"))));
+        plain.ends_with("three16\n") && styled.ends_with("three16\n")
+    });
+    let (plain, styled) = (texts(&pane).1, read(&pane.join("history.styled")));
+    assert!(plain.starts_with("one0\none1\n") && plain.contains("two0\n") && plain.ends_with(&bare(&styled)));
+    assert!(!styled.contains("one10") && styled.starts_with("\x1b[0;3"), "{styled}");
+}
+
 /// Gives a session's `main` workspace a layout, as an editor that saves in one step does: the
 /// file is whole at every moment (the viewer reads it, and writes it too, at any time).
 fn lay(session: &Path, text: &str) {
@@ -243,12 +303,12 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
         fs::write(pane.join("ctl"), format!("resize {size}\n")).unwrap();
         // (The size is written a moment before the text that was wrapped for it.)
         until("the pane has the size and every line whole", || {
+            // (No line here has a colour: the two files are the same, once both are written.)
+            let (plain, styled) = history();
             fact(&pane, "size") == size
-                && (read(&pane.join("history")) + &rows()).replace('\n', "") == lines.concat() + "ready"
+                && plain == styled
+                && (plain + &rows()).replace('\n', "") == lines.concat() + "ready"
         });
-        // (No line here has a colour: the two files are the same.)
-        let (plain, styled) = history();
-        assert_eq!(plain, styled);
     }
     // Back at the size it had, with nothing printed between: the screen as it was, and
     // `history` has given back what it was sent, and `history.styled` too.
@@ -702,7 +762,9 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     assert_eq!((text.lines().count(), text.lines().last()), (line, Some("$")));
     // History in colour is the same text with its colours, in `less -R` at its end (a `less`
     // for the test: the same script).
-    fs::copy(session.0.join("vim"), session.0.join("less")).unwrap();
+    let less = "#!/bin/sh\nfor a; do f=$a; done\necho \"$*\" > \"$OUT.at\"\ncp \"$f\" \"$OUT\"\n";
+    fs::write(session.0.join("less"), less).unwrap();
+    Command::new("chmod").arg("+x").arg(session.0.join("less")).status().unwrap();
     let _ = fs::remove_file(&out);
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
     let mut script = Command::new(keys.join("C-b").join("M-c"));
@@ -711,6 +773,14 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     assert!(script.env("FUXN_PANE", &pane).status().unwrap().success());
     until("less was given the file", || bare(&read(&out)) == text);
     assert!(read(&out).contains("\n\x1b[0;32ma-long-line-\x1b[mthat-wraps-in-twelve\n$ second\n"), "{:?}", read(&out));
+    let asked = read(&session.0.join("out.at"));
+    assert!(asked.starts_with("-+F -R +G /") && asked.ends_with("/text\n"), "{asked}");
+    // The rows left out at the screen's end are those with no text: a colour alone is none.
+    let blue = session.start("blue", &["sh", "-c", "printf 'x\\033[44m\\033[J\\033[m'; sleep 600"]);
+    until("the screen is blue", || read(&blue.join("screen.styled")).matches("\x1b[0;44m").count() == 24);
+    let mut text = Command::new(keys.join(".text"));
+    assert!(text.arg(&out).arg("styled").env("FUXN_PANE", &blue).output().unwrap().status.success());
+    assert!(read(&out).starts_with("x\x1b[0;44m ") && read(&out).lines().count() == 1, "{:?}", read(&out));
     // A command that prints nothing has no output to open, and the key says so; one whose
     // output does not end its line has that output, every character of it whole, without the
     // prompt that follows on the line. (And the editor is run as `FUXN_EDIT` says.)

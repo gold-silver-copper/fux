@@ -4,20 +4,23 @@
 # number of `marks` to have that line's number in FILE (sed's kind, from 1).
 # With `styled` it is the same lines with their colours (`history.styled.1`,
 # `history.styled`, `screen.styled`).
-# The screen is taken without the blank rows at its end, and its rows that go on
+# The screen is taken without the blank rows at its end (the rows that are blank
+# in `screen`: one that is only a colour is blank), and its rows that go on
 # from the row above (`wraps` numbers them from 0) joined to it, as history has
 # them. It is read first: a line that scrolls off meanwhile is then there twice,
 # never missing. A pane that printed while it was read (its `top` moved) is read
-# again, five times at most: of a pane that never rests, a mark's line is off by
-# as many lines as scrolled in that moment.
+# again, and so is one whose older history became another file meanwhile, five
+# times at most: of a pane that never rests, a mark's line is off by as many
+# lines as scrolled in that moment.
 umask 077
 s=${2:+.$2}
 for try in 1 2 3 4 5; do
   read -r top 2>/dev/null < "$FUXN_PANE/top"
   read -r wraps 2>/dev/null < "$FUXN_PANE/wraps"
+  aside=$(ls -i "$FUXN_PANE/history$s.1" 2>/dev/null)
   screen=$(awk -v wraps="$wraps" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
-    { row[NR] = $0; if ($0 != "") last = NR }
-    END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), row[i]; if (last) print "" }' "$FUXN_PANE/screen$s")
+    NR == FNR { if ($0 != "") last = NR; next } { row[FNR] = $0 }
+    END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), row[i]; if (last) print "" }' "$FUXN_PANE/screen" "$FUXN_PANE/screen$s")
   # History's last line may be unfinished: the screen's first row goes on from it if
   # `wraps` lists row 0, and is a line of its own if not.
   open=$(tail -c 1 "$FUXN_PANE/history$s" 2>/dev/null)
@@ -26,7 +29,7 @@ for try in 1 2 3 4 5; do
   before=$(($(wc -l < "$1")))
   printf '%s\n' "$screen" >> "$1" || exit
   read -r after 2>/dev/null < "$FUXN_PANE/top"
-  [ "$after" != "$top" ] || break
+  [ "$after" != "$top" ] || [ "$aside" != "$(ls -i "$FUXN_PANE/history$s.1" 2>/dev/null)" ] || break
 done
 case $top in '' | *[!0-9]*) top=0 ;; esac
 echo "$((before - top + 1))"
