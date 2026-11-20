@@ -1,3 +1,4 @@
 #!/bin/sh
 # focus left
-fux3 layout focus left
+# group: Focus
+fux layout focus left

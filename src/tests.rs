@@ -161,7 +161,8 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
 
 #[test]
 fn a_layout_reads_back_as_written_and_its_tiles_fill_the_area_without_overlap() {
-    for text in ["* row(a col(b c):2) focus=c\n  d focus=d zoom\n", "* col(row(a b) row(c d e):3 f) focus=a\n"] {
+    for text in ["* row(a col(b c):2) focus=c\n- d focus=d\n  e focus=e\n", "* col(row(a b) row(c d e):3 f) focus=a\n"]
+    {
         let layout = parse(text).expect("a layout");
         assert_eq!(layout.print(), text);
         let area = Rect { x: 0, y: 0, w: 83, h: 31 };
@@ -189,12 +190,16 @@ fn a_layout_follows_the_panes_that_exist_and_edits_act_on_the_focused_pane() {
     assert_eq!(layout.print(), "* row(col(a new):50 b:60) focus=b\n");
     layout.edit(&["break"]).expect("break");
     layout.edit(&["tab", "prev"]).expect("tab");
-    assert_eq!(layout.print(), "* col(a new) focus=a\n  b focus=b\n");
-    assert!(layout.edit(&["fly"]).is_err() && Layout::default().edit(&["zoom"]).is_err());
+    assert_eq!(layout.print(), "* col(a new) focus=a\n- b focus=b\n");
+    assert!(
+        layout.edit(&["fly"]).is_err()
+            && Layout::default().edit(&["rotate"]).is_err()
+            && layout.edit(&["zoom"]).is_err()
+    );
     // A pane that is not there is not placed, a huge step is a big one, and nesting has an end.
     assert!(layout.edit(&["split", "row", "nobody"]).is_err());
     layout.edit(&["size", "col", "9223372036854775807"]).expect("size");
-    assert_eq!(layout.print(), "* col(a:10000 new:50) focus=a\n  b focus=b\n");
+    assert_eq!(layout.print(), "* col(a:10000 new:50) focus=a\n- b focus=b\n");
     // What an edit writes, the next reading takes: 40 splits deep is refused, as is a share out of range.
     assert!(parse("row(a:20000 b)").is_err());
     // A row with more parts than columns shows those it has room for, each with a cell, lines between.
@@ -207,6 +212,28 @@ fn a_layout_follows_the_panes_that_exist_and_edits_act_on_the_focused_pane() {
     named.edit(&["pane", "left"]).expect("pane");
     assert_eq!(named.print(), "* row(a left) focus=left\n");
     assert!(parse(&format!("{}a{}", "row(".repeat(40), ")".repeat(40))).is_err());
+}
+
+#[test]
+fn when_the_tab_shown_goes_the_tab_shown_before_it_is_shown() {
+    // An edit that ends on another tab marks the one it left; an edit that stays leaves the mark.
+    let mut layout = parse("* row(a b) focus=a\n  c focus=c\n  d focus=d\n").expect("a layout");
+    layout.edit(&["pane", "d"]).expect("pane");
+    layout.edit(&["focus", "next"]).expect("focus");
+    assert_eq!(layout.print(), "- row(a b) focus=a\n  c focus=c\n* d focus=d\n");
+    // The shown tab's pane goes: back to the marked tab, not to the neighbour.
+    let mut closed = layout.clone();
+    closed.settle(vec!["a".into(), "b".into(), "c".into()]);
+    assert_eq!(closed.print(), "* row(a b) focus=a\n  c focus=c\n");
+    // The marked tab goes too: the position, as before there was a mark.
+    layout.settle(vec!["c".into()]);
+    assert_eq!(layout.print(), "* c focus=c\n");
+    // A pane that leaves for a tab of its own leaves its old tab marked, and `tab -` goes back.
+    let mut broken = parse("* row(a b) focus=b\n").expect("a layout");
+    broken.edit(&["break"]).expect("break");
+    assert_eq!(broken.print(), "- a focus=a\n* b focus=b\n");
+    broken.edit(&["tab", "-"]).expect("tab");
+    assert_eq!(broken.print(), "* a focus=a\n- b focus=b\n");
 }
 
 #[test]

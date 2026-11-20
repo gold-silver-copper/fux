@@ -1,3 +1,4 @@
 #!/bin/sh
 # next pane
-fux3 layout focus next
+# group: Focus
+fux layout focus next

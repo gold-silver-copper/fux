@@ -1,6 +1,6 @@
 # Design
 
-fux3 is a view over the filesystem and pane daemons. Everything else follows.
+fux is a view over the filesystem and pane daemons. Everything else follows.
 
 ## The model
 
@@ -38,9 +38,9 @@ fux3 is a view over the filesystem and pane daemons. Everything else follows.
 
 ## How it works
 
-**Starting.** `fux3 start` makes the pane's folder and locks it (both under
+**Starting.** `fux start` makes the pane's folder and locks it (both under
 a lock on the workspace, so that two starts never mix), and starts
-`fux3 hold` in a new session with the pane's lock as its standard input: the
+`fux hold` in a new session with the pane's lock as its standard input: the
 lock lives exactly as long as the holder. The start is done when `status`
 names that holder. The holder
 works inside the folder with relative names, so it does not care what the
@@ -65,7 +65,7 @@ checking that each is one sixel string.
 
 **Keys.** The viewer names each key and looks for a file of that name in the
 keys directory (or the open menu's directory). The layout is changed by the
-scripts through `fux3 layout`, an edit of the file; the viewer sees the file
+scripts through `fux layout`, an edit of the file; the viewer sees the file
 change like anyone else.
 
 ## What it deliberately has not
@@ -73,4 +73,4 @@ change like anyone else.
 No guard against `mv`, `rm` or `kill -9`; no staging names, markers or sweeps;
 no pane ids; no recipes or restart; no kill of process trees; no embedded
 language; no socket. See `DECISIONS.md` for why, and for which of the old
-fux3's bugs this removes.
+fux's bugs this removes.

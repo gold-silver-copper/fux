@@ -1,3 +1,4 @@
 #!/bin/sh
 # focus down
-fux3 layout focus down
+# group: Focus
+fux layout focus down

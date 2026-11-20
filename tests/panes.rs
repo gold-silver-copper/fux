@@ -17,17 +17,17 @@ impl Drop for Session {
 impl Session {
     fn new(name: &str) -> Session {
         // Short, as a deep path would not fit a Unix path limit on macOS.
-        let dir = std::env::temp_dir().join(format!("fux3c-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("fux-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         Session(dir)
     }
-    fn fux3(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_fux3"));
-        command.env("FUX3C_DIR", &self.0).env_remove("COLUMNS").env_remove("LINES");
+    fn fux(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fux"));
+        command.env("FUX_DIR", &self.0).env_remove("COLUMNS").env_remove("LINES");
         command
     }
     fn start(&self, name: &str, program: &[&str]) -> PathBuf {
-        let out = self.fux3().arg("start").arg(name).arg("--").args(program).output().unwrap();
+        let out = self.fux().arg("start").arg(name).arg("--").args(program).output().unwrap();
         assert!(out.status.success(), "start failed: {}", String::from_utf8_lossy(&out.stderr));
         PathBuf::from(String::from_utf8(out.stdout).unwrap().trim())
     }
@@ -69,21 +69,51 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     fs::write(pane.join("ctl"), "kill \x1b]0;now\x07\n").unwrap();
     until("a refused line is logged without its control codes", || read(&pane.join("log")).contains("kill ?]0;now?"));
     // A pane whose program cannot start is not left behind.
-    assert!(!session.fux3().args(["start", "none", "--", "/no/such/program"]).output().unwrap().status.success());
+    assert!(!session.fux().args(["start", "none", "--", "/no/such/program"]).output().unwrap().status.success());
     assert!(!session.0.join("main/none").exists());
     // A second start of a live pane is refused; the first is not disturbed.
-    assert!(!session.fux3().args(["start", "build", "--", "sh"]).output().unwrap().status.success());
+    assert!(!session.fux().args(["start", "build", "--", "sh"]).output().unwrap().status.success());
     fs::write(pane.join("in"), "exit 3\n").unwrap();
-    let waited = session.fux3().arg("wait").arg(&pane).output().unwrap();
+    let waited = session.fux().arg("wait").arg(&pane).output().unwrap();
     assert!(String::from_utf8_lossy(&waited.stdout).contains("state exited 3"));
     assert!(!pane.join("in").exists() && !pane.join("ctl").exists(), "the FIFOs go with the holder");
     // A start in place that fails leaves what the last program left.
-    assert!(!session.fux3().args(["start", "build", "--", "/no/such/program"]).output().unwrap().status.success());
+    assert!(!session.fux().args(["start", "build", "--", "/no/such/program"]).output().unwrap().status.success());
     assert!(read(&pane.join("status")).contains("state exited 3") && read(&pane.join("screen")).contains("exit 3"));
     assert!(
-        !session.fux3().args(["start", "layout"]).output().unwrap().status.success(),
+        !session.fux().args(["start", "layout"]).output().unwrap().status.success(),
         "the layout file's name is taken"
     );
+}
+
+#[test]
+fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
+    let session = Session::new("names");
+    let mut start = session.fux();
+    // What a key script, or the fux before this one, would leave in the environment.
+    start
+        .env("FUX_WS", "main")
+        .env("FUX_VIEW", "/nowhere")
+        .env("FUX_SOCKET", "/old")
+        .env("FUX", "old")
+        .env("COLUMNS", "90");
+    assert!(start.args(["start", "w2/p", "--", "sh"]).status().unwrap().success());
+    let pane = session.0.join("w2/p");
+    let me = env!("CARGO_BIN_EXE_fux");
+    let typed = format!(
+        "env | grep -E '^(FUX|TERM=|TERM_|COLUMNS)' | LC_ALL=C sort > \"$FUX_PANE/env\"; '{me}' layout > \"$FUX_PANE/here\"\n"
+    );
+    fs::write(pane.join("in"), typed).unwrap();
+    // A command typed in a pane means its own workspace, not `main`.
+    until("the layout of its own workspace is printed", || read(&pane.join("here")) == "* p focus=p\n");
+    let expected = format!(
+        "FUX_DIR={}\nFUX_PANE={}\nTERM=xterm-256color\nTERM_PROGRAM=fux\nTERM_PROGRAM_VERSION={}\n",
+        session.0.display(),
+        pane.display(),
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(read(&pane.join("env")), expected);
+    assert_eq!(read(&pane.join("screen")).lines().next().map(|line| line.contains("size=90x24")), Some(true));
 }
 
 #[test]
@@ -91,7 +121,7 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
     let session = Session::new("end");
     let pane = session.start(
         "a",
-        &["sh", "-c", "trap 'echo hup > \"$FUX3C_PANE/saw\"; exit 0' HUP; echo r''eady; while :; do sleep 1; done"],
+        &["sh", "-c", "trap 'echo hup > \"$FUX_PANE/saw\"; exit 0' HUP; echo r''eady; while :; do sleep 1; done"],
     );
     until("the program has set its trap", || read(&pane.join("screen")).contains("ready"));
     fs::write(pane.join("ctl"), "kill\n").unwrap();
@@ -99,14 +129,14 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
     until("its end is in status", || read(&pane.join("status")).contains("state exited 0"));
 
     // Whoever starts a pane may ignore signals; its program does not inherit that.
-    let start = format!("trap '' INT HUP; exec '{}' start c -- sleep 600", env!("CARGO_BIN_EXE_fux3"));
-    assert!(Command::new("sh").args(["-c", &start]).env("FUX3C_DIR", &session.0).status().unwrap().success());
+    let start = format!("trap '' INT HUP; exec '{}' start c -- sleep 600", env!("CARGO_BIN_EXE_fux"));
+    assert!(Command::new("sh").args(["-c", &start]).env("FUX_DIR", &session.0).status().unwrap().success());
     let interrupted = session.0.join("main/c");
     until("the program runs", || read(&interrupted.join("status")).contains("state running"));
     fs::write(interrupted.join("in"), "\x03").unwrap();
     until("Ctrl-C ended it", || read(&interrupted.join("status")).contains("state killed 2"));
 
-    let other = session.start("b", &["sh", "-c", "echo $$ > \"$FUX3C_PANE/pid\"; exec sleep 600"]);
+    let other = session.start("b", &["sh", "-c", "echo $$ > \"$FUX_PANE/pid\"; exec sleep 600"]);
     until("the program runs", || !read(&other.join("pid")).is_empty());
     let pid = read(&other.join("pid")).trim().to_string();
     let alive = || Command::new("kill").args(["-0", &pid]).output().unwrap().status.success();
@@ -134,13 +164,13 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     let (outer, inner) = (Session::new("outer"), Session::new("inner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b")).unwrap();
-    let script = "#!/bin/sh\n# split\np=$(fux3 start \"$FUX3C_WS/two\" -- sh) && fux3 layout split row two\necho made $FUX3C_KEYS\n";
+    let script = "#!/bin/sh\n# split\n# group: Panes\np=$(fux start \"$FUX_WS/two\" -- sh) && fux layout split row two\necho made $FUX_KEYS\n";
     fs::write(keys.join("C-b/v"), script).unwrap();
-    fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>\"$FUX3C_PANE/in\"\n").unwrap();
+    fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>\"$FUX_PANE/in\"\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/v")).arg(keys.join("C-b/e")).status().unwrap();
     let one = inner.start("one", &["sh"]);
-    let viewer = [env!("CARGO_BIN_EXE_fux3"), "view"];
-    let command = ["env", &format!("FUX3C_DIR={}", inner.0.display()), &format!("FUX3C_KEYS={}", keys.display())];
+    let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
     let screen = || read(&view.join("screen"));
     fs::write(view.join("in"), "echo o''ne\r").unwrap();
@@ -152,7 +182,11 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     // The prefix opens the menu the directory gives; the key runs the script.
     fs::write(view.join("in"), "\x02").unwrap();
     until("the menu and the bar show", || {
-        screen().contains("v  split") && screen().contains(" main  one ") && screen().contains("C-b …")
+        screen().contains(" e\n")
+            && screen().contains(" Panes\n")
+            && screen().contains("v  split")
+            && screen().contains(" main  one ")
+            && screen().contains("C-b …")
     });
     fs::write(view.join("in"), "v").unwrap();
     until("the layout file has the split", || read(&inner.0.join("main/layout")) == "* row(one two) focus=two\n");
@@ -178,7 +212,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(view.join("in"), "\x1b[<0;50;3M\r").unwrap();
     until("the click arrives translated", || read(&inner.0.join("main/two/screen")).contains("^[[<0;9;3M"));
     fs::write(view.join("in"), "\x03").unwrap();
-    fs::write(inner.0.join("main/layout"), "* col(two one) focus=one zoom\n").unwrap();
+    fs::write(inner.0.join("main/layout"), "* one focus=one\n  two focus=two\n").unwrap();
     until("an edit of the file by hand is followed", || width("one") == Some("80x24".into()));
     // A folder with a screen of someone's own making: what it says reaches the terminal as text only.
     fs::create_dir(inner.0.join("main/odd")).unwrap();

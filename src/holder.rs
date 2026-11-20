@@ -80,7 +80,7 @@ pub fn replace(name: impl AsRef<Path>, content: &[u8]) -> io::Result<()> {
 }
 
 /// Keeps the pane whose directory is the working directory until its program
-/// ends. `fux3 start` locked the directory and handed the lock over as this
+/// ends. `fux start` locked the directory and handed the lock over as this
 /// process's standard input: it is held for exactly as long as the holder lives.
 pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // The first size is COLUMNS x LINES when the starter set them (the viewer
@@ -106,8 +106,24 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     let mut child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
-        child.args(args).current_dir(cwd).env("TERM", TERM).env("FUX3C_PANE", pane);
-        child.env_remove("COLUMNS").env_remove("LINES").stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
+        // The program is told what terminal it is in and which pane. Of the
+        // `FUX…` names it gets no other but the session's and the keys' (a
+        // key script's, or an older fux's, would say things that are not so
+        // here), and no size but the terminal's own.
+        let ours =
+            |name: &OsString| name.to_str().is_some_and(|n| n.starts_with("FUX") && n != "FUX_DIR" && n != "FUX_KEYS");
+        for name in std::env::vars_os().map(|(name, _)| name).filter(ours) {
+            child.env_remove(name);
+        }
+        child
+            .args(args)
+            .current_dir(cwd)
+            .env("TERM", TERM)
+            .env("FUX_PANE", pane)
+            .env_remove("COLUMNS")
+            .env_remove("LINES");
+        child.env("TERM_PROGRAM", "fux").env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        child.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
         sys::new_session(&mut child, true);
         child.spawn().map_err(|e| format!("cannot start {}: {e}", program.to_string_lossy()))?
     };

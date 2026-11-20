@@ -1,4 +1,4 @@
-# fux3, from a clean slate
+# fux
 
 A terminal multiplexer that is a view over directories.
 
@@ -18,40 +18,61 @@ Linux and macOS.
 
 ```sh
 cargo build --release                       # no crates fetched: Cargo.lock lists this package only
-export PATH="$PWD/target/release:$PATH"     # so that `fux3` below is this one
-D=$(fux3 dir); fux3 start build -- sh       # a pane is a directory kept by one small process
+export PATH="$PWD/target/release:$PATH"     # so that `fux` below is this one
+D=$(fux dir); fux start build -- sh       # a pane is a directory kept by one small process
 printf 'echo hi\n' > "$D/main/build/in"; cat "$D/main/build/screen"     # plain tools are the clients
 ls "$D" "$D/main"                           # workspaces are folders, panes are folders in them
-fux3 view                                   # tiles, tabs, workspaces; vim, less and htop work in a pane
+fux view                                   # tiles, tabs, workspaces; vim, less and htop work in a pane
 # a key is a script: C-b then `v` runs an executable file you can read and replace
-cat ~/.config/fux3c/keys/C-b/v              # or under $FUX3C_KEYS or $XDG_CONFIG_HOME, if you set them
+cat ~/.config/fux/keys/C-b/v              # or under $FUX_KEYS or $XDG_CONFIG_HOME, if you set them
 echo kill > "$D/main/build/ctl"             # hangs up the program; what Unix does next is what happens
 ```
 
 `./example.sh` runs the first lines for real; CI runs it on both systems.
 Two notes on it: the screen is written a few milliseconds after the program
 prints, so a script looks again until it sees what it waits for; and the key
-scripts are written on the first `fux3 view`, to `$FUX3C_KEYS`, else
-`$XDG_CONFIG_HOME/fux3c/keys`, else `~/.config/fux3c/keys`.
+scripts are written on the first `fux view`, to `$FUX_KEYS`, else
+`$XDG_CONFIG_HOME/fux/keys`, else `~/.config/fux/keys`.
 
-**Beside the merged fux3.** This one reads `FUX3C_DIR` and `FUX3C_KEYS` and
-lives in `$XDG_RUNTIME_DIR/fux3c` (else `~/.cache/fux3c`) and
-`~/.config/fux3c/keys`. The merged fux3 uses `FUX3_DIR` and `…/fux3`, so the
-two never see each other's panes, whichever binary is called `fux3`.
+## While fux 1 is the one you use daily
+
+This is the fux that will replace it, on a branch. Until it does, do not
+`cargo install` it: `fux` on your `PATH` stays fux 1, and this one is run by
+its path (`target/release/fux`), as the example does with `PATH` for one
+shell. The two do not meet:
+
+- Session: `$FUX_DIR`, else `$XDG_RUNTIME_DIR/fux/workspaces`, else
+  `~/.cache/fux/workspaces`. fux 1 keeps its socket and a folder of its own
+  in `$XDG_RUNTIME_DIR/fux`, which is why this one's workspaces are a folder
+  further in. The parent is made (0700) if missing and never changed if there.
+- Keys: `$FUX_KEYS`, else `$XDG_CONFIG_HOME/fux/keys`, else
+  `~/.config/fux/keys`; the defaults are written only when that folder is
+  absent. fux 1 keeps other files in `~/.config/fux`.
+- A program in a pane of this fux sees `TERM_PROGRAM=fux`,
+  `TERM_PROGRAM_VERSION=0.40.0` and `FUX_PANE=/…/workspace/pane`, a
+  directory. In fux 1 it sees `FUX_PANE=%N` and `FUX_SOCKET`: the first
+  character of `FUX_PANE` tells them apart. Run inside a fux 1 pane, this
+  one passes none of fux 1's `FUX…` names on to its own panes; run inside a
+  pane of this one, fux 1 sees a `FUX_PANE` it did not set.
 
 ## Commands
 
 | | |
 |---|---|
-| `fux3 dir` | prints the session directory |
-| `fux3 start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place |
-| `fux3 wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `status` |
-| `fux3 view [WORKSPACE]` | the viewer |
-| `fux3 layout [EDIT…]` | prints the layout of workspace `$FUX3C_WS` (default `main`), or edits it (below) |
+| `fux dir` | prints the session directory |
+| `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place |
+| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `status` |
+| `fux view [WORKSPACE]` | the viewer |
+| `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot; a pane cannot be called `layout` or `layout.new`, in any case of
 letters.
+
+Typed in a pane, a command means "here": with no workspace named, it is the
+workspace that pane is in (and that pane's session, unless `FUX_DIR` says
+otherwise). Elsewhere it is `main`. A key script is told the workspace shown
+in `FUX_WS`.
 
 ## A pane's files
 
@@ -91,40 +112,46 @@ is lost, with a line in `log`. When the program ends, at most 4 MiB of what
 it wrote last is still read; a `resize` first draws, at the old size, up to
 1 MiB of what the program had already written.
 
-The program runs with `TERM=xterm-256color` and `FUX3C_PANE` (its pane's
-directory), in the directory `fux3 start` was run in, with the rest of that
-environment, the signals 1 to 31 at their defaults. Its first size is `COLUMNS`x`LINES`
-if the starter set them (each 1 to 500; otherwise `log` says so), else 80x24.
+The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux`,
+`TERM_PROGRAM_VERSION` and `FUX_PANE` (its pane's directory, whole path), in
+the directory `fux start` was run in, with the rest of that environment and
+the signals 1 to 31 at their defaults. Of the names beginning with `FUX` it
+gets only `FUX_PANE` and, if they were set, `FUX_DIR` and `FUX_KEYS`; and
+neither `COLUMNS` nor `LINES`, which the holder reads for itself: the pane's
+first size is `COLUMNS`x`LINES` if the starter set them (each 1 to 500;
+otherwise `log` says so), else 80x24.
 
 Is a pane alive? Its holder keeps a lock on the directory for as long as it
 lives: `flock -n "$D/main/build" true` fails while it does (Linux), and
-`fux3 wait` returns when it is gone.
+`fux wait` returns when it is gone.
 
 ## The viewer
 
-`fux3 view [WORKSPACE]` shows every folder in the workspace whose name is a
+`fux view [WORKSPACE]` shows every folder in the workspace whose name is a
 pane's name (above) as a pane. The
 `layout` file in the workspace says where; a person can read and edit it, and
 viewers of the same workspace share it, focus included:
 
 ```
 * row(sh col(logs top):2) focus=logs
-  vim focus=vim zoom
+- vim focus=vim
 ```
 
 One tab a line. `row(…)` puts its parts side by side, `col(…)` stacks them,
-`:N` is a part's share (1 to 10000; rows and columns nest at most 32 deep), `*` marks the tab shown, `focus=` is the pane that
-gets the keys, `zoom` shows it alone. A folder the file does not place gets a
+`:N` is a part's share (1 to 10000; rows and columns nest at most 32 deep), `*` marks the tab shown and `-` the tab shown before it, `focus=` is the pane that
+gets the keys. When the tab shown goes (its last pane ends), the `-` tab is
+shown, as `cd -` would; an edit that ends on another tab moves the mark. It
+is in the file, so two viewers agree. A folder the file does not place gets a
 tab of its own; a name with no folder is dropped. A part there is no room
 for (more parts than cells) is not drawn, and the viewer says so if it has
-the keys. A workspace shows at most 1,000 panes. `fux3 layout EDIT` makes
+the keys. A workspace shows at most 1,000 panes. `fux layout EDIT` makes
 one edit:
 
 `split row|col PANE` (put PANE beside or below the focused pane) ·
 `focus left|right|up|down|next|prev|PANE` · `pane PANE` (the same, for a
-pane named like a direction) · `tab next|prev|N` · `break`
+pane named like a direction) · `tab next|prev|N|-` (`-`: the tab shown before) · `break`
 (the focused pane to its own tab) · `swap next|prev` · `size row|col +N|-N` ·
-`zoom` · `rotate` · `arrange row|col|grid|main`
+`rotate` · `arrange row|col|grid|main`
 
 The viewer asks a pane once to take the size of its tile (through `ctl`). Two
 viewers with different sizes do not fight: the last to ask wins, and the
@@ -132,7 +159,7 @@ other shows what fits.
 
 ### Keys are scripts
 
-The keys directory is `$FUX3C_KEYS`, else `~/.config/fux3c/keys`; the viewer
+The keys directory is `$FUX_KEYS`, else `~/.config/fux/keys`; the viewer
 writes the default scripts there if it does not exist. A key that has a file
 of its name runs it (a file that cannot be run says so in the corner). A key that has a directory opens it as a
 menu (each script's second line, `# what it does`, is its entry) and the next
@@ -146,40 +173,98 @@ names differ by more than case, for macOS); `C-b`, `M-x`, `enter`, `tab`,
 `home` `end` `pgup` `pgdn` `insert` `delete`, `f1`…`f12`, with `C-`, `M-`,
 `S-` before them when held (`C-left`, `S-f5`).
 
-A script gets `FUX3C_DIR` (the session), `FUX3C_WS` (the workspace shown),
-`FUX3C_PANE` (the focused pane's directory), `FUX3C_KEYS`, `FUX3C_VIEW`,
+A script gets `FUX_DIR` (the session), `FUX_WS` (the workspace shown),
+`FUX_PANE` (the focused pane's directory), `FUX_KEYS`, `FUX_VIEW`,
 `COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has), and this
-`fux3` first in `PATH`. Keys typed after it wait until it ends (two seconds
+`fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; a script that
 takes longer puts its work in the background, as the defaults do.
 What it prints goes to the viewer, a line at a time: `quit` leaves the
-viewer, `workspace NAME` shows another workspace, and anything else (an error
+viewer, `workspace NAME` shows another workspace (`workspace -` the one this
+viewer showed before, which is also where it goes when the one shown is
+removed), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key. A key with no file, pressed in an
 open menu, closes the menu and goes nowhere. Writing the same lines to the FIFO
-`$FUX3C_VIEW` does the same from anywhere.
+`$FUX_VIEW` does the same from anywhere.
 
-The defaults are fux's keys, all under `keys/C-b/`: `v` split side by side,
+The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `s` split stacked (both start in the directory the viewer was started in),
-`x` then `y` close the pane (remove its directory), `z` zoom, `h j k l` focus,
+`x` then `y` close the pane (remove its directory), `h j k l` focus,
 `o` next pane, `n` `b` next and previous tab, `d` detach, `c` the pane's text
 in the editor, `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
 workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
 TERM to the program), `g` arrange (`r c g m`, `t` turn). Whether a pane
 closes when its shell exits is the script's choice too: the defaults run
-`fux3 wait` in the background and remove the directory.
+`fux wait` in the background and remove the directory.
 
 In a menu's directory, a file `.about` holds the words shown for it in the
 menu above, and a file `.repeat` keeps the menu open after each key (until a
 key it has not): that is all "resize mode" is. A directory with one script,
 like `x/y`, is a question.
 
-There is no copy mode: `C-b c` puts the pane's older history, its history and
-its screen in one private file and opens it at its end in `$EDITOR` (as
-`$EDITOR +LINE FILE`), else `$PAGER`, else `less +G`, in a new tab; the file
-is removed when the editor ends.
+A script's third line may be `# group: NAME` (and so may the second line of
+an `.about`): the menu lists keys under their group's name, groups in
+alphabetical order, keys with no group first.
 
-**The look** is fux's. A pane has every cell but the one-cell line between it
+There is no copy mode: `C-b c` puts the pane's older history, its history and
+its screen in one private file and opens it in `$EDITOR` (which may hold
+arguments), else `$PAGER`, else `less`, in a new tab. `vi`, `vim`, `nvim`,
+`nano`, `emacs` and `less` are opened at the file's end; any other editor
+gets the file alone, as not every editor reads `+LINE`. The file is removed
+when the editor ends, and you are back on the tab you came from.
+
+There is no zoom either: a pane shown alone is a tab with one pane. If you
+want the key, these two scripts are it (`keys/C-b/z` and `keys/C-b/S-z`).
+The first takes the focused pane to a tab of its own and keeps its old tab's
+line in the pane's folder; the second writes that line back.
+
+```sh
+#!/bin/sh
+# show this pane alone, in a tab of its own
+# The tab's line of the layout is kept in the pane's folder; `C-b Z` puts it back.
+[ -n "$FUX_PANE" ] || exit 0
+[ -f "$FUX_PANE/alone" ] && { echo "already alone: C-b Z puts it back"; exit; }
+fux layout | grep '^\*' > "$FUX_PANE/alone.new" || exit
+fux layout break
+# A pane that was alone already has not moved: there is nothing to put back.
+if fux layout | grep '^\*' | cmp -s - "$FUX_PANE/alone.new"
+then rm -f "$FUX_PANE/alone.new"
+else mv "$FUX_PANE/alone.new" "$FUX_PANE/alone"
+fi
+```
+
+```sh
+#!/bin/sh
+# put this pane back where `C-b z` took it from
+# The layout is text: the kept line replaces the line of the tab the pane left,
+# and the pane's own line goes.
+[ -f "$FUX_PANE/alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
+ws=$FUX_DIR/$FUX_WS me=${FUX_PANE##*/}
+# Under the lock `fux layout` takes (flock on the workspace's folder), by way of perl, which Linux and macOS both have.
+[ -n "$LOCKED" ] || LOCKED=1 exec perl -e 'use Fcntl ":flock"; open(D, "<", shift) && flock(D, LOCK_EX) or die; exit(system(@ARGV) >> 8)' "$ws" "$0"
+awk -v me="$me" '
+  function names(line, into,    n, i, w) {
+    sub(/^[*-] /, "", line); gsub(/row\(|col\(|focus=[^ ]*|[()]|:[0-9]+/, " ", line)
+    n = split(line, w, " "); for (i = 1; i <= n; i++) into[w[i]] = 1
+  }
+  NR == FNR { kept = $0; names($0, near); delete near[me]; next }
+  { split("", here); names($0, here) }
+  (me in here) { own = $0; next }
+  !done { for (p in here) if (p in near) { print kept; done = 1; next } }
+  { print }
+  END { if (!done) print own }
+' "$FUX_PANE/alone" "$ws/layout" > "$ws/.layout.$$" && mv "$ws/.layout.$$" "$ws/layout"
+rm -f "$FUX_PANE/alone"
+```
+
+Put back: the tab, the pane's place in it, every share, the focus. Not put
+back: a pane closed meanwhile (dropped), a pane opened meanwhile (it keeps
+its own tab), and a share that another viewer or script changed in the old
+tab while the pane was out, which the kept line overwrites. Closing the pane
+forgets the line; a pane named `row` or `col` confuses the match.
+
+**The look** is fux 1's. A pane has every cell but the one-cell line between it
 and its neighbour (`│`, `─`, a tee or a cross where lines meet); the lines
 touching the focused pane are green. There are no titles and no bar: while a
 prefix is in use, the last row shows the workspace, its tabs and the keys
@@ -201,18 +286,18 @@ beside `.sixel` and a few lines in the viewer.
 
 ## Don't
 
-fux3 adds nothing to stop these. What happens is what Unix does:
+fux adds nothing to stop these. What happens is what Unix does:
 
 - **Don't `rm -r` a pane you want.** The directory is the pane: its holder
   notices within 2 seconds, hangs up the program and leaves. That is also how
   to close one. `rm -r` of a workspace ends all its panes.
 - **Don't `mv` a live pane across filesystems** (that is a copy and an `rm`).
-  Within one, the pane simply has the new name; the program's `FUX3C_PANE`
+  Within one, the pane simply has the new name; the program's `FUX_PANE`
   still says the old one, and so does a key script that waits to remove it.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `status` goes on saying `running` and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
-  `printf > in` then waits for ever, as on any FIFO nobody reads. `fux3 start`
+  `printf > in` then waits for ever, as on any FIFO nobody reads. `fux start`
   with the same name starts it again in place. (A holder that ends normally
   removes its FIFOs, so a late `echo kill > ctl` only leaves a small file.)
 - **Don't count on `kill`, or `rm -r`, killing.** They hang up the terminal.
@@ -222,7 +307,7 @@ fux3 adds nothing to stop these. What happens is what Unix does:
 - **Don't remove a live pane's `in`**: that is how its holder knows the
   directory is gone, and it leaves.
 - **Don't expect a pane to drop what its starter had open.** It inherits the
-  open files of whoever ran `fux3 start`, as any child does (`3>&-` closes one).
+  open files of whoever ran `fux start`, as any child does (`3>&-` closes one).
 - **Don't write more than 512 bytes to `in` in one go if others write too**:
   larger writes can interleave (4096 on Linux).
 - **Don't kill the viewer** (with any signal: it handles none; `C-b d`
@@ -242,19 +327,19 @@ fux3 adds nothing to stop these. What happens is what Unix does:
 Differences are left as they are:
 
 - The default session directory is usually in memory on Linux
-  (`$XDG_RUNTIME_DIR/fux3c`) and on disk on macOS, which sets no such
-  variable (`~/.cache/fux3c`): a flood there is up to 80 small file
-  replacements a second on your disk. Point `FUX3C_DIR` at a RAM disk if that
+  (`$XDG_RUNTIME_DIR/fux/workspaces`) and on disk on macOS, which sets no such
+  variable (`~/.cache/fux/workspaces`): a flood there is up to 80 small file
+  replacements a second on your disk. Point `FUX_DIR` at a RAM disk if that
   matters.
 - One write of up to 4096 bytes to a FIFO arrives whole on Linux; 512 on macOS.
-- macOS ships no `flock(1)`; `fux3 wait` is the same test.
+- macOS ships no `flock(1)`; `fux wait` is the same test.
 - macOS file names ignore case by default, hence `S-h` for H.
 - macOS is covered by CI only (the tests, the viewer among them, and the
   example); nobody has used it there by hand.
 
 ## Coming from tmux
 
-`ls "$(fux3 dir)"` lists the workspaces (tmux's sessions); `fux3 view NAME`
+`ls "$(fux dir)"` lists the workspaces (tmux's sessions); `fux view NAME`
 attaches to one and `C-b d` detaches; `C-b t n` starts the first shell in an
 empty one. Tabs are tmux's windows. There is no chooser and no "last tab"
 key: both would be scripts.

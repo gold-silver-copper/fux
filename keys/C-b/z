@@ -1,3 +1,0 @@
-#!/bin/sh
-# zoom or restore
-fux3 layout zoom

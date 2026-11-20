@@ -1,14 +1,14 @@
 //! The layout of a workspace: its `layout` file, read against the panes that
-//! are really there, and the edits `fux3 layout` makes to it. One tab a line:
+//! are really there, and the edits `fux layout` makes to it. One tab a line:
 //!
 //! ```text
 //! * row(sh col(logs top):2) focus=logs
-//!   vim zoom
+//! - vim focus=vim
 //! ```
 //!
 //! `row(…)` puts its parts side by side, `col(…)` stacks them, `:N` is a
-//! part's share, `*` marks the tab shown, `focus=` the pane that gets the
-//! keys, `zoom` shows that pane alone.
+//! part's share, `*` marks the tab shown and `-` the one shown before it,
+//! `focus=` is the pane that gets the keys.
 
 use crate::holder::replace;
 use crate::is_name;
@@ -31,13 +31,14 @@ pub enum Node {
 pub struct Tab {
     pub root: Node,
     pub focus: String,
-    pub zoom: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layout {
     pub tabs: Vec<Tab>,
     pub current: usize,
+    /// The tab shown before this one, if it is still there: where to go when the shown tab goes.
+    pub before: Option<usize>,
 }
 
 /// The deepest rows and columns may nest, and the longest a layout file may be.
@@ -168,17 +169,13 @@ impl Tab {
     /// Where each pane of the tab is drawn in `area`.
     pub fn tiles(&self, area: Rect) -> Vec<(String, Rect)> {
         let mut tiles = Vec::new();
-        if self.zoom {
-            tiles.push((self.focus.clone(), area));
-        } else {
-            self.root.place(area, &mut tiles);
-        }
+        self.root.place(area, &mut tiles);
         tiles
     }
 }
 
 fn tab_of(name: &str) -> Tab {
-    Tab { root: Node::Pane(name.into()), focus: name.into(), zoom: false }
+    Tab { root: Node::Pane(name.into()), focus: name.into() }
 }
 
 /// Parses a tree from words, `(` and `)`.
@@ -215,17 +212,18 @@ pub fn parse(text: &str) -> Result<Layout, String> {
         let spaced = line.replace('(', " ( ").replace(')', " ) ");
         let mut words: Vec<String> = spaced.split_whitespace().map(String::from).collect();
         let fail = |why: String| format!("layout line {}: {why}", number + 1);
-        if words.first().is_some_and(|w| w == "*") {
-            layout.current = layout.tabs.len();
-            words.remove(0);
+        match words.first().map(String::as_str) {
+            Some("*") => layout.current = layout.tabs.len(),
+            Some("-") => layout.before = Some(layout.tabs.len()),
+            _ => words.insert(0, String::new()),
         }
+        words.remove(0);
         let mut words = words.into_iter().peekable();
         let (root, _) = tree(&mut words, 0).map_err(fail)?;
-        let mut tab = Tab { root, focus: String::new(), zoom: false };
+        let mut tab = Tab { root, focus: String::new() };
         for word in words {
             match word.strip_prefix("focus=") {
                 Some(name) => tab.focus = name.into(),
-                None if word == "zoom" => tab.zoom = true,
                 None => return Err(fail(format!("'{word}' is not understood"))),
             }
         }
@@ -238,9 +236,15 @@ impl Layout {
     pub fn print(&self) -> String {
         let mut out = String::new();
         for (i, tab) in self.tabs.iter().enumerate() {
-            out.push_str(if i == self.current { "* " } else { "  " });
+            out.push_str(if i == self.current {
+                "* "
+            } else if Some(i) == self.before {
+                "- "
+            } else {
+                "  "
+            });
             tab.root.print(&mut out);
-            let _ = write!(out, " focus={}{}", tab.focus, if tab.zoom { " zoom" } else { "" });
+            let _ = write!(out, " focus={}", tab.focus);
             out.push('\n');
         }
         out
@@ -251,8 +255,8 @@ impl Layout {
     /// tab's focus is one of its panes.
     pub fn settle(&mut self, mut existing: Vec<String>) {
         let mut seen: Vec<String> = Vec::new();
+        let (shown, marked) = (self.names(Some(self.current)), self.names(self.before));
         let tabs = std::mem::take(&mut self.tabs);
-        let current = tabs.get(self.current).map(|tab| tab.focus.clone());
         for tab in tabs {
             let mut keep = |name: &str| {
                 let fresh = existing.iter().any(|e| e == name) && !seen.iter().any(|s| s == name);
@@ -271,9 +275,34 @@ impl Layout {
                 tab.focus = tab.panes().first().map(|name| name.to_string()).unwrap_or_default();
             }
         }
-        // The tab shown stays the one that was shown, wherever it is now.
-        let same = self.tabs.iter().position(|tab| Some(&tab.focus) == current.as_ref());
-        self.current = same.unwrap_or(self.current).min(self.tabs.len().saturating_sub(1));
+        // The tab shown stays the one that was shown, wherever it is now. If
+        // it is gone, the tab shown before it is shown; if that is gone too,
+        // the tab now in its place.
+        let find = |tabs: &[Tab], names: &[String]| {
+            tabs.iter().position(|tab| tab.panes().iter().any(|p| names.iter().any(|n| n == p)))
+        };
+        let (same, back) = (find(&self.tabs, &shown), find(&self.tabs, &marked));
+        self.current = same.or(back).unwrap_or(self.current).min(self.tabs.len().saturating_sub(1));
+        self.before = back.filter(|back| *back != self.current);
+    }
+
+    /// The names of the panes of a tab, to find it again after tabs came and went.
+    fn names(&self, tab: Option<usize>) -> Vec<String> {
+        let tab = tab.and_then(|at| self.tabs.get(at));
+        tab.map(|tab| tab.panes().iter().map(|name| name.to_string()).collect()).unwrap_or_default()
+    }
+
+    /// One edit, as `fux layout WORDS…` gives it. An edit that ends on another
+    /// tab marks the one it left as the tab shown before.
+    pub fn edit(&mut self, words: &[&str]) -> Result<(), String> {
+        let (shown, marked) = (self.names(Some(self.current)), self.names(self.before));
+        self.apply(words)?;
+        let other = |names: &[String]| {
+            let has = |tab: &Tab| tab.panes().iter().any(|p| names.iter().any(|n| n == p));
+            self.tabs.iter().enumerate().position(|(at, tab)| at != self.current && has(tab))
+        };
+        self.before = other(&shown).or_else(|| other(&marked));
+        Ok(())
     }
 
     /// The workspace's layout as it stands: its file's text, the layout
@@ -331,8 +360,7 @@ impl Layout {
         }
     }
 
-    /// One edit, as `fux3 layout WORDS…` gives it.
-    pub fn edit(&mut self, words: &[&str]) -> Result<(), String> {
+    fn apply(&mut self, words: &[&str]) -> Result<(), String> {
         let count = self.tabs.len();
         let step = |at: usize, word: &str, count: usize| match word {
             "next" => Ok((at + 1) % count.max(1)),
@@ -355,7 +383,6 @@ impl Layout {
                     return Ok(());
                 };
                 let focus = std::mem::replace(&mut tab.focus, name.to_string());
-                tab.zoom = false;
                 let mut new = Some(new);
                 let found = tab.root.with_parent(&focus, &mut |parent_row, parts, at| {
                     if *parent_row == row {
@@ -372,7 +399,7 @@ impl Layout {
             }
             ["focus", way @ ("left" | "right" | "up" | "down")] => {
                 let tab = self.tab_mut()?;
-                let tiles = Tab { zoom: false, ..tab.clone() }.tiles(Rect { x: 0, y: 0, w: 10000, h: 10000 });
+                let tiles = tab.tiles(Rect { x: 0, y: 0, w: 10000, h: 10000 });
                 let Some(&(_, from)) = tiles.iter().find(|tile| tile.0 == tab.focus) else { return Ok(()) };
                 // The nearest pane on that side whose edge overlaps ours the most.
                 let overlap = |a: usize, a_len: usize, b: usize, b_len: usize| {
@@ -408,6 +435,7 @@ impl Layout {
                 self.tab_mut()?.focus = name.to_string();
             }
             ["tab", way @ ("next" | "prev")] => self.current = step(self.current, way, count)?,
+            ["tab", "-"] => self.current = self.before.ok_or("no tab was shown before this one")?,
             ["tab", number] => {
                 let number = number.parse::<usize>().ok().filter(|n| (1..=count).contains(n));
                 self.current = number.ok_or(format!("tabs are numbered 1 to {count}"))? - 1;
@@ -436,10 +464,6 @@ impl Layout {
                 let share = tab.root.share_mut(&focus, *way == "row").ok_or(format!("this pane is in no {way}"))?;
                 *share = i64::from(*share).saturating_add(change).clamp(5, 10000) as u32;
             }
-            ["zoom"] => {
-                let tab = self.tab_mut()?;
-                tab.zoom = !tab.zoom;
-            }
             ["rotate"] => {
                 let tab = self.tab_mut()?;
                 let focus = tab.focus.clone();
@@ -466,7 +490,6 @@ impl Layout {
                 }
                 .filter(&mut |_| true)
                 .ok_or("there are no panes here")?;
-                tab.zoom = false;
             }
             _ => return Err(format!("'{}' is not a layout edit: see the README", words.join(" "))),
         }
@@ -484,7 +507,7 @@ impl Node {
     }
 }
 
-/// `fux3 layout [WORDS…]`: edits the workspace's layout file, or with no
+/// `fux layout [WORDS…]`: edits the workspace's layout file, or with no
 /// words only settles it against the panes there; says how it reads then.
 /// The workspace's folder is locked meanwhile, so two edits never mix.
 pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {

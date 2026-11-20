@@ -1,6 +1,6 @@
 //! How many cells a character takes: 0 (a combining mark), 1 or 2. The two
 //! tables are Unicode 16.0.0's, written out once by `tools/width.py`: no
-//! data is read when fux3 is built or run. Anything not listed is one cell.
+//! data is read when fux is built or run. Anything not listed is one cell.
 
 /// Characters that take no cell: combining marks (categories Mn and Me),
 /// format characters (Cf), Hangul medial and final jamo, and emoji skin tones.

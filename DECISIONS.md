@@ -1,7 +1,8 @@
 # Decisions
 
 Made by the writer alone, as the brief asked; the owner may overrule any.
-Append-only.
+Append-only. Up to D33 the program was called fux3, its variables `FUX3C_…`
+and its folders `fux3c`; those entries stand as written. D34 renamed it.
 
 - **D1. One binary, `fux3`, with subcommands.** The holder is `fux3 hold`.
   Smaller than two binaries, and the viewer reuses the emulator to read
@@ -134,6 +135,37 @@ Append-only.
   terminal's menu; the cursor is not hidden under a notice. One round 2
   report (the emulator's) was cut off after its table of verdicts: its three
   "not closed" rows are fixed as the table words them.
+
+- **D34. It is called fux, version 0.40.0** (the owner: "call it just fux
+  not fux3, because eventually this will completely replace the old fux";
+  plain names now). `FUX_DIR`, `FUX_KEYS`, `FUX_WS`, `FUX_VIEW`, `FUX_PANE`.
+  The session is `$XDG_RUNTIME_DIR/fux/workspaces`, one folder further in
+  than fux 1's own files, which a panel found this viewer listing as a
+  workspace. A pane's program gets `TERM_PROGRAM=fux` and its version, and of
+  the `FUX…` names only `FUX_PANE`, `FUX_DIR` and `FUX_KEYS`: the last two
+  are this program's own and say where its session and keys are; everything
+  else (a key script's, fux 1's) is taken out. Key scripts get their five.
+- **D35. A command typed in a pane means "here"**: with `FUX_WS` unset, the
+  workspace is the folder holding `$FUX_PANE`, and the session its parent
+  unless `FUX_DIR` is set. `FUX_PANE` counts only as a whole path (fux 1's
+  is `%N`).
+- **D36. The layout marks the tab shown before with `-`** (panel: 6 of 8;
+  the owner: "will i automatically be returned to the tab i was on
+  previously? Because that is the proper UX"). One mark, like `$OLDPWD`. An
+  edit that ends on another tab marks the one it left; when the shown tab
+  goes the marked one is shown. `tab -` goes there (one line). The previous
+  workspace is each viewer's own memory: `workspace -`, and where a viewer
+  goes when the workspace it shows is removed.
+- **D37. Zoom is gone** (the owner: "opinionated behavior"; panel tied 4 to 4,
+  decided by less code and the owner's lean): the word, the edit, the key
+  and the drawing. The README has the two scripts that do it, run before
+  they were printed, and what they do not put back.
+- **D38. Menu groups are a comment line**, `# group: NAME`, after the caption
+  (panel: 6 of 8). Groups come in alphabetical order, not fux 1's: an order
+  would need a number in every script. Keys with no group come first.
+- **D39. The editor key gives a line number only to `vi`, `vim`, `nvim`,
+  `nano`, `emacs` (and `+G` to `less`)**; `$EDITOR` may hold arguments. The
+  owner's own `EDITOR` is a launcher that showed `+10` as a file.
 
 ## The old fux3's bugs: which classes are gone
 

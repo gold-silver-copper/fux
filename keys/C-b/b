@@ -1,3 +1,4 @@
 #!/bin/sh
 # previous tab
-fux3 layout tab prev
+# group: Tabs
+fux layout tab prev

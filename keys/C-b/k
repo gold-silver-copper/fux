@@ -1,3 +1,4 @@
 #!/bin/sh
 # focus up
-fux3 layout focus up
+# group: Focus
+fux layout focus up

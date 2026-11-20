@@ -1,8 +1,9 @@
 #!/bin/sh
 # next workspace
+# group: Workspaces
 found=
-for d in "$FUX3C_DIR"/*/; do
+for d in "$FUX_DIR"/*/; do
   n=${d%/}; n=${n##*/}
   [ -n "$found" ] && { echo "workspace $n"; exit; }
-  [ "$n" = "$FUX3C_WS" ] && found=1
+  [ "$n" = "$FUX_WS" ] && found=1
 done

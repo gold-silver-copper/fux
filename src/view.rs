@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Instant;
@@ -27,6 +27,9 @@ const MENU_MAX: usize = 200;
 const STYLED_MAX: u64 = 32 << 20;
 const TYPED_MAX: usize = 64 << 10;
 const SCRIPT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A key of a menu: its name, what it does, and the heading it is listed under (or none).
+type Entry = (String, String, String);
 
 type Drawn = (PathBuf, usize, usize, usize, usize, u32);
 
@@ -48,6 +51,8 @@ struct Pane {
 struct View {
     session: PathBuf,
     workspace: String,
+    /// The workspace shown before this one: this viewer's own memory, in no file.
+    before: Option<String>,
     keys: PathBuf,
     tty: File,
     size: Winsize,
@@ -62,7 +67,7 @@ struct View {
     /// Keys wait for the next look at the layout.
     pause: bool,
     /// The open menu: its directory and its entries.
-    menu: Option<(PathBuf, Vec<(String, String)>)>,
+    menu: Option<(PathBuf, Vec<Entry>)>,
     message: String,
     /// Whether the terminal said it draws sixel pictures.
     sixel: bool,
@@ -95,7 +100,9 @@ impl Drop for Restore {
 pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), String> {
     let tty = io::stdin().as_fd().try_clone_to_owned().map(File::from).map_err(|e| format!("standard input: {e}"))?;
     let mut size = sys::winsize(&tty).map_err(|_| "the viewer needs a terminal on its standard input")?;
-    fs::create_dir_all(session.join(&workspace)).map_err(|e| format!("{}: {e}", session.display()))?;
+    // What is made is the owner's alone; what is there already is left as it is.
+    let made = fs::DirBuilder::new().mode(0o700).recursive(true).create(session.join(&workspace));
+    made.map_err(|e| format!("{}: {e}", session.display()))?;
     if !keys.exists() {
         for (name, script) in keys::DEFAULT {
             let path = keys.join(name);
@@ -117,6 +124,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     let mut view = View {
         session,
         workspace,
+        before: None,
         keys,
         tty,
         size,
@@ -227,9 +235,15 @@ impl View {
     fn command(&mut self, line: &str) {
         match line.split_once(' ').unwrap_or((line, "")) {
             ("quit", "") => self.quit = true,
-            ("workspace", name) if is_name(name) && self.session.join(name).is_dir() => {
-                self.workspace = name.into();
-                self.panes.clear();
+            // `workspace -` is the workspace shown before this one.
+            ("workspace", name) if is_name(self.before.as_deref().filter(|_| name == "-").unwrap_or(name)) => {
+                let name = self.before.clone().filter(|_| name == "-").unwrap_or(name.into());
+                if !self.session.join(&name).is_dir() {
+                    self.message = format!("no workspace {name}");
+                } else if name != self.workspace {
+                    self.before = Some(std::mem::replace(&mut self.workspace, name));
+                    self.panes.clear();
+                }
             }
             ("workspace", name) => self.message = format!("no workspace {name}"),
             _ => self.message = line.chars().filter(|c| !c.is_control()).take(200).collect(),
@@ -367,8 +381,13 @@ impl View {
         let output = || OpenOptions::new().write(true).open(&self.ctl_path).map(Stdio::from);
         let (Ok(out), Ok(err)) = (output(), output()) else { return };
         let mut script = Command::new(file);
-        script.env("FUX3C_DIR", &self.session).env("FUX3C_WS", &self.workspace).env("FUX3C_KEYS", &self.keys);
-        script.env("FUX3C_PANE", pane.unwrap_or_default()).env("FUX3C_VIEW", &self.ctl_path).env("PATH", path);
+        // Of the `FUX…` names a script gets these five and no other (an older fux's would mislead it).
+        let theirs = |name: &std::ffi::OsString| name.to_str().is_some_and(|n| n.starts_with("FUX"));
+        for name in std::env::vars_os().map(|(name, _)| name).filter(theirs) {
+            script.env_remove(name);
+        }
+        script.env("FUX_DIR", &self.session).env("FUX_WS", &self.workspace).env("FUX_KEYS", &self.keys);
+        script.env("FUX_PANE", pane.unwrap_or_default()).env("FUX_VIEW", &self.ctl_path).env("PATH", path);
         // A pane a script starts begins at the size of the whole view, right for a new tab.
         script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.to_string());
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
@@ -409,6 +428,13 @@ impl View {
             self.front = vec![Cell { ch: '\u{1}', ..Cell::blank(Style::default()) }; w * h];
             self.drawn.clear();
             out.push_str("\x1b[m\x1b[2J");
+        }
+        // A workspace that is gone gives way to the one shown before it, if that is still there.
+        if !self.session.join(&self.workspace).is_dir()
+            && self.before.as_ref().is_some_and(|before| self.session.join(before).is_dir())
+        {
+            self.workspace = self.before.take().unwrap_or_default();
+            self.panes.clear();
         }
         let directory = self.session.join(&self.workspace);
         let (text, mut layout, mut wrong) = Layout::load(&directory);
@@ -577,13 +603,21 @@ impl View {
             left.extend(labels.iter().skip(first).flatten());
             put(&mut back, w, 0, last, room, &left);
             put(&mut back, w, w.saturating_sub(right.len() + 1), last, right.len(), &right);
-            let room = last.saturating_sub(1);
-            let shown = if entries.len() > room { room.saturating_sub(1) } else { entries.len() };
-            let key_width = entries.iter().map(|(key, _)| key.chars().count()).max().unwrap_or(0);
+            // The keys, under their headings; what does not fit above the bar is counted, not shown.
+            let key_width = entries.iter().map(|(key, ..)| key.chars().count()).max().unwrap_or(0);
             let mut lines = vec![(typed, BOLD)];
-            lines.extend(entries.iter().take(shown).map(|(key, about)| (format!("{key:>key_width$}  {about}"), 0)));
-            if shown < entries.len() {
-                lines.push((format!("▼ {} more", entries.len() - shown), DIM));
+            for (i, (key, about, group)) in entries.iter().enumerate() {
+                if !group.is_empty()
+                    && i.checked_sub(1).and_then(|before| entries.get(before)).is_none_or(|before| before.2 != *group)
+                {
+                    lines.push((group.clone(), BOLD));
+                }
+                lines.push((format!("{key:>key_width$}  {about}"), 0));
+            }
+            if lines.len() > last {
+                let more = lines.len() - last.saturating_sub(1);
+                lines.truncate(last.saturating_sub(1));
+                lines.push((format!("▼ {more} more"), DIM));
             }
             // The box is as wide as its longest line, in cells, and a cell more on each side.
             let lines: Vec<Vec<Cell>> = lines
@@ -774,16 +808,17 @@ impl Pane {
     }
 }
 
-/// The entries of a menu: each key in the directory and, from the second
-/// line of its script, what it does (`…` after it when the key opens another
-/// menu, whose words are in its file `.about`). At most 200.
-fn menu_entries(directory: &Path) -> Vec<(String, String)> {
+/// The entries of a menu: each key in the directory and, from its script's
+/// second line, what it does; a third line `# group: NAME` names the heading
+/// it goes under. A key that opens another menu has `…`, and its words and
+/// group are in that directory's file `.about`. Sorted by heading, then key;
+/// keys with no heading first. At most 200.
+fn menu_entries(directory: &Path) -> Vec<Entry> {
     let names = fs::read_dir(directory).into_iter().flatten().flatten();
     let names = names.filter_map(|entry| entry.file_name().into_string().ok()).filter(|name| !name.starts_with('.'));
     let mut names: Vec<String> = names.take(MENU_MAX + 1).collect();
     let more = names.len() > MENU_MAX;
     names.truncate(MENU_MAX);
-    names.sort();
     let head = |path: &Path| {
         let mut head = Vec::new();
         let _ = File::open(path).map(|file| file.take(400).read_to_end(&mut head));
@@ -791,12 +826,15 @@ fn menu_entries(directory: &Path) -> Vec<(String, String)> {
     };
     let described = names.into_iter().map(|name| {
         let path = directory.join(&name);
-        if path.is_dir() {
-            let about = head(&path.join(".about"));
-            return (name, format!("{}…", about.lines().next().unwrap_or_default()));
-        }
-        let about = head(&path).lines().nth(1).and_then(|line| line.strip_prefix("# ")).unwrap_or_default().to_string();
-        (name, about)
+        // A script's lines after `#!`: `# caption`, `# group: NAME`. A directory's `.about`: `caption`, `# group: NAME`.
+        let (text, menu) =
+            if path.is_dir() { (format!("\n# {}", head(&path.join(".about"))), "…") } else { (head(&path), "") };
+        let mut lines = text.lines().skip(1).map(|line| line.strip_prefix("# ").unwrap_or_default());
+        let about = format!("{}{menu}", lines.next().unwrap_or_default());
+        (name, about, lines.next().and_then(|line| line.strip_prefix("group: ")).unwrap_or_default().to_string())
     });
-    described.chain(more.then(|| ("…".to_string(), "more keys than a menu lists".to_string()))).collect()
+    let mut entries: Vec<Entry> = described.collect();
+    entries.sort_by(|a, b| (&a.2, &a.0).cmp(&(&b.2, &b.0)));
+    entries.extend(more.then(|| ("…".to_string(), "more keys than a menu lists".to_string(), String::new())));
+    entries
 }

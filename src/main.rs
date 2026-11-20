@@ -1,4 +1,4 @@
-//! fux3: a terminal multiplexer that is a view over directories. A pane is a
+//! fux: a terminal multiplexer that is a view over directories. A pane is a
 //! directory kept by one small process; a workspace is a folder of panes;
 //! the viewer and every other client only read and write files.
 
@@ -22,23 +22,44 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 const USAGE: &str = "\
-fux3 dir                         print the session directory (FUX3C_DIR sets it)
-fux3 start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/
-fux3 wait PANE-DIRECTORY         wait until the pane's holder is gone; print its status
-fux3 view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: main)
-fux3 layout [EDIT…]              print the layout of workspace $FUX3C_WS (default: main), or edit it
+fux dir                         print the session directory (FUX_DIR sets it)
+fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/
+fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its status
+fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: main)
+fux layout [EDIT…]              print the layout of the workspace (in a pane: its own; else main), or edit it
 The files of a pane, and everything else, are in the README.";
 
-/// The session directory: `$FUX3C_DIR`, else `$XDG_RUNTIME_DIR/fux3c`, else `~/.cache/fux3c`.
-fn session() -> Result<PathBuf, String> {
-    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
-    var("FUX3C_DIR")
-        .or_else(|| var("XDG_RUNTIME_DIR").map(|d| d.join("fux3c")))
-        .or_else(|| var("HOME").map(|d| d.join(".cache/fux3c")))
-        .ok_or_else(|| "no session directory: set FUX3C_DIR".into())
+/// A variable of the environment that is set and not empty, as a path.
+fn var(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-/// A name fux3 will make: letters, digits, `.`, `_` and `-`, not starting with a dot.
+/// The pane a command was typed in: `$FUX_PANE`, when it is a directory's
+/// whole path (the fux before this one put `%N` there).
+fn here() -> Option<PathBuf> {
+    var("FUX_PANE").filter(|pane| pane.is_absolute())
+}
+
+/// The session directory: `$FUX_DIR`; else, in a pane, the session that pane
+/// is in; else `$XDG_RUNTIME_DIR/fux/workspaces`; else `~/.cache/fux/workspaces`.
+fn session() -> Result<PathBuf, String> {
+    let from_pane = || Some(here()?.parent()?.parent()?.to_path_buf());
+    var("FUX_DIR")
+        .or_else(from_pane)
+        .or_else(|| var("XDG_RUNTIME_DIR").map(|d| d.join("fux/workspaces")))
+        .or_else(|| var("HOME").map(|d| d.join(".cache/fux/workspaces")))
+        .ok_or_else(|| "no session directory: set FUX_DIR".into())
+}
+
+/// The workspace meant when none is named: `$FUX_WS` (a key script's); else,
+/// in a pane, the folder that holds the pane; else `main`.
+fn workspace() -> String {
+    let from_pane = || here()?.parent()?.file_name()?.to_str().map(String::from);
+    let named = std::env::var("FUX_WS").ok().or_else(from_pane);
+    named.filter(|name| is_name(name)).unwrap_or("main".into())
+}
+
+/// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot.
 fn is_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')
@@ -70,11 +91,12 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let (names, program) = (args.get(..split).unwrap_or(&[]), args.get(split + 1..).unwrap_or(&[]));
     let name = match names {
-        [] => "main/".to_string(),
+        [] => format!("{}/", workspace()),
         [name] => name.to_string_lossy().into_owned(),
         _ => return Err("start takes one NAME, then -- and the program".into()),
     };
-    let (workspace, pane) = name.split_once('/').unwrap_or(("main", &name));
+    let default = workspace();
+    let (workspace, pane) = name.split_once('/').unwrap_or((&default, &name));
     if !is_name(workspace) || !(pane.is_empty() || is_name(pane)) {
         return Err(format!(
             "{name}: a name is letters, digits, '.', '_' and '-', at most 64, not starting with a dot"
@@ -109,7 +131,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     };
     // The lock on the pane's directory is the proof that a holder lives: the
     // kernel drops it when the holder is gone, however it went. We take it
-    // here and the holder inherits it. A `fux3 wait` may hold it for an instant.
+    // here and the holder inherits it. A `fux wait` may hold it for an instant.
     let lock = File::open(&dir);
     let started = match &lock {
         Err(e) => Err(e.to_string()),
@@ -165,7 +187,7 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
         if ended {
             let log = read_some(&dir.join("log"));
             let why = log.lines().last().unwrap_or("the holder ended without a word");
-            return Err(why.trim_start_matches("fux3: ").to_string());
+            return Err(why.trim_start_matches("fux: ").to_string());
         }
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -192,17 +214,16 @@ fn run(args: &[OsString]) -> Result<(), String> {
         Some("start") => start(rest),
         Some("wait") => wait(rest),
         Some("view") => {
-            let workspace = rest.first().map_or("main".into(), |name| name.to_string_lossy().into_owned());
+            let workspace = rest.first().map_or(workspace(), |name| name.to_string_lossy().into_owned());
             if rest.len() > 1 || !is_name(&workspace) {
                 return Err("view takes one workspace's name".into());
             }
-            let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
             let config = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")));
-            let keys = var("FUX3C_KEYS").or_else(|| config.map(|config| config.join("fux3c/keys")));
-            view::view(session()?, workspace, keys.ok_or("no keys directory: set FUX3C_KEYS")?)
+            let keys = var("FUX_KEYS").or_else(|| config.map(|config| config.join("fux/keys")));
+            view::view(session()?, workspace, keys.ok_or("no keys directory: set FUX_KEYS")?)
         }
         Some("layout") => {
-            let workspace = std::env::var("FUX3C_WS").ok().filter(|name| is_name(name)).unwrap_or("main".into());
+            let workspace = workspace();
             let words: Vec<String> = rest.iter().map(|word| word.to_string_lossy().into_owned()).collect();
             let text =
                 layout::command(&session()?.join(workspace), &words.iter().map(String::as_str).collect::<Vec<_>>())?;
@@ -210,7 +231,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         Some("hold") => match rest.split_first() {
             Some((cwd, program)) => holder::hold(program, cwd),
-            None => Err("hold is started by `fux3 start`".into()),
+            None => Err("hold is started by `fux start`".into()),
         },
         Some("help" | "--help" | "-h") => say(USAGE.as_bytes()),
         _ => Err(format!("usage:\n{USAGE}")),
@@ -225,7 +246,7 @@ fn main() -> ExitCode {
         Err(why) => {
             // What is quoted may be anything: no control codes, and not without end.
             let why: String = holder::plain(&why).chars().take(1000).collect();
-            let _ = writeln!(std::io::stderr(), "fux3: {why}");
+            let _ = writeln!(std::io::stderr(), "fux: {why}");
             ExitCode::FAILURE
         }
     }

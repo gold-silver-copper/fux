@@ -1,7 +1,8 @@
 //! Keys: the bytes a terminal sends, cut into keys with names, and the
 //! default key scripts. A key's name is the name of the file that is run for
 //! it: `C-b` (a directory: a menu), `v`, `up`, `S-h`, `M-left`, `f5`. In a
-//! menu's directory, `.about` names it and `.repeat` keeps it open.
+//! menu's directory, `.about` names it and `.repeat` keeps it open; a line
+//! `# group: NAME` after a script's caption puts it under that heading.
 
 /// The scripts written to the keys directory when it does not exist yet.
 macro_rules! scripts {
@@ -12,7 +13,7 @@ pub const DEFAULT: &[(&str, &str)] = scripts!(
     "C-b/g/m" "C-b/g/r" "C-b/g/t" "C-b/h" "C-b/j" "C-b/k" "C-b/l" "C-b/m/.about" "C-b/m/.repeat" "C-b/m/h" "C-b/m/j"
     "C-b/m/k" "C-b/m/l" "C-b/n" "C-b/o" "C-b/r/.about" "C-b/r/.repeat" "C-b/r/h" "C-b/r/j" "C-b/r/k" "C-b/r/l"
     "C-b/s" "C-b/t/.about" "C-b/t/h" "C-b/t/l" "C-b/t/n" "C-b/v" "C-b/w/.about" "C-b/w/h" "C-b/w/l" "C-b/w/n"
-    "C-b/x/.about" "C-b/x/y" "C-b/z"
+    "C-b/x/.about" "C-b/x/y"
 );
 
 /// The key at the start of `bytes`: how many bytes it is and its name. The

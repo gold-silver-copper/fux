@@ -1,3 +1,4 @@
 #!/bin/sh
 # all panes in a column
-fux3 layout arrange col
+# group: Arrange
+fux layout arrange col

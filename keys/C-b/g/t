@@ -1,3 +1,4 @@
 #!/bin/sh
 # turn this row into a column, or back
-fux3 layout rotate
+# group: Arrange
+fux layout rotate

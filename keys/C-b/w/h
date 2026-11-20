@@ -1,9 +1,10 @@
 #!/bin/sh
 # previous workspace
+# group: Workspaces
 before=
-for d in "$FUX3C_DIR"/*/; do
+for d in "$FUX_DIR"/*/; do
   n=${d%/}; n=${n##*/}
-  [ "$n" = "$FUX3C_WS" ] && break
+  [ "$n" = "$FUX_WS" ] && break
   before=$n
 done
 [ -n "$before" ] && echo "workspace $before"

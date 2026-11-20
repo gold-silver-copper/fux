@@ -1,7 +1,7 @@
 name: ci
 on:
   push:
-    branches: [fux3-clean]
+    branches: [fux]
 jobs:
   build:
     strategy:

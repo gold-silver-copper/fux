@@ -1,3 +1,4 @@
 #!/bin/sh
 # next tab
-fux3 layout tab next
+# group: Tabs
+fux layout tab next

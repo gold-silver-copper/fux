@@ -1,3 +1,4 @@
 #!/bin/sh
 # taller
-fux3 layout size col +5
+# group: Resize
+fux layout size col +5
