@@ -2,7 +2,7 @@
 //! queries programs wait on, keeps the lines that scroll off the top, and
 //! takes sixel pictures whole. It knows nothing of files or processes.
 
-use crate::width::{Joiner, spread, width};
+use crate::width::{Joiner, plain, spread, width};
 use std::fmt::Write as _;
 
 /// The most bytes one picture may have; a longer one is dropped and noted.
@@ -86,6 +86,10 @@ impl Cell {
     pub fn wide(&self) -> bool {
         width(self.ch, &self.more) == 2
     }
+    /// Whether every terminal gives this character the columns it has here.
+    pub fn plain(&self) -> bool {
+        plain(self.ch, &self.more)
+    }
     /// How many columns more than its own another terminal may give this character.
     pub fn spill(&self) -> usize {
         spread(self.ch, &self.more).saturating_sub(width(self.ch, &self.more))
@@ -123,6 +127,14 @@ pub struct Out {
     pub title: Option<String>,
     /// What the program put on the clipboard last.
     pub clipboard: Option<Vec<u8>>,
+}
+
+/// The character printed last: where the cursor was left, and the character's place, its
+/// cell as it was left and what was in that cell before (no place, if it found no room).
+#[derive(Clone, Copy)]
+struct Last {
+    at: Option<(usize, usize, Cell, Cell)>,
+    cursor: (usize, usize, bool),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -179,8 +191,8 @@ pub struct Term {
     shift: bool,
     saved: [Saved; 2],
     last: char,
-    /// Where the character printed last is, and what the next one needs to know to join it.
-    cluster: (usize, usize),
+    /// The character printed last, and what the next one needs to know to join it.
+    cluster: Option<Last>,
     joiner: Joiner,
     state: State,
     params: Vec<(u16, bool)>,
@@ -241,7 +253,7 @@ impl Term {
             shift: false,
             saved: [Saved::default(); 2],
             last: '\0',
-            cluster: (0, 0),
+            cluster: None,
             joiner: Joiner::default(),
             state: State::Ground,
             params: Vec::new(),
@@ -307,10 +319,14 @@ impl Term {
             let used = row.iter().rposition(|c| *c != Cell::blank(plain)).map_or(0, |last| last + 1);
             let (mut style, mut joiner) = (plain, Joiner::default());
             for cell in row.iter().take(used).filter(|cell| cell.ch != '\0') {
-                // Two characters that would read back as one are kept apart by saying the style again.
-                if cell.style != style || joiner.joins(cell.ch) {
+                if cell.style != style {
                     style = cell.style;
                     style.sgr(&mut out);
+                }
+                // Two characters that would read back as one are kept apart by U+200B, which
+                // takes no room and is no part of either.
+                if joiner.joins(cell.ch) {
+                    out.push('\u{200b}');
                     joiner = Joiner::default();
                     joiner.joins(cell.ch);
                 }
@@ -351,7 +367,7 @@ impl Term {
     }
 
     /// A terminal read back from a screen file (`header`'s words on line 1, then the rows of
-    /// `plain` or `styled`). Each word of line 1 that is not the terminal's goes to `other`.
+    /// `styled`, or of `plain`, which is text only: two cells that read as one character are one). Each word of line 1 that is not the terminal's goes to `other`.
     pub fn from_screen(text: &str, mut other: impl FnMut(&str, &str)) -> Term {
         let mut lines = text.lines();
         let (mut term, mut cursor) = (Term::new(1, 1), (0, 0));
@@ -507,22 +523,38 @@ impl Term {
         if self.graphics.get(usize::from(self.shift)) == Some(&true) {
             c = line_drawing(c);
         }
-        if self.joiner.joins(c) {
-            return self.join(c);
+        // Text goes on from the character printed last while the cursor is where that left it
+        // and its cell is as it left it: a change of style or a title between a letter and its
+        // accent moves nothing, a move or an erase does.
+        let here = (self.row, self.col, self.wrap_pending);
+        let goes_on = self.cluster.is_some_and(|last| {
+            last.cursor == here && last.at.is_none_or(|(row, col, cell, _)| self.cell_at(row, col) == Some(&cell))
+        });
+        if !goes_on {
+            (self.joiner, self.cluster) = (Joiner::default(), None);
         }
-        match width(c, &[]) {
+        if self.joiner.joins(c) {
+            self.join(c);
+        } else if width(c, &[]) == 0 {
             // A mark or a joiner with nothing to go on: it has no place on a screen.
-            0 => self.joiner = Joiner::default(),
-            columns => {
-                self.last = c;
-                self.place(Cell { ch: c, more: ['\0'; MORE], style: self.style }, columns == 2, self.insert);
-            }
+            self.cluster = None;
+        } else {
+            // Until it is placed it has no cell: what joins a character that found no room goes with it.
+            (self.last, self.cluster) = (c, Some(Last { at: None, cursor: here }));
+            self.place(Cell { ch: c, more: ['\0'; MORE], style: self.style }, width(c, &[]) == 2, self.insert);
+        }
+        // What the next character must find to go on from this one.
+        let here = (self.row, self.col, self.wrap_pending);
+        if let Some(last) = &mut self.cluster {
+            last.cursor = here;
+            last.at = last.at.and_then(|(row, col, _, under)| Some((row, col, *self.grid.get(row)?.get(col)?, under)));
         }
     }
 
     /// Adds `c` to the character printed last: it is the same cluster (UAX #29).
     fn join(&mut self, c: char) {
-        let (row, col) = self.cluster;
+        let Some((row, col, _, under)) = self.cluster.and_then(|last| last.at) else { return };
+        let insert = self.insert;
         let Some(cell) = self.grid.get_mut(row).and_then(|r| r.get_mut(col)) else { return };
         let (whole, was_wide) = (*cell, cell.wide());
         let Some(slot) = cell.more.iter_mut().find(|m| **m == '\0') else {
@@ -538,10 +570,17 @@ impl Term {
                 return;
             }
             if col + 2 > self.cols {
-                *cell = Cell::blank(whole.style);
+                // It leaves the row's last cell as it found it.
+                *cell = under;
+            } else if insert && let Some(rest) = self.grid.get_mut(row).and_then(|r| r.get_mut(col + 1..)) {
+                // In insert mode its second column is one more column put in.
+                rest.rotate_right(1);
             }
             (self.col, self.wrap_pending) = (col, false);
             self.place(grown, true, false);
+            if insert {
+                self.tidy(row);
+            }
         }
     }
 
@@ -561,16 +600,18 @@ impl Term {
         }
         let (row, col) = (self.row, self.col);
         let cells = 1 + usize::from(wide);
-        if insert && let Some(rest) = self.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
-            rest.rotate_right(cells.min(rest.len()));
-        }
         let blank = self.blank();
+        let mut under = blank;
         if let Some(line) = self.grid.get_mut(row) {
-            // What this overwrites may be half of a wide character: blank the other half.
+            // What this overwrites or parts may be half of a wide character: blank the other half.
             if line.get(col).is_some_and(|c| c.ch == '\0')
                 && let Some(lead) = col.checked_sub(1).and_then(|i| line.get_mut(i))
             {
                 *lead = blank;
+            }
+            match line.get_mut(col..) {
+                Some(rest) if insert => rest.rotate_right(cells.min(rest.len())),
+                _ => under = line.get(col).copied().filter(|c| c.ch != '\0').unwrap_or(blank),
             }
             if let Some(half) = line.get_mut(col + cells).filter(|c| c.ch == '\0') {
                 *half = blank;
@@ -587,9 +628,11 @@ impl Term {
         }
         if !self.pictures.is_empty() {
             self.pictures
-                .retain(|p| !((p.row..p.row + p.rows).contains(&row) && (p.col..p.col + p.cols).contains(&col)));
+                .retain(|p| !((p.row..p.row + p.rows).contains(&row) && p.col < col + cells && col < p.col + p.cols));
         }
-        self.cluster = (row, col);
+        if let Some(last) = &mut self.cluster {
+            last.at = Some((row, col, new, under));
+        }
         self.col += cells;
         if self.col >= self.cols {
             self.col = self.cols - 1;
@@ -650,6 +693,7 @@ impl Term {
             return;
         }
         self.interrupt();
+        self.cluster = None;
         let blank = Cell::blank(Style::default());
         if self.alt {
             std::mem::swap(&mut self.grid, &mut self.other);
@@ -798,9 +842,8 @@ impl Term {
         }
     }
 
-    /// Something other than text came: the next character starts anew, and REP has nothing to repeat.
+    /// Something other than text came: REP has nothing to repeat.
     fn interrupt(&mut self) -> char {
-        self.joiner = Joiner::default();
         std::mem::take(&mut self.last)
     }
 
@@ -1107,6 +1150,8 @@ impl Term {
             (0, 0, b'T') => self.scroll_down(self.top, n),
             (0, 0, b'b') => {
                 for _ in 0..n * usize::from(printed != '\0') {
+                    // Each one a character of its own, whatever would join it to the one before.
+                    self.cluster = None;
                     self.print(printed);
                 }
                 self.interrupt();

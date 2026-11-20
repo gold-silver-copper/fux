@@ -178,12 +178,14 @@ class Display:
 
     @classmethod
     def get(cls):
+        if cls.process is not None and cls.process.poll() is not None:
+            cls.process = None  # It is gone (another server took its number?): one more of its own, on a new number.
         for number in range(90, 100) if cls.process is None else ():
             # Never a number an X server may be using or have used, never one it picks itself:
             # a server that takes a number in use takes the other's socket, and removes it when it
             # ends. Not every Xvfb leaves a lock, so referees keep one of their own for a number.
-            shared = os.environ.get("XDG_RUNTIME_DIR") or str(pathlib.Path.home() / ".cache")
-            lock = open(f"{shared}/fux-referee-display-{number}.lock", "w")
+            (pathlib.Path.home() / ".cache").mkdir(exist_ok=True)
+            lock = open(pathlib.Path.home() / f".cache/fux-referee-display-{number}.lock", "w")
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:

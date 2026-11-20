@@ -7,7 +7,6 @@
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
 use crate::term::{BOLD, Cell, Color, DIM, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode};
-use crate::width::width;
 use crate::{is_name, keys};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -99,7 +98,7 @@ struct View {
 struct Restore(File, sys::Termios);
 impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?1049l\x1b[23;2t");
+        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?7h\x1b[?1049l\x1b[23;2t");
         let _ = sys::restore_mode(&self.0, &self.1);
     }
 }
@@ -159,7 +158,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         quit: false,
     };
     // The alternate screen, pastes marked, and "what are you" (for sixel).
-    let result = view.tty.write_all(b"\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[c").and_then(|()| view.run(&ctl));
+    let result = view.tty.write_all(b"\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[c").and_then(|()| view.run(&ctl));
     drop(restore);
     let _ = fs::remove_file(&view.ctl_path);
     result.map_err(|e| format!("the viewer stopped: {e}"))
@@ -488,7 +487,7 @@ impl View {
                     let mut cell = pane.term.cell_at(y, x).copied().unwrap_or(Cell::blank(Style::default()));
                     // Half a wide character at the tile's edge is drawn as a blank.
                     let cut = x + 1 == body.w && pane.term.cell_at(y, x + 1).is_some_and(|next| next.ch == '\0');
-                    cell.ch = if cut { ' ' } else { cell.ch };
+                    cell = if cut { Cell::blank(cell.style) } else { cell };
                     // A character your terminal may draw wider than fux counts it (it may not join what
                     // fux joins) would there reach past the tile's edge: a `?` stands in each of its columns.
                     let first = x - usize::from(cell.ch == '\0' && x > 0);
@@ -717,27 +716,27 @@ impl View {
                 continue;
             }
             let place = format!("\x1b[{};{}H", y + 1, x + 1);
-            if at != Some(i) {
+            // Anything but plain ASCII is placed by its row and column, and so is what follows it:
+            // your terminal's idea of a character's columns, or of what joins what, may not be fux's.
+            let ascii = new.ch.is_ascii() && new.more.first() == Some(&'\0');
+            // (The terminal is asked not to wrap, so that what it draws too wide at the screen's
+            // edge stays on its row: every row starts with its place.)
+            if at != Some(i) || !ascii || x == 0 {
                 out.push_str(&place);
             }
             if style != Some(new.style) {
                 new.style.sgr(&mut out);
                 style = Some(new.style);
             }
-            // Your terminal's idea of a character's columns may not be fux's. One of several parts
-            // that takes two is drawn over two blanks, should it come out narrower; the cells one
-            // may come out over are sent after it; and after anything but plain ASCII the next
-            // cell is placed by its row and column.
-            let plain = new.more.first() == Some(&'\0');
-            if new.wide() && !plain {
+            // A wide character that may come out narrower (one of several parts, an emoji) is
+            // drawn over two blanks; the cells one may come out over are sent after it.
+            if new.wide() && !new.plain() {
                 out.push_str("  ");
                 out.push_str(&place);
             }
             new.push_text(&mut out);
-            if new.spill() > 0 {
-                again = i + 1 + usize::from(new.wide()) + new.spill();
-            }
-            at = (new.ch.is_ascii() && plain).then_some(i + 1);
+            again = again.max(i + 1 + usize::from(new.wide()) + new.spill());
+            at = ascii.then_some(i + 1);
         }
         if redraw {
             for (file, x, y, ..) in &pictures {
@@ -772,20 +771,18 @@ impl View {
 }
 
 /// Text of the viewer's own (a title, the last line, a menu) as cells: a
-/// control character becomes `?`, a wide character takes its two cells, and
-/// one that takes none is left out. So nothing from a file's name or a
+/// control character becomes `?`, and the rest is cut into characters as a
+/// pane's text is, by the emulator. So nothing from a file's name or a
 /// script's words reaches the terminal as anything but text.
 fn cells(text: &str, style: Style) -> Vec<Cell> {
-    let mut cells = Vec::new();
-    for ch in text.chars().map(|c| if c.is_control() { '?' } else { c }) {
-        let wide = match width(ch, &[]) {
-            0 => continue,
-            cells => cells == 2,
-        };
-        cells.push(Cell { ch, more: ['\0'; MORE], style });
-        cells.extend(wide.then_some(Cell { ch: '\0', more: ['\0'; MORE], style }));
-    }
-    cells
+    let mut bytes = String::new();
+    style.sgr(&mut bytes);
+    let text: Vec<char> = text.chars().take(SIZE_MAX / 2).collect();
+    bytes.extend(text.iter().map(|&c| if c.is_control() { '?' } else { c }));
+    // One row with room for all of it and a column to spare, so that nothing wraps.
+    let mut row = Term::new(2 * text.len() + 1, 1);
+    row.feed(bytes.as_bytes());
+    (0..row.col).filter_map(|x| row.cell_at(0, x).copied()).collect()
 }
 
 /// Puts cells on row `y` from column `x`, at most `room` of them and none
@@ -798,12 +795,12 @@ fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Ce
         && back.get(y * w + x).is_some_and(|under| under.ch == '\0')
         && let Some(left) = back.get_mut(y * w + x - 1)
     {
-        left.ch = ' ';
+        *left = Cell::blank(left.style);
     }
     for (i, cell) in cells.iter().enumerate().take(room) {
         let cut = i + 1 == room && cells.get(i + 1).is_some_and(|next| next.ch == '\0');
         if let Some(slot) = back.get_mut(y * w + x + i) {
-            *slot = if cut { Cell { ch: ' ', ..*cell } } else { *cell };
+            *slot = if cut { Cell::blank(cell.style) } else { *cell };
         }
     }
 }

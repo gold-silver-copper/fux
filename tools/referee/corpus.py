@@ -101,6 +101,11 @@ UNICODE = {
     "prepend": "؀x",
     "thai": "กำ",
     "tamil": "நி",
+    "bengali-vowel-sign": "\u0995\u09be",
+    "tamil-vowel-sign": "\u0ba8\u0bbe",
+    "halfwidth-voiced-mark": "\uff76\uff9e",
+    "kana-voiced-mark": "\u304b\u3099",
+    "hangul-extended-final": "\uac00\ud7cb",
     "mark-after-letter": "́",
 }
 
@@ -110,6 +115,11 @@ def unicode():
         escaped = string.encode("unicode_escape").decode()
         case("unicode", name, "16x2", "text a" + escaped + "|")
         case("unicode", name + "-at-end", "16x2", "feed \\x1b[1;15H", "text a" + escaped + "|")
+    case("unicode", "mark-after-style", "16x2", "feed caf\\x1b[1;31me\\x1b[m", "text \\u0301|")
+    case("unicode", "joiner-after-style", "16x2", "text \\U0001f469", "feed \\x1b[1m", "text \\u200d\\U0001f4bb|")
+    case("unicode", "mark-after-title", "16x2", "feed e\\x1b]2;t\\x07", "text \\u0301|")
+    case("unicode", "skin-tone-alone", "16x2", "text \\U0001f3fd|")
+    case("unicode", "spacing-mark-alone", "16x2", "text \\u0bbe|")
     case("unicode", "mark-first", "16x2", "text \\u0301|")
     case("unicode", "mark-after-move", "16x2", "feed a\\x1b[1;2H", "text \\u0301|")
 

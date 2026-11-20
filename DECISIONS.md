@@ -340,6 +340,37 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     engine as the outer terminal, 5 strings, both modes): 0 of 10 dividers
     and 0 of 10 neighbour tiles damaged; before, 4 and 1.
 
+- **D52. The fix check of D51 (1 Opus, 1 gpt-6.2-astra, a tester; one pass).**
+  The cutting was right; what was wrong was around it, and one rule of D51 is
+  withdrawn.
+  - Withdrawn: "a control or an escape sequence ends a character". `grep
+    --color` colours a letter and sends its accent after the reset, so the
+    accent was lost, here and in no other terminal. Now a character goes on
+    while the cursor is where its last part left it and its cell is as it was
+    left: state, not a list of sequences. A style, a title, BEL, a sequence
+    that comes to nothing change neither; a move or an erase does.
+    `screen.styled` keeps two would-be-joined neighbours apart with U+200B.
+  - Width: a mark that every terminal gives a column (general category not
+    Mn, Me or Cf: Bengali and Tamil vowel signs, the halfwidth voiced marks, a
+    skin tone) adds its columns, and alone has a cell; a wide nonspacing mark
+    (kana's voiced marks) adds none. The category is read from the comments
+    of GraphemeBreakProperty.txt, so no sixth file is pinned. vim and bash
+    measure these as two columns; fux gave one and left stray text.
+  - Placement: what joins a character that found no room is dropped with it,
+    not put on the character before; a character that grows wide in insert
+    mode puts a column in; one that wraps on growing gives the last cell back
+    what it had; a picture under the second column goes; REP's copies are
+    each a character; inserting at the second half of a wide character no
+    longer blanks the cell before it.
+  - Viewer: a cell cut at a tile's edge or by a menu loses all its parts; the
+    span sent again only grows within a row; a wide emoji is drawn over two
+    blanks (a terminal with older tables draws a new one narrow); every cell
+    that is not plain ASCII is placed by row and column; the viewer's own
+    text is cut into characters by the emulator.
+  - Not done: a terminal set to draw ambiguous characters wide (the README
+    says so); the plain `screen` cannot tell two neighbours from one
+    character (it is text; the README and the code say so).
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

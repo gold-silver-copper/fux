@@ -20,7 +20,7 @@ FILES = {
 }
 # The order is src/width.rs's: a character's kind is the low four bits of its table entry.
 KINDS = "Other CR LF Control Extend ZWJ Regional_Indicator Prepend SpacingMark L V T LV LVT".split()
-CONSONANT, LINKER, EXTEND, PICTURE, WIDE, EMOJI = 0x10, 0x20, 0x30, 0x40, 0x80, 0x100
+CONSONANT, LINKER, EXTEND, PICTURE, WIDE, EMOJI, ROOM = 0x10, 0x20, 0x30, 0x40, 0x80, 0x100, 0x200
 SYLLABLES = range(0xAC00, 0xD7A4)  # LV and LVT, computed in src/width.rs
 
 
@@ -32,10 +32,12 @@ def read(folder, name):
 
 
 def properties(text, wanted):
-    """(first, last, value) for each line `first..last ; [property ;] value # …` that `wanted` keeps."""
+    """(first, last, value) for each line `first..last ; [property ;] value # category …` that
+    `wanted` keeps; it is given the fields after the first, and the general category last."""
     for line in text.split("\n"):
-        fields = [field.strip() for field in line.split("#")[0].split(";")]
-        if len(fields) >= 2 and (value := wanted(fields[1:])):
+        data, _, comment = line.partition("#")
+        fields = [field.strip() for field in data.split(";")] + comment.split()[:1]
+        if len(fields) >= 3 and (value := wanted(fields[1:])):
             first, _, last = fields[0].partition("..")
             yield int(first, 16), int(last or first, 16), value
 
@@ -49,6 +51,9 @@ def table(folder):
                 bits[c] |= value
 
     mark("ucd/auxiliary/GraphemeBreakProperty.txt", lambda f: KINDS.index(f[0]))
+    # A mark that is no nonspacing or enclosing mark and no format character (the halfwidth
+    # voiced marks, some Indic vowel signs) has a column of its own in every terminal.
+    mark("ucd/auxiliary/GraphemeBreakProperty.txt", lambda f: f[0] == "Extend" and f[-1] not in ("Mn", "Me", "Cf") and ROOM)
     mark("ucd/DerivedCoreProperties.txt", lambda f: f[0] == "InCB" and {"Consonant": CONSONANT, "Linker": LINKER, "Extend": EXTEND}[f[1]])
     mark("ucd/emoji/emoji-data.txt", lambda f: {"Extended_Pictographic": PICTURE, "Emoji_Presentation": WIDE, "Emoji": EMOJI}.get(f[0]))
     mark("ucd/EastAsianWidth.txt", lambda f: f[0] in ("W", "F") and WIDE)

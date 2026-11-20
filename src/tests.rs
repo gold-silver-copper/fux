@@ -397,7 +397,8 @@ fn text_is_cut_into_characters_exactly_as_unicodes_own_test_file_says() {
         }
         cases += 1;
     }
-    assert!(cases > 700, "{cases}");
+    // The file is Unicode 17.0.0's, whole: 766 cases, as tools/unicode.py pins it.
+    assert_eq!((cases, include_str!("../tests/GraphemeBreakTest.txt").len()), (766, 126_570));
 }
 
 #[test]
@@ -431,7 +432,7 @@ fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
         assert_eq!(end.plain(), wrapped, "{name}");
     }
     // Characters put side by side stay two when read back; one that is too long loses its end, and says so.
-    let apart = term(8, 1, "\u{1f1ef}\x1b[1;3H\u{1f1f5}\x1b[1;5H\u{915}\u{94d}\x1b[1;6H\u{937}");
+    let apart = term(8, 1, "\u{1f1ef}\x1b[1;2H\u{1f1f5}\x1b[1;5H\u{915}\u{94d}\x1b[1;6H\u{937}");
     let mut back = Term::new(8, 1);
     back.feed(apart.styled().lines().next().unwrap().as_bytes());
     assert_eq!(
@@ -441,6 +442,30 @@ fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
     let mut long = term(8, 1, &format!("e{}", "\u{301}".repeat(12)));
     assert_eq!(long.plain().chars().count(), 10 + 1);
     assert_eq!(long.take().refused.len(), 1);
+    // What joins a character that found no room goes with it, and joins nothing else.
+    assert_eq!(term(1, 2, "A\u{754c}\u{301}").plain(), "A\n\n");
+    assert_eq!(term(4, 2, "\x1b[?7lABC\u{1f468}\u{200d}\u{1f469}").plain(), "ABC\n\n");
+    // One that grows wide: in insert mode it puts in a second column; at a row's end it wraps
+    // whole and leaves the cell it was in as it found it.
+    assert_eq!(term(8, 2, "ABCD\r\x1b[4h\u{2764}\u{fe0f}").plain(), "\u{2764}\u{fe0f}ABCD\n\n");
+    assert_eq!(term(4, 2, "abcd\x1b[1;4H\u{2764}\u{fe0f}").plain(), "abcd\n\u{2764}\u{fe0f}\n");
+    // Text goes on while the cursor is where the last character left it and that character is
+    // still there: a change of style, a title, a sequence that came to nothing or DEL between a
+    // letter and its accent, or inside a family, moves nothing (a highlighter colours a letter
+    // and not its accent). After a move or an erase a mark has no character.
+    for between in ["\x7f", "\u{9b}", "\x1b[1?m", "\x1b[31m", "\x1b]2;title\x07", "\x1b[?25l", "\x07"] {
+        assert_eq!(term(4, 1, &format!("a{between}\u{301}")).plain(), "a\u{301}\n", "{between:?}");
+        assert_eq!(term(8, 1, &format!("\u{1f468}\u{200d}{between}\u{1f469}|")).col, 3, "{between:?}");
+    }
+    assert_eq!(term(4, 1, "a\r\x1b[C\u{301}").plain(), "a\u{301}\n");
+    assert_eq!(term(4, 1, "a\x1b[C\u{301}").plain(), "a\n");
+    assert_eq!(term(4, 1, "a\x08\x1b[X\x1b[C\u{301}|").plain(), " |\n");
+    // A wide mark (a voiced mark of kana) takes no column.
+    assert_eq!(term(8, 1, "\u{304b}\u{3099}|").col, 3);
+    // REP's copies are each a character.
+    assert_eq!(term(12, 1, "\u{1100}\x1b[3b|").col, 9);
+    // A mark every terminal gives a column has one here (a halfwidth voiced mark; a skin tone alone).
+    assert_eq!((term(8, 1, "\u{ff76}\u{ff9e}|").col, term(8, 1, "\u{1f3fd}|").col), (3, 3));
     // A program that asks is told clusters are always on.
     assert_eq!(term(8, 1, "\x1b[?2027$p").take().reply, b"\x1b[?2027;3$y");
 }
