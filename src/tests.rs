@@ -128,6 +128,10 @@ fn the_right_margin_is_xterms() {
     // A repeat runs on through the wrap.
     let repeated = term(5, 4, "X\x1b[11b");
     assert_eq!((repeated.plain().as_str(), repeated.row, repeated.col), ("XXXXX\nXXXXX\nXX\n\n", 2, 2));
+    // It repeats only a character printed just before it: not across a move, a control or itself.
+    assert_eq!(term(8, 2, "A\x1b[2;1H\x1b[3b-\x1b[2b\x1b[2b\rB\r\x1b[b").plain(), "A\nB--\n");
+    // With wrapping off a wide character that has no room is dropped; a C1 control as UTF-8 is nothing.
+    assert_eq!(term(8, 1, "\x1b[?7l0123456一|a\u{9b}2C").plain(), "0123456C\n");
 }
 
 #[test]

@@ -227,7 +227,7 @@ impl Term {
             graphics: [false; 2],
             shift: false,
             saved: [Saved::default(); 2],
-            last: ' ',
+            last: '\0',
             state: State::Ground,
             params: Vec::new(),
             param: None,
@@ -501,7 +501,7 @@ impl Term {
                 self.col = 0;
                 self.linefeed();
             } else if wide {
-                self.col = self.cols - 2;
+                return; // No room and no wrapping: it is dropped, as xterm drops it.
             }
             self.wrap_pending = false;
         }
@@ -731,8 +731,11 @@ impl Term {
                 self.utf8 = (self.utf8 << 6) | u32::from(byte & 0x3f);
                 self.utf8_left -= 1;
                 if self.utf8_left == 0 {
-                    let whole = char::from_u32(self.utf8).filter(|c| *c >= '\u{a0}' && self.utf8 >= self.utf8_min);
-                    self.print(whole.unwrap_or('\u{fffd}'));
+                    let whole = char::from_u32(self.utf8).filter(|_| self.utf8 >= self.utf8_min);
+                    // A C1 control written as UTF-8 is no character and, as in xterm, no control: nothing.
+                    if !(0x80..0xa0).contains(&self.utf8) {
+                        self.print(whole.unwrap_or('\u{fffd}'));
+                    }
                 }
                 return;
             }
@@ -752,6 +755,7 @@ impl Term {
     }
 
     fn control(&mut self, byte: u8) {
+        self.last = '\0';
         match byte {
             0x08 => {
                 self.col = self.col.saturating_sub(1);
@@ -778,6 +782,9 @@ impl Term {
 
     fn escape(&mut self, byte: u8) {
         self.state = State::Ground;
+        if byte != b'[' {
+            self.last = '\0';
+        }
         match byte {
             b'[' => {
                 self.params.clear();
@@ -961,6 +968,8 @@ impl Term {
     fn dispatch(&mut self, last: u8) {
         let n = self.arg(0, 1);
         let (row, col) = (self.row, self.col);
+        // What REP repeats: the character printed just before it, with nothing between (as xterm).
+        let printed = std::mem::take(&mut self.last);
         match (self.private, self.inter, last) {
             (0, 0, b'A') => self.move_rows(n, false),
             (0, 0, b'B') => self.move_rows(n, true),
@@ -1044,9 +1053,10 @@ impl Term {
             (0, 0, b'S') => self.scroll_up(self.top, n),
             (0, 0, b'T') => self.scroll_down(self.top, n),
             (0, 0, b'b') => {
-                for _ in 0..n {
-                    self.print(self.last);
+                for _ in 0..n * usize::from(printed != '\0') {
+                    self.print(printed);
                 }
+                self.last = '\0';
             }
             (0, 0, b'c') => self.respond("\x1b[?62;4;22c"),
             (b'>', 0, b'c') => self.respond("\x1b[>1;10;0c"),
