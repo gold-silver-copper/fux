@@ -1,10 +1,12 @@
 #!/bin/sh
 # find a tab
 # group: Find
+# (The tab shown before the list's own is shown first, so that it is the tab
+# shown before the one chosen, and `fux layout tab -` goes back to it.)
 # A list of this workspace's tabs (a pane of each, then its panes) in a pane of
 # its own; the one chosen is shown. The list is the layout file: a line a tab,
 # and `focus=` names the pane of it that has the keys.
 list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
 awk '{ sub(/^[*-]? */, ""); pane = $NF; sub(/^focus=/, "", pane); if (pane != "") printf "%s\t%s\n", pane, $0 }' "$FUXN_DIR/$FUXN_WS/layout" > "$list"
-p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" fux layout pane) || { rm -f "$list"; exit; }
+p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" sh -c 'fux layout tab - 2>/dev/null; fux layout pane "$1"' sh) || { rm -f "$list"; exit; }
 [ -d "$p" ] && fux layout pane "${p##*/}"

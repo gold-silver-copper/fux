@@ -332,7 +332,7 @@ viewer, `workspace NAME` shows another workspace (`workspace -` the one this
 viewer showed before, which is also where it goes when the one shown is
 removed; failing that, `main`, if there is one), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key. A key with no file, pressed in an
-open menu, closes the menu and goes nowhere. Writing the same lines to the FIFO
+open menu, closes the menu and goes nowhere (in a menu that stays open, as resize and move do, the prefix opens its own menu again: `C-b r l l C-b v` resizes and then splits). Writing the same lines to the FIFO
 `$FUXN_VIEW` does the same from anywhere.
 
 The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
@@ -386,7 +386,7 @@ keys at their line); any other editor
 gets the file alone, as not every editor reads `+LINE`. An editor behind a
 launcher of another name is one of those: say how yours is run in
 `FUXN_EDIT`, a command in which `%f` is the file and `%l` the line, set where
-the viewer is started (`export FUXN_EDIT='hx %f:%l'`, or your launcher in
+the viewer is started (a viewer started in a pane has it too: `FUXN_EDIT` is passed on to a pane's program, as `FUXN_DIR` and `FUXN_KEYS` are; `export FUXN_EDIT='hx %f:%l'`, or your launcher in
 `hx`'s place; `keys/.edit` reads it and is yours to change). The file is in the editor pane's own folder and is removed
 when the editor ends, or with the pane if that is closed first. Its tab goes too (the
 pane removes its own folder, as a shell pane does), and the

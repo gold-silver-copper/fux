@@ -9,7 +9,7 @@ use crate::term::{Out, SIZE_MAX, Term};
 use crate::{plain, replace};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, ErrorKind, PipeReader, Read, Write};
+use std::io::{self, ErrorKind, PipeReader, Read, Seek, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::process::ExitStatusExt;
@@ -125,8 +125,9 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         // program's own names it gets the session's and the keys' if they
         // were set, and no other (a key script's workspace is not this
         // pane's); and no size but the terminal's own.
-        let (dir, keys) = (name!("DIR"), name!("KEYS"));
-        let ours = |n: &OsString| n.as_encoded_bytes().starts_with(name!("").as_bytes()) && n != dir && n != keys;
+        let kept = [name!("DIR"), name!("KEYS"), name!("EDIT")];
+        let ours =
+            |n: &OsString| n.as_encoded_bytes().starts_with(name!("").as_bytes()) && !kept.iter().any(|k| n == k);
         for name in std::env::vars_os().map(|(name, _)| name).filter(ours) {
             child.env_remove(name);
         }
@@ -396,7 +397,13 @@ impl Holder {
             if let Err(e) = cut {
                 self.log(&format!("history keeps {written} bytes that are on the screen again: {e}"));
             }
-            self.history_open = false;
+            // (Whether the file ends in a whole line now is what its last byte says.)
+            let mut last = *b"\n";
+            let end = File::open("history").and_then(|mut file| {
+                file.seek(io::SeekFrom::End(-1))?;
+                file.read_exact(&mut last)
+            });
+            self.history_open = end.is_ok() && last != *b"\n";
         }
         self.pending.history.push_str(&out.history);
         self.pending.pictures.append(&mut out.pictures);
@@ -488,19 +495,29 @@ impl Holder {
     /// written are lost, and the log says so: they are not kept to try again.
     fn history(&mut self) {
         let lines = std::mem::take(&mut self.pending.history);
-        // A file is put aside where a line ends, so that no line is in two files (one that
-        // never ends is cut when the file is twice its size).
-        let rotated = match fs::metadata("history") {
-            Ok(m) if m.len() > HISTORY_MAX && (!self.history_open || m.len() > 2 * HISTORY_MAX) => {
-                fs::rename("history", "history.1")
-            }
-            _ => Ok(()),
+        // A file past its size is put aside where a line ends, so that no line is in two files:
+        // before these lines if the file ends with a whole one, and else after the first line
+        // end among them (a line that never ends is cut when the file is twice its size).
+        let size = fs::metadata("history").map_or(0, |m| m.len());
+        let cut = match (size > HISTORY_MAX, self.history_open) {
+            (false, _) => None,
+            (true, false) => Some(0),
+            (true, true) => lines.find('\n').map(|end| end + 1).or((size > 2 * HISTORY_MAX).then_some(0)),
         };
-        self.history_open = !lines.ends_with('\n');
-        let file = rotated.and_then(|()| OpenOptions::new().append(true).create(true).open("history"));
-        if let Err(e) = file.and_then(|mut file| file.write_all(lines.as_bytes())) {
+        let (old, new) = lines.split_at_checked(cut.unwrap_or(lines.len())).unwrap_or((&lines, ""));
+        let append = |text: &str| {
+            OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open("history")
+                .and_then(|mut file| file.write_all(text.as_bytes()))
+        };
+        let turned =
+            |()| if cut.is_some() { fs::rename("history", "history.1").and_then(|()| append(new)) } else { Ok(()) };
+        if let Err(e) = append(old).and_then(turned) {
             self.log(&format!("history was lost (some or all of {} bytes): {e}", lines.len()));
         }
+        self.history_open = !lines.ends_with('\n');
     }
 
     /// Writes what changed: history first, then pictures, the title and the

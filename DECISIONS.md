@@ -978,6 +978,39 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     (pre-release: start them again); the TERM key asks after the holder's
     number a moment after it read the program's; a paste typed in the
     instant the focus moves is wrapped as the last pane asked.
+- **D71. After the last two testers** (message 14; a working day, and
+  scripts and agents). One small series, no review round.
+  - `history` is put aside at the first line end after it has passed 4 MiB,
+    wherever in the lines to be written that end is: the lines up to it go
+    to the old file, the rest to the new. Before, the holder looked only at
+    whether the file ended with a whole line at the moment it wrote, and a
+    stream of wrapped lines (three rows a line, a row or two scrolled off at
+    a time) seldom ends a write on a line's end: the file grew to 8 MiB,
+    where the rule for a line that never ends cut it inside a line. After
+    rows are taken back from the file (a resize), whether it ends with a
+    whole line is read from its last byte, not assumed.
+  - When keys come, the viewer reads who has them from the layout (D69) and
+    now also lets go, in the pane that had them, the keys still down there:
+    a repeat that comes before the next frame reached the pane that had
+    just lost the keys.
+  - `FUXN_EDIT` is passed on to a pane's program with `FUXN_DIR` and
+    `FUXN_KEYS`: a viewer started in a pane is a viewer like any other.
+  - In a menu that stays open, the key that led there (the prefix) opens
+    its own menu again instead of being swallowed, as in fux 1
+    (`keymap.rs`, `repeating`: "the key that led here opens its column
+    again"). Any other key the menu does not have still ends it and goes
+    nowhere.
+  - `.shell` has its workspace's layout follow when its pane's folder is
+    removed, so a workspace left through the workspace picker has no line
+    for the picker's pane. The pane and tab pickers show the tab shown
+    before their own first, so that it is the one `fux layout tab -` goes
+    back to after the choice.
+  - Left: after the tab shown is closed, the tab shown before it is shown
+    and no tab is marked as shown before that one (the layout remembers
+    one tab back, not two; a second mark would be a new word in the file).
+    The resize keys make the focused pane narrower and wider rather than
+    move a border, as before. A viewer killed outright leaves its FIFO and
+    the terminal's modes (README).
 
 ## The old fux3's bugs: which classes are gone
 

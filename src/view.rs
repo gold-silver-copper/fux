@@ -340,6 +340,10 @@ impl View {
         // The keys are for the pane the layout says has them now, which a command may have
         // changed since it was last drawn.
         self.focus = Layout::load(&self.session.join(&self.workspace)).1.tab().map(|tab| tab.focus.clone());
+        // (And a key still down in the pane that had them is let go there, before what comes
+        // of it now is looked at.)
+        let has = self.focus.as_ref().map(|name| self.session.join(&self.workspace).join(name));
+        self.leave(has.as_deref());
         let wants_paste = self.focus.as_ref().and_then(|f| self.panes.get(f)).is_some_and(|pane| pane.term.paste);
         let mut at = 0;
         while let Some(rest) = bytes.get(at..).filter(|rest| !rest.is_empty()) {
@@ -608,7 +612,17 @@ impl View {
                     _ => Went::Viewer(None),
                 }
             }
-            _ => Went::Viewer(None),
+            // A key that a menu which stays open does not have ends it; if it is the key that
+            // led there (the prefix), its own menu is open again, as when it is pressed anew.
+            _ => {
+                let top = self.keys.join(name);
+                if !name.is_empty()
+                    && menu.is_some_and(|(was, _)| was != top && was.starts_with(&top) && was.join(".repeat").exists())
+                {
+                    self.menu = Some((top.clone(), menu_entries(&top)));
+                }
+                Went::Viewer(None)
+            }
         };
         // Which keys are down is remembered for their releases: the last 64.
         if let Some((id, ..)) = event {

@@ -39,6 +39,34 @@ fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
+#[test]
+fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
+    // Lines of 252 bytes, three rows each, in bursts: more than twice what `history` holds, so
+    // it is put aside twice. No line is cut by that: `history.1` ends with a whole line, and
+    // `history` goes on with the next one.
+    let session = Session::new("turns");
+    let prints = "awk 'BEGIN { pad = sprintf(\"%245s\", \"\"); gsub(/ /, \"x\", pad); \
+        for (i = 0; i < 36000; i++) { printf \"%06d%s\\n\", i, pad; if (i % 700 == 699) { fflush(); system(\"sleep 0.01\") } } }'";
+    let mut start = session.fux();
+    start.env("COLUMNS", "120").env("LINES", "36").args(["start", "lines", "--", "sh", "-c", prints]);
+    let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let mut turns = Vec::new();
+    until("the program has ended", || {
+        // (Each `history.1` is looked at as it appears: its last line is whole.)
+        let aside = fs::read(pane.join("history.1")).unwrap_or_default();
+        if aside.len() > 252 && turns.last().map(|(size, _)| *size) != Some(aside.len()) {
+            turns.push((aside.len(), aside.ends_with(b"\n") && aside.len() % 252 == 0));
+        }
+        fact(&pane, "state") == "exited 0"
+    });
+    assert!(turns.len() >= 2 && turns.iter().all(|(size, whole)| *whole && *size < 5 << 20), "{turns:?}");
+    let (aside, history) = (read(&pane.join("history.1")), read(&pane.join("history")));
+    let number = |line: Option<&str>| line.and_then(|line| line.get(..6)?.parse::<usize>().ok());
+    let (last, next) = (number(aside.lines().last()), number(history.lines().next()));
+    assert!(last.is_some() && next == last.map(|n| n + 1), "{last:?} {next:?}");
+    assert!(history.lines().take(100).all(|line| line.len() == 251));
+}
+
 /// Gives a session's `main` workspace a layout, as an editor that saves in one step does: the
 /// file is whole at every moment (the viewer reads it, and writes it too, at any time).
 fn lay(session: &Path, text: &str) {
@@ -111,7 +139,9 @@ fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     let session = Session::new("names");
     let mut start = session.fux();
     // What a key script would leave in the environment is not this pane's; another program's names are not ours to judge.
+    // (How the editor is run is a setting for every viewer, one started in a pane too: it stays.)
     start.env("FUXN_WS", "main").env("FUXN_VIEW", "/nowhere").env("FUX_SOCKET", "/another").env("COLUMNS", "90");
+    start.env("FUXN_EDIT", "ed %f");
     assert!(start.args(["start", "w2/p", "--", "sh"]).status().unwrap().success());
     let pane = session.0.join("w2/p");
     let me = env!("CARGO_BIN_EXE_fux");
@@ -122,7 +152,7 @@ fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     // A command typed in a pane means its own workspace, not `main`.
     until("the layout of its own workspace is printed", || read(&pane.join("here")) == "* p focus=p\n");
     let expected = format!(
-        "FUXN_DIR={}\nFUXN_PANE={}\nFUX_SOCKET=/another\nTERM=xterm-256color\nTERM_PROGRAM=fux-next\nTERM_PROGRAM_VERSION={}\n",
+        "FUXN_DIR={}\nFUXN_EDIT=ed %f\nFUXN_PANE={}\nFUX_SOCKET=/another\nTERM=xterm-256color\nTERM_PROGRAM=fux-next\nTERM_PROGRAM_VERSION={}\n",
         session.0.display(),
         pane.display(),
         env!("CARGO_PKG_VERSION")
@@ -741,13 +771,19 @@ fn a_held_key_does_again_what_its_press_did_and_there_only_and_a_program_started
     // not what it did before, and not what a press would do there. Pressed there, it does.
     fs::write(view.join("in"), format!("{escape}{prefix}{}{}{}{}{}", tap("109;1"), h[1], h[2], h[0], h[2])).unwrap();
     until("the key acted in the other menu", || ran().ends_with("m\n"));
+    // The prefix pressed in a menu that stays open starts over: its own menu is open again, and
+    // the next keys are that menu's.
+    fs::write(view.join("in"), format!("{prefix}{}{}{}", tap("114;1"), h[0], h[2])).unwrap();
+    until("the first menu's key acted again", || ran() == "r\nr\nm\nr\n");
     // A key goes down in the first pane, and the other tab is shown: the key is let go there,
     // and a key typed right after the command that showed it is the second pane's.
     fs::write(view.join("in"), format!("{escape}\x1b[97;1:1u")).unwrap();
     until("the key is down", || shown(&first) == "^[[?11u^[[97;1:1u");
-    assert_eq!(ran(), "r\nr\nm\n");
+    assert_eq!(ran(), "r\nr\nm\nr\n");
+    // (What the terminal still tells of the held key right after that command, before the
+    // viewer has drawn again, reaches neither pane.)
     layout(&["tab", "next"]);
-    fs::write(view.join("in"), tap("122;1")).unwrap();
+    fs::write(view.join("in"), format!("\x1b[97;1:2u{}", tap("122;1"))).unwrap();
     until("the second pane has the keys", || shown(&second) == "^[[?11u^[[122;1:1u^[[122;1:3u");
     until("the key is let go in the first", || shown(&first) == "^[[?11u^[[97;1:1u^[[97;1:3u");
     // The first pane's program ends and another is started under its name, in the tab that is
