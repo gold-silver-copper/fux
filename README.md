@@ -55,7 +55,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` (from `status` and `state`). When it returns, every file of the pane is the last there will be: wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
-| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it, read it, wait, get a command's output and exit code, end it and clean up, with the manners and the hazards. It is `src/help-agents.txt`, in the binary; every command on it is run, in order, by `tools/help-agents.sh` (CI, both systems) |
+| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it (also so that a write cannot hang on a dead pane), read it, wait, get a command's output and exit code, tell a live pane from a dead one, rename, end and clean up, see what the viewer shows, with the manners and the hazards. It is `src/help-agents.txt`, in the binary; every command on it is run, in order, by `tools/help-agents.sh` (CI, both systems) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot, and not `-` alone; a pane cannot be called `layout` or

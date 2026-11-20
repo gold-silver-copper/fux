@@ -1021,6 +1021,30 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   what it leaves to the README (the viewer's keys, `marks` and `links` in
   full, pictures). There is no command to wait for output: the page gives
   the loops, since what "settled" means is the reader's to say.
+- **D73. The agents' page after the first blind test** (message 16: an agent
+  with the binary and the page alone did 25 of 27 tasks as asked). The
+  page changed where its record shows it guessed or was misled; no new
+  subcommand (the eight it proposed are the owner's to decide).
+  - Whether a pane is alive is the lock on its directory, which the holder
+    holds while it lives: not `state` (a crashed holder leaves `running`)
+    and not the holder's pid (a zombie answers `kill -0`, which the old
+    check used). A write that cannot hang is an open of the FIFO without
+    waiting, which fails at once with no reader; sh cannot do either
+    (POSIX has no such open and macOS no flock(1)), so the page gives both
+    as one line of perl, which Linux and macOS have, names python's form,
+    and says what each failure means. fux could make them one line only
+    with a new command; that is with the owner.
+  - Waiting is three small functions on the page (a text seen, a frame
+    changed since before the key, the screen settled), since "two equal
+    reads" alone can be the old frame twice.
+  - Each fact file has its line with an example; `whole` is stated as
+    exact but for four things; renaming with `mv`, the viewer in a pane
+    of another workspace (the page had said not to run it), a program that
+    ignores the hangup, and "two above, one below" are run on the page.
+  - `tools/help-agents.sh` runs the lines indented by exactly four blanks
+    (52 now), with a keys directory of its own, and checks that the
+    session holds nothing after the page's cleaning up but the two files
+    the page says a viewer leaves.
 
 ## The old fux3's bugs: which classes are gone
 
