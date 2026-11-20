@@ -662,9 +662,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   cursor is on, counted from the pane's first line: `top` plus the lines
   above the cursor on the screen (rows that go on from the row above are no
   new line). A line's number does not change when it scrolls into history
-  or is wrapped anew, so `marks` is written only when a mark is added. A
-  mark on or below a line that gets a new prompt is dropped (the screen was
-  cleared and written again). The last thousand; none on the alternate
+  or is wrapped anew, so `marks` is written only when a mark is added. (What
+  a new prompt above a mark does is in D64.) The last thousand; none on the alternate
   screen.
   - With `top`, a mark is a line of history plus screen: `.text` writes that
     text into a file and says how many of its lines are before the screen's
@@ -675,6 +674,39 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - Kept: a line older than `history.1` is in no file, and the keys then
     start at the text's first line; insert and delete line above a mark
     move the text and not the mark.
+- **D64. The fix check of D62 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  All three found the last command's output wrong when it was empty or did
+  not end its line; the two reviewers found marks paired wrongly after a
+  clear. Changed:
+  - a mark is `LINE COL KIND [EXIT]`: with the cell, `printf hello` is
+    `hello` without the prompt after it and `true` is nothing, which the key
+    says ("the last command printed nothing") instead of opening the prompt;
+  - marks are not dropped any more. A prompt above marks, and a clear of the
+    whole screen (`ESC[2J`, so Ctrl-L and `clear`), bring the marks below to
+    that line, in their order: an output and its end stay a pair, of nothing,
+    and are never paired with another command's. Only a prompt does it: a
+    program that moves up and ends has erased nothing (sol's case). Only
+    the whole words `A`, `B`, `C`, `D` mark;
+  - both keys refuse while the pane shows the alternate screen (`alt` in
+    `modes`): the marks are the shell's and the text is not;
+  - `.text` reads `top` itself, before and after the text, and reads again
+    (five times at most) if it moved; it writes with umask 077; the keys say
+    when the output is older than the files or no prompt is marked, and
+    remove their file when they stop.
+  - Kept, and why: a publish that lands between `.text` reading `history`
+    and `top` in the one moment the holder has written the first and not the
+    second still gives lines off by what scrolled (there is no stamp that
+    covers several files; D59 chose files over one header and this is its
+    price, for a key pressed on a pane that is printing); lines dropped at
+    the 4 MiB bound of unwritten history are not counted in `top` (a disk
+    that stalled that long has lost the text too); an unfinished line that
+    is only in `history.1` after a rotation and two resizes is joined to
+    the screen's first (three rare things at once); insert, delete and a
+    scroll of part of the screen move text and not marks (now in the
+    README's row); `EDITOR` is split at spaces as before. sol's wish for
+    tests of each of these was met for the cases that changed (empty output,
+    output without a line break, a clear, a mark above marks), not for the
+    kept ones.
 
 ## The old fux3's bugs: which classes are gone
 

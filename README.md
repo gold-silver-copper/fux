@@ -81,7 +81,7 @@ in `FUXN_WS`.
 | `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
 | `top` | how many lines of the pane's text are before the screen's first row, counted since the pane began: the number, from 0, of the line that row is part of. (After `history` has become `history.1` twice, the oldest of them are in neither file) |
 | `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. A row that goes on in the next keeps the blanks at its end in `screen`, so joining the two gives the line as it was printed: with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
-| `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it). LINE is counted from the pane's first line, as `top` is: line `top` is the screen's first, a smaller number is in `history`. The last thousand; empty when the shell marks nothing |
+| `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE COL KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it, if the shell gave one from 0 to 255). LINE is counted from the pane's first line, as `top` is, a line being what was printed up to its line break however many rows it takes: line `top` is the screen's first, a smaller number is in `history`, in `history.1` or older than both. COL is how many cells into the line the mark is. A prompt drawn above marks (the screen was cleared and the prompt drawn again) brings them to its line, in their order, and so does clearing the screen: what they marked is gone. The alternate screen has no marks, and `marks` are the shell's while it is shown. Lines that an insert, a delete or a scroll of part of the screen moves keep their marks' numbers, which then name other text. The last thousand; empty when the shell marks nothing |
 | `pictures` | a line `pic-N.sixel ROW COL COLS ROWS` for each picture on the screen: the file, where it is, its size in cells |
 | `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
@@ -311,10 +311,14 @@ The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `s` split stacked (both, and a new tab, start where the focused pane's program says it is, its `cwd`, and else in the directory the viewer was started in),
 `x` then `y` close the pane (remove its directory), `h j k l` focus,
 `o` next pane, `n` `b` next and previous tab, `d` detach, `c` the pane's text
-in the editor, `C` (Shift-c) the last command's output in the editor and `p`
-the editor at the prompt before this one (both for a shell that marks its
-prompts: for bash, `PS1='\[\e]133;A\a\]'$PS1'\[\e]133;B\a\]'; PS0='\e]133;C\a';
-PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'`), `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
+in the editor, `C` (Shift-c) the last command's output in the editor (from
+the cell it began at to the cell it ended at, so without the prompt that
+follows an output with no line break; it says so if the command printed
+nothing) and `p` the editor at the prompt before this one, or at the only one
+(both for a shell that marks its prompts, and neither while the pane shows a
+program's own screen: for bash from 4.4 on, `PS1='\[\e]133;A\a\]'$PS1'\[\e]133;B\a\]'; PS0='\e]133;C\a';
+PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'`, the `printf` put first in a
+`PROMPT_COMMAND` you have already), `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
 workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
 TERM to the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find

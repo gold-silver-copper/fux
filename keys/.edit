@@ -15,4 +15,4 @@ esac
 # what it said can be read. An editor killed outright leaves both.
 p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" sh -c 'f=$1; shift; "$@" "$f"; code=$?; rm -f "$f"; [ "$code" -eq 0 ] || { echo "the editor ended with $code: Enter closes this"; read -r _; }' sh "$f" "$@") || { rm -f "$f"; exit; }
 # An editor that is done at once has taken its pane with it already.
-[ -d "$p" ] && fux layout pane "${p##*/}"
+[ ! -d "$p" ] || fux layout pane "${p##*/}"

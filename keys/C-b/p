@@ -6,10 +6,12 @@
 # at the prompt before the one being typed at.
 [ -n "$FUXN_PANE" ] || exit 0
 [ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
+case " $(cat "$FUXN_PANE/modes" 2>/dev/null) " in *" alt "*) echo "this pane shows a program's own screen: the marks are of the shell's"; exit ;; esac
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
-before=$("$FUXN_KEYS/.text" "$f")
-read -r top 2>/dev/null < "$FUXN_PANE/top"
-line=$(awk '$2 == "prompt" { before = last; last = $1 } END { print (before != "" ? before : last) }' "$FUXN_PANE/marks")
-n=$((line - ${top:-0} + before + 1))
+add=$("$FUXN_KEYS/.text" "$f") || { rm -f "$f"; exit; }
+# (The only prompt there is, if there is one only.)
+line=$(awk '$3 == "prompt" { before = last; last = $1 } END { print (before != "" ? before : last) }' "$FUXN_PANE/marks")
+[ -n "$line" ] || { rm -f "$f"; echo "no prompt is marked here"; exit; }
+n=$((line + add))
 [ "$n" -ge 1 ] || n=1
 exec "$FUXN_KEYS/.edit" "$f" "$n"

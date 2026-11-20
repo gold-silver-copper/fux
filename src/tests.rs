@@ -244,21 +244,45 @@ fn a_program_says_where_it_is_what_to_notice_and_how_it_draws() {
 fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave_alone() {
     let (a, b, c, d) = ("\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07", "\x1b]133;D;3\x07");
     let mut term = term(10, 4, &format!("{a}$ {b}ls\r\n{c}one\r\ntwo\r\n{d}{a}$ {b}"));
-    let marks = "0 prompt\n0 command\n1 output\n3 end 3\n3 prompt\n3 command\n";
+    let marks = "0 0 prompt\n0 2 command\n1 0 output\n3 0 end 3\n3 0 prompt\n3 2 command\n";
     assert_eq!(term.marks(), marks);
-    // The lines scroll into history, are wrapped anew, come back: their numbers are theirs.
+    // The lines scroll into history, are wrapped anew, come back: their numbers are theirs, and
+    // the line a number names is the same text.
+    let line = |term: &Term, number: usize| {
+        let text = term.peek().history.clone() + &term.lines().0;
+        text.lines().nth(number).unwrap_or_default().trim_end().to_string()
+    };
     term.feed(b"a long command that wraps\r\n");
     assert!(term.top() > 0 && term.marks() == marks);
-    assert!(term.resize(4, 2) && term.resize(30, 9) && term.marks() == marks);
-    // A mark on a line that is written again (the screen was cleared) is the newer one's; the
-    // alternate screen has none; a thousand are kept.
-    let top = term.top();
-    term.feed(format!("\x1b[H\x1b[2J{a}> \x1b[?1049h{a}\x1b[?1049l").as_bytes());
-    assert!(
-        term.marks().ends_with(&format!("{top} prompt\n")) && term.marks().lines().count() <= 6,
-        "{}",
-        term.marks()
+    assert_eq!(
+        (line(&term, 0), line(&term, 1), line(&term, 3)),
+        ("$ ls".into(), "one".into(), "$ a long command that wraps".into())
     );
+    assert!(term.resize(4, 2) && term.resize(30, 9) && term.marks() == marks);
+    assert_eq!((line(&term, 1), line(&term, 3)), ("one".into(), "$ a long command that wraps".into()));
+    // A mark in a line that wraps says how far into the line it is.
+    let wrapped = crate::tests::term(4, 3, &format!("{a}$ {b}abcdef{c}"));
+    assert_eq!(wrapped.marks(), "0 0 prompt\n0 2 command\n0 8 output\n");
+    // Only a prompt says that what was marked below it is gone, and only the four letters mark.
+    let up = crate::tests::term(
+        10,
+        5,
+        &format!("{a}$ {b}one\r\n{c}alpha\r\n{d}{a}$ {b}two\r\n{c}beta\x1b[A{d}\x1b]133;Any\x07"),
+    );
+    assert!(up.marks().ends_with("3 0 output\n2 4 end 3\n"), "{}", up.marks());
+    // The screen is cleared: what was marked on it is there no more. Its marks stay, in their
+    // order, at the line that took their place, so none is paired with another command's.
+    let top = term.top();
+    term.feed(format!("{c}out\r\n{d}{a}$ {b}clear\r\n{c}\x1b[H\x1b[2J{d}{a}> ").as_bytes());
+    let ends: Vec<String> = term.marks().lines().rev().take(4).map(str::to_string).collect();
+    assert_eq!(
+        ends,
+        [format!("{top} 0 prompt"), format!("{top} 0 end 3"), format!("{top} 0 output"), format!("{top} 0 command")]
+    );
+    // A prompt drawn again in its place is one prompt; the alternate screen has none; a thousand are kept.
+    let count = term.marks().lines().count();
+    term.feed(format!("\r{a}> {b}\x1b[?1049h{a}\x1b[?1049l").as_bytes());
+    assert_eq!(term.marks().lines().count(), count + 1);
     term.feed(format!("{c}x\r\n").repeat(1200).as_bytes());
     assert_eq!(term.marks().lines().count(), 1000);
 }

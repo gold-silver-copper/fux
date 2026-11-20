@@ -494,11 +494,9 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
     until("the marks are there", || read(&pane.join("marks")).lines().count() == 10);
     let marks = read(&pane.join("marks"));
-    assert!(
-        marks.starts_with("0 prompt\n0 command\n1 output\n14 end 0\n14 prompt\n")
-            && marks.ends_with("17 end 1\n17 prompt\n17 command\n"),
-        "{marks}"
-    );
+    let (first, last) =
+        ("0 0 prompt\n0 2 command\n1 0 output\n14 0 end 0\n14 0 prompt\n", "17 0 end 1\n17 0 prompt\n17 2 command\n");
+    assert!(marks.starts_with(first) && marks.ends_with(last), "{marks}");
     assert!(fact(&pane, "top").parse::<usize>().unwrap() > 10);
     // An editor for the test: it is called `vim`, so it is given a line number; it notes that
     // and copies the file it was to open.
@@ -533,4 +531,23 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     // History in the editor opens at the text's end.
     let (text, line) = key("c");
     assert_eq!((text.lines().count(), text.lines().last()), (line, Some("$")));
+    // A command that prints nothing has no output to open, and the key says so; one whose
+    // output does not end its line has that output, without the prompt that follows on the line.
+    let quiet = "m() { printf '\\033]133;%s\\007' \"$1\"; }; \
+        m A; printf '$ '; m B; echo printf; m C; printf hello; m 'D;0'; \
+        m A; printf '$ '; m B; sleep 1; echo true; m C; m 'D;0'; m A; printf '$ '; m B; sleep 600";
+    let pane = session.start("quiet", &["sh", "-c", quiet]);
+    until("the first command is done", || read(&pane.join("marks")).lines().count() == 6);
+    let run = |name: &str| {
+        let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+        let mut script = Command::new(keys.join("C-b").join(name));
+        script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("EDITOR", session.0.join("vim"));
+        script.env("OUT", &out).env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main");
+        String::from_utf8(script.env("FUXN_PANE", &pane).output().unwrap().stdout).unwrap()
+    };
+    let _ = fs::remove_file(&out);
+    assert_eq!(run("S-c"), "");
+    until("the editor was given the output", || read(&out) == "hello\n");
+    until("the second command is done", || read(&pane.join("marks")).lines().count() == 10);
+    assert_eq!(run("S-c"), "the last command printed nothing\n");
 }

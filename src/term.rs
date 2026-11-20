@@ -252,8 +252,8 @@ pub struct Term {
     cluster: Option<Last>,
     /// How many whole lines have gone into history: the number of the line the screen's first row is of.
     pub gone: usize,
-    /// The marks a shell put at its prompts (OSC 133): line, kind, exit code. The last thousand.
-    marks: Vec<(usize, &'static str, Option<u8>)>,
+    /// The marks a shell put at its prompts (OSC 133): line, cells into it, kind, exit code. The last thousand.
+    marks: Vec<(usize, usize, &'static str, Option<u8>)>,
     /// (How many of them are in the rows the last resize sent there.)
     above_lines: usize,
     /// The last row that went to history was not ended: its line goes on in the screen's first row.
@@ -545,11 +545,11 @@ impl Term {
         self.gone + usize::from(self.history_open && !first.is_some_and(|row| continues(row)))
     }
 
-    /// The shell's marks, a line each: `LINE KIND`, and the command's exit code after `end`.
+    /// The shell's marks, a line each: `LINE COL KIND`, and the command's exit code after `end`.
     pub fn marks(&self) -> String {
-        let line = |(line, kind, code): &(usize, &str, Option<u8>)| match code {
-            Some(code) => format!("{line} {kind} {code}\n"),
-            None => format!("{line} {kind}\n"),
+        let line = |(line, col, kind, code): &(usize, usize, &str, Option<u8>)| match code {
+            Some(code) => format!("{line} {col} {kind} {code}\n"),
+            None => format!("{line} {col} {kind}\n"),
         };
         self.marks.iter().map(line).collect()
     }
@@ -1338,23 +1338,33 @@ impl Term {
             // typed begins, `C` where its output begins, `D[;CODE]` where it ended. Each is kept
             // as the number of the line the cursor is on, counted from the pane's first line.
             "133" if !self.alt => {
-                let kind = match rest.as_bytes().first() {
-                    Some(b'A') => "prompt",
-                    Some(b'B') => "command",
-                    Some(b'C') => "output",
-                    Some(b'D') => "end",
+                let kind = match rest.split(';').next() {
+                    Some("A") => "prompt",
+                    Some("B") => "command",
+                    Some("C") => "output",
+                    Some("D") => "end",
                     _ => return,
                 };
                 let code = rest.split(';').nth(1).filter(|_| kind == "end").and_then(|code| code.parse::<u8>().ok());
                 let below = self.grid.iter().take(self.row + 1).skip(1).filter(|row| !continues(row)).count();
                 let line = self.top() + below;
-                // Lines that were marked and written over since (the screen was cleared) are no
-                // longer what their marks said: a mark is the last on its line or above it.
-                // (A prompt on the line of an earlier prompt is that line written again.)
-                self.marks.retain(|mark| mark.0 <= line);
-                let again = self.marks.iter().position(|mark| mark.0 == line && mark.1 == "prompt");
-                self.marks.truncate(again.filter(|_| kind == "prompt").unwrap_or(self.marks.len()));
-                self.marks.push((line, kind, code));
+                // How far into its line: a whole row for each row of the line above the cursor's.
+                let above = self.grid.iter().take(self.row + 1).rev().take_while(|row| continues(row)).count();
+                let col = above.min(self.row) * self.cols + self.col + usize::from(self.wrap_pending);
+                // A prompt above a mark says that mark's text is there no more (the prompt was
+                // drawn again higher up): the mark is kept, at this line, so that what was
+                // marked before is still in its order, with nothing between. Only a prompt says
+                // so: a program that moved up and ended has erased nothing.
+                if kind == "prompt" {
+                    self.marks.iter_mut().filter(|mark| mark.0 > line).for_each(|mark| (mark.0, mark.1) = (line, 0));
+                }
+                // (A prompt drawn again in its place is one prompt.)
+                while kind == "prompt"
+                    && self.marks.last().is_some_and(|last| last.0 == line && matches!(last.2, "prompt" | "command"))
+                {
+                    self.marks.pop();
+                }
+                self.marks.push((line, col, kind, code));
                 let extra = self.marks.len().saturating_sub(MARKS_MAX);
                 self.marks.drain(..extra);
             }
@@ -1507,9 +1517,12 @@ impl Term {
                 }
                 2 => {
                     (0..self.rows).for_each(|r| self.erase(r, 0, self.cols));
-                    // A screen that was cleared is not given back what a resize took off its top.
+                    // A screen that was cleared is not given back what a resize took off its top,
+                    // and the marks that were on it are all at its first line now.
                     if !self.alt {
                         self.above.clear();
+                        let top = self.top();
+                        self.marks.iter_mut().filter(|mark| mark.0 > top).for_each(|mark| (mark.0, mark.1) = (top, 0));
                     }
                 }
                 _ => {}
