@@ -428,13 +428,16 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     fs::write(view.join("in"), "\x1b").unwrap();
     // A program that stops asking (it ends, and a shell is there again) is told nothing more:
     // not when it stops, and not when its pane loses the keys.
-    let quits = inner.start(
-        "quits",
-        &["sh", "-c", "stty raw -echo; printf '\\033[?1004h'; sleep 1; printf '\\033[?1004l'; exec cat -vt"],
-    );
+    let asks_then_stops = "stty raw -echo; printf '\\033[?1004h'; until [ -e \"$FUXN_PANE/go\" ]; do sleep 0.05; done; printf '\\033[?1004l'; exec cat -vt";
+    let quits = inner.start("quits", &["sh", "-c", asks_then_stops]);
+    until("it asks", || fact(&quits, "modes") == "focus");
     fs::write(inner.0.join("main/layout"), "  p1 focus=p1\n  p2 focus=p2\n* quits focus=quits\n").unwrap();
-    until("it is told it has the keys", || shown(&quits) == "^[[I");
-    until("it stops asking", || fact(&quits, "modes").is_empty());
+    until("the second pane lost the keys", || shown(&p2).ends_with("^[[I^[[O"));
+    std::thread::sleep(Duration::from_millis(300));
+    fs::write(quits.join("go"), "").unwrap();
+    until("it was told it had the keys, and stops asking", || {
+        shown(&quits) == "^[[I" && fact(&quits, "modes").is_empty()
+    });
     std::thread::sleep(Duration::from_millis(300));
     fs::write(inner.0.join("main/layout"), "  p1 focus=p1\n* p2 focus=p2\n  quits focus=quits\n").unwrap();
     until("the second pane has the keys again", || shown(&p2).ends_with("^[[O^[[I"));
