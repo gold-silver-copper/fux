@@ -1101,6 +1101,12 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     line, the layout edits beyond split, focus and tab (named only). The
     page is 222 lines against "near 200": the new recipes are long lines
     of their own, and nothing else was the testers' to spare.
+- **D78. The agents' page, two wordings** (message 22, after a fifth blind
+  reader did 31 of 32 with nothing of the page in its way): beside the
+  first typing example, what counts as evidence that a command ran (what
+  only the program can produce, never the typed words, which the echo
+  puts on the screen too); and that a wait's limit counts tries, not
+  seconds.
 
 ## The old fux3's bugs: which classes are gone
 

@@ -40,12 +40,19 @@ A match must be one that was not there before you acted: an old prompt, or the l
 typed yourself, matches too. So anchor (^...$), wait for `changed` first, or print a tag
 the typed line does not contain (below). Settled alone can be the old frame twice. A
 row's blanks at its end are not in `screen`: a prompt "$ " is the line "$", and where the
-cursor stands is in `cursor`. Waiting for a first prompt, for 5 s at most:
+cursor stands is in `cursor`. Waiting for a first prompt, for 50 tries at most:
     seen '[$#>]$' "$P/screen" 50
+A limit counts tries, not seconds: 50 tries are 5 s and what the tries themselves take
+(more on a busy machine). For a limit in time, loop on a clock as `ended` does below with
+tries, or on Linux run the wait under timeout(1).
 
 TYPE INTO IT
 `in` is a FIFO: bytes written to it are typed to the program. Enter is \r.
     f=$(frame "$P"); printf 'echo hello\r' > "$P/in"; changed "$P" "$f"; seen '^hello$' "$P/screen"
+    printf 'echo $((6*7))\r' > "$P/in"; seen '^42$' "$P/screen"
+What you typed is in `screen` too (the terminal echoes it), so the words you typed are no
+evidence that a command ran. Wait for what only the program can produce: a value it
+computed (42 above, which you never typed), or a whole row of its own, anchored ^ and $.
     text='any text, with % and \ in it'; printf '%s' "$text" > "$P/in"; printf '\025' > "$P/in"
 Keys are their bytes: Ctrl-C \003, Ctrl-D \004, Ctrl-U \025, Escape \033, Tab \t, Backspace
 \177, arrows \033[A B C D. One write of at most 512 bytes arrives whole; larger ones may
