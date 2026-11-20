@@ -28,6 +28,8 @@ const KEYS_KEPT: usize = 16;
 const MARKS_MAX: usize = 1000;
 /// How many links' addresses are kept at a time.
 const LINKS_MAX: usize = 1000;
+/// How long the list of the links on the screen may be: what a reader reads of it.
+pub const LINKS_LIST_MAX: usize = 256 << 10;
 /// The most cells of rows that a resize sent to history are kept to come back at the next one.
 const ABOVE_MAX: usize = 100_000;
 
@@ -296,6 +298,8 @@ pub struct Term {
     /// The string being read, after the byte that began it (`]` for OSC, `P` for DCS…); and whether it outgrew its bound.
     string: Vec<u8>,
     string_over: bool,
+    /// (A control byte came inside it and was dropped: what is left is not what was sent.)
+    string_holed: bool,
     out: Out,
     pub pictures: Vec<Picture>,
     /// The pictures of the screen not shown (the main one while the alternate is).
@@ -377,6 +381,7 @@ impl Term {
             too_long: false,
             string: Vec::new(),
             string_over: false,
+            string_holed: false,
             out: Out::default(),
             pictures: Vec::new(),
             other_pictures: Vec::new(),
@@ -572,7 +577,11 @@ impl Term {
         }
         if self.links.len() >= LINKS_MAX {
             let mut used = vec![false; self.links.len()];
-            for cell in self.grid.iter().chain(&self.other).flatten().filter(|cell| cell.link != 0) {
+            // (Of both screens, of the rows a resize set aside to bring back, and of the cell
+            // that may be put back under a character still being joined.)
+            let under = self.cluster.and_then(|last| last.at).map(|(.., under)| under);
+            let cells = self.grid.iter().chain(&self.other).chain(&self.above).flatten().chain(&under);
+            for cell in cells.filter(|cell| cell.link != 0) {
                 used.get_mut(usize::from(cell.link) - 1).into_iter().for_each(|used| *used = true);
             }
             for (known, _) in self.links.iter_mut().zip(used).filter(|(_, used)| !used) {
@@ -596,6 +605,14 @@ impl Term {
     pub fn links(&self) -> String {
         let (mut out, mut line, mut base) = (String::new(), self.top(), 0);
         let mut run: Option<(usize, usize, usize, u16)> = None;
+        // (A list that would be longer than a reader reads ends before the run that makes it so.)
+        let mut put = |(line, start, length, link): (usize, usize, usize, u16)| {
+            let address = usize::from(link).checked_sub(1).and_then(|at| self.links.get(at));
+            let record = format!("{line} {start} {length} {}\n", address.map_or("", String::as_str));
+            if address.is_some_and(|address| !address.is_empty()) && out.len() + record.len() <= LINKS_LIST_MAX {
+                out.push_str(&record);
+            }
+        };
         // (Of the screen shown: a program on the alternate screen has links too. Its lines are
         // numbered on from `top` as the main screen's are, though none of them goes to history.)
         for (y, row) in self.grid.iter().enumerate() {
@@ -607,22 +624,14 @@ impl Term {
                         Some((l, start, len + 1, link))
                     }
                     ended => {
-                        if let Some((l, start, len, link)) = ended
-                            && let Some(address) = self.links.get(usize::from(link) - 1)
-                        {
-                            let _ = writeln!(out, "{l} {start} {len} {address}");
-                        }
+                        ended.into_iter().for_each(&mut put);
                         (cell.link != 0).then_some((line, at, 1, cell.link))
                     }
                 };
             }
             base += row.len();
         }
-        if let Some((l, start, len, link)) = run
-            && let Some(address) = self.links.get(usize::from(link) - 1)
-        {
-            let _ = writeln!(out, "{l} {start} {len} {address}");
-        }
+        run.into_iter().for_each(&mut put);
         out
     }
 
@@ -961,6 +970,8 @@ impl Term {
     fn set_alt(&mut self, alt: bool, clear: bool) {
         if alt != self.alt {
             std::mem::swap(&mut self.grid, &mut self.other);
+            // (A character still being joined is of the screen it was printed on.)
+            self.cluster = None;
             std::mem::swap(&mut self.pictures, &mut self.other_pictures);
             self.alt = alt;
             self.main_row = self.row;
@@ -1131,7 +1142,7 @@ impl Term {
                     self.bel = false;
                 }
                 0x18 | 0x1a => self.end_string(false),
-                0x00..=0x1f | 0x7f => {}
+                0x00..=0x1f | 0x7f => self.string_holed = true,
                 _ if self.string.len() <= PICTURE_MAX => self.string.push(byte),
                 // Past its bound a string is dropped, and said so at once: it may never end.
                 _ if self.string_over => {}
@@ -1239,7 +1250,7 @@ impl Term {
                 self.state = State::Csi;
             }
             b']' | b'P' | b'X' | b'^' | b'_' => {
-                (self.string, self.string_over) = (vec![byte], false);
+                (self.string, self.string_over, self.string_holed) = (vec![byte], false, false);
                 self.state = State::Str;
             }
             0x20..=0x2f => {
@@ -1422,7 +1433,7 @@ impl Term {
                 let address = rest.split_once(';').map_or("", |(_, address)| address);
                 let plain =
                     !address.is_empty() && address.len() <= 2048 && address.bytes().all(|b| (0x21..=0x7e).contains(&b));
-                self.link = if plain { self.link_number(address) } else { 0 };
+                self.link = if plain && !self.string_holed { self.link_number(address) } else { 0 };
             }
             // A shell marks its prompts: `133;A` where a prompt starts, `B` where the command
             // typed begins, `C` where its output begins, `D[;CODE]` where it ended. Each is kept
@@ -1720,7 +1731,7 @@ impl Term {
                 (self.insert, self.origin, self.autowrap, self.cursor_shown) = (false, false, true, true);
                 (self.app_cursor, self.app_keypad, self.graphics, self.shift) = (false, false, [false; 2], false);
                 (self.mouse, self.mouse_sgr) = (0, false);
-                (self.top, self.bottom, self.style) = (0, self.rows - 1, Style::default());
+                (self.top, self.bottom, self.style, self.link) = (0, self.rows - 1, Style::default(), 0);
                 self.saved = [Saved::default(); 2];
             }
             (0, b' ', b'q') => self.cursor_shape = u8::try_from(self.arg(0, 0)).unwrap_or(0),
@@ -1981,7 +1992,9 @@ fn continues(row: &[Cell]) -> bool {
 /// as far as it stands.
 fn reflow(old: &[Vec<Cell>], cols: usize, places: &mut [(usize, usize, bool)]) -> Vec<Vec<Cell>> {
     let blank = Cell::blank(Style::default());
-    let text = |cell: &Cell| cell.ch != ' ' || cell.more.first() != Some(&'\0') || cell.style.flags & !MARKS != 0;
+    let text = |cell: &Cell| {
+        cell.ch != ' ' || cell.more.first() != Some(&'\0') || cell.style.flags & !MARKS != 0 || cell.link != 0
+    };
     // The lines, what fills the rest of each one's last row (the colour of the blanks it ended
     // in), and for each old row the line it is part of and where in it the row starts.
     let mut lines: Vec<(Vec<Cell>, Cell)> = Vec::new();

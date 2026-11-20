@@ -315,7 +315,10 @@ fn a_link_is_on_its_cells_through_scrolling_erasing_and_wrapping_and_ends_at_his
     assert!(!term.styled().contains("\x1b]") && term.plain() == "alinkb\n漢字\n\n");
     // Written over or erased, a cell is no longer part of the link; an address that is not
     // plain printable text is no link.
-    term.feed(format!("\x1b[1;3HX\x1b[2;3H\x1b[K\x1b[3;1H{}", link("http://bad example/\x01", "no")).as_bytes());
+    term.feed(format!("\x1b[1;3HX\x1b[2;3H\x1b[K\x1b[3;1H{}", link("http://bad example/", "no")).as_bytes());
+    // (Nor is one with a control byte in it, which a string loses on its way: what is left of
+    // the address is another address.)
+    term.feed(format!("{}{}", link("http://a\x01b/", "no"), link("http://d\x7fx/", "no")).as_bytes());
     assert_eq!(term.links(), "0 1 1 http://x.example/\n0 3 2 http://x.example/\n1 0 2 file:///y\n");
     // A link that wraps is one run of cells in reading order, and still one after the text is
     // wrapped anew; its line's number is a mark's kind of number.
@@ -332,6 +335,25 @@ fn a_link_is_on_its_cells_through_scrolling_erasing_and_wrapping_and_ends_at_his
         many.feed(format!("\r{}", link(&format!("http://h/{n}"), "x")).as_bytes());
     }
     assert_eq!((many.links().as_str(), many.peek().refused.len()), ("0 0 1 http://h/1499\n", 0));
+    // A cell that is off the screen for a while keeps its address: a row a resize set aside
+    // comes back with the link it had, however many links were made meanwhile.
+    let mut aside = crate::tests::term(10, 3, &format!("{}\r\n\r\nb", link("http://A/", "a")));
+    assert!(aside.resize(10, 1));
+    for n in 0..1200 {
+        aside.feed(format!("\r{}", link(&format!("http://h/{n}"), "x")).as_bytes());
+    }
+    assert!(aside.resize(10, 3) && aside.links().starts_with("0 0 1 http://A/\n"), "{}", aside.links());
+    // A blank that is part of a link is text to wrapping anew; a soft reset ends the link that
+    // was being printed.
+    let mut blank = crate::tests::term(4, 2, &format!("{}\r", link("http://s/", "X ")));
+    assert!(blank.resize(5, 2) && blank.links() == "0 0 2 http://s/\n", "{}", blank.links());
+    blank.feed(b"\x1b]8;;http://open/\x1b\\\x1b[!pZ");
+    assert_eq!(blank.links(), "0 1 1 http://s/\n");
+    // The list is no longer than a reader reads: it ends before the run that would make it so.
+    let wide = "http://".to_string() + &"w".repeat(2041);
+    let mut full = Term::new(2, 200);
+    full.feed((0..200).map(|n| format!("\x1b[{};1H{}", n + 1, link(&wide, "x"))).collect::<String>().as_bytes());
+    assert_eq!((full.links().len() <= crate::term::LINKS_LIST_MAX, full.links().lines().count()), (true, 127));
 }
 
 #[test]

@@ -784,6 +784,42 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     differently (the outer pane's emulator reads the inner viewer's OSC 8
     as any program's); the viewer's table of addresses is emptied and all
     drawn anew past 4,000.
+- **D68. The fix check of D67 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  All three: nothing but an address's own printable bytes reaches the
+  terminal. Found and changed:
+  - a cell could come back with another link's address: making room in a
+    full table looked only at the two screens, not at the rows a resize set
+    aside nor at the cell kept under a character being joined (both
+    reviewers, traced). Both are looked at now; a character being joined is
+    forgotten when the screen is switched (it could be put back on the
+    other screen);
+  - an address with a control byte in it became the address without it (a
+    string drops such bytes): no link now (tester, sol);
+  - the list: the viewer read 256 KiB and a thousand lines, the holder
+    wrote without bound; a cut record's address was taken short, and a
+    screen of single-cell links with long addresses was half a gigabyte
+    (sol). The holder's list ends before the run that would pass 256 KiB,
+    the viewer takes whole records only, a thousand addresses and no more
+    cells than the screen has;
+  - the viewer: a line number from `top` is added to without overflow; the
+    link is closed before every cursor move, so none is open across a line
+    between tiles when only the cells on both sides changed (sol), and when
+    the viewer leaves (both); its table of addresses is emptied only when
+    most of it is of links no longer drawn (five panes of a thousand links
+    were drawn anew every frame), and an address is looked up once for a
+    pane and a frame, not once for a cell; past 65,535 addresses on one
+    screen a cell has no link; a number with no address is no link;
+  - a blank that is part of a link is text to reflow (the link on a space
+    at a line's end was lost); a soft reset ends the link being printed, as
+    it ends the colours. Entering and leaving the alternate screen do not.
+  - Kept, and why: `links` of one publish read with `screen.styled` of the
+    one before puts, for one read, a new address on old text (D59's price
+    again: no stamp covers several files; the README's row says it); the
+    viewer's copy has no room for a 500th column's last character (as
+    before this step, now seen as a link on a blank); the 256 KiB list
+    holds 127 runs of the longest addresses, thousands of ordinary ones;
+    a thousand addresses are "at a time" as the program prints, so text
+    that is about to scroll still holds its own (the tester's count).
 
 ## The old fux3's bugs: which classes are gone
 

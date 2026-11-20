@@ -6,7 +6,9 @@
 
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
-use crate::term::{BOLD, Cell, Color, DIM, KEYS, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode};
+use crate::term::{
+    BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode,
+};
 use crate::{is_name, keys};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -87,8 +89,11 @@ struct View {
     sixel: bool,
     /// The kitty keyboard flags the terminal takes, of those fux passes on.
     keyboard: u8,
-    /// The addresses of the links drawn: a cell's `link` less one is its place here.
+    /// The addresses of the links drawn: a cell's `link` less one is its place here. And each
+    /// address's number, and how many of them the last frame drew.
     links: Vec<String>,
+    numbers: HashMap<String, u16>,
+    live: usize,
     /// The keys that are down, as far as the terminal tells, and where the press of each went.
     down: Vec<((u32, u8), Went)>,
     /// The terminal joins characters into clusters as fux does (its mode 2027), and whether
@@ -133,7 +138,7 @@ struct View {
 struct Restore(File, sys::Termios);
 impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t");
+        let _ = self.0.write_all(b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t");
         let _ = sys::restore_mode(&self.0, &self.1);
     }
 }
@@ -182,6 +187,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         sixel: false,
         keyboard: 0,
         links: Vec::new(),
+        numbers: HashMap::new(),
+        live: 0,
         down: Vec::new(),
         joins: false,
         joined: false,
@@ -760,14 +767,17 @@ impl View {
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
         self.focus = tab.map(|tab| tab.focus.clone());
         self.notices(&layout, &directory);
-        // (The table of links' addresses is emptied when it has grown large: all is drawn anew.)
-        if self.links.len() > 4000 {
+        // (The table of links' addresses is emptied when it has grown large and most of it is
+        // of links that are drawn no more: all is drawn anew.)
+        if self.links.len() > 4000 && self.links.len() > 2 * self.live {
             self.links.clear();
+            self.numbers.clear();
             self.front.iter_mut().for_each(|cell| cell.ch = '\u{1}');
         }
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
+        let mut live = 0;
         let mut title = None;
         let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l");
         let mut wants_focus = None;
@@ -795,6 +805,7 @@ impl View {
                         .and_then(|mut ctl| ctl.write_all(format!("resize {} {}{cell}\n", body.w, body.h).as_bytes()));
                 }
             }
+            let mut mine: Vec<Option<u16>> = vec![None; pane.addresses.len()];
             for y in 0..body.h {
                 for x in 0..body.w {
                     let mut cell = pane.term.cell_at(y, x).copied().unwrap_or(Cell::blank(Style::default()));
@@ -810,15 +821,29 @@ impl View {
                     {
                         cell = Cell { ch: '?', more: ['\0'; MORE], style: cell.style, link: 0 };
                     }
-                    // A link's number is its address's place in the viewer's own table.
-                    if let Some(address) = usize::from(cell.link).checked_sub(1).and_then(|at| pane.addresses.get(at)) {
-                        let known = self.links.iter().position(|link| link == address);
-                        let at = known.unwrap_or_else(|| {
-                            self.links.push(address.clone());
-                            self.links.len() - 1
-                        });
-                        cell.link = u16::try_from(at + 1).unwrap_or(0);
-                    }
+                    // A link's number is its address's place in the viewer's own table (found once
+                    // for each of the pane's addresses; past 65,535 addresses on one screen, no link).
+                    cell.link = match usize::from(cell.link).checked_sub(1) {
+                        Some(at) if mine.get(at).is_some_and(Option::is_some) => {
+                            mine.get(at).copied().flatten().unwrap_or(0)
+                        }
+                        Some(at) => {
+                            let address = pane.addresses.get(at);
+                            let number = address.and_then(|address| {
+                                let next = u16::try_from(self.links.len() + 1).ok();
+                                let number = self.numbers.get(address).copied().or(next)?;
+                                if usize::from(number) > self.links.len() {
+                                    self.links.push(address.clone());
+                                    self.numbers.insert(address.clone(), number);
+                                }
+                                Some(number)
+                            });
+                            mine.get_mut(at).into_iter().for_each(|slot| *slot = Some(number.unwrap_or(0)));
+                            live += usize::from(number.is_some());
+                            number.unwrap_or(0)
+                        }
+                        None => 0,
+                    };
                     if let Some(slot) = back.get_mut((body.y + y) * w + body.x + x) {
                         *slot = cell;
                     }
@@ -893,6 +918,7 @@ impl View {
                 }
             }
         }
+        self.live = live;
         // The lines between panes: `│` and `─`, a tee or a cross where they
         // meet, and green where they touch the focused pane.
         let focus = tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name)).map(|(_, body)| *body);
@@ -1067,6 +1093,10 @@ impl View {
             // (The terminal is asked not to wrap, so that what it draws too wide at the screen's
             // edge stays on its row: every row starts with its place.)
             if at != Some(i) || !ascii || x == 0 {
+                // (A link is closed before the cursor moves: none is open over cells not drawn.)
+                if std::mem::take(&mut pen) != 0 {
+                    out.push_str("\x1b]8;;\x1b\\");
+                }
                 out.push_str(&place);
             }
             if style != Some(new.style) {
@@ -1255,12 +1285,17 @@ impl Pane {
         let rows: Vec<usize> = numbers(&fact("wraps", 4096));
         let (mut line, mut base, mut starts) = (numbers(&fact("top", 32)).first().copied().unwrap_or(0), 0, Vec::new());
         for row in 0..self.term.rows {
-            (line, base) = if row > 0 && !rows.contains(&row) { (line + 1, 0) } else { (line, base) };
+            (line, base) = if row > 0 && !rows.contains(&row) { (line.saturating_add(1), 0) } else { (line, base) };
             starts.push((line, base));
             base += cols;
         }
         self.addresses.clear();
-        for run in fact("links", 256 << 10).lines().take(1000) {
+        // (Whole records only: a list cut by the bound ends before its last line's end. A thousand
+        // addresses, as a holder keeps, and no more cells than the screen has.)
+        let list = fact("links", LINKS_LIST_MAX as u64);
+        let whole = list.rfind('\n').and_then(|end| list.get(..end)).unwrap_or_default();
+        let (mut known, mut cells): (HashMap<&str, u16>, usize) = (HashMap::new(), self.term.rows * cols);
+        for run in whole.lines() {
             let mut fields = run.splitn(4, ' ');
             let mut number = || fields.next().and_then(|n| n.parse::<usize>().ok());
             let (Some(line), Some(from), Some(length)) = (number(), number(), number()) else { continue };
@@ -1268,10 +1303,19 @@ impl Pane {
             if address.is_empty() || address.len() > 2048 || !address.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
                 continue;
             }
-            self.addresses.push(address.to_string());
+            let link = match known.get(address) {
+                Some(link) => *link,
+                None if self.addresses.len() < 1000 => {
+                    self.addresses.push(address.to_string());
+                    known.insert(address, self.addresses.len() as u16);
+                    self.addresses.len() as u16
+                }
+                None => continue,
+            };
             for (row, (_, base)) in starts.iter().enumerate().filter(|(_, (of, _))| *of == line) {
-                for col in from.max(*base)..(from.saturating_add(length)).min(base + cols) {
-                    self.term.set_link(row, col - base, self.addresses.len() as u16);
+                for col in (from.max(*base)..(from.saturating_add(length)).min(base + cols)).take(cells) {
+                    self.term.set_link(row, col - base, link);
+                    cells -= 1;
                 }
             }
         }
