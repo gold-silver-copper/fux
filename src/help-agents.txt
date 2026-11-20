@@ -87,6 +87,7 @@ READ IT
     cat "$P/screen"                           # the screen now, one line a row
     cat "$P/screen.styled"                    # the same with colour codes, safe to cat
     cat "$P/history"                          # lines that scrolled off the top (history.1: older)
+    cat "$P/history.styled"                   # the same lines with colour codes (history.styled.1: older)
     cat "$P/size" "$P/cursor" "$P/modes" "$P/state" "$P/status"
 One fact, one small file (absent until there is something to say, where noted):
 size    COLS ROWS, e.g. `80 24`

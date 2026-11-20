@@ -40,14 +40,20 @@ fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
+/// Styled text without its colours (SGR codes).
+fn bare(styled: &str) -> String {
+    let parts = styled.split("\x1b[").enumerate();
+    parts.map(|(i, part)| if i == 0 { part } else { part.split_once('m').map_or("", |(_, text)| text) }).collect()
+}
+
 #[test]
 fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
     // Lines of 252 bytes, three rows each, in bursts: more than twice what `history` holds, so
     // it is put aside twice. No line is cut by that: `history.1` ends with a whole line, and
-    // `history` goes on with the next one.
+    // `history` goes on with the next one. (Each line's number has a colour.)
     let session = Session::new("turns");
     let prints = "awk 'BEGIN { pad = sprintf(\"%245s\", \"\"); gsub(/ /, \"x\", pad); \
-        for (i = 0; i < 36000; i++) { printf \"%06d%s\\n\", i, pad; if (i % 700 == 699) { fflush(); system(\"sleep 0.01\") } } }'";
+        for (i = 0; i < 36000; i++) { printf \"\\033[3%dm%06d\\033[m%s\\n\", i % 8, i, pad; if (i % 700 == 699) { fflush(); system(\"sleep 0.01\") } } }'";
     let mut start = session.fux();
     start.env("COLUMNS", "120").env("LINES", "36").args(["start", "lines", "--", "sh", "-c", prints]);
     let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
@@ -66,6 +72,11 @@ fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
     let (last, next) = (number(aside.lines().last()), number(history.lines().next()));
     assert!(last.is_some() && next == last.map(|n| n + 1), "{last:?} {next:?}");
     assert!(history.lines().take(100).all(|line| line.len() == 251));
+    // `history.styled` has the same lines with their colours, and was put aside with `history`
+    // each time, at the same line.
+    let (styled_aside, styled) = (read(&pane.join("history.styled.1")), read(&pane.join("history.styled")));
+    assert!(styled_aside.starts_with("\x1b[0;3") && styled.lines().all(|line| line.starts_with("\x1b[0;3")));
+    assert!(bare(&styled_aside) == aside && bare(&styled) == history);
 }
 
 /// Gives a session's `main` workspace a layout, as an editor that saves in one step does: the
@@ -217,7 +228,8 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
     let screen = || read(&pane.join("screen"));
     let rows = screen;
     until("the program has printed", || screen().contains("\nready\n"));
-    let (before, history) = (rows(), read(&pane.join("history")));
+    let history = || (read(&pane.join("history")), read(&pane.join("history.styled")));
+    let (before, kept) = (rows(), history());
     // Narrow: lines wrap, rows leave by the top into `history`, and every line is whole in
     // `history` and `screen` together (the screen's rows that go on are joined to tell).
     for size in ["12 24", "7 24", "40 5", "80 24"] {
@@ -227,10 +239,13 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
             fact(&pane, "size") == size
                 && (read(&pane.join("history")) + &rows()).replace('\n', "") == lines.concat() + "ready"
         });
+        // (No line here has a colour: the two files are the same.)
+        let (plain, styled) = history();
+        assert_eq!(plain, styled);
     }
     // Back at the size it had, with nothing printed between: the screen as it was, and
-    // `history` has given back what it was sent.
-    assert_eq!((rows(), read(&pane.join("history"))), (before, history));
+    // `history` has given back what it was sent, and `history.styled` too.
+    assert_eq!((rows(), history()), (before, kept));
     // A size that is refused changes nothing and is in the log.
     fs::write(pane.join("ctl"), "resize 0 5\n").unwrap();
     until("the log says so", || read(&pane.join("log")).contains("resize"));

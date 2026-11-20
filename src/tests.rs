@@ -21,6 +21,39 @@ fn every_line_printed_is_on_the_screen_or_in_history_in_order() {
 }
 
 #[test]
+fn styled_history_has_historys_lines_with_their_looks() {
+    // A line with colours, one that wraps (its rows are joined, each from and to the default
+    // style), wide characters, a link (text only: history is text), blanks with a colour to the
+    // row's end, and a line with none of it: what a plain row costs is its text once more.
+    let link = "\x1b]8;;http://x.example/\x1b\\link\x1b]8;;\x1b\\";
+    let text = format!(
+        "\x1b[1;31mred\x1b[m plain\r\n\x1b[32mgreen wraps\x1b[m\r\n日本 {link}\r\n\x1b[44mbar\x1b[K\x1b[m\r\nbare\r\n"
+    );
+    let mut term = term(8, 2, &format!("{text}1\r\n2"));
+    assert_eq!(term.peek().history, "red plain\ngreen wraps\n日本 link\nbar\nbare\n");
+    let styled = "\x1b[0;1;31mred\x1b[0m plain\n\x1b[0;32mgreen wr\x1b[m\x1b[0;32maps\x1b[m\n日本 link\n\x1b[0;44mbar     \x1b[m\nbare\n";
+    assert_eq!(term.peek().styled, styled);
+    // Rows a resize sends there go to both, and are taken back from both: from what was not
+    // yet taken, and by the count of what was.
+    let colours = "\x1b[35mab\x1b[36mcdefgh\x1b[m";
+    let mut wide = crate::tests::term(8, 2, colours);
+    assert!(wide.resize(2, 2) && same_lines(&wide) && wide.peek().history == "abcd");
+    let sent = wide.take();
+    assert_eq!(sent.styled, "\x1b[0;35mab\x1b[m\x1b[0;36mcd\x1b[m");
+    assert!(wide.resize(8, 2) && wide.peek().history.is_empty() && wide.peek().styled.is_empty());
+    assert_eq!((wide.peek().unhistory, wide.peek().unstyled), (4, sent.styled.len()));
+    assert!(wide.resize(4, 1) && wide.resize(8, 2) && wide.peek().styled.is_empty() && wide.peek().unstyled > 0);
+    // A line whose rest was cleared away ends in both; a full reset leaves both as they are.
+    let mut cleared = crate::tests::term(4, 2, "\x1b[31mx\r\naaaabb\r\n\x1b[H\x1b[2J$ ls\r\nfile\r\n");
+    assert!(same_lines(&cleared) && cleared.peek().history == "x\naaaa\n$ ls\n", "{:?}", cleared.peek().history);
+    let kept = cleared.peek().styled.clone();
+    cleared.feed(b"\x1bc");
+    assert!(cleared.peek().styled == kept && kept.matches('\n').count() == 3 && kept.contains("\x1b[0;31maaaa"));
+    term.feed(b"\x1bc\x1b[33mafter\r\n\r\n\r\n");
+    assert!(same_lines(&term) && term.peek().styled.ends_with("\x1b[0;33mafter\x1b[m\n\n"));
+}
+
+#[test]
 fn the_styled_screen_read_back_is_the_same_screen() {
     let mut first = term(30, 6, "plain \x1b[1;31mbold red\x1b[0m \x1b[48;5;200m256\x1b[38;2;1;2;3mrgb\x1b[m\r\n");
     first.feed(
@@ -593,10 +626,27 @@ fn numbers(seed: u64) -> impl FnMut(usize) -> usize {
 fn some_text(next: &mut impl FnMut(usize) -> usize) -> String {
     let words =
         ["a", "to", "the", "wrapped", "一二三", "e\u{301}", "\u{1f468}\u{200d}\u{1f469}", "\u{1f1ef}\u{1f1f5}", "x"];
+    let words =
+        words.into_iter().chain(["\x1b[1;31mred\x1b[m", "\x1b[4:3;58:5:9mthe\x1b[44m \x1b[m", "\x1b[7m一\x1b[27m"]);
+    let words: Vec<&str> = words.collect();
     let line = |next: &mut dyn FnMut(usize) -> usize| {
         (0..next(40)).map(|_| words[next(words.len())]).collect::<Vec<_>>().join(" ")
     };
     (0..2 + next(12)).map(|_| line(next)).collect::<Vec<_>>().join("\r\n")
+}
+
+/// Styled text without its looks: no SGR codes, and none of the U+200B that keep characters apart.
+fn bare(styled: &str) -> String {
+    let parts = styled.split("\x1b[").enumerate();
+    let parts = parts.map(|(i, part)| if i == 0 { part } else { part.split_once('m').map_or("", |(_, text)| text) });
+    parts.collect::<String>().replace('\u{200b}', "")
+}
+
+/// Whether styled history has history's lines (blanks that have a colour are kept at a line's end).
+fn same_lines(term: &Term) -> bool {
+    let ends = |text: &str| text.split('\n').map(|line| line.trim_end_matches(' ')).collect::<Vec<_>>().join("\n");
+    let out = term.peek();
+    !out.styled.contains("\x1b]") && ends(&bare(&out.styled)) == ends(&out.history)
 }
 
 /// Text as its lines, without the blanks at a line's end (where a cursor stood, blanks may be
@@ -664,9 +714,10 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
         let next = &mut numbers(seed);
         let text = some_text(next);
         let mut term = term(2 + next(60), 1 + next(30), &text);
-        let printed = text.replace("\r\n", "\n");
+        let printed = bare(&text.replace("\r\n", "\n"));
         let everything = |term: &Term| lines_of(&(term.peek().history.clone() + &term.lines().0));
         assert_eq!(everything(&term), lines_of(&printed), "seed {seed}: as printed");
+        assert!(same_lines(&term), "seed {seed}: styled history as printed");
         // A saved cursor is put somewhere on the screen, and then the cursor, on text or beside it
         // (not in the last column, where a cell may be the gap a wide character left: no place in the text).
         let place = |term: &Term| term.peek().history.clone() + &term.lines().1;
@@ -683,6 +734,8 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
             assert!(term.resize(2 + next(60), 1 + next(30)));
             assert_eq!(everything(&term), lines_of(&printed), "seed {seed}: at {}x{}", term.cols, term.rows);
             assert!(term.lines().2, "seed {seed}: a character in half at {}x{}", term.cols, term.rows);
+            // (7) Styled history has history's lines, whatever was sent there and taken back.
+            assert!(same_lines(&term), "seed {seed}: styled history at {}x{}", term.cols, term.rows);
             // (Unless its own row had to go to history, to make room for text below it: then
             // it is at the top, and on another character from then on.)
             there &= term.row > 0 || term.peek().history.len() == kept;
@@ -696,6 +749,7 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
         assert!(term.resize(size.0, size.1));
         if there {
             assert_eq!(term.peek().history.len(), history, "seed {seed}: history, back at {size:?}");
+            assert!(same_lines(&term), "seed {seed}: styled history, back at {size:?}");
             assert_eq!((term.plain(), (term.row, term.col)), (was, at), "seed {seed}: back at {size:?}");
             // The saved cursor too, if its row never left the screen and it was on a character or
             // right after one (in the blank part of a row or on an empty row it is only kept

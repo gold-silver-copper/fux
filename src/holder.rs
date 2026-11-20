@@ -33,7 +33,8 @@ const READ_BUDGET: usize = 512 << 10;
 /// The most typed bytes and answers waiting for the program; past it `in` is
 /// not read, so its writers wait.
 const INPUT_MAX: usize = 64 << 10;
-/// `history` becomes `history.1` when it is longer than this.
+/// `history` becomes `history.1` when it is longer than this, or `history.styled` is (and that
+/// `history.styled.1` with it: the two have the same lines).
 const HISTORY_MAX: u64 = 4 << 20;
 const CTL_LINE_MAX: usize = 1280;
 const LOG_MAX: usize = 64 << 10;
@@ -217,8 +218,10 @@ impl Holder {
         for old in ["title", "clipboard", "cwd", "notice"] {
             let _ = fs::remove_file(old);
         }
-        let _ = fs::remove_file("history.1");
-        File::create("history").map_err(|e| format!("cannot make history: {e}"))?;
+        for history in ["history", "history.styled"] {
+            let _ = fs::remove_file(format!("{history}.1"));
+            File::create(history).map_err(|e| format!("cannot make {history}: {e}"))?;
+        }
         for old in fs::read_dir(".").into_iter().flatten().flatten().map(|entry| entry.file_name()) {
             let number = old.to_str().and_then(|name| name.strip_prefix("pic-")?.strip_suffix(".sixel"));
             if number.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
@@ -411,18 +414,27 @@ impl Holder {
         }
         out.refused.into_iter().for_each(|refused| self.log(refused));
         // A resize took rows back from history's end: from what waits to be written, then from the file.
-        let waiting = self.pending.history.len().saturating_sub(out.unhistory);
-        let written = (out.unhistory - (self.pending.history.len() - waiting)) as u64;
-        if self.pending.history.is_char_boundary(waiting) {
-            self.pending.history.truncate(waiting);
-        }
-        if written > 0 {
-            let cut = OpenOptions::new().write(true).open("history");
-            let cut = cut.and_then(|file| file.set_len(file.metadata()?.len().saturating_sub(written)));
-            if let Err(e) = cut {
-                self.log(&format!("history keeps {written} bytes that are on the screen again: {e}"));
+        let files = [
+            ("history", &mut self.pending.history, out.unhistory),
+            ("history.styled", &mut self.pending.styled, out.unstyled),
+        ];
+        let taken = files.map(|(name, waiting, back)| {
+            let keep = waiting.len().saturating_sub(back);
+            let written = (back - (waiting.len() - keep)) as u64;
+            if waiting.is_char_boundary(keep) {
+                waiting.truncate(keep);
             }
-            // (Whether the file ends in a whole line now is what its last byte says.)
+            let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(written));
+            let cut = if written > 0 { OpenOptions::new().write(true).open(name).and_then(cut) } else { Ok(()) };
+            (written > 0, cut.map_err(|e| format!("{name} keeps {written} bytes that are on the screen again: {e}")))
+        });
+        for (_, cut) in &taken {
+            if let Err(e) = cut {
+                self.log(e);
+            }
+        }
+        if taken.iter().any(|(written, _)| *written) {
+            // (Whether the files end in a whole line now is what the last byte of one says.)
             let mut last = *b"\n";
             let end = File::open("history").and_then(|mut file| {
                 file.seek(io::SeekFrom::End(-1))?;
@@ -430,6 +442,7 @@ impl Holder {
             });
             self.history_open = end.is_ok() && last != *b"\n";
         }
+        self.pending.styled.push_str(&out.styled);
         self.pending.history.push_str(&out.history);
         self.pending.pictures.append(&mut out.pictures);
         self.pending.title = out.title.or(self.pending.title.take());
@@ -516,31 +529,31 @@ impl Holder {
         }
     }
 
-    /// Appends the lines that scrolled off to `history`. Lines that cannot be
-    /// written are lost, and the log says so: they are not kept to try again.
+    /// Appends the lines that scrolled off to `history`, and the same lines with their looks to
+    /// `history.styled`. Lines that cannot be written are lost, and the log says so: they are
+    /// not kept to try again.
     fn history(&mut self) {
-        let lines = std::mem::take(&mut self.pending.history);
+        let (lines, styled) = (std::mem::take(&mut self.pending.history), std::mem::take(&mut self.pending.styled));
         // A file past its size is put aside where a line ends, so that no line is in two files:
         // before these lines if the file ends with a whole one, and else after the first line
-        // end among them (a line that never ends is cut when the file is twice its size).
-        let size = fs::metadata("history").map_or(0, |m| m.len());
-        let cut = match (size > HISTORY_MAX, self.history_open) {
+        // end among them (a line that never ends is cut when the file is twice its size). Both
+        // files are put aside when either is past its size, at the same line.
+        let size = ["history", "history.styled"].iter().filter_map(|name| fs::metadata(name).ok()).map(|m| m.len());
+        let size = size.max().unwrap_or(0);
+        let whole = match (size > HISTORY_MAX, self.history_open) {
             (false, _) => None,
-            (true, false) => Some(0),
-            (true, true) => lines.find('\n').map(|end| end + 1).or((size > 2 * HISTORY_MAX).then_some(0)),
+            (true, false) => Some(true),
+            (true, true) => lines.contains('\n').then_some(false).or((size > 2 * HISTORY_MAX).then_some(true)),
         };
-        let (old, new) = lines.split_at_checked(cut.unwrap_or(lines.len())).unwrap_or((&lines, ""));
-        let append = |text: &str| {
-            OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open("history")
-                .and_then(|mut file| file.write_all(text.as_bytes()))
-        };
-        let turned =
-            |()| if cut.is_some() { fs::rename("history", "history.1").and_then(|()| append(new)) } else { Ok(()) };
-        if let Err(e) = append(old).and_then(turned) {
-            self.log(&format!("history was lost (some or all of {} bytes): {e}", lines.len()));
+        for (name, text) in [("history", &lines), ("history.styled", &styled)] {
+            let cut = whole.map(|whole| if whole { 0 } else { text.find('\n').map_or(text.len(), |end| end + 1) });
+            let (old, new) = text.split_at_checked(cut.unwrap_or(text.len())).unwrap_or((text, ""));
+            let append =
+                |text: &str| OpenOptions::new().append(true).create(true).open(name)?.write_all(text.as_bytes());
+            let aside = |()| fs::rename(name, format!("{name}.1")).and_then(|()| append(new));
+            if let Err(e) = append(old).and_then(|()| if cut.is_some() { aside(()) } else { Ok(()) }) {
+                self.log(&format!("{name} was lost (some or all of {} bytes): {e}", text.len()));
+            }
         }
         self.history_open = !lines.ends_with('\n');
     }

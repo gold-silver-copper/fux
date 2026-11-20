@@ -198,6 +198,10 @@ pub struct Out {
     /// how many bytes to take off the end of what history has: a resize took rows back.
     pub history: String,
     pub unhistory: usize,
+    /// The same lines with their looks (text and SGR codes only, a row as `styled` gives it),
+    /// and how many bytes to take off the end of what was given of those.
+    pub styled: String,
+    pub unstyled: usize,
     /// What was dropped for being over a bound, or refused, for the log (each kind once).
     pub refused: Vec<&'static str>,
     /// New pictures: the number of each and its bytes, a whole sixel string.
@@ -309,6 +313,7 @@ pub struct Term {
     /// whether history's line was open before them.
     above: Vec<Vec<Cell>>,
     above_bytes: usize,
+    above_styled: usize,
     above_open: Option<usize>,
     /// A line feed is the text wrapping into the next row.
     wrapping: bool,
@@ -399,6 +404,7 @@ impl Term {
             history_open: None,
             above: Vec::new(),
             above_bytes: 0,
+            above_styled: 0,
             above_open: None,
             wrapping: false,
             joiner: Joiner::default(),
@@ -465,9 +471,11 @@ impl Term {
     /// A row's text as history keeps it. A row that goes on in the next is not ended, so history
     /// holds whole lines however they were wrapped; `open` says the line before was left so, and
     /// a row that does not go on from it ends it first (what it went on in was erased).
-    fn row_history(row: &[Cell], goes_on: bool, open: &mut Option<usize>, out: &mut String) {
+    /// `styled` gets the same row with its looks, and a line's end wherever `out` gets one.
+    fn row_history(row: &[Cell], goes_on: bool, open: &mut Option<usize>, out: &mut String, styled: &mut String) {
         if open.is_some() && !continues(row) {
             out.push('\n');
+            styled.push('\n');
             *open = None;
         }
         let start = out.len();
@@ -477,8 +485,19 @@ impl Term {
             *open = Some(open.unwrap_or(0) + out.len() - start);
         } else {
             Term::row_text(row, out);
-            out.push('\n');
             *open = None;
+        }
+        // (Most rows have no looks and no character that could join another: their text is all of it.)
+        let looks = |cell: &Cell| Style { flags: cell.style.flags & !MARKS, ..cell.style } != Style::default();
+        let bare =
+            |cell: &Cell| cell.ch.is_ascii() && cell.more.first() == Some(&'\0') && cell.link == 0 && !looks(cell);
+        match row.iter().all(bare) {
+            true => styled.push_str(out.get(start..).unwrap_or_default()),
+            false => Term::row_styled(row, goes_on, styled),
+        }
+        if !goes_on {
+            out.push('\n');
+            styled.push('\n');
         }
     }
 
@@ -498,7 +517,7 @@ impl Term {
                 let upto = self.col + usize::from(self.wrap_pending);
                 cells.iter().take(upto).for_each(|cell| cell.push_text(&mut before));
             }
-            Term::row_history(cells, goes_on, &mut open, &mut all);
+            Term::row_history(cells, goes_on, &mut open, &mut all, &mut String::new());
         }
         let whole = [&self.grid, &self.other].iter().all(|grid| {
             grid.len() == self.rows
@@ -535,38 +554,43 @@ impl Term {
     /// that starts and ends in the default style.
     pub fn styled(&self) -> String {
         let mut out = String::new();
-        let plain = Style::default();
         for (y, row) in self.grid.iter().enumerate() {
-            // (The marks are no looks.)
-            let look = |cell: &Cell| Cell { style: Style { flags: cell.style.flags & !MARKS, ..cell.style }, ..*cell };
-            // (A row that goes on in the next keeps the blanks at its end, as in `plain`.)
-            let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
-            let used = match self.grid.get(y + 1).is_some_and(|next| continues(next)) {
-                true => row.len() - usize::from(gap),
-                false => row.iter().rposition(|c| look(c) != Cell::blank(plain)).map_or(0, |last| last + 1),
-            };
-            let (mut style, mut joiner) = (plain, Joiner::default());
-            for cell in row.iter().take(used).filter(|cell| cell.ch != '\0') {
-                if look(cell).style != style {
-                    style = look(cell).style;
-                    style.sgr(&mut out);
-                }
-                // Two characters that would read back as one are kept apart by U+200B, which
-                // takes no room and is no part of either.
-                if joiner.joins(cell.ch) {
-                    out.push('\u{200b}');
-                    joiner = Joiner::default();
-                    joiner.joins(cell.ch);
-                }
-                cell.more.iter().take_while(|&&c| c != '\0').for_each(|&c| _ = joiner.joins(c));
-                cell.push_text(&mut out);
-            }
-            if style != plain {
-                out.push_str("\x1b[m");
-            }
+            Term::row_styled(row, self.grid.get(y + 1).is_some_and(|next| continues(next)), &mut out);
             out.push('\n');
         }
         out
+    }
+
+    /// A row with its looks, from the default style to the default style, and no line's end.
+    fn row_styled(row: &[Cell], goes_on: bool, out: &mut String) {
+        let plain = Style::default();
+        // (The marks are no looks.)
+        let look = |cell: &Cell| Cell { style: Style { flags: cell.style.flags & !MARKS, ..cell.style }, ..*cell };
+        // (A row that goes on in the next keeps the blanks at its end, as in `plain`.)
+        let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
+        let used = match goes_on {
+            true => row.len() - usize::from(gap),
+            false => row.iter().rposition(|c| look(c) != Cell::blank(plain)).map_or(0, |last| last + 1),
+        };
+        let (mut style, mut joiner) = (plain, Joiner::default());
+        for cell in row.iter().take(used).filter(|cell| cell.ch != '\0') {
+            if look(cell).style != style {
+                style = look(cell).style;
+                style.sgr(out);
+            }
+            // Two characters that would read back as one are kept apart by U+200B, which
+            // takes no room and is no part of either.
+            if joiner.joins(cell.ch) {
+                out.push('\u{200b}');
+                joiner = Joiner::default();
+                joiner.joins(cell.ch);
+            }
+            cell.more.iter().take_while(|&&c| c != '\0').for_each(|&c| _ = joiner.joins(c));
+            cell.push_text(out);
+        }
+        if style != plain {
+            out.push_str("\x1b[m");
+        }
     }
 
     /// The modes the `modes` file lists by name, and where each is kept.
@@ -801,6 +825,7 @@ impl Term {
     fn settle(&mut self) {
         if self.history_open.is_some() && !self.main().first().is_some_and(|row| continues(row)) {
             self.out.history.push('\n');
+            self.out.styled.push('\n');
             (self.gone, self.history_open) = (self.gone + 1, None);
             // (What comes after them in history makes the rows a resize sent there stay there.)
             self.above.clear();
@@ -912,6 +937,8 @@ impl Term {
             return;
         };
         let (mut full, before) = (false, self.out.history.len());
+        // (Blanks that have a colour are a row's looks to its end.)
+        let cut = blank == Cell::blank(Style::default());
         for i in 0..n {
             // (The row the text is just wrapping out of has no next row yet.)
             let goes_on = region.get(i + 1).map_or(self.wrapping, |next| continues(next));
@@ -920,9 +947,10 @@ impl Term {
             // where they start, and they are neither read for history, which would cut them,
             // nor written again.)
             let used = row.iter().rposition(|cell| *cell != blank).map_or(0, |last| last + 1);
-            if kept && self.out.history.len() < HISTORY_PENDING_MAX {
-                let text = row.get(..used.max(1)).filter(|_| !goes_on).unwrap_or(row);
-                Term::row_history(text, goes_on, &mut self.history_open, &mut self.out.history);
+            if kept && self.out.history.len().max(self.out.styled.len()) < HISTORY_PENDING_MAX {
+                let text = row.get(..used.max(1)).filter(|_| cut && !goes_on).unwrap_or(row);
+                let out = &mut self.out;
+                Term::row_history(text, goes_on, &mut self.history_open, &mut out.history, &mut out.styled);
             } else if kept {
                 (full, self.history_open) = (true, None);
             }
@@ -1229,12 +1257,13 @@ impl Term {
         // the last of them, a screen's worth at most, are kept to come back another time.
         let keep = up.saturating_sub(ABOVE_MAX / cols);
         let (mut history, mut open) = (String::new(), if held > 0 { self.above_open } else { self.history_open });
-        let (mut before, mut was_open) = (0, open);
+        let (mut styled, mut before, mut styled_before, mut was_open) = (String::new(), 0, 0, open);
         for (y, row) in wrapped.iter().take(up).enumerate() {
             if y == keep {
-                (before, was_open) = (history.len(), open);
+                (before, styled_before, was_open) = (history.len(), styled.len(), open);
             }
-            Term::row_history(row, wrapped.get(y + 1).is_some_and(|next| continues(next)), &mut open, &mut history);
+            let goes_on = wrapped.get(y + 1).is_some_and(|next| continues(next));
+            Term::row_history(row, goes_on, &mut open, &mut history, &mut styled);
         }
         let above: Vec<Vec<Cell>> = wrapped.drain(..up).skip(keep).collect();
         wrapped.resize(rows, vec![blank; cols]);
@@ -1290,10 +1319,16 @@ impl Term {
                 Some(Last { at: Some((at_row, at_col, *self.cell_at(at_row, at_col)?, under)), cursor: here })
             });
         }
-        let back = if held > 0 { self.above_bytes } else { 0 };
-        let waiting = self.out.history.len().saturating_sub(back);
-        self.out.unhistory += back.saturating_sub(self.out.history.len());
-        self.out.history = self.out.history.get(..waiting).unwrap_or_default().to_string() + &history;
+        // (What history was given of the rows above, and has not yet taken, is taken back here.)
+        let retake = |given: &mut String, taken: &mut usize, back: usize, again: &str| {
+            let waiting = given.len().saturating_sub(back);
+            *taken += back.saturating_sub(given.len());
+            *given = given.get(..waiting).unwrap_or_default().to_string() + again;
+        };
+        let (back, styled_back) = if held > 0 { (self.above_bytes, self.above_styled) } else { (0, 0) };
+        retake(&mut self.out.history, &mut self.out.unhistory, back, &history);
+        retake(&mut self.out.styled, &mut self.out.unstyled, styled_back, &styled);
+        self.above_styled = styled.len() - styled_before;
         let lines = |text: Option<&str>| text.map_or(0, |text| text.matches('\n').count());
         self.gone = (self.gone + lines(Some(&history))).saturating_sub(if held > 0 { self.above_lines } else { 0 });
         self.above_lines = lines(history.get(before..));
