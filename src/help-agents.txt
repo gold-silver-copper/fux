@@ -10,7 +10,7 @@ else ~/.cache/fux-next. If you run inside a pane, $FUXN_PANE is your own pane's 
 its parent your workspace, and that one's parent the session.
 
 START A PANE
-    D=$(fux dir)                              # the session directory
+    D=$(fux dir)                              # the session directory (made when the first pane starts)
     P=$(fux start agent-demo/job -- sh)       # workspace agent-demo, pane job: prints $D/agent-demo/job
     ls "$D" "$D/agent-demo"                   # workspaces; the panes of one
 NAME is WORKSPACE/PANE, or WORKSPACE/ for the next free number, or PANE alone (workspace
@@ -29,12 +29,15 @@ never sleep and hope: wait for a text, or for the frame to change, always with a
     seen() { n=0; until grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt 100 ] || return 1; sleep 0.1; done; }
     frame() { cksum < "$1/screen.styled"; }
     changed() { n=0; while [ "$(frame "$1")" = "$2" ]; do n=$((n+1)); [ $n -lt 100 ] || return 1; sleep 0.1; done; }
-    settled() { a=; b=x; n=0; until [ "$a" = "$b" ] || [ $n -ge 100 ]; do a=$b; sleep 0.3; b=$(frame "$1"); n=$((n+1)); done; }
-seen REGEX FILE waits (10 s) until the file has a matching line. changed DIR FRAME waits
-until the screen is another than the one you noted BEFORE you acted; settled DIR waits
-until two reads 0.3 s apart are the same. Settled alone can be the old frame twice, so
-after a key use `changed` first. A row's blanks at its end are not in `screen`: a prompt
-"$ " is the line "$", and where the cursor stands is in `cursor`. Waiting for a prompt:
+    settled() { a=; b=x; n=0; until [ "$a" = "$b" ]; do n=$((n+1)); [ $n -lt 100 ] || return 1; a=$b; sleep 0.3; b=$(frame "$1"); done; }
+    unseen() { n=0; while grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt 100 ] || return 1; sleep 0.1; done; }
+seen REGEX FILE waits (10 s) until the file has a matching line, unseen until it has none.
+changed DIR FRAME waits until the screen is another than the one you noted BEFORE you
+acted; settled DIR waits until two reads 0.3 s apart are the same. Each returns non-zero
+when its limit ran out: check that (`seen X FILE || give up`), or you go on with nothing
+seen. Settled alone can be the old frame twice, so after a key use `changed` first. A
+row's blanks at its end are not in `screen`: a prompt "$ " is the line "$", and where the
+cursor stands is in `cursor`. Waiting for a prompt:
     seen '[$#>]$' "$P/screen"
 
 TYPE INTO IT
@@ -63,6 +66,10 @@ holder holds a lock on the pane's directory for as long as it lives, and that is
     seen . "$X/state"; sleep 0.2; alive "$P"; alive "$X" || echo "crash is dead, though its state says $(cat "$X/state")"
     printf 'x' | send "$X/in" || echo "refused at once"
 (Linux has flock -n "$X" true for the same test, with the answer the other way round.)
+Without perl or python, the next best is the holder's process, there and not a zombie
+(wrong only if the holder died and another process has its number by now):
+    alive_sh() { s=$(ps -o state= -p "$(sed -n 's/^holder //p' "$1/status")" 2>/dev/null) && case $s in ''|Z*) false ;; esac; }
+    alive_sh "$P"; alive_sh "$X" || echo "crash is dead by its process too"
 
 READ IT
     cat "$P/screen"                           # the screen now, one line a row
@@ -117,7 +124,7 @@ FULL-SCREEN PROGRAMS (vim, less, htop)
 keys as bytes; after each, wait for a changed frame or for the text you expect.
     printf 'less "%s/status"\r' "$P" > "$P/in"; seen alt "$P/modes"
     f=$(frame "$P"); printf '/pid\r' > "$P/in"; changed "$P" "$f"      # search; vim: printf '\033:wq\r'
-    printf 'q' > "$P/in"; n=0; while grep -q alt "$P/modes"; do n=$((n+1)); [ $n -lt 100 ] || break; sleep 0.1; done
+    printf 'q' > "$P/in"; unseen alt "$P/modes"
 
 RESIZE, RENAME, RING, END
 `ctl` is a FIFO too, one command a line: resize COLS ROWS, notify WORDS, kill.
@@ -130,9 +137,14 @@ its program's $FUXN_PANE still says the old name. Move only within one filesyste
 `kill` hangs up (SIGHUP), as closing a terminal does. It does not remove the pane: the
 directory stays, with the last screen and state. It does not force: a program that
 ignores it lives on, with `state` hungup; then signal the program (never the holder):
-    T=$(fux start agent-demo/stubborn -- sh -c 'trap "" HUP; echo ready; exec sleep 600')
+    T=$(fux start agent-demo/stubborn -- sh -c 'trap "" HUP; echo ready; sleep 600; echo over')
     seen ready "$T/screen"; echo kill > "$T/ctl"; seen hungup "$T/state"
-    kill -TERM "$(sed -n 's/^pid //p' "$T/status")"; fux wait "$T"      # state killed 15
+    p=$(sed -n 's/^pid //p' "$T/status"); kill -TERM "$p"; fux wait "$T"    # state killed 15
+`state` and `fux wait` are about the pane's program alone, not about what it started:
+here the shell is gone and its `sleep` runs on. The program leads a process group of its
+own number, and what it started is in it as a rule (a job-control shell's jobs are not):
+    kill -0 -"$p" && echo "something of pane stubborn still runs"       # pgrep -g "$p" lists it
+    kill -TERM -"$p"; sleep 0.3; kill -0 -"$p" 2>/dev/null || echo "nothing of it is left"
 Removing a pane's directory ends the pane too (its holder sees it within 2 seconds).
 
 MANY PANES
@@ -153,13 +165,15 @@ Edits: split row|col PANE [beside PANE] · focus left|right|up|down|next|prev|PA
 next|prev|N|- · break · swap next|prev · size row|col +N|-N · rotate · arrange row|col|grid|main.
 To see what a person would, run the viewer in a pane of ANOTHER workspace and read it:
     V=$(COLUMNS=100 LINES=30 fux start agent-view/v -- fux view agent-demo); seen '│' "$V/screen"
+    printf 'notify %s\n' 'look here' > "$W/ctl"; seen ' broad: look here$' "$V/notice"
     cat "$V/screen"; printf '\002d' > "$V/in"; fux wait "$V"       # C-b d: the viewer leaves
 A viewer sets the size of the panes it shows to their tiles. A notice (`notify`, a bell)
 of a pane in the workspace shown is passed on to the viewer's terminal as `PANE: WORDS`,
-and its tab is marked. From inside a pane: printf 'notify %s\n' 'done' > "$FUXN_PANE/ctl".
-A viewer writes two files in the session, `keyboard` and `colours` (what its terminal
-can do; harmless, left behind), its key scripts in $FUXN_KEYS (else ~/.config/fux-next/keys),
-and while it runs a FIFO `.view.PID` there.
+and its tab is marked; a viewer in a pane has that in its own pane's `notice`, as above
+(`N broad: look here`). From inside a pane: printf 'notify %s\n' 'done' > "$FUXN_PANE/ctl".
+A viewer writes in the session `keyboard` and, only if its terminal answered, `colours`
+(what its terminal can do; harmless, left behind), its key scripts in $FUXN_KEYS (else
+~/.config/fux-next/keys), and while it runs a FIFO `.view.PID` in the session.
 
 MANNERS AND CLEANING UP
 Work in workspaces of your own (agent-TASK). Never type into, resize, kill, rearrange or

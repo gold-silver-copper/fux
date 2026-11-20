@@ -1045,6 +1045,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     (52 now), with a keys directory of its own, and checks that the
     session holds nothing after the page's cleaning up but the two files
     the page says a viewer leaves.
+- **D74. The agents' page after the second blind test** (message 17: 26 of
+  27 as asked, on another model). The owner's rule: no command for what a
+  script recipe can do, so `send` and `alive` stay recipes on the page.
+  The page only: every wait recipe returns non-zero at its limit
+  (`settled` did not) and the page says to check it; `fux wait` and
+  `state` are about the pane's program, not what it started, with the
+  process group as the way to see and end the rest (the hangup example
+  no longer hides this behind `exec`, and ends with a command after
+  `sleep`, since bash execs the last command of `sh -c`); `fux dir` names
+  a directory that may not be there yet; a viewer in a pane has what it
+  passes on in its own `notice`; `colours` only if the terminal answered;
+  `alive_sh` for a machine with neither perl nor python, with its limit.
 
 ## The old fux3's bugs: which classes are gone
 
