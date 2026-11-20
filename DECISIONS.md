@@ -371,6 +371,37 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     says so); the plain `screen` cannot tell two neighbours from one
     character (it is text; the README and the code say so).
 
+- **D53. A resize wraps the main screen anew** (the panel, 2026-11-19). A
+  row that goes on in the next carries a mark on its last cell (two bits
+  beside the looks in a cell's style: "the row continues", and "this cell is
+  the gap a wide character left"). The mark travels with the row through
+  every scroll and is gone when the cell is erased or written, so no second
+  list of rows has to be kept in step. `reflow` is a function from the old
+  rows and a width to new rows: lines are joined, cut again at the new width
+  and never inside a character; the places that must stay on their character
+  (the cursor, the saved cursor, each picture's corner) go in and come out.
+  `resize` builds both new screens and only then puts them in place: a size
+  it refuses changes nothing (the holder asks the terminal device first, so
+  a size that refuses changes nothing either).
+  - The line of the cursor counts as reaching to the cursor, so a cursor in
+    the blank part of a row comes back to its column when the width does. A
+    saved cursor there, or on an empty row, is only kept inside the screen.
+  - History holds whole lines: a row that goes on is written without its line
+    end. What went to history stays there; a taller screen gets blank rows at
+    the bottom (tmux, xterm and the old emulator bring rows back; history
+    here is a file that other programs read).
+  - The alternate screen is cut or padded and nothing of it goes to history.
+    While it is shown the main screen behind it is wrapped all the same, so
+    leaving it gives the main screen at the new size.
+  - Tests: the six properties over 400 runs of random text and sizes from
+    fixed seeds; the 120-character line that lost 40 characters loses none.
+  - The start: the viewer gives a key script `FUXN_ROW` and `FUXN_COL`, the
+    size a split of the focused pane would give the new tile (it splits a
+    copy of the layout to know), and the split keys pass it to `fux start`
+    as `COLUMNS` and `LINES`. A test's program notes the size it starts at:
+    its tile's. The holder still draws what a program wrote before a resize
+    at the old size first; nothing waits or retries.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

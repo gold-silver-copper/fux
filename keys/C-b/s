@@ -2,7 +2,8 @@
 # split stacked
 # group: Panes
 # `.shell` runs your shell and removes the pane's folder when it ends.
-p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell") || exit
+# The viewer says how large the new tile will be: the pane starts at that size.
+p=$(COLUMNS=${FUXN_COL%x*} LINES=${FUXN_COL#*x} fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell") || exit
 # Below the pane the key was pressed on, wherever the focus is by now.
 if [ -n "$FUXN_PANE" ]; then
   fux layout split col "${p##*/}" beside "${FUXN_PANE##*/}"

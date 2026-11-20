@@ -35,6 +35,11 @@ pub const BLINK: u16 = 16;
 pub const REVERSE: u16 = 32;
 pub const HIDDEN: u16 = 64;
 pub const STRIKE: u16 = 128;
+/// Not looks, but marks on a row's last cell: the row goes on in the next one
+/// (the text wrapped there), and with `PAD` the cell itself is no text (a wide
+/// character had no room in it and went to the next row whole).
+pub const WRAPS: u16 = 256;
+const PAD: u16 = 512;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Style {
@@ -300,6 +305,48 @@ impl Term {
         out.truncate(start + out.get(start..).map_or(0, |text| text.trim_end_matches(' ').len()));
     }
 
+    /// A row's text as history keeps it: a row that goes on in the next is not
+    /// ended, so history holds whole lines however they were wrapped.
+    fn row_history(row: &[Cell], out: &mut String) {
+        match row.last().map(|cell| cell.style.flags) {
+            Some(flags) if flags & WRAPS != 0 => {
+                row.iter().take(row.len() - usize::from(flags & PAD != 0)).for_each(|cell| cell.push_text(out));
+            }
+            _ => {
+                Term::row_text(row, out);
+                out.push('\n');
+            }
+        }
+    }
+
+    /// For tests: the main screen's text as lines (rows that go on joined), all of it and the part
+    /// before the cursor; and whether every wide character on both screens has both its cells.
+    #[cfg(test)]
+    pub fn lines(&self) -> (String, String, bool) {
+        let (main, row) = if self.alt { (&self.other, self.main_row) } else { (&self.grid, self.row) };
+        let (mut all, mut before) = (String::new(), String::new());
+        for (y, cells) in main.iter().enumerate() {
+            if y == row {
+                before.clone_from(&all);
+                let upto = self.col + usize::from(self.wrap_pending);
+                cells.iter().take(upto).for_each(|cell| cell.push_text(&mut before));
+                before.extend(std::iter::repeat_n(' ', upto.saturating_sub(cells.len())));
+            }
+            Term::row_history(cells, &mut all);
+        }
+        let whole = [&self.grid, &self.other].iter().all(|grid| {
+            grid.iter().all(|cells| {
+                (0..cells.len()).all(|x| {
+                    let half = |x: usize| cells.get(x).is_some_and(|cell| cell.ch == '\0');
+                    let lead =
+                        x.checked_sub(1).and_then(|x| cells.get(x)).is_some_and(|cell| cell.ch != '\0' && cell.wide());
+                    half(x) == lead && cells.len() == self.cols
+                })
+            }) && grid.len() == self.rows
+        });
+        (all, before, whole)
+    }
+
     /// The screen as plain text, one line per row, blanks at the end cut.
     pub fn plain(&self) -> String {
         let mut out = String::new();
@@ -316,11 +363,14 @@ impl Term {
         let mut out = String::new();
         let plain = Style::default();
         for row in &self.grid {
-            let used = row.iter().rposition(|c| *c != Cell::blank(plain)).map_or(0, |last| last + 1);
+            // (The marks on a row's last cell are no looks: `WRAPS`, `PAD`.)
+            let text = |c: &Cell| c.ch != ' ' || c.more.first() != Some(&'\0') || c.style.flags & !(WRAPS | PAD) != 0;
+            let used = row.iter().rposition(|c| text(c) || c.style.bg != plain.bg).map_or(0, |last| last + 1);
             let (mut style, mut joiner) = (plain, Joiner::default());
             for cell in row.iter().take(used).filter(|cell| cell.ch != '\0') {
-                if cell.style != style {
-                    style = cell.style;
+                let look = Style { flags: cell.style.flags & !(WRAPS | PAD), ..cell.style };
+                if look != style {
+                    style = look;
                     style.sgr(&mut out);
                 }
                 // Two characters that would read back as one are kept apart by U+200B, which
@@ -467,8 +517,7 @@ impl Term {
         for row in region.iter_mut().take(n) {
             if from == 0 && !self.alt {
                 if self.out.history.len() < HISTORY_PENDING_MAX {
-                    Term::row_text(row, &mut self.out.history);
-                    self.out.history.push('\n');
+                    Term::row_history(row, &mut self.out.history);
                 } else {
                     full = true;
                 }
@@ -591,6 +640,13 @@ impl Term {
         }
         if self.wrap_pending || (wide && self.col + 2 > self.cols) {
             if self.autowrap {
+                // The row goes on in the next one, and its last cell says so. A wide character
+                // that had no room in that cell leaves it as no text, if nothing is in it.
+                let waiting = self.wrap_pending;
+                if let Some(last) = self.grid.get_mut(self.row).and_then(|row| row.last_mut()) {
+                    let empty = !waiting && last.ch == ' ' && last.more.first() == Some(&'\0');
+                    last.style.flags |= WRAPS | if empty { PAD } else { 0 };
+                }
                 self.col = 0;
                 self.linefeed();
             } else if wide {
@@ -685,68 +741,87 @@ impl Term {
         self.pictures.clear();
     }
 
-    /// A new size. Rows keep their text (no reflow): what does not fit to the
-    /// right is cut, and rows that do not fit above the cursor go to history.
-    pub fn resize(&mut self, cols: usize, rows: usize) {
-        let (cols, rows) = (cols.clamp(1, SIZE_MAX), rows.clamp(1, SIZE_MAX));
+    /// Takes a new size, or refuses it and changes nothing. The main screen's
+    /// text is wrapped anew: a line that was wrapped is one line again, and
+    /// what no longer fits above the cursor goes to history. The alternate
+    /// screen is cut or padded where it is, and none of it goes to history.
+    /// The new screens are made whole first and then take the old ones' place.
+    pub fn resize(&mut self, cols: usize, rows: usize) -> bool {
+        if !(1..=SIZE_MAX).contains(&cols) || !(1..=SIZE_MAX).contains(&rows) {
+            self.refuse("a size was refused: columns and rows are each 1 to 500");
+            return false;
+        }
         if (cols, rows) == (self.cols, self.rows) {
-            return;
+            return true;
         }
         self.interrupt();
         self.cluster = None;
         let blank = Cell::blank(Style::default());
-        if self.alt {
-            std::mem::swap(&mut self.grid, &mut self.other);
-        }
-        // `grid` is the main screen here. Blank rows below the cursor go first;
-        // a row with something on it is never dropped: it goes to history.
-        let cursor = if self.alt { self.main_row } else { self.row };
-        while self.grid.len() > rows
-            && self.grid.len() > cursor + 1
-            && self.grid.last().is_some_and(|row| row.iter().all(|c| *c == blank))
+        let (main, other) = if self.alt { (&self.other, &self.grid) } else { (&self.grid, &self.other) };
+        // Places on the main screen that stay on their character: the cursor (a line is as long
+        // as the cursor is far, so it comes back where it was), the saved cursor, each picture.
+        let saved = self.saved.first().map_or((0, 0), |saved| (saved.row, saved.col + usize::from(saved.wrap)));
+        let (main_pictures, other_pictures) =
+            if self.alt { (&self.other_pictures, &self.pictures) } else { (&self.pictures, &self.other_pictures) };
+        let cursor = if self.alt { (self.main_row, 0) } else { (self.row, self.col + usize::from(self.wrap_pending)) };
+        let end = !self.alt && self.wrap_pending;
+        let mut places = vec![cursor, saved];
+        places.extend(main_pictures.iter().map(|p| (p.row, p.col)));
+        let mut wrapped = reflow(main, cols, &mut places, end);
+        let at = |i: usize| places.get(i).copied().unwrap_or((0, 0));
+        // Blank rows below the cursor go first; a row with something on it is
+        // never dropped: it goes to history.
+        while wrapped.len() > rows.max(at(0).0 + 1) && wrapped.last().is_some_and(|row| row.iter().all(|c| *c == blank))
         {
-            self.grid.pop();
+            wrapped.pop();
         }
-        let extra = self.grid.len().saturating_sub(rows);
-        for row in self.grid.drain(..extra) {
-            Term::row_text(&row, &mut self.out.history);
-            self.out.history.push('\n');
+        let up = wrapped.len().saturating_sub(rows);
+        let mut history = String::new();
+        wrapped.drain(..up).for_each(|row| Term::row_history(&row, &mut history));
+        wrapped.resize(rows, vec![blank; cols]);
+        // The other screen keeps its rows: one that loses half a wide character loses it whole.
+        let mut cut = other.clone();
+        cut.resize(rows, Vec::new());
+        for row in &mut cut {
+            if row.get(cols).is_some_and(|c| c.ch == '\0')
+                && let Some(lead) = row.get_mut(cols - 1)
+            {
+                *lead = Cell::blank(lead.style);
+            }
+            row.resize(cols, blank);
+        }
+        // A picture stays if it is whole and in its column still.
+        let mut kept: Vec<Picture> = Vec::new();
+        for (i, picture) in main_pictures.iter().enumerate() {
+            let (row, col) = at(i + 2);
+            if row >= up && col == picture.col && row - up + picture.rows <= rows && col + picture.cols <= cols {
+                kept.push(Picture { row: row - up, ..picture.clone() });
+            }
+        }
+        let mut still = other_pictures.clone();
+        still.retain(|p| p.row + p.rows <= rows && p.col + p.cols <= cols);
+        // Nothing was changed until here: now the new state takes the old one's place.
+        let fit = |(row, col): (usize, usize)| (row.saturating_sub(up).min(rows - 1), col);
+        let ((row, col), saved) = (fit(at(0)), fit(at(1)));
+        if let Some(slot) = self.saved.first_mut() {
+            (slot.row, slot.col, slot.wrap) = (saved.0, saved.1.min(cols - 1), saved.1 >= cols);
+        }
+        if let Some(slot) = self.saved.get_mut(1) {
+            (slot.row, slot.col) = (slot.row.min(rows - 1), slot.col.min(cols - 1));
         }
         if self.alt {
-            if let Some(saved) = self.saved.first_mut() {
-                saved.row = saved.row.saturating_sub(extra);
-            }
-            self.main_row = self.main_row.saturating_sub(extra).min(rows - 1);
-            std::mem::swap(&mut self.grid, &mut self.other);
+            (self.grid, self.other, self.pictures, self.other_pictures) = (cut, wrapped, still, kept);
+            self.main_row = row;
+            (self.row, self.col, self.wrap_pending) = (self.row.min(rows - 1), self.col.min(cols - 1), false);
         } else {
-            self.row = self.row.saturating_sub(extra);
+            (self.grid, self.other, self.pictures, self.other_pictures) = (wrapped, cut, kept, still);
+            // A cursor past its row's last column is the one that waits to wrap there.
+            (self.row, self.col, self.wrap_pending) = (row, col.min(cols - 1), col >= cols);
         }
-        for grid in [&mut self.grid, &mut self.other] {
-            grid.resize(rows, Vec::new());
-            for row in grid {
-                // Cutting off a wide character's second cell blanks its first, on either screen.
-                if row.get(cols).is_some_and(|c| c.ch == '\0')
-                    && let Some(lead) = row.get_mut(cols - 1)
-                {
-                    *lead = Cell::blank(lead.style);
-                }
-                row.resize(cols, blank);
-            }
-        }
+        self.out.history.push_str(&history);
         (self.cols, self.rows) = (cols, rows);
         (self.top, self.bottom) = (0, rows - 1);
-        self.row = self.row.min(rows - 1);
-        self.col = self.col.min(cols - 1);
-        self.wrap_pending = false;
-        // A picture stays if it still fits whole where it is; the main screen's moved up with its rows.
-        let (shown, other) = if self.alt { (0, extra) } else { (extra, 0) };
-        for (pictures, up) in [(&mut self.pictures, shown), (&mut self.other_pictures, other)] {
-            pictures.retain_mut(|p| {
-                let fits = p.row >= up && p.row - up + p.rows <= rows && p.col + p.cols <= cols;
-                p.row = p.row.saturating_sub(up);
-                fits
-            });
-        }
+        true
     }
 
     /// Notes a refusal for the log, once until the holder has taken it.
@@ -1411,6 +1486,77 @@ pub fn base64_encode(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// The rows of a screen wrapped anew for `cols` columns: rows that go on in
+/// the next one (`WRAPS`) are one line, cut again where the new width ends,
+/// never inside a character. `places` are rows and columns of the old rows
+/// and come back as those of the new; the first is the cursor, and its line
+/// is taken to reach as far as it stands (`end`: it waits to wrap at its row's end).
+fn reflow(old: &[Vec<Cell>], cols: usize, places: &mut [(usize, usize)], end: bool) -> Vec<Vec<Cell>> {
+    let blank = Cell::blank(Style::default());
+    // The lines, and for each old row the line it is part of and where in it the row starts.
+    let (mut lines, mut origin, mut open): (Vec<Vec<Cell>>, Vec<(usize, usize)>, bool) =
+        (Vec::new(), Vec::new(), false);
+    for (y, row) in old.iter().enumerate() {
+        if !open {
+            lines.push(Vec::new());
+        }
+        let flags = row.last().map_or(0, |cell| cell.style.flags);
+        open = flags & WRAPS != 0;
+        let mut used = match open {
+            true => row.len() - usize::from(flags & PAD != 0),
+            false => row.iter().rposition(|cell| *cell != blank).map_or(0, |last| last + 1),
+        };
+        if places.first().is_some_and(|cursor| cursor.0 == y) && !open {
+            used = used.max(places.first().map_or(0, |cursor| cursor.1));
+        }
+        let number = lines.len().saturating_sub(1);
+        let Some(line) = lines.last_mut() else { continue };
+        origin.push((number, line.len()));
+        for x in 0..used {
+            let cell = row.get(x).copied().unwrap_or(blank);
+            line.push(Cell { style: Style { flags: cell.style.flags & !(WRAPS | PAD), ..cell.style }, ..cell });
+        }
+    }
+    // The new rows, and for each the line it is part of and where in it the row starts.
+    let (mut rows, mut starts): (Vec<Vec<Cell>>, Vec<(usize, usize)>) = (Vec::new(), Vec::new());
+    for (number, line) in lines.iter().enumerate() {
+        let mut row = Vec::with_capacity(cols);
+        starts.push((number, 0));
+        let mut i = 0;
+        while let Some(cell) = line.get(i) {
+            let unit = 1 + usize::from(line.get(i + 1).is_some_and(|half| half.ch == '\0' && cell.ch != '\0'));
+            if unit > cols {
+                // A wide character on a screen one column wide: a blank stands where it was.
+                row.push(Cell::blank(cell.style));
+            } else if row.len() + unit > cols {
+                let full = row.len() == cols;
+                match row.last_mut().filter(|_| full) {
+                    Some(last) => last.style.flags |= WRAPS,
+                    None => row.push(Cell { style: Style { flags: WRAPS | PAD, ..blank.style }, ..blank }),
+                }
+                rows.push(std::mem::replace(&mut row, Vec::with_capacity(cols)));
+                starts.push((number, i));
+                continue;
+            } else {
+                row.extend(line.get(i..i + unit).unwrap_or(&[]));
+            }
+            i += unit;
+        }
+        row.resize(cols, blank);
+        rows.push(row);
+    }
+    for (i, place) in places.iter_mut().enumerate() {
+        let (line, offset) = origin.get(place.0).map_or((usize::MAX, 0), |&(line, start)| (line, start + place.1));
+        // The last new row of that line that starts at or before the place; for a cursor at a
+        // row's end (`end`), before it: where one row ends and the next starts is two places.
+        let last =
+            |strict: bool| starts.iter().rposition(|&(of, start)| of == line && start + usize::from(strict) <= offset);
+        let row = last(i == 0 && end).or_else(|| last(false));
+        *place = row.map_or((0, 0), |row| (row, offset - starts.get(row).map_or(0, |start| start.1)));
+    }
+    rows
 }
 
 /// The DEC line-drawing set, for programs that draw boxes with `ESC ( 0`.

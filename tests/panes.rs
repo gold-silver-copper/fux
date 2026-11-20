@@ -161,7 +161,9 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     let (outer, inner) = (Session::new("outer"), Session::new("inner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b")).unwrap();
-    let script = "#!/bin/sh\n# split\n# group: Panes\np=$(fux start \"$FUXN_WS/two\" -- sh) && fux layout split row two\necho made $FUXN_KEYS\n";
+    // The split key starts its pane at the size the viewer says the new tile will have; the
+    // program notes the size it found when it started.
+    let script = "#!/bin/sh\n# split\n# group: Panes\np=$(COLUMNS=${FUXN_ROW%x*} LINES=${FUXN_ROW#*x} fux start \"$FUXN_WS/two\" -- sh -c 'stty size > \"$FUXN_PANE/first\"; exec sh') && fux layout split row two\necho made $FUXN_KEYS\n";
     fs::write(keys.join("C-b/v"), script).unwrap();
     fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>\"$FUXN_PANE/in\"\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/v")).arg(keys.join("C-b/e")).status().unwrap();
@@ -202,6 +204,8 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     until("the panes have their tiles' sizes", || {
         width("one") == Some("40x24".into()) && width("two") == Some("39x24".into())
     });
+    // And the new pane's program started at its tile's size: it was never drawn at another.
+    assert_eq!(read(&inner.0.join("main/two/first")), "24 39\n");
     // A character the terminal outside may draw wider than fux counts it (three people who are one
     // family here) is not drawn where that could reach past its tile's edge: a `?` stands in each of
     // its columns, while the pane's own screen keeps it. One that is wide everywhere is drawn.

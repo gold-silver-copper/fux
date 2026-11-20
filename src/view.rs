@@ -380,8 +380,23 @@ impl View {
         let mut script = Command::new(file);
         script.env(name!("DIR"), &self.session).env(name!("WS"), &self.workspace).env(name!("KEYS"), &self.keys);
         script.env(name!("PANE"), pane.unwrap_or_default()).env(name!("VIEW"), &self.ctl_path).env("PATH", path);
-        // A pane a script starts begins at the size of the whole view, right for a new tab.
+        // A pane a script starts begins at the size of the whole view, right for a new tab. The
+        // size a tile would have if the focused pane were split is given too, side by side
+        // (ROW) and one above the other (COL): a script that splits passes it on to `fux start`,
+        // and its program is never drawn at one size and then at another.
         script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.to_string());
+        let area = Rect { x: 0, y: 0, w: usize::from(self.size.cols), h: usize::from(self.size.rows) };
+        let layout = Layout::load(&self.session.join(&self.workspace)).1;
+        for (name, way) in [(name!("ROW"), "row"), (name!("COL"), "col")] {
+            // A pane no folder can be named after is split off in a copy of the layout.
+            let mut split = layout.clone();
+            split.tabs.push(layout::Tab { root: layout::Node::Pane("\0".into()), focus: "\0".into() });
+            let tile = split.edit(&["split", way, "\0"]).ok().and_then(|()| {
+                split.tab()?.tiles(area).into_iter().find(|(pane, _)| pane == "\0").map(|(_, tile)| tile)
+            });
+            let tile = tile.unwrap_or(area);
+            script.env(name, format!("{}x{}", tile.w, tile.h));
+        }
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
             Ok(child) => {
                 self.waiting = Some((child.id(), Instant::now()));

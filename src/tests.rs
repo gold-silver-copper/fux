@@ -179,13 +179,111 @@ fn the_alternate_screen_gives_the_main_one_back_and_keeps_no_history() {
     assert_eq!(term.plain(), "one\ntwo!\n\n\n");
 }
 
+/// Numbers that are the same on every run: a test over random sizes fails the same way twice.
+fn numbers(seed: u64) -> impl FnMut(usize) -> usize {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    move |below| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 33) as usize % below.max(1)
+    }
+}
+
+/// Lines of words, some longer than any screen here, with wide, joined and marked characters.
+fn some_text(next: &mut impl FnMut(usize) -> usize) -> String {
+    let words =
+        ["a", "to", "the", "wrapped", "一二三", "e\u{301}", "\u{1f468}\u{200d}\u{1f469}", "\u{1f1ef}\u{1f1f5}", "x"];
+    let line = |next: &mut dyn FnMut(usize) -> usize| {
+        (0..next(40)).map(|_| words[next(words.len())]).collect::<Vec<_>>().join(" ")
+    };
+    (0..2 + next(12)).map(|_| line(next)).collect::<Vec<_>>().join("\r\n")
+}
+
+/// Text as its lines, without the blanks at a line's end (where a cursor stood, blanks may be
+/// kept) and without the empty lines at its end.
+fn lines_of(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().map(|line| line.trim_end_matches(' ')).collect();
+    lines.join("\n").trim_end_matches('\n').to_string()
+}
+
 #[test]
-fn a_resize_keeps_the_text_and_sends_what_no_longer_fits_to_history() {
-    let mut term = term(10, 4, "a\r\nb\r\nc\r\nd");
-    term.resize(5, 2);
-    assert_eq!((term.peek().history.as_str(), term.plain().as_str()), ("a\nb\n", "c\nd\n"));
-    term.resize(8, 3);
-    assert_eq!((term.plain().as_str(), term.row), ("c\nd\n\n", 1));
+fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
+    // The case that lost 40 characters of 123: a line of 120, narrowed to 40 columns and widened back.
+    let long: String = (0..120).map(|n| char::from(b'a' + n % 26)).collect();
+    let mut wide = term(120, 10, &format!("{long}\r\nend"));
+    assert!(
+        wide.resize(40, 10)
+            && wide.plain().starts_with(&format!("{}\n{}\n{}\nend\n", &long[..40], &long[40..80], &long[80..]))
+    );
+    assert!(wide.resize(120, 10));
+    assert_eq!((wide.plain(), wide.row, wide.col), (format!("{long}\nend\n\n\n\n\n\n\n\n\n"), 1, 3));
+    for seed in 0..300 {
+        let next = &mut numbers(seed);
+        let text = some_text(next);
+        let mut term = term(2 + next(60), 1 + next(30), &text);
+        let printed = text.replace("\r\n", "\n");
+        let everything = |term: &Term| lines_of(&(term.peek().history.clone() + &term.lines().0));
+        assert_eq!(everything(&term), lines_of(&printed), "seed {seed}: as printed");
+        // A saved cursor is put somewhere on the screen, and then the cursor, on text or beside it
+        // (not in the last column, where a cell may be the gap a wide character left: no place in the text).
+        let place = |term: &Term| term.peek().history.clone() + &term.lines().1;
+        term.feed(format!("\x1b[{};{}H\x1b7", 1 + next(term.rows), 1 + next(term.cols - 1)).as_bytes());
+        let saved_before = place(&term);
+        term.feed(format!("\x1b[{};{}H", 1 + next(term.rows), 1 + next(term.cols - 1)).as_bytes());
+        let (was, at, history) = (term.plain(), (term.row, term.col), term.peek().history.len());
+        let (before, size) = (place(&term), (term.cols, term.rows));
+        for _ in 0..1 + next(4) {
+            // (1) Every character printed is in the screen or in history, once and in order; (3) the cursor
+            // stays on its character; (4) no character is cut in half.
+            assert!(term.resize(2 + next(60), 1 + next(30)));
+            assert_eq!(everything(&term), lines_of(&printed), "seed {seed}: at {}x{}", term.cols, term.rows);
+            assert!(term.lines().2, "seed {seed}: a character in half at {}x{}", term.cols, term.rows);
+            if term.peek().history.len() == history {
+                assert_eq!(place(&term), before, "seed {seed}: the cursor at {}x{}", term.cols, term.rows);
+            }
+        }
+        // (2) Back at the size it had, with nothing printed between and nothing gone to history: as it was.
+        assert!(term.resize(size.0, size.1));
+        if term.peek().history.len() == history {
+            assert_eq!((term.plain(), (term.row, term.col)), (was, at), "seed {seed}: back at {size:?}");
+            // The saved cursor too, if it was on a character or right after one (in the blank
+            // part of a row or on an empty row it is only kept inside the screen).
+            term.feed(b"\x1b8");
+            assert!(
+                place(&term) == saved_before || saved_before.ends_with([' ', '\n']),
+                "seed {seed}: the saved cursor"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_resize_cuts_the_alternate_screen_and_a_refused_one_changes_nothing() {
+    for seed in 0..100 {
+        let next = &mut numbers(seed);
+        let text = some_text(next);
+        let mut term = term(2 + next(60), 1 + next(30), &text);
+        let everything = |term: &Term| lines_of(&(term.peek().history.clone() + &term.lines().0));
+        let main = everything(&term);
+        term.feed(format!("\x1b[?1049h\x1b[H{}", some_text(next).replace('a', "ALT")).as_bytes());
+        for _ in 0..1 + next(4) {
+            // (4) No character is cut in half on either screen, and the alternate one's rows stay rows.
+            assert!(term.resize(2 + next(60), 1 + next(30)) && term.lines().2, "seed {seed}");
+        }
+        // (6) A size that is refused changes nothing, and says so.
+        let state = (term.styled(), term.row, term.col, term.cols, term.rows, term.peek().history.clone());
+        for (cols, rows) in [(0, 5), (5, 0), (501, 5), (5, 501)] {
+            assert!(!term.resize(cols, rows));
+        }
+        assert_eq!(state, (term.styled(), term.row, term.col, term.cols, term.rows, term.peek().history.clone()));
+        assert_eq!(term.peek().refused.len(), 1);
+        // (5) Leaving the alternate screen gives the main one back at the new size, with all its text;
+        // nothing of the alternate screen went to history.
+        term.feed(b"\x1b[?1049l");
+        assert_eq!(everything(&term), main, "seed {seed}: at {}x{}", term.cols, term.rows);
+        assert!(!term.peek().history.contains("ALT") && term.plain().lines().count() == term.rows);
+    }
 }
 
 #[test]
@@ -324,17 +422,6 @@ fn a_screen_file_reads_back_as_the_terminal_that_wrote_it() {
     let mut back = Term::from_screen(&file, |_, _| {});
     assert_eq!(back.header(), term.header());
     assert_eq!((back.plain(), back.styled()), (term.plain(), term.styled()));
-}
-
-#[test]
-fn a_wide_character_cut_by_a_resize_goes_whole_on_both_screens() {
-    // One on the screen shown, one on the screen behind the alternate one.
-    let mut term = Term::new(4, 2);
-    term.feed("AB界\x1b[?1049hCD界".as_bytes());
-    term.resize(3, 2);
-    assert_eq!(term.plain(), "\nCD\n");
-    term.feed(b"\x1b[?1049l");
-    assert_eq!(term.plain(), "AB\n\n");
 }
 
 #[test]

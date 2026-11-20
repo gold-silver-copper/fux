@@ -75,7 +75,7 @@ in `FUXN_WS`.
 | `screen` | line 1 says what rows cannot; then one line of plain text per row |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them |
 | `status` | `holder N` and `command …` (its first 4,096 characters): written once, when the pane starts. The program's number and state are on line 1 of the screens, and only there |
-| `history` | plain text of the lines that scrolled off the top. Past 4 MiB it becomes `history.1` and a new one starts |
+| `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them. Past 4 MiB it becomes `history.1` and a new one starts |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
@@ -156,7 +156,9 @@ three people where fux joined a family). The viewer keeps that inside the
 cell: after anything but plain ASCII it places the next cell by row and
 column, it sends the cells such a character may have been drawn over again,
 and where one could reach past its tile's edge it draws a `?` in each of its
-columns instead (the pane's `screen` keeps the character). A terminal set to
+columns instead (the pane's `screen` keeps the character): a family in the
+last six columns of a tile is `??`, since a terminal that does not join it
+draws three people there. fux does not ask your terminal how it measures. A terminal set to
 draw "ambiguous" characters two columns wide is not catered for: the lines
 between tiles are such characters.
 
@@ -168,6 +170,14 @@ Devanagari conjunct, which is one character here, redraws it oddly.
 The viewer asks a pane once to take the size of its tile (through `ctl`). Two
 viewers with different sizes do not fight: the last to ask wins, and the
 other shows what fits.
+
+A resize wraps the main screen's text anew: a line that was wrapped is one
+line again at any width, no character is cut in two, and the cursor stays on
+its character. Rows that no longer fit above the cursor go to `history`,
+which does not give them back: a screen made taller gets blank rows at its
+bottom. The alternate screen (vim, less) is cut or padded, never wrapped,
+and nothing of it goes to history: its program draws it again. A size that
+is refused changes nothing and leaves a line in `log`.
 
 ### Keys are scripts
 
@@ -190,7 +200,10 @@ names differ by more than case, for macOS); `C-b`, `M-x`, `enter`, `tab`,
 
 A script gets `FUXN_DIR` (the session), `FUXN_WS` (the workspace shown),
 `FUXN_PANE` (the focused pane's directory), `FUXN_KEYS`, `FUXN_VIEW`,
-`COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has), and this
+`COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has),
+`FUXN_ROW` and `FUXN_COL` (the size, as `COLSxROWS`, of the tile a split of the
+focused pane would make, side by side or one above the other: the split keys
+start their pane at that size, so its program is not drawn twice), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; a script that
 takes longer puts its work in the background, as the defaults do.
@@ -397,7 +410,7 @@ does something else is a row below with a case that shows it.
 | --- | --- |
 | What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6, 9, 21 and 58 and the colon forms of 4, 38 and 48, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. A character goes on while the cursor is where its last part left it and its cell is unchanged: a change of colour or a title between a letter and its accent does not part them (`grep --color` does this), a move or an erase does |
-| How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). U+FE0F after an emoji makes it two. A control, U+2028 and U+2029 among them, and a mark or joiner with no character to join, takes no cell and is dropped |
+| How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). An emoji with U+FE0F in its character is two. A control, U+2028 and U+2029 among them, and a mark or joiner with no character to join, takes no cell and is dropped |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports) | Its own specification |
 
 `tools/referee/referee.py` plays the same bytes to fux and to three
@@ -454,7 +467,7 @@ takes a desktop's number removes the desktop's socket when it ends).
 | `terminfo/is2`, `terminfo/rs2` | tmux | text, cursor | Leaving 132-column mode (`CSI ? 3 l`) does nothing, as in xterm by default; tmux clears the screen |
 | `terminfo/rmcup` | tmux | text, cursor | Leaving the alternate screen when not on it still restores the saved cursor, as in xterm; tmux does nothing |
 | `controls/alternate-1049-twice` | tmux | text | Asking for the alternate screen of 1049 while on it clears it again, as in xterm; tmux keeps it |
-| `controls/alternate-47`, `controls/wrap-pending-cuf`, `controls/wrap-pending-report`, `unicode/mark-after-letter-at-end` | tmux | cursor | A cursor waiting to wrap is in the last column, reported and moved from there, as in xterm; tmux counts it one column further |
+| `controls/alternate-47`, `controls/wrap-pending-cuf`, `controls/wrap-pending-report`, `resize/narrow-full-screen`, `unicode/mark-after-letter-at-end` | tmux | cursor | A cursor waiting to wrap is in the last column, reported and moved from there, as in xterm; tmux counts it one column further |
 | `controls/wrap-pending-bs` | tmux | text, cursor | A cursor waiting to wrap is in the last column, reported and moved from there, as in xterm; tmux counts it one column further |
 | `controls/save-restore-pen-and-wrap` | tmux | text, cursor | Saving and restoring the cursor keeps a waiting wrap, as in xterm; tmux forgets it |
 | `controls/wrap-pending-el` | tmux | text, cursor | Erasing in the line ends a waiting wrap, as in xterm; tmux keeps it |
@@ -471,23 +484,11 @@ takes a desktop's number removes the desktop's socket when it ends).
 | `unicode/bengali-vowel-sign-at-end`, `unicode/devanagari-at-end`, `unicode/devanagari-joiner-at-end`, `unicode/flag-at-end`, `unicode/flags-three-at-end`, `unicode/halfwidth-voiced-mark-at-end`, `unicode/keycap-at-end`, `unicode/prepend-at-end`, `unicode/tamil-at-end`, `unicode/tamil-vowel-sign-at-end`, `unicode/thai-at-end`, `unicode/vs16-at-end` | tmux | text, cursor | tmux joins fewer characters than UAX #29 does (a spacing mark, a conjunct; before 3.8 also a flag, a skin tone, U+FE0F): what it does not join it measures apart and cuts at a row's end |
 | `unicode/halfwidth-voiced-mark` | old | cursor | old measures the same cluster otherwise |
 | `unicode/halfwidth-voiced-mark-at-end` | old | text, cursor | old measures the same cluster otherwise |
-<!-- referee:end -->
-
-Not done yet, and listed so the referee tells a new difference from these:
-rows are cut on a resize instead of wrapped again.
-
-<!-- referee:departures -->
-| Cases | Differs from | In | |
-| --- | --- | --- | --- |
-| `resize/narrow-full-screen` | old | text | no reflow |
-| `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow` | old | text, cursor | no reflow |
-| `resize/narrow-cursor-mid-line`, `resize/narrow-wide-characters`, `resize/widen` | old, tmux | text, cursor | no reflow |
-| `resize/narrow-and-back`, `resize/region-then-resize` | old, tmux, xterm | text | no reflow |
-| `resize/shorter-and-back`, `resize/taller` | old, tmux, xterm | text, cursor | no reflow |
-| `resize/narrow-wide-and-back` | old, xterm | text, cursor | no reflow |
-| `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow`, `resize/narrow-wide-and-back` | tmux | text | no reflow |
-| `resize/narrow-full-screen` | tmux | text, cursor | no reflow |
-| `resize/narrow-wide-characters` | xterm | text | no reflow |
+| `resize/region-then-resize` | old, tmux, xterm | text | What went to `history` stays there (it is a file): a screen made taller gets blank rows at its bottom, where the others bring rows back from their scrollback |
+| `resize/shorter-and-back`, `resize/taller` | old, tmux, xterm | text, cursor | What went to `history` stays there (it is a file): a screen made taller gets blank rows at its bottom, where the others bring rows back from their scrollback |
+| `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow`, `resize/narrow-cursor-mid-line`, `resize/narrow-wide-and-back`, `resize/narrow-wide-characters` | tmux | text, cursor | Narrowed, the screen keeps every row it has room for; tmux sends rows above the cursor to its history though the screen has room, and does not get them back when widened |
+| `resize/narrow-full-screen` | xterm | text | The main screen's text is wrapped anew, as in tmux and the old emulator; xterm cuts rows at the right and loses what it cut |
+| `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow`, `resize/narrow-cursor-mid-line`, `resize/narrow-wide-characters`, `resize/widen` | xterm | text, cursor | The main screen's text is wrapped anew, as in tmux and the old emulator; xterm cuts rows at the right and loses what it cut |
 <!-- referee:end -->
 
 ## Left out
@@ -499,8 +500,7 @@ hyperlinks (OSC 8 is read and dropped); reading the clipboard (setting it
 works); colour queries and palette and cursor colour changes (OSC 4, 10, 11,
 12) and the queries DECRQSS, XTGETTCAP and XTVERSION (and `CSI > c` is
 answered with no xterm version in it); focus reports (mode
-1004); the bell, the visual bell, the printer codes and memory lock; reflow on resize (rows keep their text, what does not fit is
-cut or goes to history); left and right margins; line feed mode (`CSI 20 h`);
+1004); the bell, the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
 double underline and
 underline colours (drawn as one plain underline); more than ten
 parts in one character (a letter with twelve marks loses the last three,
