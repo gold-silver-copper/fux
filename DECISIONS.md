@@ -1275,6 +1275,29 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     more than 4 MiB of styled text now loses plain rows it kept before
     (colour at every cell of a full 500 by 500 screen): the README's
     Bounds say so. A file is 4 MiB and one write, about 4.5 MiB as a rule.
+- **D89. A pane owns its colours** (message 23, step 5; the panel 7 of 8).
+  What a program sets (OSC 4, 10, 11, 12) is kept by its pane's emulator,
+  one set for both screens, until it gives it back (OSC 104, 110 to 112,
+  a full reset). A question is answered with what was set, else from the
+  session's `colours` as before. The cells stay as the program wrote them
+  (a palette number, a default); `screen.styled` tells a cell whose number
+  or default was set as direct colour, so text printed before a set
+  changes with it, as on a terminal. With a background of its own every
+  cell of the pane has it, blank ones too. The cursor's colour is a fifth
+  word of `cursor`; the viewer gives it to its terminal for the pane that
+  has the keys and takes it back when the keys move, a menu opens or it
+  leaves. The viewer never sets its terminal's palette. D56's "heard and
+  changes nothing" is gone.
+  - No `palette` file: the cells carry the colours.
+  - `history.styled` is a record: a row is told in the colours of the
+    moment it left the screen, and is not rewritten when a colour is set
+    or given back later.
+  - Taken: `#` with 3, 6, 9 or 12 hex digits and `rgb:R/G/B` with one to
+    four each. Not taken (a line in `log`): colour names, `rgbi:` and the
+    other X forms.
+  - The viewer also asks its terminal for the cursor's colour at start and
+    keeps it in `colours` (a line `cursor`), so "give back" has something
+    to go back to.
 
 ## The old fux3's bugs: which classes are gone
 
