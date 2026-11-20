@@ -189,6 +189,9 @@ pub struct Term {
     /// The pictures of the screen not shown (the main one while the alternate is).
     pub other_pictures: Vec<Picture>,
     next_picture: u32,
+    /// The title now, and the titles a program put aside to bring back (`CSI 22 t`, `CSI 23 t`), at most 8.
+    title: String,
+    titles: Vec<String>,
     /// The size of a cell in pixels, to know how many cells a picture covers.
     pub cell: (usize, usize),
 }
@@ -241,6 +244,8 @@ impl Term {
             pictures: Vec::new(),
             other_pictures: Vec::new(),
             next_picture: 1,
+            title: String::new(),
+            titles: Vec::new(),
             cell: (10, 20),
         }
     }
@@ -849,7 +854,10 @@ impl Term {
     fn command(&mut self, text: &str) {
         let (number, rest) = text.split_once(';').unwrap_or((text, ""));
         match number {
-            "0" | "2" => self.out.title = Some(rest.chars().filter(|c| !c.is_control()).take(TITLE_MAX).collect()),
+            "0" | "2" => {
+                self.title = rest.chars().filter(|c| !c.is_control()).take(TITLE_MAX).collect();
+                self.out.title = Some(self.title.clone());
+            }
             "52" => match rest.split_once(';').map_or("", |(_, what)| what) {
                 // Setting only: a program is never told what is on the clipboard.
                 "?" => self.refuse("a program asked to read the clipboard: that is refused"),
@@ -1091,6 +1099,15 @@ impl Term {
                     14 => self.respond(&format!("\x1b[4;{};{}t", rows * h, cols * w)),
                     16 => self.respond(&format!("\x1b[6;{h};{w}t")),
                     18 => self.respond(&format!("\x1b[8;{rows};{cols}t")),
+                    // The title put aside (the oldest is forgotten past 8), and brought back.
+                    22 => {
+                        self.titles.drain(..self.titles.len().saturating_sub(7));
+                        self.titles.push(self.title.clone());
+                    }
+                    23 => {
+                        self.title = self.titles.pop().unwrap_or_default();
+                        self.out.title = Some(self.title.clone());
+                    }
                     _ => {}
                 }
             }

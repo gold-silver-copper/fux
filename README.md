@@ -52,7 +52,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 |---|---|
 | `fux dir` | prints the session directory |
 | `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`, or typed in a pane, that pane's), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place |
-| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as line 1 of its last screen has them |
+| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …`: line 1 of its last screen, with a space where that has `=` or `:` |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
 
@@ -196,9 +196,12 @@ the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
 TERM to the pane's program), `g` arrange (`r c g m`, `t` turn). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
 not your shell but `keys/.shell`, a few lines that run it and then remove
-the pane's own folder. A shell killed outright (or hung up with `kill`)
-never reaches the `rm`: its folder stays, saying `killed`, until the close
-key or `rm -r` takes it. The close key moves the folder out of the
+the pane's own folder, however the shell ended. Only when `.shell` itself
+is gone first (the pane hung up with `kill`, its holder killed, or `.shell`
+killed outright) is nobody left to remove the folder: it stays, saying
+`killed`, until the close key or `rm -r` takes it. The `a k` key sends TERM
+to the pane's program, which in a default shell pane is `.shell`: it lets
+TERM pass, as an interactive shell does. The close key moves the folder out of the
 workspace (the tile goes at once), removes its `in`, and removes the folder
 when the holder has left, within two seconds.
 
@@ -287,7 +290,7 @@ gone, says so in the corner of its own last row (`exited 0`, `lost`).
 **Titles and the clipboard.** The viewer gives your terminal the focused
 pane's title (and its own back when no pane has one, and when it leaves);
 no row is taken for it. What the focused pane's program copies (OSC 52)
-is passed to your terminal once, when it is copied: looking at a pane, or
+is passed to your terminal once, when its `clipboard` file changes: looking at a pane, or
 coming back to it, never sends an old clipboard again. Without a viewer the
 `clipboard` file is still there to read.
 

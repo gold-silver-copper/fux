@@ -91,6 +91,9 @@ fn a_title_and_a_clipboard_leave_as_text_and_bytes_and_a_string_has_one_bound() 
     let out = term.take();
     assert_eq!((out.title.as_deref(), out.clipboard.as_deref()), (Some("my title"), Some(&b"hello, world"[..])));
     assert_eq!(term.plain(), "after\n\n");
+    // A title put aside comes back, as a program that borrows the title for a while expects.
+    term.feed(b"\x1b[22;2t\x1b]2;borrowed\x07\x1b[23;2t");
+    assert_eq!(term.take().title.as_deref(), Some("my title"));
     // A program is never told what is on the clipboard, and is refused in words.
     term.feed(b"\x1b]52;c;?\x07\x1b]52;c;not base64!\x07");
     let out = term.take();
