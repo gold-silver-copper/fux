@@ -77,6 +77,10 @@ struct View {
     sixel: bool,
     /// The kitty keyboard flags the terminal takes, of those fux passes on.
     keyboard: u8,
+    /// The keys that are down, as far as the terminal tells: those the viewer took for itself,
+    /// and those it passed to the pane that has the keys.
+    taken: Vec<(u32, u8)>,
+    sent: Vec<(u32, u8)>,
     /// The terminal joins characters into clusters as fux does (its mode 2027), and whether
     /// this viewer was the one to turn that on.
     joins: bool,
@@ -167,6 +171,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         message: String::new(),
         sixel: false,
         keyboard: 0,
+        taken: Vec::new(),
+        sent: Vec::new(),
         joins: false,
         joined: false,
         told_focus: None,
@@ -195,7 +201,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // The terminal is asked once what its colours are (the two it draws with and its palette),
     // and last of all what it is: its answer to that ends the wait for the others.
     const START: &str =
-        "\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>5u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
+        "\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     let result = view.tty.write_all((START.to_string() + &asked + "\x1b[c").as_bytes()).and_then(|()| view.run(&ctl));
     // The pane that was told it has the keys is told that it has them no more.
@@ -497,19 +503,56 @@ impl View {
     /// One key: a script if the key's file is one, a menu if it is a
     /// directory, and otherwise the key goes to the pane.
     fn key(&mut self, name: &str, raw: &[u8]) {
+        // A program may have asked to be told when keys are let go and held (the kitty
+        // protocol's flag 2), and the terminal then tells the viewer too. A key the viewer took
+        // for itself is its own to the end: its repeats and its release go nowhere. A release
+        // reaches a pane only if that pane got the press. While a menu is open, a release, and a
+        // modifier key by itself, are nothing: they do not choose and do not close it.
+        let event = keys::event(raw);
+        let repeats = self.menu.as_ref().is_some_and(|(directory, _)| directory.join(".repeat").exists());
+        match event {
+            Some((id, 3, _)) => {
+                let (taken, sent) =
+                    (self.taken.iter().position(|key| *key == id), self.sent.iter().position(|key| *key == id));
+                if let Some(at) = taken {
+                    self.taken.swap_remove(at);
+                } else if let Some(at) = sent.filter(|_| self.menu.is_none()) {
+                    self.sent.swap_remove(at);
+                    self.typed.extend_from_slice(raw);
+                }
+                return;
+            }
+            Some((_, _, true)) if self.menu.is_some() => return,
+            // (Held in a menu that stays open, a key acts again: to resize, say.)
+            Some((id, 2, _)) if self.taken.contains(&id) && !repeats => return,
+            _ => {}
+        }
         self.message.clear();
         let menu = self.menu.take();
         let file = menu.as_ref().map_or(&self.keys, |(directory, _)| directory).join(name);
-        match fs::metadata(&file) {
-            Ok(kind) if !name.is_empty() && kind.is_dir() => self.menu = Some((file.clone(), menu_entries(&file))),
+        let down = match fs::metadata(&file) {
+            Ok(kind) if !name.is_empty() && kind.is_dir() => {
+                self.menu = Some((file.clone(), menu_entries(&file)));
+                &mut self.taken
+            }
             Ok(kind) if !name.is_empty() && kind.is_file() => {
                 self.send();
                 self.script(&file);
                 // A menu with a file `.repeat` in it stays for the next key (to resize, say), until a key it has not.
                 self.menu = menu.filter(|(directory, _)| directory.join(".repeat").exists());
+                &mut self.taken
             }
-            _ if menu.is_none() => self.typed.extend_from_slice(raw),
-            _ => {}
+            _ if menu.is_none() => {
+                self.typed.extend_from_slice(raw);
+                &mut self.sent
+            }
+            _ => &mut self.taken,
+        };
+        // Which keys are down is remembered for their releases (the last 64 of each kind).
+        if let Some((id, 1, _)) = event {
+            down.retain(|key| *key != id);
+            down.truncate(63);
+            down.push(id);
         }
     }
 
@@ -676,7 +719,11 @@ impl View {
         // What no tile covers is a line: marked here, drawn once the tiles are in place.
         let line = Cell { ch: '\u{2}', ..Cell::blank(Style::default()) };
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
-        self.focus = tab.map(|tab| tab.focus.clone());
+        let focus = tab.map(|tab| tab.focus.clone());
+        if std::mem::replace(&mut self.focus, focus.clone()) != focus {
+            // The keys that were passed on went to another pane: their releases are not this one's.
+            self.sent.clear();
+        }
         self.notices(&layout, &directory);
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();

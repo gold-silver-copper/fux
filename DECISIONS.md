@@ -708,6 +708,24 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     output without a line break, a clear, a mark above marks), not for the
     kept ones.
 
+- **D65. The whole kitty keyboard protocol** (message 12, step I). All five
+  flags are passed on (the mask is 31), still only as far as the terminal
+  takes them. The viewer's part is what flag 2 and 8 make necessary:
+  `keys::event` reads a key's number, whether it is pressed, repeated or
+  released, and whether it is a modifier by itself. The viewer remembers
+  which keys are down: those it took (prefix, menu keys, keys a menu
+  swallowed) and those it passed to the pane with the keys. A release of a
+  key it took goes nowhere; a release goes to a pane only if its press went
+  to that pane (the list is cleared when the keys move to another pane);
+  with a menu open, releases and lone modifiers do nothing.
+  - Mine to decide: a repeat of a key the viewer took is dropped, except in
+    a menu that stays open (`.repeat`), where a held key acts again: without
+    flag 2 a terminal sends a held key as presses and the resize menu
+    repeats, and a program's asking for flag 2 should not change that.
+  - Under flag 8 a plain letter comes as `CSI 97 u` and is named `a`: the
+    menus work as before. A shifted sign is named by its sign only if the
+    terminal says which it is (flag 4): as before.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

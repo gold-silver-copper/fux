@@ -134,8 +134,22 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     assert_eq!(asked("\x1b[=1u\x1b[>5u\x1b[?u\x1b[<1u\x1b[?u\x1b[<9u\x1b[?u").0, "\x1b[?5u\x1b[?1u\x1b[?0u");
     assert_eq!(asked("\x1b[=1;1u\x1b[=4;2u\x1b[?u\x1b[=1;3u\x1b[?u\x1b[=0u\x1b[?u").0, "\x1b[?5u\x1b[?4u\x1b[?0u");
     assert_eq!(asked("\x1b[>1u\x1b[?1049h\x1b[?u\x1b[>4u\x1b[?u\x1b[?1049l\x1b[?u").0, "\x1b[?0u\x1b[?4u\x1b[?1u");
-    // Only the flags fux passes on are ever in force (not 2, 8, 16, nor a number past them).
-    assert_eq!(asked("\x1b[>31u\x1b[?u\x1b[=256u\x1b[?u").0, "\x1b[?5u\x1b[?0u");
+    // All five of the protocol's flags can be in force, and no number past them.
+    assert_eq!(asked("\x1b[>31u\x1b[?u\x1b[=256u\x1b[?u\x1b[=127u\x1b[?u").0, "\x1b[?31u\x1b[?0u\x1b[?31u");
+    // A flag the terminal that sends the keys lacks is not in force, and the program is told so.
+    let mut lacking = Term::new(4, 1);
+    lacking.keyboard = 5;
+    lacking.feed(b"\x1b[>31u\x1b[?u\x1b[=2;2u\x1b[?u");
+    assert_eq!(lacking.take().reply, b"\x1b[?5u\x1b[?5u");
+    // What a key's sequence says beyond its name: which key, pressed, held or let go, and
+    // whether it is a modifier by itself. Bytes in the old form say none of it.
+    use crate::keys::event;
+    assert_eq!(event(b"\x1b[97;1:3u"), Some(((97, b'u'), 3, false)));
+    assert_eq!(event(b"\x1b[98;5u"), Some(((98, b'u'), 1, false)));
+    assert_eq!(event(b"\x1b[97:65;2:2;65u"), Some(((97, b'u'), 2, false)));
+    assert_eq!(event(b"\x1b[57441;2u"), Some(((57441, b'u'), 1, true)));
+    assert_eq!(event(b"\x1b[1;5:3A"), Some(((1, b'A'), 3, false)));
+    assert_eq!((event(b"a"), event(b"\x1b[<0;1;1M"), event(b"\x1ba")), (None, None, None));
     // Going back takes a count: none given is one, 0 is none.
     assert_eq!(asked("\x1b[=4u\x1b[>1u\x1b[<0u\x1b[?u\x1b[<u\x1b[?u").0, "\x1b[?1u\x1b[?4u");
     // What is kept aside is bounded at 16: of 17, the oldest (4) is gone, and the 16 come back in turn.
@@ -725,7 +739,7 @@ fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_
     let mut flags = Term::new(4, 1);
     flags.keyboard = crate::term::KEYS;
     flags.feed(b"\x1b[=65536u\x1b[?u\x1b[=65535u\x1b[?u");
-    assert_eq!(flags.take().reply, b"\x1b[?0u\x1b[?5u");
+    assert_eq!(flags.take().reply, b"\x1b[?0u\x1b[?31u");
     // A row that goes on in the next keeps the blank at its end; when what a line of history
     // went on in is erased, the screen's first row is the next line, and not listed.
     let mut spaced = crate::tests::term(3, 2, "ab cd");

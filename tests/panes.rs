@@ -551,3 +551,47 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     until("the second command is done", || read(&pane.join("marks")).lines().count() == 10);
     assert_eq!(run("S-c"), "the last command printed nothing\n");
 }
+
+#[test]
+fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_press() {
+    // As the test before: the viewer in a pane of an outer session whose terminal is said to
+    // take every flag of the kitty keyboard protocol.
+    let (outer, inner) = (Session::new("router"), Session::new("rinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    fs::write(keys.join("C-b/o"), "#!/bin/sh\n# other\nfux layout focus next\n").unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("C-b/o")).status().unwrap();
+    fs::create_dir_all(&outer.0).unwrap();
+    fs::write(outer.0.join("keyboard"), "31\n").unwrap();
+    let raw = "stty raw -echo; exec cat -vt";
+    let plain = inner.start("plain", &["sh", "-c", raw]);
+    let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &viewer[..]].concat());
+    until("the session knows what the terminal takes", || read(&inner.0.join("keyboard")) == "31\n");
+    // A program asks for escape codes told apart, presses and releases, and every key as a code.
+    let asking = "stty raw -echo; printf '\\033[>11u\\033[?u'; exec cat -vt";
+    let asks = inner.start("asks", &["sh", "-c", asking]);
+    let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
+    until("it is told they are in force", || shown(&asks) == "^[[?11u" && fact(&asks, "modes") == "keys11");
+    fs::write(inner.0.join("main/layout"), "* row(asks plain) focus=asks\n").unwrap();
+    until("the viewer asked its terminal for them", || fact(&view, "modes").contains("keys11"));
+    // A key typed: its press and its release reach the program. One held down stays down for now.
+    fs::write(view.join("in"), "\x1b[97;1:1u\x1b[97;1:3u\x1b[120;1:1u").unwrap();
+    until("the keys arrive", || shown(&asks) == "^[[?11u^[[97;1:1u^[[97;1:3u^[[120;1:1u");
+    // The prefix, held and let go; Shift by itself, down and up, with the menu open; then the
+    // menu's key, and its release. All of it is the viewer's: the menu stays open through Shift
+    // and the releases, the script runs once, and no pane hears of any of it.
+    fs::write(view.join("in"), "\x1b[98;5:1u\x1b[98;5:2u\x1b[98;5:3u\x1b[57441;2:1u\x1b[57441;1:3u").unwrap();
+    until("the menu is open, and stays", || read(&view.join("screen")).contains("o  other"));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(read(&view.join("screen")).contains("o  other"));
+    fs::write(view.join("in"), "\x1b[111;1:1u\x1b[111;1:3u").unwrap();
+    until("the other pane has the keys", || read(&inner.0.join("main/layout")).contains("focus=plain"));
+    until("the terminal is asked for no flags", || !fact(&view, "modes").contains("keys"));
+    // The key that was held is let go now: its press went to the first pane, so its release is
+    // not the second one's. What is typed here arrives; nothing else ever did.
+    fs::write(view.join("in"), "\x1b[120;1:3uz").unwrap();
+    until("the plain pane has what was typed there", || shown(&plain) == "z");
+    assert_eq!(shown(&asks), "^[[?11u^[[97;1:1u^[[97;1:3u^[[120;1:1u");
+}

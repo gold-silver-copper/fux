@@ -89,6 +89,22 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)>
     Some((length, name))
 }
 
+/// What a key's sequence says beyond its name, in the kitty protocol's forms: which key it is
+/// (its number and the sequence's last byte), whether it is pressed (1), held and repeating (2)
+/// or let go (3), and whether it is a modifier key by itself (Shift, Ctrl and their like).
+/// `None` for bytes that are no such sequence: a key in the old form, which is a press.
+pub fn event(raw: &[u8]) -> Option<((u32, u8), u8, bool)> {
+    let (last, inside) = raw.strip_prefix(b"\x1b[")?.split_last()?;
+    let mut fields = std::str::from_utf8(inside).ok()?.split(';');
+    let code = fields.next()?.split(':').next()?.parse::<u32>().unwrap_or(1);
+    let kind = fields.next().and_then(|held| held.split(':').nth(1)?.parse::<u8>().ok()).unwrap_or(1);
+    matches!(last, b'u' | b'~' | b'A'..=b'H' | b'P'..=b'S').then_some((
+        (code, *last),
+        kind,
+        *last == b'u' && (57441..=57454).contains(&code),
+    ))
+}
+
 /// The name of an escape sequence with these parameters and last byte.
 fn sequence(parameters: &str, last: u8) -> String {
     let mut numbers = parameters.split(';');

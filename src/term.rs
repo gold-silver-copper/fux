@@ -19,9 +19,10 @@ pub const SIZE_MAX: usize = 500;
 const HISTORY_PENDING_MAX: usize = 4 << 20;
 /// (Room for an answer to every question about a colour that a viewer asks at its start.)
 const REPLY_MAX: usize = 16 << 10;
-/// The keyboard flags fux passes on (the kitty protocol's "disambiguate escape codes" and
-/// "report alternate keys"), and how many sets of flags a program can push aside on a screen.
-pub const KEYS: u8 = 1 | 4;
+/// The keyboard flags fux passes on (all of the kitty protocol's: escape codes told apart,
+/// presses and releases, alternate keys, every key as an escape code, the text a key gives),
+/// and how many sets of flags a program can push aside on a screen.
+pub const KEYS: u8 = 31;
 const KEYS_KEPT: usize = 16;
 /// How many of a shell's marks are kept.
 const MARKS_MAX: usize = 1000;
