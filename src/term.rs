@@ -455,7 +455,10 @@ impl Term {
 
     fn row_text(row: &[Cell], out: &mut String) {
         let start = out.len();
-        row.iter().for_each(|cell| cell.push_text(out));
+        // (The blanks at a row's end are not put there to be cut again: most of a row is those.)
+        let blank = |cell: &Cell| cell.ch == '\0' || (cell.ch == ' ' && cell.more.first() == Some(&'\0'));
+        let used = row.iter().rposition(|cell| !blank(cell)).map_or(0, |last| last + 1);
+        row.iter().take(used).for_each(|cell| cell.push_text(out));
         out.truncate(start + out.get(start..).map_or(0, |text| text.trim_end_matches(' ').len()));
     }
 
@@ -887,7 +890,7 @@ impl Term {
     /// Moves rows `from..=bottom` up by `n`, blank rows coming in below.
     fn scroll_up(&mut self, from: usize, n: usize) {
         let n = n.min(self.bottom + 1 - from.min(self.bottom));
-        let blank = vec![self.blank(); self.cols];
+        let blank = self.blank();
         let kept = from == 0 && !self.alt;
         // A mark on a row that goes into history is from then on a place in the text; on a row
         // that is dropped, it is where the rows that stay begin; on a row that moves, it moves.
@@ -913,12 +916,17 @@ impl Term {
             // (The row the text is just wrapping out of has no next row yet.)
             let goes_on = region.get(i + 1).map_or(self.wrapping, |next| continues(next));
             let Some(row) = region.get_mut(i) else { break };
+            // (Most of a row is the blanks at its end, as they will be again: one look finds
+            // where they start, and they are neither read for history, which would cut them,
+            // nor written again.)
+            let used = row.iter().rposition(|cell| *cell != blank).map_or(0, |last| last + 1);
             if kept && self.out.history.len() < HISTORY_PENDING_MAX {
-                Term::row_history(row, goes_on, &mut self.history_open, &mut self.out.history);
+                let text = row.get(..used.max(1)).filter(|_| !goes_on).unwrap_or(row);
+                Term::row_history(text, goes_on, &mut self.history_open, &mut self.out.history);
             } else if kept {
                 (full, self.history_open) = (true, None);
             }
-            row.clone_from(&blank);
+            row.iter_mut().take(used).for_each(|cell| *cell = blank);
         }
         region.rotate_left(n);
         self.gone += self.out.history.get(before..).map_or(0, |new| new.matches('\n').count());
@@ -937,7 +945,7 @@ impl Term {
     /// Moves rows `from..=bottom` down by `n`, blank rows coming in at `from`.
     fn scroll_down(&mut self, from: usize, n: usize) {
         let n = n.min(self.bottom + 1 - from.min(self.bottom));
-        let blank = vec![self.blank(); self.cols];
+        let blank = self.blank();
         let bottom = self.bottom;
         self.move_marks(|_, row, col| match row {
             row if row < from || row > bottom => At::Screen(row, col),
@@ -948,7 +956,7 @@ impl Term {
             return;
         };
         region.rotate_right(n);
-        region.iter_mut().take(n).for_each(|row| row.clone_from(&blank));
+        region.iter_mut().take(n).for_each(|row| row.fill(blank));
         self.scroll_pictures(from, n, false);
         // Rows have new neighbours at both ends of what moved.
         self.parts(from + n);
