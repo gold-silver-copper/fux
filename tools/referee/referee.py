@@ -4,17 +4,19 @@
 usage: tools/referee/referee.py [--fux PATH] [--old PATH] [--witness NAME,…] [-v] [CASE…]
 
 Each case (tools/referee/corpus/**/NAME.case) is played to fux (the built program, in a pane of
-a session of the referee's own) and to each witness that is installed:
+a session of the referee's own) and to each witness:
 
   old    the emulator of the fux this one replaces (tools/referee/old, built apart)
   tmux   on a socket of its own
   xterm  under Xvfb, never on a display of yours
 
-What is compared is the screen's text, row by row with blanks at the end cut, and the cursor's
-row and column. A difference that is a row of the README's table of departures is reported as
-known; any other makes the run fail. Witnesses change between versions, so the table has a row
-if any version the referee was run with differs, and a row that does not differ here is noted.
-A case's lines:
+All three are needed unless --witness names fewer. What is compared is the screen's text, row
+by row with blanks at the end cut, and the cursor's row and column; not colours, answers to
+questions, modes, the bell or the clipboard. A difference is known if the README's table of
+departures has a row for the case and the witness that says where it is (`text`, `cursor`, or
+both); any other makes the run fail, and so does a case that a witness could not be played.
+Witnesses change between versions, so the table has a row if any version the referee was run
+with differs, and a row that does not differ here is noted. A case's lines:
 
   size COLSxROWS      first
   feed BYTES          as a Python bytes literal's inside: \\x1b[2J, \\r\\n
@@ -22,12 +24,20 @@ A case's lines:
   file NAME [COUNT]   the bytes of a file beside the case, or its first COUNT
   resize COLSxROWS    the terminal is resized here
   # anything          a note
+
+Feeds that follow each other reach the terminal as one stream.
 """
-import ast, os, pathlib, re, shutil, signal, subprocess, sys, tempfile, time
+import ast, os, pathlib, re, select, shlex, shutil, signal, subprocess, sys, tempfile, time
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 PLAYER = HERE / "player.py"
+# Never /tmp unless the user's own TMPDIR says so.
+ROOM = os.environ.get("TMPDIR") or os.environ.get("XDG_RUNTIME_DIR") or str(pathlib.Path.home() / ".cache")
+
+
+class Unplayed(Exception):
+    """A terminal could not be played a case: the harness's trouble, not a difference."""
 
 
 def parse(path):
@@ -43,6 +53,8 @@ def parse(path):
             steps.append(("feed", ast.literal_eval('"' + rest.replace('"', '\\"') + '"').encode()))
         elif kind == "file":
             name, _, upto = rest.partition(" ")
+            if "/" in name:
+                raise SystemExit(f"{path}: {name} is not a file beside the case")
             steps.append(("feed", (path.parent / name).read_bytes()[: int(upto) if upto else None]))
         elif kind == "resize":
             steps.append(("resize",) + tuple(map(int, rest.split("x"))))
@@ -53,42 +65,55 @@ def parse(path):
     return size[0], size[1], steps
 
 
-def written(steps):
+def written(case):
+    cols, rows, steps = case
     lines = [f"feed {s[1].hex()}" if s[0] == "feed" else f"resize {s[1]} {s[2]}" for s in steps]
-    return "\n".join(lines)
+    return "\n".join([f"size {cols} {rows}", *lines]) + "\n"
 
 
 def until(what, ready, seconds=10):
     deadline = time.monotonic() + seconds
     while not ready():
         if time.monotonic() > deadline:
-            raise RuntimeError(f"timed out waiting for {what}")
+            raise Unplayed(f"timed out waiting for {what}")
         time.sleep(0.005)
 
 
-def trimmed(lines, rows):
-    lines = [line.rstrip(" ") for line in lines][:rows]
-    return lines + [""] * (rows - len(lines))
+def run(command, **more):
+    try:
+        return subprocess.run(command, check=True, capture_output=True, timeout=20, **more).stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
+        raise Unplayed(f"{command[0]}: {error}")
+
+
+def screen(text, rows):
+    """A screen's text as its rows, each without the blanks at its end."""
+    lines = text.split("\n")
+    if len(lines) < rows or any(lines[rows:]):
+        raise Unplayed(f"a screen of {rows} rows came as {len(lines)} lines")
+    return [line.rstrip(" ") for line in lines[:rows]]
 
 
 class Played:
     """A terminal with the player in it: the directory they share and the steps to resize at."""
 
-    def __init__(self, steps, extra=()):
-        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="referee-"))
-        self.steps = steps
-        (self.dir / "steps").write_text(written(steps))
+    def __init__(self, case, extra=()):
+        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="referee-", dir=ROOM))
+        self.steps = case[2]
+        self.rows = ([step[2] for step in self.steps if step[0] == "resize"] or [case[1]])[-1]
+        (self.dir / "steps").write_text(written(case))
         self.command = [sys.executable, str(PLAYER), str(self.dir / "steps"), str(self.dir), *extra]
 
-    def run(self, resize, failed=lambda: None):
+    def run(self, resize, ended=lambda: False):
         """Waits for the player to finish, resizing the terminal with `resize` when it asks."""
         asked = set()
 
         def done():
-            why = failed()
-            if why:
-                raise RuntimeError(why)
-            for number, step in enumerate(self.steps):
+            if (self.dir / "failed").exists():
+                raise Unplayed((self.dir / "failed").read_text().strip())
+            if ended():
+                raise Unplayed("the terminal ended early")
+            for number, step in enumerate(self.steps, 1):
                 if step[0] == "resize" and number not in asked and (self.dir / f"ready-{number}").exists():
                     asked.add(number)
                     resize(step[1], step[2])
@@ -101,81 +126,71 @@ class Played:
     def leave(self):
         (self.dir / "exit").touch()
 
-    def remove(self):
-        shutil.rmtree(self.dir, ignore_errors=True)
-
 
 def fux(case, binary):
-    cols, rows, steps = case
-    played = Played(steps)
-    env = dict(os.environ, FUXN_DIR=str(played.dir / "session"), FUXN_KEYS=str(played.dir / "keys"), COLUMNS=str(cols), LINES=str(rows))
+    played = Played(case)
+    env = dict(os.environ, FUXN_DIR=str(played.dir / "session"), FUXN_KEYS=str(played.dir / "keys"))
+    env.update(COLUMNS=str(case[0]), LINES=str(case[1]))
     for name in ("FUXN_PANE", "FUXN_WS", "FUXN_VIEW"):
         env.pop(name, None)
     try:
-        pane = pathlib.Path(subprocess.run([binary, "start", "r/p", "--", *played.command], env=env, check=True, capture_output=True, text=True).stdout.strip())
+        pane = pathlib.Path(run([binary, "start", "r/p", "--", *played.command], env=env, text=True).strip())
         cursor = played.run(lambda c, r: (pane / "ctl").write_text(f"resize {c} {r}\n"))
-        # The screen file follows the emulator by a moment: read it when it has stopped changing.
-        seen = [None, time.monotonic()]
-
-        def settled():
-            text = (pane / "screen").read_text(encoding="utf-8", errors="replace")
-            if text != seen[0]:
-                seen[:] = [text, time.monotonic()]
-            return time.monotonic() - seen[1] > 0.08 and f"cursor={cursor[0]},{cursor[1]} " in text.split("\n")[0]
-
-        until("the screen file", settled)
-        last = seen[0].split("\n")[0]
-        now_rows = int(re.search(r"size=\d+x(\d+)", last).group(1))
-        return trimmed(seen[0].split("\n")[1:], now_rows), cursor
+        # The screen file follows the emulator by a moment. Once the player has left, the pane's
+        # keeper has taken in all it wrote and published the last screen: `wait` says when.
+        played.leave()
+        run([binary, "wait", str(pane)], env=env)
+        return screen((pane / "screen").read_text(encoding="utf-8").split("\n", 1)[1], played.rows), cursor
     finally:
         played.leave()
-        shutil.rmtree(played.dir / "session", ignore_errors=True)
-        played.remove()
+        shutil.rmtree(played.dir, ignore_errors=True)
 
 
 def old(case, binary):
-    cols, rows, steps = case
-    out = subprocess.run([binary], input=f"size {cols} {rows}\n{written(steps)}\n", capture_output=True, text=True, check=True).stdout.split("\n")
+    out = run([binary], input=written(case), text=True).split("\n")
     row, col = map(int, out[0].split()[1:])
-    return [line[1:] for line in out[1:] if line.startswith("|")], (row, col)
+    return [line[1:].rstrip(" ") for line in out[1:] if line.startswith("|")], (row, col)
 
 
 def tmux(case, _):
-    cols, rows, steps = case
-    played = Played(steps)
+    played = Played(case)
     base = ["tmux", "-S", str(played.dir / "sock"), "-f", str(HERE / "tmux.conf")]
     try:
-        subprocess.run([*base, "new-session", "-d", "-s", "r", "-x", str(cols), "-y", str(rows), " ".join(played.command)], check=True, capture_output=True)
-        size = [rows]
-
-        def resize(c, r):
-            size[0] = r
-            subprocess.run([*base, "resize-window", "-t", "r", "-x", str(c), "-y", str(r)], check=True, capture_output=True)
-
-        cursor = played.run(resize)
-        text = subprocess.run([*base, "capture-pane", "-p", "-t", "r"], check=True, capture_output=True).stdout.decode("utf-8", "replace")
-        return trimmed(text.split("\n"), size[0]), cursor
+        run([*base, "new-session", "-d", "-s", "r", "-x", str(case[0]), "-y", str(case[1]), shlex.join(played.command)])
+        cursor = played.run(lambda c, r: run([*base, "resize-window", "-t", "r", "-x", str(c), "-y", str(r)]))
+        text = run([*base, "capture-pane", "-p", "-t", "r"]).decode("utf-8", "replace")
+        return screen(text, played.rows), cursor
     finally:
         played.leave()
         subprocess.run([*base, "kill-server"], capture_output=True)
-        played.remove()
+        shutil.rmtree(played.dir, ignore_errors=True)
 
 
 class Display:
-    """An X server that draws nowhere, started once for the xterm witness."""
+    """An X server that draws nowhere, started once for the xterm witness. Its number is one the
+    referee asked for, far from a desktop's, and is used only while this very server lives."""
 
     number = None
     process = None
 
     @classmethod
     def get(cls):
-        if cls.number is None:
+        for number in range(90, 100) if cls.process is None else ():
             read, write = os.pipe()
-            cls.process = subprocess.Popen(["Xvfb", "-displayfd", str(write), "-screen", "0", "4096x4096x24", "-nolisten", "tcp"], pass_fds=[write], stderr=subprocess.DEVNULL)
+            command = ["Xvfb", f":{number}", "-displayfd", str(write), "-screen", "0", "4096x4096x24", "-nolisten", "tcp"]
+            process = subprocess.Popen(command, pass_fds=[write], stderr=subprocess.DEVNULL)
             os.close(write)
-            cls.number = os.read(read, 16).decode().strip()
+            # It writes its number when it listens, or ends without a word if the number is taken.
+            ready = select.select([read], [], [], 10)[0] and os.read(read, 16).decode().strip() == str(number)
             os.close(read)
-        return ":" + cls.number
+            if ready and process.poll() is None:
+                cls.process, cls.number = process, number
+                break
+            process.kill()
+            process.wait()
+        if cls.process is None or cls.process.poll() is not None:
+            raise SystemExit("no Xvfb of the referee's own is running: xterm is not started on any other display")
+        return f":{cls.number}"
 
     @classmethod
     def stop(cls):
@@ -185,33 +200,36 @@ class Display:
 
 
 def xterm(case, _):
-    cols, rows, steps = case
-    played = Played(steps, extra=["xterm"])
-    # A display of the referee's own and no other: xterm must never reach the user's.
-    env = {k: v for k, v in os.environ.items() if k not in ("WAYLAND_DISPLAY", "XAUTHORITY")}
-    env.update(DISPLAY=Display.get(), LC_ALL="C.UTF-8")
-    printed = played.dir / "printed"
-    options = ["allowWindowOps: true", f"printerCommand: cat > {printed}.new && mv {printed}.new {printed}", "printAttributes: 0", "printerFormFeed: false", "printerNewLine: true", "utf8: 2"]
-    command = ["xterm", "-u8", "+sb", "-geometry", f"{cols}x{rows}"]
+    played = Played(case, extra=["xterm"])
+    # A display of the referee's own and no other, and none of the user's settings for xterm.
+    env = {k: v for k, v in os.environ.items() if k not in ("WAYLAND_DISPLAY", "XAUTHORITY", "XAPPLRESDIR")}
+    env.update(DISPLAY=Display.get(), LC_ALL="C.UTF-8", HOME=str(played.dir), XENVIRONMENT="/dev/null")
+    printer = f"sh {shlex.quote(str(HERE / 'printer.sh'))} {shlex.quote(str(played.dir))}"
+    options = ["allowWindowOps: true", "printerCommand: " + printer, "printerAutoClose: true", "printAttributes: 0"]
+    options += ["printerFormFeed: false", "printerNewLine: true", "utf8: 2", "precompose: false"]
+    command = ["xterm", "-u8", "+sb", "-ut", "-geometry", f"{case[0]}x{case[1]}"]
     for option in options:
         command += ["-xrm", "XTerm*" + option]
-    process = subprocess.Popen([*command, "-e", *played.command], env=env, stderr=subprocess.DEVNULL)
+    process = None
     try:
-        cursor = played.run(lambda c, r: None, lambda: "xterm ended early" if process.poll() is not None else None)
-        until("xterm's print of its screen", printed.exists)
-        now_rows = [s[2] for s in steps if s[0] == "resize"][-1:] or [rows]
-        return trimmed(printed.read_text(encoding="utf-8", errors="replace").split("\n"), now_rows[0]), cursor
+        process = subprocess.Popen([*command, "-e", *played.command], env=env, cwd=played.dir, stderr=subprocess.DEVNULL)
+        cursor = played.run(lambda c, r: None, lambda: process.poll() is not None or Display.process.poll() is not None)
+        until("xterm's print of its screen", (played.dir / "printed").exists)
+        text = (played.dir / "printed").read_text(encoding="utf-8", errors="replace")
+        return screen(text, played.rows), cursor
     finally:
         played.leave()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.send_signal(signal.SIGTERM)
-        played.remove()
+        if process:
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        shutil.rmtree(played.dir, ignore_errors=True)
 
 
 def departures():
-    """The rows of the README's table between its two marks: {(case, witness): why}."""
+    """The rows of the README's tables between their marks: {(case, witness): where it differs}."""
     known, inside = {}, False
     for line in (REPO / "README.md").read_text(encoding="utf-8").split("\n"):
         if "referee:departures" in line:
@@ -227,50 +245,61 @@ def departures():
 
 
 def main():
-    args, names, options = sys.argv[1:], [], {"--fux": str(REPO / "target/release/fux"), "--old": str(HERE / "old/target/release/referee-old"), "--witness": "old,tmux,xterm"}
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+    args, names = sys.argv[1:], []
+    options = {"--fux": str(REPO / "target/release/fux"), "--old": str(HERE / "old/target/release/referee-old"), "--witness": "old,tmux,xterm"}
     verbose = "-v" in args
     args = [a for a in args if a != "-v"]
     while args:
         arg = args.pop(0)
         if arg in options:
             options[arg] = args.pop(0)
-        elif arg in ("-h", "--help"):
+        elif arg.startswith("-"):
             raise SystemExit(__doc__)
         else:
             names.append(arg)
-    witnesses = {"old": (old, options["--old"]), "tmux": (tmux, shutil.which("tmux")), "xterm": (xterm, shutil.which("xterm") and shutil.which("Xvfb"))}
-    witnesses = {name: witnesses[name] for name in options["--witness"].split(",") if name}
-    absent = [name for name, (_, binary) in witnesses.items() if not binary or not os.path.exists(binary)]
-    for name in absent:
-        print(f"witness {name}: not installed (or not built), left out")
-        del witnesses[name]
+    every = {"old": (old, options["--old"]), "tmux": (tmux, shutil.which("tmux")), "xterm": (xterm, shutil.which("xterm") and shutil.which("Xvfb"))}
+    wanted = [name for name in options["--witness"].split(",") if name]
+    for name in wanted:
+        if name not in every or not every[name][1] or not os.path.exists(every[name][1]):
+            raise SystemExit(f"witness {name}: not installed (or not built). --witness names the ones to use")
+    witnesses = {name: every[name] for name in wanted}
     for name, asked in (("tmux", ["tmux", "-V"]), ("xterm", ["xterm", "-version"])):
         if name in witnesses:
             print(f"witness {name}: " + subprocess.run(asked, capture_output=True, text=True).stdout.strip())
     cases = sorted(HERE.glob("corpus/**/*.case"))
-    cases = [c for c in cases if not names or c.stem in names or str(c.relative_to(HERE / "corpus").with_suffix("")) in names]
+    named = lambda path: str(path.relative_to(HERE / "corpus").with_suffix(""))
+    cases = [c for c in cases if not names or c.stem in names or named(c) in names]
+    if not cases or not witnesses or not os.path.exists(options["--fux"]):
+        raise SystemExit("nothing to compare: no case of that name, no witness, or no fux at --fux")
     known, new, stale, agree = departures(), [], [], {name: 0 for name in witnesses}
     try:
         for path in cases:
-            name = str(path.relative_to(HERE / "corpus").with_suffix(""))
-            case = parse(path)
-            ours = fux(case, options["--fux"])
+            name, case = named(path), parse(path)
+            try:
+                ours = fux(case, options["--fux"])
+            except Unplayed as error:
+                new.append(f"{name} could not be played to fux: {error}")
+                continue
             differing = []
             for witness, (play, binary) in witnesses.items():
                 try:
                     theirs = play(case, binary)
-                except (RuntimeError, subprocess.CalledProcessError, ValueError) as error:
-                    theirs = ([f"(could not be played: {error})"], None)
-                if theirs == ours:
+                except Unplayed as error:
+                    new.append(f"{name} could not be played to {witness}: {error}")
+                    continue
+                where = ", ".join(what for what, i in (("text", 0), ("cursor", 1)) if ours[i] != theirs[i])
+                expected = known.get((name, witness))
+                if not where:
                     agree[witness] += 1
-                    if (name, witness) in known:
+                    if expected:
                         stale.append((name, witness))
                     continue
-                expected = (name, witness) in known
-                differing.append(witness + ("" if expected else " (NEW)"))
-                if not expected:
-                    new.append((name, witness))
-                if verbose or not expected:
+                differing.append(witness + ("" if where == expected else " (NEW)"))
+                if where != expected:
+                    row = f"says {expected}" if expected else "has no row for it"
+                    new.append(f"{name} differs from {witness} in {where}, and the README's table {row}")
+                if verbose or where != expected:
                     print(f"--- {name}: fux, cursor {ours[1]}")
                     print("\n".join("  |" + row for row in ours[0]))
                     print(f"--- {name}: {witness}, cursor {theirs[1]}")
@@ -280,12 +309,12 @@ def main():
         Display.stop()
     print()
     for witness in witnesses:
-        listed = sum(1 for (case, w) in known if w == witness and any(str(p.relative_to(HERE / "corpus").with_suffix("")) == case for p in cases))
+        listed = len({case for (case, w) in known if w == witness} & {named(path) for path in cases})
         print(f"{witness}: same on {agree[witness]} of {len(cases)} cases; {listed} departures in the README's table")
     for case, witness in stale:
         print(f"note: the README lists {case} as differing from {witness}, and from this {witness} it does not")
-    for case, witness in new:
-        print(f"NEW: {case} differs from {witness} and the README's table has no row for it")
+    for line in new:
+        print("NEW: " + line)
     sys.exit(1 if new else 0)
 
 

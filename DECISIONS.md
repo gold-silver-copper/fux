@@ -282,6 +282,31 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   tables), the program at most 5,500 (non-test Rust and the key scripts).
   Generated tables are counted apart.
 
+- **D50. The fix check of D48 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  Fixed in the referee: its player asked the terminal a question after every
+  line of a case, which cut sequences written over two lines (two rows were
+  wrong for it), so feeds now go as one stream and it asks only around a resize
+  and at the end, taking the last answer after the terminal has gone quiet;
+  fux's screen is read after the player has left and `fux wait` has returned,
+  not after a pause; a witness that cannot be played fails the run and is
+  never a "known" row; all three witnesses are needed unless `--witness` names
+  fewer; a row says where the difference is (`text`, `cursor`) and any other
+  difference on that case fails; xterm's print of its screen is told from a
+  case's own printing, runs with none of the user's X resources and paths are
+  quoted; Xvfb gets a number from 90 up that the referee asked for and is
+  checked alive before each xterm (on the owner's machine `-displayfd` alone
+  had been handing out number 0, the desktop's); work files go under
+  `$TMPDIR` or `$XDG_RUNTIME_DIR`, never `/tmp` by default. Fixed in the
+  emulator, as xterm does each: DECALN homes the cursor and lets the whole
+  screen scroll; mode 1047 asked for again keeps the screen; REP after a
+  cancelled sequence repeats nothing and after a dropped character repeats
+  nothing visible; a C1 control written too long is not dropped as a C1
+  control; `_` in the line-drawing set is a blank. Kept, each a row: a
+  non-ASCII character inside a sequence (xterm reads it as a Latin-1 letter),
+  a wide character on a one-column screen, memory lock. Not done: comparing
+  answers, colours and modes (the referee sees text and cursor, and the README
+  now says so); decoding tmux's tab and line-drawing cells (two rows say it).
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

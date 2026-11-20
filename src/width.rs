@@ -4,6 +4,7 @@
 
 /// Characters that take no cell: combining marks (categories Mn and Me),
 /// format characters (Cf), Hangul medial and final jamo, and emoji skin tones.
+// A table written by tools/width.py, to its `];`.
 #[rustfmt::skip]
 const ZERO: &[(u32, u32)] = &[
     (0x0300, 0x036f), (0x0483, 0x0489), (0x0591, 0x05bd), (0x05bf, 0x05bf), (0x05c1, 0x05c2), (0x05c4, 0x05c5),
@@ -76,6 +77,7 @@ const ZERO: &[(u32, u32)] = &[
 ];
 
 /// Characters that take two cells: East Asian wide and fullwidth.
+// A table written by tools/width.py, to its `];`.
 #[rustfmt::skip]
 const WIDE: &[(u32, u32)] = &[
     (0x1100, 0x115f), (0x231a, 0x231b), (0x2329, 0x232a), (0x23e9, 0x23ec), (0x23f0, 0x23f0), (0x23f3, 0x23f3),

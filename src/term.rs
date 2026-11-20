@@ -493,6 +493,7 @@ impl Term {
             0 => return self.add_mark(c),
             w => w == 2,
         };
+        self.last = c; // Even if it finds no room below: REP then repeats what was sent, as in xterm.
         if wide && self.cols < 2 {
             return;
         }
@@ -538,7 +539,6 @@ impl Term {
             self.pictures
                 .retain(|p| !((p.row..p.row + p.rows).contains(&row) && (p.col..p.col + p.cols).contains(&col)));
         }
-        self.last = c;
         self.col += cells;
         if self.col >= self.cols {
             self.col = self.cols - 1;
@@ -713,7 +713,7 @@ impl Term {
             }
             _ => match byte {
                 0x1b => self.state = State::Escape,
-                0x18 | 0x1a => self.state = State::Ground,
+                0x18 | 0x1a => (self.state, self.last) = (State::Ground, '\0'),
                 0x00..=0x1f => self.control(byte),
                 0x7f => {}
                 _ => match self.state {
@@ -730,12 +730,13 @@ impl Term {
             if byte & 0xc0 == 0x80 {
                 self.utf8 = (self.utf8 << 6) | u32::from(byte & 0x3f);
                 self.utf8_left -= 1;
-                if self.utf8_left == 0 {
-                    let whole = char::from_u32(self.utf8).filter(|_| self.utf8 >= self.utf8_min);
+                // A sequence of the right length for no character (written too long, a surrogate,
+                // past the last one) shows one mark, as in xterm.
+                match char::from_u32(self.utf8).filter(|_| self.utf8 >= self.utf8_min) {
+                    _ if self.utf8_left > 0 => {}
                     // A C1 control written as UTF-8 is no character and, as in xterm, no control: nothing.
-                    if !(0x80..0xa0).contains(&self.utf8) {
-                        self.print(whole.unwrap_or('\u{fffd}'));
-                    }
+                    Some('\u{80}'..'\u{a0}') => {}
+                    whole => self.print(whole.unwrap_or('\u{fffd}')),
                 }
                 return;
             }
@@ -846,6 +847,9 @@ impl Term {
             (b'#', b'8') => {
                 let fill = Cell { ch: 'E', ..Cell::blank(Style::default()) };
                 self.grid.iter_mut().for_each(|row| row.fill(fill));
+                // And, as in xterm, the whole screen scrolls again and the cursor goes home.
+                (self.top, self.bottom, self.origin) = (0, self.rows - 1, false);
+                self.move_to(0, 0);
             }
             _ => {}
         }
@@ -1180,7 +1184,8 @@ impl Term {
                 if !on && self.alt {
                     self.clear();
                 }
-                self.set_alt(on, on);
+                // Asked for while already there, it is left as it is (as in xterm).
+                self.set_alt(on, on && !self.alt);
             }
             1048 if on => self.save_cursor(),
             1048 => self.restore_cursor(),
@@ -1317,6 +1322,7 @@ fn line_drawing(c: char) -> char {
     const SET: &str = "◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·";
     match c {
         '`'..='~' => SET.chars().nth(c as usize - '`' as usize).unwrap_or(c),
+        '_' => ' ',
         _ => c,
     }
 }

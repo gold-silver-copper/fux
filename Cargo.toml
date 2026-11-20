@@ -5,6 +5,8 @@ edition = "2024"
 description = "A terminal multiplexer that is a view over directories: a pane is a directory kept by one small process"
 license = "MIT"
 publish = false
+# The referee is a tool beside the package, not part of it.
+exclude = ["/tools/referee"]
 
 [profile.release]
 panic = "abort"

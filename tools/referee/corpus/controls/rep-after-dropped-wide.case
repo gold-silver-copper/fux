@@ -1,0 +1,4 @@
+size 8x2
+feed \x1b[?7l0123456
+text 一
+feed \x1b[b

@@ -1,2 +1,2 @@
 size 8x3
-feed 0123456\x1b7\x1b[1;1HZ\x1b89X
+feed 01234567\x1b7\x1b[1;1HZ\x1b8X

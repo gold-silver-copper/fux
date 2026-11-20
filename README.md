@@ -381,9 +381,9 @@ does something else is a row below with a case that shows it.
 
 | Question | Authority |
 | --- | --- |
-| What a control sequence does | xterm: everything the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`), and of what xterm does beyond it: the alternate screens 47 and 1047, the modes and reports listed under "A pane's files", `CSI 22 t` and `23 t` for the title, OSC 0, 1, 2 and 52, sixel pictures |
-| Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file |
-| How many columns a character takes | One rule: two for East Asian wide and fullwidth characters; none for combining marks, format characters, the jamo that complete a Hangul syllable and emoji skin tones; one for everything else, the "ambiguous" ones too |
+| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 9, 21 and 58 and the colon forms of 38 and 48, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
+| Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt` |
+| How many columns a character takes | One rule: two for East Asian wide and fullwidth characters; none for combining marks that take no space (categories Mn and Me) and format characters from U+0300 on, the jamo U+1160 to U+11FF that complete a Hangul syllable, and emoji skin tones; one for everything else, the "ambiguous" ones too |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports) | Its own specification |
 
 `tools/referee/referee.py` plays the same bytes to fux and to three
@@ -395,38 +395,56 @@ sequences where terminals are known to differ (`controls/`), Unicode strings
 (`unicode/`), resizes (`resize/`) and recorded sessions of bash, vim, less
 and htop (`sessions/`). xterm is the authority for control sequences only;
 tmux and the old emulator are there because a difference from them is worth
-a look. CI runs it on Linux and fails on any difference that is not a row
-here. Witnesses differ between their own versions (the rows were made with
-CI's xterm and tmux and with newer ones; the referee prints which it ran): a row stays while any of them differs,
-and the referee notes the rows that do not differ from the ones you have. To replay a row: `cargo build --release && tools/referee/referee.py -v
-CASE` (the old emulator is built apart: `cargo build --release
---manifest-path tools/referee/old/Cargo.toml`).
+a look. It sees text and cursor only: a case for a colour, a mode, an answer
+or the bell shows that nothing else moved. CI runs it on Linux and fails on
+any difference that is not a row here, on a row that says the difference is
+elsewhere (`text`, `cursor`), and on a case a witness could not be played.
+Witnesses differ between their own versions (the rows were made with CI's
+xterm and tmux and with newer ones; the referee prints which it ran): a row
+stays while any of them differs, and the referee notes the rows that do not
+differ from the ones you have. To replay a row: `cargo build --release &&
+cargo build --release --manifest-path tools/referee/old/Cargo.toml &&
+tools/referee/referee.py -v CASE` (`--witness tmux` if you have only tmux).
+It needs `xterm`, `Xvfb` and `tmux`; its files go under `$TMPDIR` (or
+`$XDG_RUNTIME_DIR`), and Xvfb, as every X server, puts its socket in
+`/tmp/.X11-unix` under a number from 90 up.
 
 <!-- referee:departures -->
-| Cases | Differs from | What fux does, and why |
-| --- | --- | --- |
-| `terminfo/smglp`, `terminfo/smglr`, `terminfo/smgrp` | old, xterm | No left and right margins: `CSI ? 69 h` is ignored and `CSI s` always saves the cursor. Nothing in the corpus's sessions sets them |
-| `terminfo/mc0`, `terminfo/mc5+mc4` | xterm | No printer: the three printer codes are ignored. xterm prints (and the referee reads xterm's screen from its printer) |
-| `controls/newline-mode` | old, xterm | No line feed/new line mode (`CSI 20 h`): a line feed never returns to the first column |
-| `controls/sub-in-sequence` | old, xterm | SUB ends a sequence and shows nothing; xterm shows an error character in its place |
-| `controls/rep-after-mark` | old, xterm | REP after a character with a combining mark repeats the mark, as xterm does, but a cell keeps two marks and xterm more; old repeats the letter. ECMA-48 knows no marks |
-| `controls/back-tab` | xterm | Back-tab (`CSI Z`) moves the cursor, and so ends a wrap that was waiting at the row's end, as every other move does (DEC STD 070); xterm leaves it waiting and the next character lands on the next row |
-| `controls/bad-utf8` | tmux, xterm | Ill-formed UTF-8 shows one U+FFFD for each part that cannot go on, as Unicode recommends; the cursors agree, the characters shown differ |
-| `controls/ed-two-parameters` | old | `CSI 1 ; 0 J` erases as its first parameter says, as in xterm; old erases for each |
-| `controls/text-in-sequence` | old | A non-ASCII character inside a control sequence is printed and the sequence goes on, as in xterm; old drops it |
-| `controls/wrap-pending-tab` | old | A tab at the row's end leaves the wrap waiting, as in xterm; old ends it |
-| `controls/tab-stops` | old | `CSI 2 g` clears no tab stop, as in xterm; old clears all |
-| `controls/tab-stops`, `controls/back-tab` | tmux | tmux's text of its screen has a tab character where a tab moved the cursor; fux has blanks |
-| `terminfo/acsc`, `terminfo/smacs+text` | tmux | tmux's text of its screen gives line-drawing characters as the letters that were sent |
-| `terminfo/dl`, `terminfo/dl1`, `terminfo/il`, `terminfo/il1`, `controls/delete-lines-in-region` | tmux | Inserting or deleting lines puts the cursor in the first column, as in xterm; tmux leaves its column |
-| `terminfo/is2`, `terminfo/rs2` | tmux | Leaving 132-column mode (`CSI ? 3 l`) does nothing, as in xterm by default; tmux clears the screen |
-| `terminfo/rmcup` | tmux | Leaving the alternate screen when not on it still restores the saved cursor, as in xterm; tmux does nothing |
-| `controls/alternate-47`, `controls/wrap-pending-report`, `controls/wrap-pending-bs`, `controls/wrap-pending-cuf` | tmux | A cursor waiting to wrap is in the last column, reported and moved from there, as in xterm; tmux counts it one column further |
-| `controls/wrap-pending-el` | tmux | Erasing in the line ends a waiting wrap, as in xterm; tmux keeps it |
-| `controls/line-position-relative` | tmux | `CSI e` and `CSI a` move down and right, as in xterm; tmux does not know them |
-| `controls/wide-insert-inside` | tmux | Inserting in the middle of a two-column character blanks the whole character, as in xterm; tmux keeps it |
-| `controls/c1-as-text` | tmux | A C1 control written as UTF-8 is dropped; tmux keeps it in its text |
-| `resize/alternate-narrow` | tmux | Narrowing brings the cursor inside the screen; tmux reports it where it was |
+| Cases | Differs from | In | What fux does, and why |
+| --- | --- | --- | --- |
+| `terminfo/smglp`, `terminfo/smglr`, `terminfo/smgrp` | old, xterm | text, cursor | No left and right margins: `CSI ? 69 h` is ignored and `CSI s` always saves the cursor. Nothing in the corpus's sessions sets them |
+| `terminfo/mc5+mc4` | xterm | text, cursor | No printer: the printer codes are ignored and the text between them is shown; xterm sends that text to its printer |
+| `terminfo/meml+memu` | xterm | text | No memory lock (`ESC l`, `ESC m`): xterm keeps the rows above the cursor from scrolling |
+| `controls/newline-mode` | old, xterm | text, cursor | No line feed/new line mode (`CSI 20 h`): a line feed never returns to the first column |
+| `controls/sub-in-sequence` | old, xterm | text, cursor | SUB ends a sequence and shows nothing; xterm shows an error character in its place |
+| `controls/text-in-sequence` | xterm | text, cursor | A non-ASCII character inside a control sequence ends the sequence, and its last byte shows as U+FFFD; xterm takes `é` for the `i` it resembles in Latin-1's other half, which ends the sequence |
+| `controls/text-in-sequence` | old, tmux | text, cursor | The same case: old and tmux drop the character and go on with the sequence |
+| `controls/back-tab` | xterm | text, cursor | Back-tab (`CSI Z`) moves the cursor, and so ends a wrap that was waiting at the row's end, as every other move does (DEC STD 070); xterm leaves it waiting and the next character lands on the next row |
+| `controls/bad-utf8`, `controls/overlong-utf8` | xterm | text | Bytes that are no character show one U+FFFD for each sequence, in the cells xterm uses too (the cursors agree); xterm's print of its screen writes them otherwise |
+| `controls/overlong-utf8` | old | text, cursor | The same bytes: old and tmux count the marks otherwise, and tmux a waiting wrap (below) |
+| `controls/bad-utf8` | tmux | cursor | The same bytes: old and tmux count the marks otherwise, and tmux a waiting wrap (below) |
+| `controls/overlong-utf8` | tmux | text | The same bytes: old and tmux count the marks otherwise, and tmux a waiting wrap (below) |
+| `controls/wide-in-one-column` | old, xterm | cursor | On a screen one column wide a wide character is dropped where the cursor is; xterm and old go to the next row first |
+| `controls/wide-in-one-column-then-text` | tmux | text, cursor | The same on tmux, which then writes over the first character |
+| `controls/ed-two-parameters` | old | text | `CSI 1 ; 0 J` erases as its first parameter says, as in xterm; old erases for each |
+| `controls/wrap-pending-tab` | old | text, cursor | A tab at the row's end leaves the wrap waiting, as in xterm; old ends it |
+| `controls/tab-stops` | old | text, cursor | `CSI 2 g` clears no tab stop, as in xterm; old clears all |
+| `controls/back-tab`, `controls/tab-stops` | tmux | text | tmux's text of its screen has a tab character where a tab moved the cursor; fux has blanks |
+| `controls/line-drawing-underscore`, `terminfo/acsc`, `terminfo/smacs+text` | tmux | text | tmux's text of its screen gives line-drawing characters as the letters that were sent |
+| `controls/delete-lines-in-region` | tmux | text | Inserting or deleting lines puts the cursor in the first column, as in xterm; tmux leaves its column |
+| `terminfo/dl`, `terminfo/dl1`, `terminfo/il`, `terminfo/il1` | tmux | text, cursor | Inserting or deleting lines puts the cursor in the first column, as in xterm; tmux leaves its column |
+| `terminfo/is2`, `terminfo/rs2` | tmux | text, cursor | Leaving 132-column mode (`CSI ? 3 l`) does nothing, as in xterm by default; tmux clears the screen |
+| `terminfo/rmcup` | tmux | text, cursor | Leaving the alternate screen when not on it still restores the saved cursor, as in xterm; tmux does nothing |
+| `controls/alternate-1049-twice` | tmux | text | Asking for the alternate screen of 1049 while on it clears it again, as in xterm; tmux keeps it |
+| `controls/alternate-47`, `controls/wrap-pending-cuf`, `controls/wrap-pending-report` | tmux | cursor | A cursor waiting to wrap is in the last column, reported and moved from there, as in xterm; tmux counts it one column further |
+| `controls/wrap-pending-bs` | tmux | text, cursor | A cursor waiting to wrap is in the last column, reported and moved from there, as in xterm; tmux counts it one column further |
+| `controls/save-restore-pen-and-wrap` | tmux | text, cursor | Saving and restoring the cursor keeps a waiting wrap, as in xterm; tmux forgets it |
+| `controls/wrap-pending-el` | tmux | text, cursor | Erasing in the line ends a waiting wrap, as in xterm; tmux keeps it |
+| `controls/line-position-relative` | tmux | text | `CSI e` and `CSI a` move down and right, as in xterm; tmux does not know them |
+| `controls/wide-insert-inside` | tmux | text | Inserting in the middle of a two-column character blanks the whole character, as in xterm; tmux keeps it |
+| `controls/c1-as-text` | tmux | text | A C1 control written as UTF-8 is dropped, as in xterm; tmux keeps it in its text |
+| `controls/rep-after-mark` | tmux | text, cursor | REP after a letter with a combining mark repeats the letter, as in xterm; tmux repeats the mark |
+| `resize/alternate-narrow` | tmux | cursor | Narrowing brings the cursor inside the screen; tmux reports it where it was |
 <!-- referee:end -->
 
 Not done yet, and listed so the referee tells a new difference from these:
@@ -435,17 +453,27 @@ two marks; emoji joined by U+200D, flags, keycaps and VS16 take the columns
 of their parts), and rows are cut on a resize instead of wrapped again.
 
 <!-- referee:departures -->
-| Cases | Differs from | |
-| --- | --- | --- |
-| `unicode/devanagari-at-end`, `unicode/tamil-at-end`, `unicode/thai-at-end` | old | clusters |
-| `unicode/flag-at-end`, `unicode/flags-three-at-end` | old, tmux | clusters |
-| `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow-cursor-mid-line`, `resize/narrow-full-screen`, `resize/narrow`, `resize/widen` | old, tmux | no reflow |
-| `unicode/devanagari-joiner-at-end`, `unicode/family-at-end`, `unicode/family-four-at-end`, `unicode/family-four`, `unicode/family`, `unicode/keycap-at-end`, `unicode/keycap`, `unicode/prepend-at-end`, `unicode/prepend`, `unicode/three-marks-at-end`, `unicode/three-marks`, `unicode/vs16` | old, tmux, xterm | clusters |
-| `resize/narrow-and-back`, `resize/narrow-wide-and-back`, `resize/narrow-wide-characters`, `resize/region-then-resize`, `resize/shorter-and-back`, `resize/taller` | old, tmux, xterm | no reflow |
-| `unicode/vs16-at-end` | old, xterm | clusters |
-| `unicode/devanagari-joiner`, `unicode/mark-alone-at-end` | tmux, xterm | clusters |
-| `unicode/e-acute-at-end`, `unicode/e-acute`, `unicode/joiner-after-letter-at-end`, `unicode/joiner-after-letter`, `unicode/mark-alone`, `unicode/skin-tone-at-end`, `unicode/skin-tone`, `unicode/vs15-at-end`, `unicode/vs15`, `unicode/zero-width-space-at-end`, `unicode/zero-width-space` | xterm | clusters |
-| `unicode/flags-three`, `unicode/skin-tone`, `unicode/skin-tone-at-end`, `unicode/vs16-at-end` | tmux | clusters (the older tmux) |
+| Cases | Differs from | In | |
+| --- | --- | --- | --- |
+| `unicode/devanagari-at-end`, `unicode/keycap-at-end`, `unicode/tamil-at-end`, `unicode/thai-at-end`, `unicode/vs16-at-end` | old | text, cursor | clusters |
+| `unicode/family`, `unicode/family-at-end`, `unicode/family-four`, `unicode/family-four-at-end`, `unicode/keycap`, `unicode/vs16` | old, tmux | cursor | clusters |
+| `unicode/three-marks`, `unicode/three-marks-at-end` | old, tmux | text | clusters |
+| `unicode/devanagari-joiner-at-end`, `unicode/flag-at-end`, `unicode/flags-three-at-end` | old, tmux | text, cursor | clusters |
+| `unicode/prepend` | old, tmux, xterm | cursor | clusters |
+| `unicode/prepend-at-end` | old, tmux, xterm | text, cursor | clusters |
+| `unicode/devanagari-joiner`, `unicode/mark-after-letter-at-end` | tmux | cursor | clusters |
+| `unicode/keycap-at-end` | tmux, xterm | text | clusters |
+| `unicode/skin-tone`, `unicode/skin-tone-at-end` | xterm | cursor | clusters |
+| `unicode/devanagari-joiner`, `unicode/devanagari-joiner-at-end`, `unicode/family`, `unicode/family-at-end`, `unicode/family-four`, `unicode/family-four-at-end`, `unicode/joiner-after-letter`, `unicode/joiner-after-letter-at-end`, `unicode/keycap`, `unicode/mark-after-move`, `unicode/vs15`, `unicode/vs15-at-end`, `unicode/vs16`, `unicode/vs16-at-end`, `unicode/zero-width-space`, `unicode/zero-width-space-at-end` | xterm | text | clusters |
+| `resize/narrow-full-screen` | old | text | no reflow |
+| `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow` | old | text, cursor | no reflow |
+| `resize/narrow-cursor-mid-line`, `resize/narrow-wide-characters`, `resize/widen` | old, tmux | text, cursor | no reflow |
+| `resize/narrow-and-back`, `resize/region-then-resize` | old, tmux, xterm | text | no reflow |
+| `resize/shorter-and-back`, `resize/taller` | old, tmux, xterm | text, cursor | no reflow |
+| `resize/narrow-wide-and-back` | old, xterm | text, cursor | no reflow |
+| `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow`, `resize/narrow-wide-and-back` | tmux | text | no reflow |
+| `resize/narrow-full-screen` | tmux | text, cursor | no reflow |
+| `resize/narrow-wide-characters` | xterm | text | no reflow |
 <!-- referee:end -->
 
 ## Left out
@@ -454,15 +482,16 @@ The kitty keyboard protocol; of the mouse, the UTF-8 and urxvt report forms
 (1005, 1015: programs get the SGR form or the oldest one), dragging a line
 to resize, and any menu use;
 hyperlinks (OSC 8 is read and dropped); reading the clipboard (setting it
-works); colour queries and palette changes (OSC 4, 10, 11) and the
-queries DECRQSS, XTGETTCAP and XTVERSION; the bell, the visual bell and the
-printer codes; reflow on resize (rows keep their text, what does not fit is
+works); colour queries and palette and cursor colour changes (OSC 4, 10, 11,
+12) and the queries DECRQSS, XTGETTCAP and XTVERSION; focus reports (mode
+1004); the bell, the visual bell, the printer codes and memory lock; reflow on resize (rows keep their text, what does not fit is
 cut or goes to history); left and right margins; line feed mode (`CSI 20 h`);
 double underline and
 underline colours (drawn as one plain underline); more than two combining
 marks on a character; choosers and prompts (renaming
 and picking from a list would be scripts); a copy mode (`C-b c` is the
-editor on the pane's text); Windows. `clear` clears the screen, not the `history` file.
+editor on the pane's text); Windows. `clear` clears the screen, not the
+`history` file (`CSI 3 J` is ignored).
 
 Pictures: one that does not fit its tile whole is not drawn. After a picture
 the cursor goes to the start of the line below it (xterm leaves it on the

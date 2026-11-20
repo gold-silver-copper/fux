@@ -30,5 +30,5 @@ fn main() {
     println!("cursor {row} {col}");
     let rows: Vec<String> = screen.rows().map(|row| row.text()).collect();
     let shown = rows.len().saturating_sub(usize::from(screen.size().rows()));
-    rows.iter().skip(shown).for_each(|row| println!("|{}", row.trim_end()));
+    rows.iter().skip(shown).for_each(|row| println!("|{row}"));
 }

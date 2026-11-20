@@ -132,6 +132,15 @@ fn the_right_margin_is_xterms() {
     assert_eq!(term(8, 2, "A\x1b[2;1H\x1b[3b-\x1b[2b\x1b[2b\rB\r\x1b[b").plain(), "A\nB--\n");
     // With wrapping off a wide character that has no room is dropped; a C1 control as UTF-8 is nothing.
     assert_eq!(term(8, 1, "\x1b[?7l0123456一|a\u{9b}2C").plain(), "0123456C\n");
+    // A long way to write a C1 control is no C1 control: it shows the mark of bytes that are no character.
+    // A sequence that was cancelled leaves REP nothing to repeat, and a character dropped is what it repeats.
+    let mut bad = Term::new(20, 1);
+    bad.feed(b"a\xe0\x82\x9bb\xed\xa0\x80c\xe4\xb8e\xffA\x1b[9\x18\x1b[b");
+    assert_eq!(bad.plain(), "a\u{fffd}b\u{fffd}c\u{fffd}e\u{fffd}A\n");
+    assert_eq!(term(8, 1, "\x1b[?7l0123456一\x1b[b").plain(), "0123456\n");
+    // Asking again for the alternate screen of 1047 keeps what is on it; DECALN lets the whole screen scroll.
+    assert_eq!(term(8, 2, "\x1b[?1047hX\x1b[?1047hY").plain(), "XY\n\n");
+    assert_eq!(term(3, 3, "\x1b[2;3r\x1b[3;2H\x1b#8X\n\n\nY").plain(), "EEE\nEEE\n Y\n");
 }
 
 #[test]

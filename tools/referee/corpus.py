@@ -2,7 +2,7 @@
 """Writes the generated part of the corpus again: tools/referee/corpus.py
 
 terminfo/  every output capability of `infocmp -x xterm-256color` (not the keys, k…, nor the
-           shapes of replies: u6, u8, rv, RV, xr, XR, xm), each applied to a 12x6 screen
+           shapes of replies: u6, u8, rv, xr, xm), each applied to a 12x6 screen
            full of text with the cursor at row 3, column 5, then `@` printed where the cursor is
 unicode/   each string after `a` and before `|`, and again started in a row's last-but-one column
 resize/    text, then sizes
@@ -54,7 +54,11 @@ def terminfo():
     made["rmam+text"] = tput("rmam") + b"QQQQQQQQQQ"
     made["smacs+text"] = tput("smacs") + b"lqk" + tput("rmacs")
     made["tabs"] = tput("tbc") + tput("cup", 2, 9) + tput("hts") + tput("cup", 2, 0) + tput("ht")
-    made["setaf+setab"] = tput("setaf", 1) + tput("setab", 4)
+    made["setaf+setab"] = tput("setaf", 1) + tput("setab", 4) + tput("setaf", 200) + tput("setab", 12)
+    made["RV"] = tput("RV")
+    made["XR"] = tput("XR")
+    made["meml+memu"] = tput("cup", 2, 0) + tput("meml") + tput("cup", 5, 0) + b"\n\nX" + tput("memu") + b"\nY"
+    made["E3"] = tput("cup", 5, 0) + b"\n\n\n" + tput("E3")
     made["sgr"] = tput("sgr", 1, 0, 1, 0, 0, 1, 0, 0, 0)
     made["Ms"] = tput("Ms", "c", "dGVzdA==")
     made["Ss"] = tput("Ss", 2)
@@ -97,7 +101,7 @@ UNICODE = {
     "prepend": "؀x",
     "thai": "กำ",
     "tamil": "நி",
-    "mark-alone": "́",
+    "mark-after-letter": "́",
 }
 
 
@@ -106,6 +110,8 @@ def unicode():
         escaped = string.encode("unicode_escape").decode()
         case("unicode", name, "16x2", "text a" + escaped + "|")
         case("unicode", name + "-at-end", "16x2", "feed \\x1b[1;15H", "text a" + escaped + "|")
+    case("unicode", "mark-first", "16x2", "text \\u0301|")
+    case("unicode", "mark-after-move", "16x2", "feed a\\x1b[1;2H", "text \\u0301|")
 
 
 def resize():
