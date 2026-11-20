@@ -580,6 +580,27 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - `sizes.sh` prints and no longer fails (the owner: "I never really said
     I want one").
 
+- **D60. The fix check of D59 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  Fixed: `status` was written after the first screen (the TERM key could
+  read the new `state` with the old program's number): it is a fact like the
+  others now, written with them, and what an earlier program left is removed
+  before the first screen, not after; `fux start` returns when the screen is
+  there too. A round of writing that fails is tried again (it was dropped
+  until the next output). Wrapped rows keep their blanks in `screen`, and
+  the editor key puts a line end between an unfinished line of history and
+  a first row that does not go on from it; `top` counts that line. The
+  viewer shows anything but text and colours in a `screen.styled` as `?`,
+  and cuts a line longer than `size` says cleanly (it drew `abcdP` for
+  `abcdefghijKLMNOP` at 5 columns). `fux wait` opens `state` and `status`
+  without waiting. 65535 is flags, 65536 is not. The TERM key asks after
+  the holder before it trusts `running`.
+  Kept: if the very last round of writing fails, `fux wait` reports what is
+  on disk (the holder's `log` says why); lines that were dropped because 4
+  MiB of history were waiting are not counted in `top`; a FIFO left by a
+  dead viewer of the same number is removed, untested (the number cannot be
+  chosen in a test); the order of writes is tested by the files' times on an
+  ended pane, not by intercepting each write.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

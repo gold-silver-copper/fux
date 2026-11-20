@@ -26,10 +26,10 @@ mod view;
 mod width;
 
 use std::ffi::OsString;
-use std::fs::{self, DirBuilder, File};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
@@ -116,7 +116,8 @@ fn say(line: &[u8]) -> Result<(), String> {
 /// At most 64 KiB of a small file of ours, as text.
 fn read_some(path: &Path) -> std::io::Result<String> {
     let mut bytes = Vec::new();
-    File::open(path)?.take(64 << 10).read_to_end(&mut bytes)?;
+    // (Opened without waiting, should the name be a FIFO's.)
+    OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path)?.take(64 << 10).read_to_end(&mut bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -217,7 +218,10 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
     loop {
         // An error here is the end too: there is nothing left to wait for.
         let ended = !matches!(holder.try_wait(), Ok(None));
-        if read_some(&dir.join("status")).is_ok_and(|status| status.contains(&ours)) {
+        // (Its status comes with its first facts, a moment before its first screen.)
+        if read_some(&dir.join("status")).is_ok_and(|status| status.contains(&ours))
+            && dir.join("screen.styled").exists()
+        {
             return Ok(());
         }
         // A pane may remove its own folder when its program is done (the default

@@ -236,6 +236,8 @@ pub struct Term {
     private: u8,
     /// The sequence's first number was left out.
     bare: bool,
+    /// One of the sequence's numbers was too large to keep.
+    huge: bool,
     inter: u8,
     utf8: u32,
     utf8_left: u8,
@@ -313,6 +315,7 @@ impl Term {
             sub: false,
             private: 0,
             bare: false,
+            huge: false,
             inter: 0,
             utf8: 0,
             utf8_left: 0,
@@ -407,8 +410,15 @@ impl Term {
     /// The screen as plain text, one line per row, blanks at the end cut.
     pub fn plain(&self) -> String {
         let mut out = String::new();
-        for row in &self.grid {
-            Term::row_text(row, &mut out);
+        for (y, row) in self.grid.iter().enumerate() {
+            // A row that goes on in the next keeps the blanks at its end: they are in the
+            // middle of its line (but not the gap a wide character left).
+            if self.grid.get(y + 1).is_some_and(|next| continues(next)) {
+                let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
+                row.iter().take(row.len() - usize::from(gap)).for_each(|cell| cell.push_text(&mut out));
+            } else {
+                Term::row_text(row, &mut out);
+            }
             out.push('\n');
         }
         out
@@ -447,7 +457,7 @@ impl Term {
         out
     }
 
-    /// The modes line 1 of a screen file lists by name, and where each is kept.
+    /// The modes the `modes` file lists by name, and where each is kept.
     fn modes(&mut self) -> [(&'static str, &mut bool); 4] {
         [
             ("appcursor", &mut self.app_cursor),
@@ -485,10 +495,18 @@ impl Term {
         (self.keys, self.keyboard) = ([(keys, Vec::new()), (keys, Vec::new())], KEYS);
     }
 
+    /// How many lines are before the main screen's first row: those gone into history whole,
+    /// and one more that history has the start of, if what it went on in was erased.
+    pub fn top(&self) -> usize {
+        let first = if self.alt { self.other.first() } else { self.grid.first() };
+        self.gone + usize::from(self.history_open && !first.is_some_and(|row| continues(row)))
+    }
+
     /// The rows of the screen that go on from the row above (the text wrapped into them), as
     /// numbers from 0: what `plain` cannot say. The first row may go on from history's last line.
     pub fn wraps(&self) -> String {
-        let rows = self.grid.iter().enumerate().filter(|(y, row)| continues(row) && (*y > 0 || self.history_open));
+        let open = self.history_open && !self.alt;
+        let rows = self.grid.iter().enumerate().filter(|(y, row)| continues(row) && (*y > 0 || open));
         rows.map(|(y, _)| y.to_string()).collect::<Vec<String>>().join(" ")
     }
 
@@ -1082,6 +1100,7 @@ impl Term {
             b'[' => {
                 self.params.clear();
                 (self.param, self.sub, self.private, self.inter, self.too_long) = (None, false, 0, 0, false);
+                self.huge = false;
                 self.state = State::Csi;
             }
             b']' | b'P' | b'X' | b'^' | b'_' => {
@@ -1266,8 +1285,10 @@ impl Term {
             // After an intermediate byte only the last byte may come: anything else spoils the sequence.
             b'0'..=b'?' if self.inter != 0 => self.too_long = true,
             b'0'..=b'9' => {
-                let digit = u16::from(byte - b'0');
-                self.param = Some(self.param.unwrap_or(0).saturating_mul(10).saturating_add(digit));
+                // (A number past what is kept is the largest kept, and remembered as too large.)
+                let more = u32::from(self.param.unwrap_or(0)) * 10 + u32::from(byte - b'0');
+                self.huge |= more > u32::from(u16::MAX);
+                self.param = Some(u16::try_from(more).unwrap_or(u16::MAX));
             }
             b';' | b':' | 0x40..=0x7e => {
                 // More parameters than are kept: the whole sequence is ignored, and said so.
@@ -1478,7 +1499,7 @@ impl Term {
             (b'=' | b'>' | b'<' | b'?', 0, b'u') => {
                 let alt = usize::from(self.alt);
                 // (A number too large to be flags is no flags, not the largest number kept.)
-                let given = Some(self.arg(0, 0)).filter(|n| *n < usize::from(u16::MAX)).unwrap_or(0);
+                let given = if self.huge { 0 } else { self.arg(0, 0) };
                 let (asked, how) = ((given & usize::from(KEYS & self.keyboard)) as u8, self.arg(1, 1));
                 // (Going back takes a count: one if none is given, none if it is 0.)
                 let (back, which) = (if self.bare { 1 } else { self.arg(0, 0) }, self.private);

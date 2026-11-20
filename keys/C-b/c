@@ -9,11 +9,15 @@ f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
 # The screen is read first, without the blank rows at its end, and its rows that go
 # on from the row above (`wraps` numbers them from 0) joined to it, as history has them:
 # a line that scrolls off meanwhile is then there twice, never missing.
-read -r wraps < "$FUXN_PANE/wraps" 2>/dev/null
+read -r wraps 2>/dev/null < "$FUXN_PANE/wraps"
 screen=$(awk -v wraps="$wraps" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
   { row[NR] = $0; if ($0 != "") last = NR }
   END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), row[i]; if (last) print "" }' "$FUXN_PANE/screen")
-{ cat "$FUXN_PANE/history.1" "$FUXN_PANE/history" 2>/dev/null; printf '%s\n' "$screen"; } > "$f"
+# History's last line may be unfinished: the screen's first row goes on from it if
+# `wraps` lists row 0, and is a line of its own if not.
+open=$(tail -c 1 "$FUXN_PANE/history" 2>/dev/null)
+case " $wraps " in *" 0 "*) open= ;; esac
+{ cat "$FUXN_PANE/history.1" "$FUXN_PANE/history" 2>/dev/null; [ -z "$open" ] || echo; printf '%s\n' "$screen"; } > "$f"
 n=$(($(wc -l < "$f")))
 # $EDITOR may hold arguments (split at spaces, nothing else expanded). Only an
 # editor known to read a line number is given one.

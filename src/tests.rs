@@ -626,8 +626,15 @@ fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_
     assert_eq!((base64_decode("AA="), base64_decode("AB=="), base64_decode("b2xk=")), (None, None, None));
     let mut flags = Term::new(4, 1);
     flags.keyboard = crate::term::KEYS;
-    flags.feed(b"\x1b[=65536u\x1b[?u");
-    assert_eq!(flags.take().reply, b"\x1b[?0u");
+    flags.feed(b"\x1b[=65536u\x1b[?u\x1b[=65535u\x1b[?u");
+    assert_eq!(flags.take().reply, b"\x1b[?0u\x1b[?5u");
+    // A row that goes on in the next keeps the blank at its end; when what a line of history
+    // went on in is erased, the screen's first row is the next line, and not listed.
+    let mut spaced = crate::tests::term(3, 2, "ab cd");
+    assert_eq!((spaced.plain().as_str(), spaced.wraps().as_str()), ("ab \ncd\n", "1"));
+    spaced.feed(b"efg\x1b[1;1H\x1b[2KXYZ");
+    assert_eq!((spaced.take().history.as_str(), spaced.plain().as_str()), ("ab ", "XYZ\nfg\n"));
+    assert_eq!((spaced.wraps().as_str(), spaced.top()), ("", 1));
 }
 
 #[test]

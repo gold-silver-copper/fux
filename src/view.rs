@@ -968,11 +968,28 @@ impl Pane {
             _ => (0, 0),
         };
         let cols = if self.size.0 == 0 { SIZE_MAX } else { self.size.0 };
-        self.term = Term::new(cols, styled.lines().count().clamp(1, SIZE_MAX));
-        // (No wrapping: a line longer than the pane is said to be wide is cut.)
+        // (One column more than the pane is said to have: there a line that is longer ends,
+        // and is cut off.)
+        self.term = Term::new((cols + 1).min(SIZE_MAX), styled.lines().count().clamp(1, SIZE_MAX));
         self.term.feed(b"\x1b[?7l");
         for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
-            self.term.feed(format!("\x1b[{};1H\x1b[m{line}", row + 1).as_bytes());
+            // The rows are text and colours, as the holder writes them: anything else in a
+            // file of someone's own making is shown as `?`.
+            let mut text = String::with_capacity(line.len());
+            let mut rest = line;
+            while let Some(at) = rest.find(|c: char| c.is_control()) {
+                let (before, after) = rest.split_at(at);
+                let colour = after.strip_prefix("\x1b[").and_then(|sgr| {
+                    let end = sgr.find(|c: char| !(c.is_ascii_digit() || c == ';' || c == ':'))?;
+                    sgr.get(end..)?.starts_with('m').then_some(2 + end + 1)
+                });
+                text.push_str(before);
+                text.push_str(colour.and_then(|length| after.get(..length)).unwrap_or("?"));
+                rest = after.get(colour.unwrap_or(1)..).unwrap_or_default();
+            }
+            text.push_str(rest);
+            self.term
+                .feed(format!("\x1b[{};1H\x1b[m{text}\x1b[{};{}H\x1b[m\x1b[K", row + 1, row + 1, cols + 1).as_bytes());
         }
         self.term.set_words(&fact("modes", 256));
         let cursor = fact("cursor", 64);

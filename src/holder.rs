@@ -48,11 +48,15 @@ struct Holder {
     pid: u32,
     /// The facts as they were written last, each in its file: one is written again only when it changes.
     facts: Vec<(&'static str, String)>,
+    /// What the `status` file says.
+    status: String,
+    /// The last round of writing failed.
+    failing: bool,
     input: Vec<u8>,
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
     pictures: Vec<u32>,
-    /// `running`, `hungup`, `exited CODE` or `killed SIGNAL`: on line 1 of the screens, and nowhere else.
+    /// `running`, `hungup`, `exited CODE` or `killed SIGNAL`: the `state` file.
     state: String,
     /// What the emulator produced and the next publish writes: history, pictures, a title, a clipboard.
     pending: Out,
@@ -154,6 +158,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         _slave: slave,
         pid,
         facts: Vec::new(),
+        status: String::new(),
+        failing: false,
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: Vec::new(),
@@ -181,12 +187,11 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
 
 impl Holder {
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader, command: &str) -> Result<(), String> {
-        self.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
-        // Written once: who holds the pane, the program's own number, and what it runs.
-        let status = format!("holder {}\npid {}\ncommand {command}\n", std::process::id(), self.pid);
-        replace("status", status.as_bytes()).map_err(|e| format!("cannot write status: {e}"))?;
-        // What an earlier holder of this pane left goes now that this one's
-        // screen has replaced the one that named it: its history and its pictures.
+        // Who holds the pane, the program's own number, and what it runs: a fact as the others
+        // are, written once (it never changes), with them and before the first screen.
+        self.status = format!("holder {}\npid {}\ncommand {command}\n", std::process::id(), self.pid);
+        // What an earlier holder of this pane left goes before this one's first
+        // screen is there: its title and clipboard, its history and its pictures.
         let _ = fs::remove_file("title");
         let _ = fs::remove_file("clipboard");
         let _ = fs::remove_file("history.1");
@@ -197,6 +202,7 @@ impl Holder {
                 let _ = fs::remove_file(old);
             }
         }
+        self.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
 
         let mut buffer = vec![0u8; 64 << 10];
         let (mut dirty, mut published, mut looked, mut budget) = (false, Instant::now(), Instant::now(), READ_BUDGET);
@@ -205,12 +211,15 @@ impl Holder {
             if since >= PUBLISH_EVERY {
                 budget = READ_BUDGET;
                 if dirty {
-                    match self.publish() {
+                    // What could not be written is tried again in the next round (and said once).
+                    let written = self.publish();
+                    match &written {
                         Err(e) if e.kind() == ErrorKind::NotFound => return Err(GONE.into()),
-                        Err(e) => self.log(&format!("cannot write the screen: {e}")),
-                        Ok(()) => {}
+                        Err(e) if !self.failing => self.log(&format!("cannot write the pane's files: {e}")),
+                        _ => {}
                     }
-                    (dirty, published) = (false, Instant::now());
+                    self.failing = written.is_err();
+                    (dirty, published) = (self.failing, Instant::now());
                 }
             }
             // The directory is the pane: when it is gone, so is this.
@@ -475,13 +484,14 @@ impl Holder {
         let term = &mut self.term;
         let shown = if term.cursor_shown { "shown" } else { "hidden" };
         let facts = [
-            ("top", format!("{}\n", term.gone)),
+            ("top", format!("{}\n", term.top())),
             ("wraps", format!("{}\n", term.wraps())),
             ("pictures", term.pictures.iter().map(placed).collect()),
             ("size", format!("{} {}\n", term.cols, term.rows)),
             ("cursor", format!("{} {} {shown} {}\n", term.row, term.col, term.cursor_shape)),
             ("modes", format!("{}\n", term.words())),
             ("state", format!("{}\n", self.state)),
+            ("status", self.status.clone()),
         ];
         for (name, text) in facts {
             if !self.facts.iter().any(|(fact, was)| *fact == name && *was == text) {

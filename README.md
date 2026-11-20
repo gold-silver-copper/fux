@@ -75,12 +75,12 @@ in `FUXN_WS`.
 | `screen` | the screen as plain text: one line per row, and nothing else |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them |
 | `size` | `COLS ROWS` (`read cols rows < size`) |
-| `cursor` | `ROW COL shown\|hidden SHAPE`: row and column from 0, and the shape's number as a program sets it (0 to 6) |
+| `cursor` | `ROW COL shown\|hidden SHAPE`: row and column from 0, and the shape's number as a program sets it (0 to 6, as a rule) |
 | `modes` | one line of words, empty when none: how input is to be sent to the program. `appcursor`, `keypad`, `paste`, `alt` (the alternate screen), `mouse9`, `mouse1000`, `mouse1002` or `mouse1003` (the mouse reports the program asked for), `mousesgr` (their newer form), `keys1`, `keys4` or `keys5` (the keyboard flags in force for it, below) |
 | `state` | what became of the program: `running`, `hungup`, `exited CODE` or `killed SIGNAL` |
 | `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
-| `top` | how many whole lines have gone into `history`: the number, from 0, of the line the screen's first row is part of |
-| `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. With it a script can copy a wrapped line whole |
+| `top` | how many lines of the pane's text are before the screen's first row, counted since the pane began: the number, from 0, of the line that row is part of. (After `history` has become `history.1` twice, the oldest of them are in neither file) |
+| `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. A row that goes on in the next keeps the blanks at its end in `screen`, so joining the two gives the line as it was printed: with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
 | `pictures` | a line `pic-N.sixel ROW COL COLS ROWS` for each picture on the screen: the file, where it is, its size in cells |
 | `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
@@ -91,7 +91,10 @@ in `FUXN_WS`.
 **One fact, one file.** The screens are text and nothing else; everything
 else about a pane is a small file of its own, written when it changes and
 not otherwise, replaced in one step (written as `NAME.new`, then renamed),
-so a reader sees a whole old one or a whole new one. In each round of
+so a reader sees a whole old one or a whole new one (`history` is added to
+in place, and a picture's file is written before `pictures` names it). A
+file that could not be written is tried again in the next round, and `log`
+says so once. In each round of
 writing the facts come first and the screens last, `screen.styled` last of
 all, and the screens are written again whenever any fact was: to follow a
 pane, watch `screen.styled` and read what you need when it changes.

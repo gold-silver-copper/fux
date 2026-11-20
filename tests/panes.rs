@@ -66,7 +66,6 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     until("the new size shows", || read(&pane.join("screen")).contains("\n17 91\n"));
     assert_eq!(fact(&pane, "size"), "91 17");
     assert_eq!(read(&pane.join("screen")).lines().count(), 17, "one line a row");
-    assert!(read(&pane.join("screen")).starts_with("$ ") || !read(&pane.join("screen")).starts_with("pid="));
     // Every fact has its file: where the cursor is, how input is sent, whether the program runs, who it is.
     let cursor: Vec<String> = fact(&pane, "cursor").split(' ').map(str::to_string).collect();
     assert!(cursor.len() == 4 && cursor[2] == "shown", "{cursor:?}");
@@ -138,6 +137,14 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
     let (running, first) = (fact(&quiet, "state"), stamp());
     until("its screen is written again", || stamp() != first);
     assert_eq!((running.as_str(), fact(&quiet, "state").as_str()), ("running", "exited 0"));
+    // Every fact is written before the screens and `screen.styled` last of all: in a pane that
+    // has ended, no fact is younger than it.
+    let written = |name: &str| fs::metadata(quiet.join(name)).unwrap().modified().unwrap();
+    let wait = session.fux().arg("wait").arg(&quiet).output().unwrap();
+    assert!(String::from_utf8_lossy(&wait.stdout).ends_with("state exited 0\n"));
+    for name in ["size", "cursor", "modes", "state", "status", "top", "wraps", "pictures", "screen"] {
+        assert!(written(name) <= written("screen.styled"), "{name} was written after screen.styled");
+    }
 
     // Whoever starts a pane may ignore signals; its program does not inherit that.
     let start = format!("trap '' INT HUP; exec '{}' start c -- sleep 600", env!("CARGO_BIN_EXE_fux"));
@@ -289,11 +296,14 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::create_dir(inner.0.join("main/odd")).unwrap();
     fs::write(inner.0.join("main/odd/state"), "x\x1b]0;T\x07\x1b[2Jy\n").unwrap();
     fs::write(inner.0.join("main/odd/cursor"), "99 99 shown 7\n").unwrap();
-    fs::write(inner.0.join("main/odd/screen.styled"), "hi\x1b]0;T\x07\x1b[?1049h\n").unwrap();
+    fs::write(inner.0.join("main/odd/size"), "5 9\n").unwrap();
+    fs::write(inner.0.join("main/odd/screen.styled"), "h\x1b[1mi\x1b]0;T\x07\x1b[?1049h ho-hum\n").unwrap();
     // The viewer gives the new folder a tab; a hand's edit comes after that, not across it.
     until("the viewer has placed the folder", || read(&inner.0.join("main/layout")).contains("odd"));
     fs::write(inner.0.join("main/layout"), "* row(one odd) focus=one\n").unwrap();
     until("its title is drawn with the codes as marks", || screen().contains(" x?]0;T??[2Jy\n"));
+    // Its row is text and colours and nothing more, cut where it says the pane ends (5 columns).
+    assert!(screen().contains("│hi?]0\n") || screen().contains("│hi?]0 "), "{}", screen());
 }
 
 #[test]
@@ -324,16 +334,16 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
         env!("CARGO_BIN_EXE_fux")
     );
     let view = outer.start("view", &["sh", "-c", &view]);
-    let line1 = |pane: &Path| format!("{} state={}", fact(pane, "modes"), fact(pane, "state").replace(' ', ":"));
+    let modes = |pane: &Path| fact(pane, "modes");
     let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
     // The viewer learns what its terminal takes and says so for the session. A program that
-    // asks from then on has its flags in force, on its own line 1 and, asked of the terminal,
+    // asks from then on has its flags in force, on its own `modes` and, asked of the terminal,
     // on the viewer's.
     until("the session knows", || read(&inner.0.join("keyboard")) == "5\n");
     let asks = inner.start("asks", &["sh", "-c", asking]);
-    until("the second answer", || shown(&asks).contains("^[[?1u") && line1(&asks).contains("keys1"));
+    until("the second answer", || shown(&asks).contains("^[[?1u") && modes(&asks).contains("keys1"));
     fs::write(inner.0.join("main/layout"), "* row(asks plain) focus=asks\n  early focus=early\n").unwrap();
-    until("the viewer asked its terminal for them", || line1(&view).contains("keys1"));
+    until("the viewer asked its terminal for them", || modes(&view).contains("keys1"));
     // Ctrl-I is not Tab and Shift-Enter is not Enter: each reaches the program as it was sent.
     fs::write(view.join("in"), "a\x1b[105;5ub\tc\x1b[13;2ud\r").unwrap();
     until("the keys arrive apart", || shown(&asks).ends_with("^[[?1ua^[[105;5ub^Ic^[[13;2ud^M"));
@@ -341,16 +351,16 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
     fs::write(view.join("in"), "\x1b[98;5uo").unwrap();
     until("the other pane has the keys", || read(&inner.0.join("main/layout")).contains("focus=plain"));
     // That program asked for nothing: the terminal is put back to telling keys the old way.
-    until("the viewer took the flags back", || !line1(&view).contains("keys"));
+    until("the viewer took the flags back", || !modes(&view).contains("keys"));
     fs::write(view.join("in"), "x\ty").unwrap();
     until("plain keys arrive", || shown(&plain) == "x^Iy");
     assert!(shown(&asks).ends_with("d^M"), "{}", shown(&asks));
     // Back on the pane that asked, they are in force again.
     fs::write(view.join("in"), "\x02o").unwrap();
-    until("the flags are asked for again", || line1(&view).contains("keys1"));
+    until("the flags are asked for again", || modes(&view).contains("keys1"));
     // The program that was told "none" before the viewer came still gets keys the old way: what
     // it was told stays true.
-    assert!(!line1(&early).contains("keys") && shown(&early) == "^[[?0u", "{}", line1(&early));
+    assert!(!modes(&early).contains("keys") && shown(&early) == "^[[?0u", "{}", modes(&early));
     // When the viewer leaves, the terminal has the flags it had: 4, on its alternate screen.
     let ctl = fs::read_dir(&inner.0)
         .unwrap()
