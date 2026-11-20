@@ -608,7 +608,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     // A program that marks as a shell does: two commands (the first with more output than the
     // screen has rows, and a line that wraps), then a prompt.
     let shell = "m() { printf '\\033]133;%s\\007' \"$1\"; }; \
-        m A; printf '$ '; m B; echo first; m C; seq 101 112; echo a-long-line-that-wraps-in-twelve; m 'D;0'; \
+        m A; printf '$ '; m B; echo first; m C; seq 101 112; printf '\\033[32ma-long-line-\\033[mthat-wraps-in-twelve\\n'; m 'D;0'; \
         m A; printf '$ '; m B; echo second; m C; echo alpha; echo beta; m 'D;1'; m A; printf '$ '; m B; sleep 600";
     let mut start = session.fux();
     start.env("COLUMNS", "12").env("LINES", "5").args(["start", "sh", "--", "sh", "-c", shell]);
@@ -653,6 +653,17 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     // History in the editor opens at the text's end.
     let (text, line) = key("c");
     assert_eq!((text.lines().count(), text.lines().last()), (line, Some("$")));
+    // History in colour is the same text with its colours, in `less -R` at its end (a `less`
+    // for the test: the same script).
+    fs::copy(session.0.join("vim"), session.0.join("less")).unwrap();
+    let _ = fs::remove_file(&out);
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let mut script = Command::new(keys.join("C-b").join("M-c"));
+    script.env("PATH", format!("{}:{bin}:{}", session.0.display(), std::env::var("PATH").unwrap()));
+    script.env("OUT", &out).env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main");
+    assert!(script.env("FUXN_PANE", &pane).status().unwrap().success());
+    until("less was given the file", || bare(&read(&out)) == text);
+    assert!(read(&out).contains("\n\x1b[0;32ma-long-line-\x1b[mthat-wraps-in-twelve\n$ second\n"), "{:?}", read(&out));
     // A command that prints nothing has no output to open, and the key says so; one whose
     // output does not end its line has that output, every character of it whole, without the
     // prompt that follows on the line. (And the editor is run as `FUXN_EDIT` says.)

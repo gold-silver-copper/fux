@@ -427,7 +427,7 @@ The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `s` split stacked (both, and a new tab, start where the focused pane's program says it is, its `cwd`, and else in the directory the viewer was started in),
 `x` then `y` close the pane (remove its directory), `h j k l` focus,
 `o` next pane, `n` `b` next and previous tab, `d` detach, `c` the pane's text
-in the editor, `C` (Shift-c) the last command's output in the editor (from
+in the editor, `M-c` (Alt-c) the same text in colour in `less`, `C` (Shift-c) the last command's output in the editor (from
 where it began to where it ended, so without the prompt that
 follows an output with no line break; it says so if the command printed
 nothing or its output was cleared away; of a long output that Ctrl-L or `clear` cut in two,
@@ -481,6 +481,12 @@ pane removes its own folder, as a shell pane does), and the
 tab shown before it is shown again (the one you came from, unless you looked
 at another meanwhile); an editor that failed first waits for Enter, so that
 what it said can be read.
+
+`C-b M-c` (Alt-c) is the same text with its colours: older styled history,
+`history.styled` and `screen.styled` in one private file, in `less -R` at its
+end, in a tab of its own that goes when you leave less (`q`), the file with it.
+It is `less` whatever `$EDITOR` is: an editor shows the codes, not the colours
+(`keys/C-b/M-c` is four lines, and yours to change).
 
 There is no zoom either: a pane shown alone is a tab with one pane. If you
 want the key, these two scripts are it (`keys/C-b/z` and `keys/C-b/S-z`).
@@ -763,7 +769,7 @@ more than ten
 parts in one character (a letter with twelve marks loses the last three,
 and the pane's `log` says so); prompts (renaming
 would be a script); a copy mode (`C-b c` is the
-editor on the pane's text); Windows. `clear` clears the screen, not the
+editor on the pane's text, `C-b M-c` is `less` on it in colour); Windows. `clear` clears the screen, not the
 `history` file (`CSI 3 J` is ignored).
 
 Pictures: one that does not fit its tile whole is not drawn. After a picture
