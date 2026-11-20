@@ -18,6 +18,9 @@ use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// The most key scripts running at once; one more is refused with a message.
@@ -80,6 +83,11 @@ struct View {
     before: Option<String>,
     keys: PathBuf,
     tty: File,
+    /// What goes to the terminal is written by a thread of its own, so that a terminal that
+    /// reads slowly holds up the frames and not the keys: the way to it (until the viewer
+    /// leaves), and how much of what was sent there it has not written yet.
+    out: Option<mpsc::Sender<String>>,
+    unwritten: Arc<AtomicUsize>,
     size: Winsize,
     /// What the terminal shows now, to send only what changes.
     front: Vec<Cell>,
@@ -184,12 +192,27 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     let saved = sys::raw_mode(&tty).map_err(|e| format!("cannot set the terminal: {e}"))?;
     let restore = Restore(tty.try_clone().map_err(|e| e.to_string())?, saved);
     size.rows = 0; // the first frame sees a new size and draws everything
+    let (out, queue) = mpsc::channel::<String>();
+    let unwritten = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let (mut tty, unwritten) = (tty.try_clone().map_err(|e| e.to_string())?, unwritten.clone());
+        std::thread::Builder::new().spawn(move || {
+            queue.into_iter().try_for_each(|text| {
+                tty.write_all(text.as_bytes())?;
+                unwritten.fetch_sub(1, Ordering::Release);
+                io::Result::Ok(())
+            })
+        })
+    };
+    let writer = writer.map_err(|e| format!("cannot start a thread: {e}"))?;
     let mut view = View {
         session,
         workspace,
         before: None,
         keys,
         tty,
+        out: Some(out),
+        unwritten,
         size,
         front: Vec::new(),
         from: None,
@@ -238,24 +261,37 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // (First a link is closed: whatever ran before may have left one open, and no cell here is part of it.)
     const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
-    let result = view.tty.write_all((START.to_string() + &asked + "\x1b[c").as_bytes()).and_then(|()| view.run(&ctl));
+    view.write(START.to_string() + &asked + "\x1b[c");
+    let result = view.run(&ctl, &writer);
     // The keys leave with the viewer: a key that is down in a pane is let go there.
     view.leave(None);
     // The pane that was told it has the keys is told that it has them no more.
     view.tell(None);
     if view.joined {
-        let _ = view.tty.write_all(b"\x1b[?2027l");
+        view.write("\x1b[?2027l".into());
     }
+    // All of it is written before the terminal is put back; what could not be is why the viewer stopped.
+    view.out = None;
+    let result = result.and(writer.join().unwrap_or(Ok(())));
     drop(restore);
     let _ = fs::remove_file(&view.ctl_path);
     result.map_err(|e| format!("the viewer stopped: {e}"))
 }
 
 impl View {
-    fn run(&mut self, ctl: &File) -> io::Result<()> {
+    /// Hands the terminal's writer something to write.
+    fn write(&mut self, text: String) {
+        if let Some(out) = &self.out {
+            self.unwritten.fetch_add(1, Ordering::Release);
+            let _ = out.send(text);
+        }
+    }
+
+    fn run(&mut self, ctl: &File, writer: &JoinHandle<io::Result<()>>) -> io::Result<()> {
         let mut buffer = vec![0u8; 16 << 10];
         let (mut active, mut typed) = (Instant::now(), None::<Instant>);
-        while !self.quit {
+        // (The writer ends only when the terminal cannot be written to.)
+        while !self.quit && !writer.is_finished() {
             // A key's script runs before the keys typed after it, as a command
             // in a shell does: they wait until it ends (and what it printed is
             // read, and what it changed is drawn). One that takes longer than
@@ -418,7 +454,7 @@ impl View {
                     let state = name.trim_start_matches("mode:2027;").parse::<u8>().unwrap_or(0);
                     (self.joins, self.joined) = (matches!(state, 1..=3), state == 2);
                     if self.joined {
-                        let _ = self.tty.write_all(b"\x1b[?2027h");
+                        self.write("\x1b[?2027h".into());
                     }
                 }
                 name if name.starts_with("mode:") => {}
@@ -556,7 +592,7 @@ impl View {
                 // (With the pane's name before them, the words cannot be taken for one of the
                 // numbered commands some terminals read after `9;`.)
                 let rung = if words.is_empty() { "\x07".to_string() } else { format!("\x1b]9;{name}: {words}\x1b\\") };
-                let _ = self.tty.write_all(rung.as_bytes());
+                self.write(rung);
                 self.message = if words.is_empty() { format!("{name}: bell") } else { format!("{name}: {words}") };
             }
         }
@@ -795,6 +831,11 @@ impl View {
 
     /// Looks at the files and draws what changed. Says whether anything did.
     fn frame(&mut self) -> io::Result<bool> {
+        // One frame at a time: while the terminal is still reading the last, the next one waits
+        // (and is then of what the panes show by then), and the keys do not.
+        if self.unwritten.load(Ordering::Acquire) > 0 {
+            return Ok(true);
+        }
         let mut size = sys::winsize(&self.tty)?;
         let cell_size = (size.xpixel / size.cols.max(1), size.ypixel / size.rows.max(1));
         // A terminal larger than the largest pane is drawn in its top left corner.
@@ -1285,7 +1326,7 @@ impl View {
         // (What the terminal is to report is said when it changes, not with every frame: a
         // terminal may answer the asking itself.)
         let set = if modes == self.modes { "" } else { modes.as_str() };
-        self.tty.write_all(format!("\x1b[?2026h\x1b[?25l{out}\x1b[m{cursor}{set}\x1b[?2026l").as_bytes())?;
+        self.write(format!("\x1b[?2026h\x1b[?25l{out}\x1b[m{cursor}{set}\x1b[?2026l"));
         (self.cursor, self.modes) = (cursor, modes);
         Ok(true)
     }
