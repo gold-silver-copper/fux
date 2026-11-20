@@ -1215,6 +1215,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     styled files as it joins the plain ones, opened in `less -R` at its
     end through `.edit`. Alt-c: beside `c` (the editor) and `C` (the last
     output), and not Ctrl-c, which people press to back out of a prefix.
+- **D85. The first screen** (message 23, step 4; the panel 8 of 8). A
+  workspace that has no pane when a viewer first shows it gets what
+  `keys/.empty` starts: a shell in a first pane, by default, as the
+  new-tab key starts one. A script, so it is the user's to change (a
+  project's panes, a restore, nothing).
+  - Mine to decide: only when the workspace is first shown (at start, and
+    on a change of workspace), not each time it becomes empty. A workspace
+    whose last shell ends while it is shown stays empty and says how to go
+    on (`C-b t n`): a shell that came back at every `exit` could not be
+    left, and tmux users expect the last `exit` to end something.
+  - A keys directory written by an earlier build has no `.empty`: the
+    viewer then shows the sentence as before.
 
 ## The old fux3's bugs: which classes are gone
 

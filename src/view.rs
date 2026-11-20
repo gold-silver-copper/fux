@@ -132,6 +132,8 @@ struct View {
     /// this viewer has not shown on a focused pane yet. And when all were last looked at.
     notices: HashMap<String, (Stamp, bool)>,
     looked: Option<Instant>,
+    /// The workspace that was looked at for panes when it was first shown.
+    greeted: Option<String>,
     /// While the terminal is still being asked what it is like: since when, and the colours it
     /// has told of.
     colours: Option<(Instant, String)>,
@@ -247,6 +249,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         own: std::env::var_os(name!("PANE")).unwrap_or_default(),
         notices: HashMap::new(),
         looked: None,
+        greeted: None,
         colours: Some((Instant::now(), String::new())),
         written: Vec::new(),
         drawn: Vec::new(),
@@ -1131,7 +1134,21 @@ impl View {
         }
         // A notice sits in the bottom right corner until the next key: what is
         // wrong with the layout file, what a script said, or that there are no panes.
-        let hint = format!("no panes in {}: keys are scripts in {}", self.workspace, self.keys.display());
+        // A workspace that has no pane when it is first shown is not left blank: the keys'
+        // `.empty` is run (a new shell, by default). One whose last pane ends while it is
+        // shown stays empty, and says how to go on.
+        if self.greeted.as_deref() != Some(self.workspace.as_str()) {
+            self.greeted = Some(self.workspace.clone());
+            let first = self.keys.join(".empty");
+            if tiles.is_empty() && wrong.is_none() && first.is_file() {
+                self.script(&first);
+            }
+        }
+        let hint = format!(
+            "no panes in {}: C-b t n starts a shell (keys are scripts in {})",
+            self.workspace,
+            self.keys.display()
+        );
         let (note, style) = match &wrong {
             Some(wrong) => (wrong, colour(9, Some(236), 0)),
             None if tiles.is_empty() && self.message.is_empty() => (&hint, colour(11, Some(236), 0)),

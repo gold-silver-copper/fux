@@ -637,8 +637,9 @@ Differences are left as they are:
 ## Coming from tmux
 
 `ls "$(fux dir)"` lists the workspaces (tmux's sessions); `fux view NAME`
-attaches to one and `C-b d` detaches; `C-b t n` starts the first shell in an
-empty one. Tabs are tmux's windows. The choosers are `C-b f p`, `f t` and
+attaches to one and `C-b d` detaches; a workspace with no pane gets a shell
+when it is first shown (`keys/.empty` does that, and is yours to change), and
+`C-b t n` starts one in a workspace whose last pane has ended. Tabs are tmux's windows. The choosers are `C-b f p`, `f t` and
 `f w` (a pane, a tab, a workspace); there is no "last tab" key: it would be a script.
 
 ## Whose rules it follows

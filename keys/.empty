@@ -1,0 +1,6 @@
+#!/bin/sh
+# What the viewer runs when the workspace it is to show has no pane: your shell
+# in a first pane, as the new-tab key starts one. Make it what you like (a
+# project's panes, a picker of workspaces, nothing at all).
+p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell") || exit
+fux layout pane "${p##*/}"

@@ -273,6 +273,25 @@ fn a_flood_is_published_a_bounded_number_of_times_and_loses_no_line() {
 }
 
 #[test]
+fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
+    // The viewer in a pane of an outer session, with no keys directory yet: it writes the
+    // default keys, and `.empty` among them starts a shell in the workspace it finds empty.
+    let (outer, inner) = (Session::new("eouter"), Session::new("einner"));
+    let keys = inner.0.join(".keys");
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view =
+        outer.start("view", &[&command[..], &["env", "SHELL=/bin/sh", env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the first pane runs a shell", || fact(&inner.0.join("main/1"), "state") == "running");
+    assert!(read(&inner.0.join("main/1/status")).contains(".keys/.shell"));
+    // The shell ends, and its pane with it: the workspace stays empty, and the viewer says how
+    // to go on. It is not started over and over.
+    fs::write(inner.0.join("main/1/in"), "exit\r").unwrap();
+    until("the viewer says so", || read(&view.join("screen")).contains("no panes in main: C-b t n starts a shell"));
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(fs::read_dir(inner.0.join("main")).unwrap().flatten().all(|entry| !entry.path().is_dir()));
+}
+
+#[test]
 fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     // The viewer needs a terminal: it runs in a pane of an outer session.
     let (outer, inner) = (Session::new("outer"), Session::new("inner"));
