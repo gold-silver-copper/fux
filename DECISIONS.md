@@ -601,6 +601,35 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   chosen in a test); the order of writes is tested by the files' times on an
   ended pane, not by intercepting each write.
 
+- **D61. Small facts and modes** (message 12, step G; the panel's forms).
+  - `cwd`: the path from OSC 7, kept if the host named is none, `localhost`
+    or this machine's (`gethostname`, one more declared call), removed if it
+    is another's. The split and new-tab keys `cd` there before `fux start`.
+    A path that is not UTF-8 is not told.
+  - `notice`: `NUMBER WORDS`, replaced whole; the number alone is the bell
+    (one file, not a `bell` beside it: one thing to watch). `notify TEXT` on
+    `ctl` for anyone. The viewer looks at all panes' notices four times a
+    second, rings its own terminal once for a new one, says it in the
+    corner and marks the tab in the bar until the pane has had the keys.
+    What was there at its start is not rung. No log.
+  - Mode 2026: the holder makes no round of writing while the program says
+    it is drawing, for half a second at most.
+  - Mode 1004: a word in `modes`; the viewer tells the pane that gains or
+    loses the keys (if it asked), and asks its own terminal for the same so
+    that the window's focus reaches the program too.
+  - Mode 2027: the viewer asks once; if the terminal knows it, it is turned
+    on (and off again at the end if the viewer turned it on) and no `??` is
+    drawn. A pane of fux answers "set for good", so the pane test now sees
+    the character itself at a tile's edge; the stand-in is covered by the
+    probe with a Ghostty engine only (not in CI).
+  - Underlines: kind (double, curly, dotted, dashed) and colour are in a
+    cell's style and in `screen.styled`, always in the form with colons,
+    which a terminal that does not know them skips whole.
+  - Pickers are key scripts (`C-b f p|t|w`) and one helper, `.pick`, run in a
+    pane. One thing a script cannot know: which pane the viewer itself runs
+    in. The viewer says it (`FUXN_SELF`), and the workspace picker leaves
+    that workspace out.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

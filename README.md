@@ -71,12 +71,12 @@ in `FUXN_WS`.
 | File | What it is |
 |---|---|
 | `in` | FIFO. Bytes written here are typed to the program |
-| `ctl` | FIFO, one command a line: `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]` |
+| `ctl` | FIFO, one command a line: `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]`, `notify TEXT` (have something noticed, as a program does: `printf 'notify %s\n' 'the build is done' > ctl`) |
 | `screen` | the screen as plain text: one line per row, and nothing else |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them |
 | `size` | `COLS ROWS` (`read cols rows < size`) |
 | `cursor` | `ROW COL shown\|hidden SHAPE`: row and column from 0, and the shape's number as a program sets it (0 to 6, as a rule) |
-| `modes` | one line of words, empty when none: how input is to be sent to the program. `appcursor`, `keypad`, `paste`, `alt` (the alternate screen), `mouse9`, `mouse1000`, `mouse1002` or `mouse1003` (the mouse reports the program asked for), `mousesgr` (their newer form), `keys1`, `keys4` or `keys5` (the keyboard flags in force for it, below) |
+| `modes` | one line of words, empty when none: how input is to be sent to the program. `appcursor`, `keypad`, `paste`, `focus` (it asked to be told when its pane gains and loses the keys), `alt` (the alternate screen), `mouse9`, `mouse1000`, `mouse1002` or `mouse1003` (the mouse reports the program asked for), `mousesgr` (their newer form), `keys1`, `keys4` or `keys5` (the keyboard flags in force for it, below) |
 | `state` | what became of the program: `running`, `hungup`, `exited CODE` or `killed SIGNAL` |
 | `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
 | `top` | how many lines of the pane's text are before the screen's first row, counted since the pane began: the number, from 0, of the line that row is part of. (After `history` has become `history.1` twice, the oldest of them are in neither file) |
@@ -86,6 +86,8 @@ in `FUXN_WS`.
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
+| `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). A shell that does not send OSC 7 can write the file itself: `pwd > "$FUXN_PANE/cwd"` |
+| `notice` | what was last to be noticed: a number that grows with each one, then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL, OSC 9, 777 or 99) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture over 4 MiB, history it could not write); stops at 64 KiB |
 
 **One fact, one file.** The screens are text and nothing else; everything
@@ -111,7 +113,8 @@ When a pane is still, or ended, its files agree.
 past that the program waits, as on any slow terminal. The holder keeps at most 64 KiB of typed bytes for a program that is not
 reading; past that it stops reading `in`, and once the FIFO's own buffer
 (the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
-cells and keeps at most 8 pictures of at most 4 MiB of data each; a ninth drops the
+cells. A program that says it is in the middle of drawing (mode 2026) is not
+written out until it says it is done, or half a second has passed. A screen keeps at most 8 pictures of at most 4 MiB of data each; a ninth drops the
 oldest, with a line in `log`. History that cannot be written (a full disk)
 is lost, with a line in `log`. When the program ends, at most 4 MiB of what
 it wrote last is still read; a `resize` first draws, at the old size, up to
@@ -227,7 +230,9 @@ column, it sends the cells such a character may have been drawn over again,
 and where one could reach past its tile's edge it draws a `?` in each of its
 columns instead (the pane's `screen` keeps the character): a family in the
 last six columns of a tile is `??`, since a terminal that does not join it
-draws three people there. fux does not ask your terminal how it measures. A terminal set to
+draws three people there. The viewer asks your terminal once whether it joins
+characters as fux does (mode 2027), turns that on if it is off, and draws no
+`??` if the terminal says yes. A terminal set to
 draw "ambiguous" characters two columns wide is not catered for: the lines
 between tiles are such characters.
 
@@ -235,6 +240,13 @@ A program that measures text otherwise than its terminal draws it wrong in
 any terminal: bash counts each part of a joined character, so its cursor
 is off after an emoji with a skin tone here as in tmux, and stepping into a
 Devanagari conjunct, which is one character here, redraws it oddly.
+
+The viewer looks at every pane's `notice` four times a second. A new one is
+passed on to your terminal once (the bell as a bell, words as OSC 9), said
+in the corner, and its tab has a `!` in the bar until its pane has had the
+keys. What was there when the viewer started only marks its tab. A program
+that asked to be told about focus (mode 1004) is told when its pane gains
+and loses the keys, and when your terminal's window does.
 
 The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile changes. Two
 viewers with different sizes do not fight: the last to ask wins, and the
@@ -279,7 +291,8 @@ A script gets `FUXN_DIR` (the session), `FUXN_WS` (the workspace shown),
 `FUXN_ROW` and `FUXN_COL` (the size, as `COLSxROWS`, of the tile a split of the
 focused pane would make: `FUXN_ROW` side by side, as `C-b v` splits, `FUXN_COL`
 one above the other, as `C-b s` does; the split keys
-start their pane at that size, so its program is not drawn twice), and this
+start their pane at that size, so its program is not drawn twice), `FUXN_SELF`
+(the pane this viewer itself runs in, if it runs in one), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; a script that
 takes longer puts its work in the background, as the defaults do.
@@ -292,13 +305,17 @@ open menu, closes the menu and goes nowhere. Writing the same lines to the FIFO
 `$FUXN_VIEW` does the same from anywhere.
 
 The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
-`s` split stacked (both start in the directory the viewer was started in),
+`s` split stacked (both, and a new tab, start where the focused pane's program says it is, its `cwd`, and else in the directory the viewer was started in),
 `x` then `y` close the pane (remove its directory), `h j k l` focus,
 `o` next pane, `n` `b` next and previous tab, `d` detach, `c` the pane's text
 in the editor, `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
 workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
-TERM to the pane's program), `g` arrange (`r c g m`, `t` turn). Whether a pane
+TERM to the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
+(`p` a pane, `t` a tab, `w` a workspace: a list in a pane of its own, chosen
+with fzf, sk or fzy if one is installed and by number if none is; the
+workspace that holds the viewer's own pane is not offered, since a viewer
+that shows itself draws itself without end). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
 not your shell but `keys/.shell`, a few lines that run it and then remove
 the pane's own folder, however the shell ended. Only when `.shell` itself
@@ -489,7 +506,7 @@ does something else is a row below with a case that shows it.
 
 | Question | Authority |
 | --- | --- |
-| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6, 9, 21 and 58 and the colon forms of 4, 38 and 48, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
+| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6, 9, 21, 58 and 59 and the colon forms of 4 (the kinds of underline), 38, 48 and 58, modes 1004 (focus) and 2026 (drawing), OSC 7, 9, 777 and 99, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. A character goes on while the cursor is where its last part left it and its cell is unchanged: a change of colour or a title between a letter and its accent does not part them (`grep --color` does this), a move or an erase does |
 | How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). An emoji with U+FE0F in its character is two. A control, U+2028 and U+2029 among them, and a mark or joiner with no character to join, takes no cell and is dropped |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports, the kitty keyboard protocol's flags 1 and 4) | Its own specification |
@@ -585,10 +602,8 @@ to resize, and any menu use;
 hyperlinks (OSC 8 is read and dropped); reading the clipboard (setting it
 works); changing a colour (OSC 4, 10, 11, 12 with a value, 104, 110, 111, 112:
 taken, without effect) and asking for the cursor's (OSC 12 with `?`) and the queries DECRQSS, XTGETTCAP and XTVERSION (and `CSI > c` is
-answered with no xterm version in it); focus reports (mode
-1004); the bell, the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
-double underline and
-underline colours (drawn as one plain underline); more than ten
+answered with no xterm version in it); the visual bell, the printer codes and memory lock; left and right margins; line feed mode (`CSI 20 h`);
+more than ten
 parts in one character (a letter with twelve marks loses the last three,
 and the pane's `log` says so); choosers and prompts (renaming
 and picking from a list would be scripts); a copy mode (`C-b c` is the

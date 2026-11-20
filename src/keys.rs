@@ -9,7 +9,7 @@ macro_rules! scripts {
     ($($name:literal)*) => { &[$(($name, include_str!(concat!("../keys/", $name)))),*] };
 }
 pub const DEFAULT: &[(&str, &str)] = scripts!(
-    ".shell" "C-b/C-b" "C-b/a/.about" "C-b/a/k" "C-b/a/n" "C-b/b" "C-b/c" "C-b/d" "C-b/g/.about" "C-b/g/c" "C-b/g/g"
+    ".shell" ".pick" "C-b/f/.about" "C-b/f/p" "C-b/f/t" "C-b/f/w" "C-b/C-b" "C-b/a/.about" "C-b/a/k" "C-b/a/n" "C-b/b" "C-b/c" "C-b/d" "C-b/g/.about" "C-b/g/c" "C-b/g/g"
     "C-b/g/m" "C-b/g/r" "C-b/g/t" "C-b/h" "C-b/j" "C-b/k" "C-b/l" "C-b/m/.about" "C-b/m/.repeat" "C-b/m/h" "C-b/m/j"
     "C-b/m/k" "C-b/m/l" "C-b/n" "C-b/o" "C-b/r/.about" "C-b/r/.repeat" "C-b/r/h" "C-b/r/j" "C-b/r/k" "C-b/r/l"
     "C-b/s" "C-b/t/.about" "C-b/t/h" "C-b/t/l" "C-b/t/n" "C-b/v" "C-b/w/.about" "C-b/w/h" "C-b/w/l" "C-b/w/n"
@@ -106,6 +106,10 @@ fn sequence(parameters: &str, last: u8) -> String {
         }
         // The terminal's answer to "what are you": not a key, but ours to read.
         (b'c', _) if first.starts_with('?') => return format!("terminal:{parameters}"),
+        // Its answer to "is this mode set": `?MODE;STATE$y`.
+        (b'y', _) if first.starts_with('?') && parameters.ends_with('$') => {
+            return format!("mode:{}", parameters.trim_start_matches('?').trim_end_matches('$'));
+        }
         // Its answer to "which keyboard flags are in force" (the kitty protocol).
         (b'u', _) if first.starts_with('?') => return format!("keyboard:{}", first.trim_start_matches('?')),
         // A key in that protocol's form: its number is the character it gives with nothing

@@ -1,0 +1,20 @@
+#!/bin/sh
+# What the find keys run in a pane of their own: .pick LIST COMMAND…
+# LIST is a file of lines `KEY<tab>WORDS`. One is chosen, with fzf, sk or fzy if
+# one is installed and from a numbered list if none is, and COMMAND is run
+# with its KEY as the last argument. The file is removed.
+list=$1; shift
+trap 'rm -f "$list"' EXIT
+finder=
+for f in fzf sk fzy; do command -v "$f" >/dev/null 2>&1 && { finder=$f; break; }; done
+if [ -n "$finder" ]; then
+  line=$("$finder" < "$list")
+else
+  awk '{ printf "%3d  %s\n", NR, $0 }' "$list"
+  printf 'which? '
+  IFS= read -r n
+  case $n in '' | *[!0-9]*) exit ;; esac
+  line=$(sed -n "${n}p" "$list")
+fi
+[ -n "$line" ] || exit
+"$@" "${line%%	*}"

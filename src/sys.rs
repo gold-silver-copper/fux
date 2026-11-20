@@ -85,6 +85,7 @@ unsafe extern "C" {
     fn tcgetattr(fd: c_int, termios: *mut Termios) -> c_int;
     fn tcsetattr(fd: c_int, actions: c_int, termios: *const Termios) -> c_int;
     fn cfmakeraw(termios: *mut Termios);
+    fn gethostname(name: *mut c_char, len: usize) -> c_int;
 }
 /// `mode_t`: 32 bits on Linux, 16 on macOS.
 #[cfg(target_os = "linux")]
@@ -182,6 +183,15 @@ pub fn wait(wanted: &[(RawFd, i16)], timeout: i32) -> io::Result<Vec<i16>> {
         return Ok(vec![0; wanted.len()]);
     }
     Ok(fds.iter().map(|fd| fd.revents).collect())
+}
+
+/// This machine's name, as programs on it know it.
+pub fn host() -> Option<String> {
+    let mut name = [0u8; 256];
+    // SAFETY: gethostname writes at most the length given into a buffer of that length.
+    check(unsafe { gethostname(name.as_mut_ptr().cast(), name.len() - 1) }).ok()?;
+    let end = name.iter().position(|byte| *byte == 0)?;
+    String::from_utf8(name.get(..end)?.to_vec()).ok()
 }
 
 pub fn make_fifo(path: &Path) -> io::Result<()> {

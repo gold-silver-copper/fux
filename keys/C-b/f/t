@@ -1,0 +1,9 @@
+#!/bin/sh
+# find a tab
+# group: Find
+# A list of this workspace's tabs (number, panes) in a pane of its own; the one
+# chosen is shown. The list is the layout file: a line a tab.
+list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
+awk '{ sub(/^[*-]? */, ""); printf "%d\t%s\n", NR, $0 }' "$FUXN_DIR/$FUXN_WS/layout" > "$list"
+p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" fux layout tab) || { rm -f "$list"; exit; }
+[ -d "$p" ] && fux layout pane "${p##*/}"

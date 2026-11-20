@@ -42,6 +42,12 @@ pub const BLINK: u16 = 16;
 pub const REVERSE: u16 = 32;
 pub const HIDDEN: u16 = 64;
 pub const STRIKE: u16 = 128;
+/// The kind of an underline that is not one plain line (with `UNDERLINE`).
+pub const DOUBLE: u16 = 1024;
+pub const CURLY: u16 = 2048;
+pub const DOTTED: u16 = 4096;
+pub const DASHED: u16 = 8192;
+const KINDS: u16 = DOUBLE | CURLY | DOTTED | DASHED;
 /// Not looks, but marks. `CONT` on a row's first cell: the row goes on from
 /// the one above (the text wrapped into it). `PAD` on a row's last cell: the
 /// cell is no text (a wide character had no room in it and went to the next
@@ -54,6 +60,8 @@ const MARKS: u16 = CONT | PAD;
 pub struct Style {
     pub fg: Color,
     pub bg: Color,
+    /// The underline's colour, if it has one of its own.
+    pub ul: Color,
     pub flags: u16,
 }
 
@@ -67,7 +75,18 @@ impl Style {
             if self.flags & bit != 0 {
                 let _ = write!(out, ";{code}");
             }
+            // An underline's kind and colour are written in the form with colons, which a
+            // terminal that does not know them passes over whole.
+            let kind = [DOUBLE, CURLY, DOTTED, DASHED].iter().position(|kind| self.flags & kind != 0);
+            if let Some(kind) = kind.filter(|_| *bit == UNDERLINE && self.flags & bit != 0) {
+                let _ = write!(out, ":{}", kind + 2);
+            }
         }
+        let _ = match self.ul {
+            Color::Default => Ok(()),
+            Color::Indexed(n) => write!(out, ";58:5:{n}"),
+            Color::Rgb(r, g, b) => write!(out, ";58:2::{r}:{g}:{b}"),
+        };
         for (color, base) in [(self.fg, 30), (self.bg, 40)] {
             let _ = match color {
                 Color::Default => Ok(()),
@@ -143,6 +162,12 @@ pub struct Out {
     pub title: Option<String>,
     /// What the program put on the clipboard last.
     pub clipboard: Option<Vec<u8>>,
+    /// The directory the program said it is in last (OSC 7): the host it named, and the path.
+    pub cwd: Option<(String, String)>,
+    /// What the program wanted noticed last (empty for the bell), and how many times it wanted
+    /// something noticed since this was taken.
+    pub notice: Option<String>,
+    pub notices: u32,
 }
 
 /// The character printed last: where the cursor was left, and the character's place, its
@@ -204,6 +229,10 @@ pub struct Term {
     pub app_cursor: bool,
     pub app_keypad: bool,
     pub paste: bool,
+    /// The program asked to be told when its pane gains and loses the keys (mode 1004).
+    pub focus: bool,
+    /// The program is in the middle of drawing (mode 2026): what it has drawn so far is not to be shown yet.
+    pub sync: bool,
     /// The mouse reports the program asked for: 0 for none, else 9, 1000, 1002 or 1003; and whether as SGR (1006).
     pub mouse: u16,
     pub mouse_sgr: bool,
@@ -293,6 +322,8 @@ impl Term {
             app_cursor: false,
             app_keypad: false,
             paste: false,
+            focus: false,
+            sync: false,
             mouse: 0,
             mouse_sgr: false,
             tabs: (0..SIZE_MAX).map(|c| c % 8 == 0).collect(),
@@ -458,11 +489,12 @@ impl Term {
     }
 
     /// The modes the `modes` file lists by name, and where each is kept.
-    fn modes(&mut self) -> [(&'static str, &mut bool); 4] {
+    fn modes(&mut self) -> [(&'static str, &mut bool); 5] {
         [
             ("appcursor", &mut self.app_cursor),
             ("keypad", &mut self.app_keypad),
             ("paste", &mut self.paste),
+            ("focus", &mut self.focus),
             ("alt", &mut self.alt),
         ]
     }
@@ -1068,6 +1100,7 @@ impl Term {
     fn control(&mut self, byte: u8) {
         self.interrupt();
         match byte {
+            0x07 => self.notice(""),
             0x08 => {
                 self.col = self.col.saturating_sub(1);
                 self.wrap_pending = false;
@@ -1189,6 +1222,13 @@ impl Term {
         }
     }
 
+    /// Something the program wants noticed: text without control characters, a kibibyte at most.
+    fn notice(&mut self, text: &str) {
+        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        let cut = (0..=text.len().min(1024)).rev().find(|at| text.is_char_boundary(*at)).unwrap_or(0);
+        (self.out.notice, self.out.notices) = (text.get(..cut).map(str::to_string), self.out.notices.saturating_add(1));
+    }
+
     /// An operating system command: a title (0, 2), the clipboard (52), or a question about a
     /// colour (4, 10, 11 with `?`). No other is kept: setting a colour changes nothing.
     fn command(&mut self, text: &str) {
@@ -1238,6 +1278,34 @@ impl Term {
                     }
                 }
             }
+            // The directory the program is in: `file://HOST/PATH`, the path's odd bytes as `%XX`.
+            "7" => {
+                let (host, path) = rest
+                    .strip_prefix("file://")
+                    .and_then(|rest| rest.split_at_checked(rest.find('/')?))
+                    .unwrap_or_default();
+                let mut bytes = Vec::new();
+                let mut rest = path.bytes();
+                while let Some(byte) = rest.next() {
+                    let hex = |rest: &mut std::str::Bytes| char::from(rest.next()?).to_digit(16);
+                    let pair = |rest: &mut std::str::Bytes| Some((hex(rest)? * 16 + hex(rest)?) as u8);
+                    bytes.push(if byte == b'%' { pair(&mut rest).unwrap_or(0) } else { byte });
+                }
+                // (A path that is no text, or has a control character in it, is not told.)
+                if let Some(path) =
+                    String::from_utf8(bytes).ok().filter(|path| !path.is_empty() && !path.chars().any(char::is_control))
+                {
+                    self.out.cwd = Some((host.to_string(), path));
+                }
+            }
+            // A notice: `9;TEXT` (but `9;4;…` is a progress bar's), `777;notify;TITLE;BODY`, `99;…;TEXT`.
+            "9" if !rest.starts_with("4;") => self.notice(rest),
+            "777" => {
+                if let Some(text) = rest.strip_prefix("notify;") {
+                    self.notice(&text.replacen(';', ": ", 1));
+                }
+            }
+            "99" => self.notice(rest.split_once(';').map_or("", |(_, text)| text)),
             "52" => match rest.split_once(';').map(|(_, what)| what) {
                 // Setting only: a program is never told what is on the clipboard.
                 Some("?") => self.refuse("a program asked to read the clipboard: that is refused"),
@@ -1467,6 +1535,8 @@ impl Term {
                     9 | 1000 | 1002 | 1003 => Some(usize::from(self.mouse) == mode),
                     1006 => Some(self.mouse_sgr),
                     2004 => Some(self.paste),
+                    1004 => Some(self.focus),
+                    2026 => Some(self.sync),
                     _ => None,
                 };
                 // Text is always cut into grapheme clusters (2027): permanently set.
@@ -1577,6 +1647,8 @@ impl Term {
             }
             7 => self.autowrap = on,
             25 => self.cursor_shown = on,
+            1004 => self.focus = on,
+            2026 => self.sync = on,
             47 => self.set_alt(on, false),
             1047 => {
                 if !on && self.alt {
@@ -1614,9 +1686,11 @@ impl Term {
                 2 => style.flags |= DIM,
                 3 => style.flags |= ITALIC,
                 4 | 21 => {
-                    // `4:0` is "no underline"; every other kind is drawn as one line.
-                    let off = matches!(self.params.get(i), Some(&(0, true)));
-                    style.flags = flag(style.flags, UNDERLINE, !off);
+                    // `4:0` is "no underline"; `4:2` to `4:5` (and 21) are double, curly, dotted, dashed.
+                    let kind = self.params.get(i).filter(|p| p.1).map_or(if code == 21 { 2 } else { 1 }, |p| p.0);
+                    style.flags = flag(style.flags & !KINDS, UNDERLINE, kind != 0);
+                    style.flags |=
+                        [DOUBLE, CURLY, DOTTED, DASHED].get(usize::from(kind).wrapping_sub(2)).copied().unwrap_or(0);
                 }
                 5 | 6 => style.flags |= BLINK,
                 7 => style.flags |= REVERSE,
@@ -1624,7 +1698,8 @@ impl Term {
                 9 => style.flags |= STRIKE,
                 22 => style.flags &= !(BOLD | DIM),
                 23 => style.flags &= !ITALIC,
-                24 => style.flags &= !UNDERLINE,
+                24 => style.flags &= !(UNDERLINE | KINDS),
+                59 => style.ul = Color::Default,
                 25 => style.flags &= !BLINK,
                 27 => style.flags &= !REVERSE,
                 28 => style.flags &= !HIDDEN,
@@ -1641,6 +1716,7 @@ impl Term {
                     match (code, color) {
                         (38, Some(color)) => self.style.fg = color,
                         (48, Some(color)) => self.style.bg = color,
+                        (58, Some(color)) => self.style.ul = color,
                         _ => {}
                     }
                 }

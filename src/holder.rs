@@ -31,6 +31,8 @@ const INPUT_MAX: usize = 64 << 10;
 const HISTORY_MAX: u64 = 4 << 20;
 const CTL_LINE_MAX: usize = 256;
 const LOG_MAX: usize = 64 << 10;
+/// The longest a program may hold its screen back while it draws (mode 2026).
+const DRAWING_MAX: Duration = Duration::from_millis(500);
 
 /// A holder looks this often whether its directory is still there.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
@@ -52,6 +54,10 @@ struct Holder {
     status: String,
     /// The last round of writing failed.
     failing: bool,
+    /// How many notices there have been: the number in the `notice` file.
+    noticed: u32,
+    /// Since when the program has been in the middle of drawing (mode 2026).
+    drawing: Option<Instant>,
     input: Vec<u8>,
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
@@ -160,6 +166,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         facts: Vec::new(),
         status: String::new(),
         failing: false,
+        noticed: 0,
+        drawing: None,
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: Vec::new(),
@@ -192,8 +200,9 @@ impl Holder {
         self.status = format!("holder {}\npid {}\ncommand {command}\n", std::process::id(), self.pid);
         // What an earlier holder of this pane left goes before this one's first
         // screen is there: its title and clipboard, its history and its pictures.
-        let _ = fs::remove_file("title");
-        let _ = fs::remove_file("clipboard");
+        for old in ["title", "clipboard", "cwd", "notice"] {
+            let _ = fs::remove_file(old);
+        }
         let _ = fs::remove_file("history.1");
         File::create("history").map_err(|e| format!("cannot make history: {e}"))?;
         for old in fs::read_dir(".").into_iter().flatten().flatten().map(|entry| entry.file_name()) {
@@ -208,9 +217,13 @@ impl Holder {
         let (mut dirty, mut published, mut looked, mut budget) = (false, Instant::now(), Instant::now(), READ_BUDGET);
         loop {
             let since = published.elapsed();
+            // A program in the middle of drawing (mode 2026) is not shown until it says it is done,
+            // or half a second has gone by: one that never says so cannot freeze its pane.
+            self.drawing = if self.term.sync { self.drawing.or(Some(Instant::now())) } else { None };
+            let drawing = self.drawing.is_some_and(|since| since.elapsed() < DRAWING_MAX) && self.master.is_some();
             if since >= PUBLISH_EVERY {
                 budget = READ_BUDGET;
-                if dirty {
+                if dirty && !drawing {
                     // What could not be written is tried again in the next round (and said once).
                     let written = self.publish();
                     match &written {
@@ -363,6 +376,9 @@ impl Holder {
         self.pending.pictures.append(&mut out.pictures);
         self.pending.title = out.title.or(self.pending.title.take());
         self.pending.clipboard = out.clipboard.or(self.pending.clipboard.take());
+        self.pending.cwd = out.cwd.or(self.pending.cwd.take());
+        self.pending.notice = out.notice.or(self.pending.notice.take());
+        self.pending.notices += out.notices;
         if self.pending.history.len() > READ_BUDGET {
             self.history();
         }
@@ -388,6 +404,13 @@ impl Holder {
     fn command(&mut self, line: &str) -> Result<(), String> {
         let mut words = line.split_whitespace();
         match words.next() {
+            // Anyone may have something noticed: the words after `notify`, as a program's own notice.
+            Some("notify") => {
+                let text = line.trim_start().strip_prefix("notify").unwrap_or_default().trim();
+                let text: String = text.chars().filter(|c| !c.is_control()).take(1024).collect();
+                (self.pending.notice, self.pending.notices) = (Some(text), self.pending.notices + 1);
+                Ok(())
+            }
             Some("kill") if words.next().is_none() => {
                 // Closing the master is the hangup. What the program and its
                 // children do about it is theirs to decide.
@@ -431,7 +454,7 @@ impl Holder {
                 self.collect();
                 Ok(())
             }
-            _ => Err("not a command (kill, resize COLS ROWS)".into()),
+            _ => Err("not a command (kill, resize COLS ROWS, notify TEXT)".into()),
         }
     }
 
@@ -509,6 +532,29 @@ impl Holder {
         }
         if let Some(Err(e)) = self.pending.clipboard.take().map(|bytes| replace("clipboard", &bytes)) {
             self.log(&format!("the clipboard could not be written: {e}"));
+        }
+        // The directory the program says it is in: kept if it is one of this machine (no host
+        // named, or this one's name), and forgotten if it is another machine's (a shell at the
+        // far end of ssh): a path of there means nothing here.
+        if let Some((host, path)) = self.pending.cwd.take() {
+            let here = host.is_empty() || host == "localhost" || sys::host().is_some_and(|name| name == host);
+            let written = if here && path.starts_with('/') {
+                replace("cwd", format!("{path}\n").as_bytes())
+            } else {
+                fs::remove_file("cwd")
+            };
+            if let Err(e) = written.or_else(|e| if e.kind() == ErrorKind::NotFound { Ok(()) } else { Err(e) }) {
+                self.log(&format!("the directory could not be written: {e}"));
+            }
+        }
+        // What the program wanted noticed last: a number that grows with each one (so that the
+        // same words twice are two), then the words; the number alone is the bell.
+        if let Some(text) = self.pending.notice.take() {
+            self.noticed = self.noticed.wrapping_add(std::mem::take(&mut self.pending.notices).max(1));
+            let line = format!("{} {text}", self.noticed).trim_end().to_string() + "\n";
+            if let Err(e) = replace("notice", line.as_bytes()) {
+                self.log(&format!("a notice could not be written: {e}"));
+            }
         }
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
         // end: who watches a pane watches that one file, and finds every fact already there.

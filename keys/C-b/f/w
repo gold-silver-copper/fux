@@ -1,0 +1,17 @@
+#!/bin/sh
+# find a workspace
+# group: Find
+# A list of the session's workspaces (name, panes) in a pane of its own; the
+# viewer is told to show the one chosen. Not offered: the workspace that holds
+# the pane this viewer itself runs in ($FUXN_SELF): a viewer that shows itself
+# draws itself without end.
+list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
+own=${FUXN_SELF%/*}
+for w in "$FUXN_DIR"/*/; do
+  w=${w%/}
+  [ "$w" = "$own" ] && continue
+  printf '%s\t%s\n' "${w##*/}" "$(ls "$w" | grep -v '^layout' | tr '\n' ' ')"
+done > "$list"
+# (The pane has no word for the viewer: it is given the viewer's FIFO to write to.)
+p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" sh -c 'echo "workspace $1" > "$0"' "$FUXN_VIEW") || { rm -f "$list"; exit; }
+[ -d "$p" ] && fux layout pane "${p##*/}"

@@ -1,0 +1,13 @@
+#!/bin/sh
+# find a pane
+# group: Find
+# A list of this workspace's panes (name, title, the row its cursor is on) in a
+# pane of its own; the one chosen gets the keys. `.pick` does the choosing.
+list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
+for p in "$FUXN_DIR/$FUXN_WS"/*/; do
+  [ -e "$p/screen" ] || continue
+  read -r row _ 2>/dev/null < "$p/cursor"
+  printf '%s\t%s  %s\n' "$(basename "$p")" "$(head -n 1 "$p/title" 2>/dev/null)" "$(sed -n "$((${row:-0} + 1))p" "$p/screen")"
+done > "$list"
+p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" fux layout pane) || { rm -f "$list"; exit; }
+[ -d "$p" ] && fux layout pane "${p##*/}"

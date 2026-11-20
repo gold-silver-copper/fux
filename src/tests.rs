@@ -190,6 +190,45 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
 }
 
 #[test]
+fn a_program_says_where_it_is_what_to_notice_and_how_it_draws() {
+    // The directory it is in (OSC 7), with the host it names; a path's odd bytes come as %XX.
+    let mut term = term(20, 2, "\x1b]7;file://box/tmp/a%20b\x07");
+    assert_eq!(term.take().cwd, Some(("box".to_string(), "/tmp/a b".to_string())));
+    term.feed(b"\x1b]7;file:///home\x1b\\\x1b]7;nonsense\x07\x1b]7;file:///a%00b\x07");
+    assert_eq!(term.take().cwd, Some((String::new(), "/home".to_string())));
+    // What it wants noticed: the bell (no words), and words in three forms; each one counts.
+    term.feed(b"\x07");
+    assert_eq!((term.peek().notice.as_deref(), term.peek().notices), (Some(""), 1));
+    term.feed(b"\x1b]9;4;1;50\x07\x1b]9;done\x07\x1b]99;i=1;hello\x1b\\\x1b]777;notify;make;all\x01 built\x07");
+    assert_eq!((term.take().notice.as_deref(), term.plain().as_str()), (Some("make: all built"), "\n\n"));
+    // That it wants to be told when its pane gains the keys is a word among the modes; that it
+    // is in the middle of drawing is the holder's to know. Both are told when asked.
+    term.feed(b"\x1b[?1004h\x1b[?2026h\x1b[?1004$p\x1b[?2026$p");
+    assert_eq!((term.words().as_str(), term.sync), ("focus", true));
+    assert_eq!(term.take().reply, b"\x1b[?1004;1$y\x1b[?2026;1$y");
+    term.feed(b"\x1b[?2026l\x1bc");
+    assert!(!term.sync && term.words().is_empty());
+    // An underline has a kind and a colour of its own, and both read back from `styled`.
+    let mut lined = crate::tests::term(
+        12,
+        1,
+        "\x1b[4:3m\x1b[58:2::1:2:3ma\x1b[59;21mb\x1b[4:4;58;5;9mc\x1b[4:5md\x1b[24me\x1b[4mf\x1b[4:0mg",
+    );
+    let styled = lined.styled();
+    assert!(
+        styled.starts_with("\x1b[0;4:3;58:2::1:2:3ma\x1b[0;4:2mb\x1b[0;4:4;58:5:9mc\x1b[0;4:5;58:5:9md"),
+        "{styled:?}"
+    );
+    assert!(styled.contains("d\x1b[0;58:5:9me\x1b[0;4;58:5:9mf\x1b[0;58:5:9mg"), "{styled:?}");
+    let mut back = Term::new(12, 1);
+    back.feed(styled.lines().next().unwrap().as_bytes());
+    assert_eq!(back.styled(), lined.styled());
+    lined.feed(b"\r\x1b[K");
+    // The viewer reads its terminal's answer about a mode as an answer.
+    assert_eq!(crate::keys::next(b"\x1b[?2027;2$y", false, false), Some((11, "mode:2027;2".into())));
+}
+
+#[test]
 fn queries_are_answered_with_nobody_watching() {
     let term = term(80, 24, "\x1b[c\x1b[>c\x1b[5n\x1b[3;7H\x1b[6n\x1b[?2004$p\x1b[18t");
     assert_eq!(

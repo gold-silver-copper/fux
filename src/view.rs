@@ -77,6 +77,18 @@ struct View {
     sixel: bool,
     /// The kitty keyboard flags the terminal takes, of those fux passes on.
     keyboard: u8,
+    /// The terminal joins characters into clusters as fux does (its mode 2027), and whether
+    /// this viewer was the one to turn that on.
+    joins: bool,
+    joined: bool,
+    /// The pane that was told it has the keys (it asked to be told: mode 1004).
+    told_focus: Option<PathBuf>,
+    /// The pane this viewer itself runs in, if it runs in one.
+    own: std::ffi::OsString,
+    /// Each pane's `notice` as it was last looked at: the file's stamp, and whether it has one
+    /// this viewer has not shown on a focused pane yet. And when all were last looked at.
+    notices: HashMap<String, (Stamp, bool)>,
+    looked: Option<Instant>,
     /// While the terminal is still being asked what it is like: since when, and the colours it
     /// has told of.
     colours: Option<(Instant, String)>,
@@ -107,7 +119,7 @@ struct View {
 struct Restore(File, sys::Termios);
 impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t");
+        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t");
         let _ = sys::restore_mode(&self.0, &self.1);
     }
 }
@@ -155,6 +167,12 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         message: String::new(),
         sixel: false,
         keyboard: 0,
+        joins: false,
+        joined: false,
+        told_focus: None,
+        own: std::env::var_os(name!("PANE")).unwrap_or_default(),
+        notices: HashMap::new(),
+        looked: None,
         colours: Some((Instant::now(), String::new())),
         written: Vec::new(),
         drawn: Vec::new(),
@@ -176,9 +194,15 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // ones kept (to give back at the end), read back, and put to none until a pane asks.
     // The terminal is asked once what its colours are (the two it draws with and its palette),
     // and last of all what it is: its answer to that ends the wait for the others.
-    const START: &str = "\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>5u\x1b[?u\x1b[=0u\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
+    const START: &str =
+        "\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>5u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     let result = view.tty.write_all((START.to_string() + &asked + "\x1b[c").as_bytes()).and_then(|()| view.run(&ctl));
+    // The pane that was told it has the keys is told that it has them no more.
+    view.tell(None);
+    if view.joined {
+        let _ = view.tty.write_all(b"\x1b[?2027l");
+    }
     drop(restore);
     let _ = fs::remove_file(&view.ctl_path);
     result.map_err(|e| format!("the viewer stopped: {e}"))
@@ -267,6 +291,7 @@ impl View {
                 } else if name != self.workspace {
                     self.before = Some(std::mem::replace(&mut self.workspace, name));
                     self.panes.clear();
+                    (self.notices, self.looked) = (HashMap::new(), None);
                 }
             }
             ("workspace", name) => self.message = format!("no workspace {name}"),
@@ -324,6 +349,16 @@ impl View {
                 name if name.starts_with("keyboard:") => {
                     self.keyboard = name.trim_start_matches("keyboard:").parse::<u8>().unwrap_or(0) & KEYS;
                 }
+                // The terminal's answer about joining characters into clusters (mode 2027): set (1,
+                // or 3 for good) or not set but known (2), which is then turned on.
+                name if name.starts_with("mode:2027;") => {
+                    let state = name.trim_start_matches("mode:2027;").parse::<u8>().unwrap_or(0);
+                    (self.joins, self.joined) = (matches!(state, 1..=3), state == 2);
+                    if self.joined {
+                        let _ = self.tty.write_all(b"\x1b[?2027h");
+                    }
+                }
+                name if name.starts_with("mode:") => {}
                 name => self.key(name, raw),
             }
             if self.waiting.is_some() || std::mem::take(&mut self.pause) {
@@ -385,6 +420,58 @@ impl View {
         }
         // Until its last answer has come, the terminal is still being listened to.
         self.colours = (!last).then_some((since, told));
+    }
+
+    /// Tells the pane that has the keys so, if it asked to be told (mode 1004), and the one
+    /// that was told before that it has them no more.
+    fn tell(&mut self, now: Option<PathBuf>) {
+        if self.told_focus != now {
+            for (pane, report) in [(self.told_focus.take(), "\x1b[O"), (now.clone(), "\x1b[I")] {
+                let input =
+                    pane.map(|pane| OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(pane.join("in")));
+                let _ = input.map(|input| input.and_then(|mut input| input.write_all(report.as_bytes())));
+            }
+            self.told_focus = now;
+        }
+    }
+
+    /// Looks at the `notice` of every pane of the workspace, four times a second: a new one
+    /// is passed on to this terminal once (the bell as a bell, words as a notice), said in the
+    /// corner, and remembered until its pane has the keys in the tab shown.
+    fn notices(&mut self, layout: &Layout, directory: &Path) {
+        if self.looked.is_some_and(|at| at.elapsed() < Duration::from_millis(250)) {
+            return;
+        }
+        let first = self.looked.replace(Instant::now()).is_none();
+        let panes: Vec<String> = layout.tabs.iter().flat_map(|tab| tab.panes()).map(str::to_string).collect();
+        self.notices.retain(|name, _| panes.contains(name));
+        for name in panes {
+            let file = directory.join(&name).join("notice");
+            let stamp: Stamp =
+                fs::metadata(&file).ok().filter(|m| m.is_file()).map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
+            let known = self.notices.get(&name).copied();
+            if known.is_some_and(|(was, _)| was == stamp) {
+                continue;
+            }
+            // (One that was there when this viewer came, or with its pane, is old: it is not rung again.)
+            let new = stamp.is_some() && !first && known.is_some();
+            self.notices.insert(name.clone(), (stamp, stamp.is_some()));
+            if new {
+                let mut text = Vec::new();
+                let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(&file);
+                let _ = file.map(|file| file.take(1200).read_to_end(&mut text));
+                let text = String::from_utf8_lossy(&text);
+                let words = text.lines().next().unwrap_or_default().split_once(' ').map_or("", |(_, words)| words);
+                let words: String = words.chars().filter(|c| !c.is_control()).take(200).collect();
+                let rung = if words.is_empty() { "\x07".to_string() } else { format!("\x1b]9;{words}\x1b\\") };
+                let _ = self.tty.write_all(rung.as_bytes());
+                self.message = if words.is_empty() { format!("{name}: bell") } else { format!("{name}: {words}") };
+            }
+        }
+        // What the pane with the keys had to say has been seen.
+        if let Some(seen) = self.focus.as_ref().and_then(|focus| self.notices.get_mut(focus)) {
+            seen.1 = false;
+        }
     }
 
     /// One key: a script if the key's file is one, a menu if it is a
@@ -474,6 +561,7 @@ impl View {
         let mut script = Command::new(file);
         script.env(name!("DIR"), &self.session).env(name!("WS"), &self.workspace).env(name!("KEYS"), &self.keys);
         script.env(name!("PANE"), pane.unwrap_or_default()).env(name!("VIEW"), &self.ctl_path).env("PATH", path);
+        script.env(name!("SELF"), &self.own);
         // A pane a script starts begins at the size of the whole view, right for a new tab. The
         // size a tile would have if the focused pane were split is given too, side by side
         // (ROW) and one above the other (COL): a script that splits passes it on to `fux start`,
@@ -562,17 +650,20 @@ impl View {
         let colour = |fg: u8, bg: Option<u8>, flags: u16| Style {
             fg: Color::Indexed(fg),
             bg: bg.map_or(Color::Default, Color::Indexed),
+            ul: Color::Default,
             flags,
         };
         // What no tile covers is a line: marked here, drawn once the tiles are in place.
         let line = Cell { ch: '\u{2}', ..Cell::blank(Style::default()) };
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
         self.focus = tab.map(|tab| tab.focus.clone());
+        self.notices(&layout, &directory);
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
         let mut title = None;
-        let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
+        let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l");
+        let mut wants_focus = None;
         let mut keys = 0;
         for (name, body) in &tiles {
             let pane = self.panes.entry(name.clone()).or_insert_with(Pane::new);
@@ -606,7 +697,8 @@ impl View {
                     // A character your terminal may draw wider than fux counts it (it may not join what
                     // fux joins) would there reach past the tile's edge: a `?` stands in each of its columns.
                     let first = x - usize::from(cell.ch == '\0' && x > 0);
-                    if let Some(whole) = pane.term.cell_at(y, first).filter(|c| c.spill() > 0)
+                    // (A terminal that says it joins characters as fux does draws it as fux counts it.)
+                    if let Some(whole) = pane.term.cell_at(y, first).filter(|c| c.spill() > 0 && !self.joins)
                         && first + 1 + usize::from(whole.wide()) + whole.spill() > body.w
                     {
                         cell = Cell { ch: '?', more: ['\0'; MORE], style: cell.style };
@@ -668,6 +760,11 @@ impl View {
                 // And reports the mouse when, and as far as, a living program asked (always in the SGR form).
                 if pane.term.mouse != 0 && live {
                     modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.term.mouse));
+                }
+                // And is told when this terminal's window gains and loses the keys, if it asked.
+                if pane.term.focus && live {
+                    modes.push_str("\x1b[?1004h");
+                    wants_focus = Some(pane_directory.clone());
                 }
                 // And tells keys as that program asked (the kitty protocol), if the terminal can.
                 if live {
@@ -735,7 +832,13 @@ impl View {
             let typed = typed.join(" ");
             let mut left = cells(&format!(" {} ", self.workspace), colour(250, Some(236), BOLD));
             let labels = layout.tabs.iter().enumerate().map(|(i, tab)| {
-                cells(&format!(" {} ", tab.focus), if i == layout.current { colour(0, Some(2), BOLD) } else { bar })
+                // (A tab with a notice not seen yet has a mark.)
+                let unseen = tab.panes().iter().any(|pane| self.notices.get(*pane).is_some_and(|notice| notice.1));
+                let mark = if unseen { "!" } else { "" };
+                cells(
+                    &format!(" {}{mark} ", tab.focus),
+                    if i == layout.current { colour(0, Some(2), BOLD) } else { bar },
+                )
             });
             let labels: Vec<Vec<Cell>> = labels.collect();
             // On the right: what there is to say, or else the keys typed so far.
@@ -803,6 +906,7 @@ impl View {
             cursor.push_str("\x1b[?25l");
         }
         cursor.push_str(&modes);
+        self.tell(wants_focus);
         if self.keyboard != 0 {
             cursor.push_str(&format!("\x1b[={keys}u"));
         }

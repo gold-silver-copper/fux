@@ -261,16 +261,16 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     // And the new pane's program started at its tile's size: it was never drawn at another.
     assert_eq!(read(&inner.0.join("main/two/first")), "24 39\n");
     // A character the terminal outside may draw wider than fux counts it (three people who are one
-    // family here) is not drawn where that could reach past its tile's edge: a `?` stands in each of
-    // its columns, while the pane's own screen keeps it. One that is wide everywhere is drawn.
+    // family here) is not drawn where that could reach past its tile's edge, unless the terminal
+    // says that it joins characters as fux does (the viewer asks: mode 2027). This one, a pane of
+    // fux, says so: the family is drawn at the very edge, as a wide character is.
     let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
     fs::write(inner.0.join("main/one/in"), format!("clear; printf '\\033[9;39H{family}\\033[11;39H\u{6f22}\\n'\r"))
         .unwrap();
-    until("the family is in its pane and a stand-in in the viewer", || {
+    until("the family is in its pane and in the viewer", || {
         read(&inner.0.join("main/one/screen")).contains(family)
-            && screen().contains("??│")
+            && screen().contains(&format!("{family}│"))
             && screen().contains("\u{6f22}│")
-            && !screen().contains(family)
     });
     // The viewer asked its terminal once what the colours are and wrote them down for the
     // session: a program in a pane that asks is told the same, viewer or no viewer.
@@ -368,4 +368,80 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
         .find(|entry| entry.file_name().to_string_lossy().starts_with(".view."));
     fs::write(ctl.unwrap().path(), "quit\n").unwrap();
     until("the terminal is as it was found", || shown(&view).contains("^[[?4u"));
+}
+
+#[test]
+fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_passes_it_on() {
+    let (outer, inner) = (Session::new("gouter"), Session::new("ginner"));
+    // The keys as they come with fux.
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&inner.0).unwrap();
+    let copied = Command::new("cp").arg("-R").arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys")).arg(&keys).status();
+    assert!(copied.unwrap().success());
+    let raw = "stty raw -echo; printf '\\033[?1004h'; exec cat -vt";
+    let (p1, p2) = (inner.start("p1", &["sh", "-c", raw]), inner.start("p2", &["sh", "-c", raw]));
+    fs::write(inner.0.join("main/layout"), "* p1 focus=p1\n  p2 focus=p2\n").unwrap();
+    let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
+    let path = format!("PATH={}", std::env::var("PATH").unwrap());
+    let command = ["env", &path, &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &viewer[..]].concat());
+    let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
+    // The pane that has the keys is told so, having asked (mode 1004), and the viewer asks its
+    // own terminal to tell it of the window's focus.
+    until("the first pane is told it has the keys", || shown(&p1) == "^[[I");
+    until("the viewer asked its terminal", || fact(&view, "modes").contains("focus"));
+    // Where a program says it is (OSC 7) is the pane's `cwd`; a place on another machine is no place here.
+    let print = inner.start("print", &["sh", "-c", "printf '\\033]7;file:///usr/share\\007'; sleep 600"]);
+    until("the directory is told", || read(&print.join("cwd")) == "/usr/share\n");
+    let far = inner.start(
+        "far",
+        &["sh", "-c", "printf '\\033]7;file:///usr\\007\\033]7;file://elsewhere.example/home/x\\007'; sleep 600"],
+    );
+    until("the far pane runs", || {
+        fact(&far, "state") == "running" && read(&far.join("screen.styled")).is_empty().eq(&false)
+    });
+    assert!(!far.join("cwd").exists());
+    // Anyone may have something noticed through `ctl`; a program rings the bell. Each is the
+    // pane's `notice`, with a number that grows. The viewer passes a new one on to its own
+    // terminal once and marks the tab until its pane has had the keys.
+    until("the viewer has looked at the panes once", || fact(&view, "modes").contains("focus"));
+    std::thread::sleep(Duration::from_millis(600));
+    fs::write(p2.join("ctl"), "notify the build is done\n").unwrap();
+    until("the notice is written", || read(&p2.join("notice")) == "1 the build is done\n");
+    until("the viewer passed it on", || read(&view.join("notice")).ends_with(" the build is done\n"));
+    fs::write(view.join("in"), "\x02").unwrap();
+    until("the tab is marked", || read(&view.join("screen")).contains(" p2! "));
+    // The next tab: the pane has the keys, the mark goes, and the panes are told who has them.
+    fs::write(view.join("in"), "n").unwrap();
+    until("the second pane is told", || shown(&p2) == "^[[I" && shown(&p1) == "^[[I^[[O");
+    fs::write(view.join("in"), "\x02").unwrap();
+    until("the mark is gone", || {
+        read(&view.join("screen")).contains(" p2 ") && !read(&view.join("screen")).contains("p2!")
+    });
+    fs::write(view.join("in"), "\x1b").unwrap();
+    fs::write(p2.join("in"), "").unwrap();
+    let bell = inner.start("bell", &["sh", "-c", "sleep 0.7; printf '\\007'; sleep 600"]);
+    until("the bell is a notice with no words", || read(&bell.join("notice")) == "1\n");
+    // A program in the middle of drawing (mode 2026) is not shown until it is done: half a
+    // frame is never seen. One that never says it is done is shown after half a second.
+    let draws = inner.start("draws", &["sh", "-c", "printf '\\033[?2026hhalf'; sleep 0.3; printf ' whole\\033[?2026l'; sleep 0.3; printf '\\033[?2026h stuck'; sleep 600"]);
+    let start = Instant::now();
+    while !read(&draws.join("screen")).contains("stuck") {
+        assert!(!read(&draws.join("screen")).starts_with("half\n"), "half a frame was shown");
+        assert!(start.elapsed() < Duration::from_secs(10), "a program that never ends its drawing froze its pane");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(start.elapsed() > Duration::from_millis(900));
+    // The find key lists the panes in a pane of its own, with whatever finder there is (a
+    // numbered list if none): the pane chosen gets the keys.
+    fs::write(inner.0.join("main/layout"), "* p1 focus=p1\n  p2 focus=p2\n").unwrap();
+    until("the first tab is shown", || shown(&p1).ends_with("^[[I"));
+    fs::write(view.join("in"), "\x02fp").unwrap();
+    until("the list is shown", || read(&view.join("screen")).contains("p2"));
+    std::thread::sleep(Duration::from_millis(300));
+    // (A finder takes a moment to narrow its list to what was typed.)
+    fs::write(view.join("in"), "2").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    fs::write(view.join("in"), "\r").unwrap();
+    until("the pane chosen has the keys", || read(&inner.0.join("main/layout")).contains("* p2 focus=p2"));
 }
