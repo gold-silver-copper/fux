@@ -1241,6 +1241,14 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     a long temporary path (it is short now, without the path).
   - Kept: a layout made invalid in the instant between the viewer's two
     reads of it can still get `.empty` run against it.
+  - From the tester: a `SHELL` that cannot be run left a blank screen and
+    no word (the pane removed itself with the shell's error on it): a
+    default shell pane whose program could not be run at all now waits
+    for Enter. "First shown" is each time a viewer comes to a workspace
+    and finds it empty, also one whose last pane ended while the viewer
+    was elsewhere; the README says "each time". Kept: an `.empty` that
+    fails shows its error in the corner and not the sentence; a slow one
+    is waited for two seconds, as any key script.
 
 ## The old fux3's bugs: which classes are gone
 
