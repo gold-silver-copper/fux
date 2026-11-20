@@ -132,8 +132,8 @@ enum State {
     Escape,
     EscapeInter,
     Csi,
-    /// A string (OSC, DCS, APC, SOS, PM), kept in `string` up to BEL or ST: a
-    /// title, a clipboard or a sixel picture if it says so.
+    /// A string (OSC, DCS, APC, SOS, PM), kept in `string` up to its ST (or, for
+    /// OSC alone, a BEL): a title, a clipboard or a sixel picture if it says so.
     Str,
     /// ESC seen inside a string: `\` ends it, anything else starts anew.
     StrEscape,
@@ -697,7 +697,12 @@ impl Term {
                 0x18 | 0x1a => self.end_string(false),
                 0x00..=0x1f | 0x7f => {}
                 _ if self.string.len() <= PICTURE_MAX => self.string.push(byte),
-                _ => self.string_over = true,
+                // Past its bound a string is dropped, and said so at once: it may never end.
+                _ if self.string_over => {}
+                _ => {
+                    self.string_over = true;
+                    self.refuse("a control string over 4 MiB (a picture, a clipboard, a title) was dropped");
+                }
             },
             State::StrEscape => {
                 self.end_string(byte == b'\\');
@@ -805,8 +810,16 @@ impl Term {
             b'c' => {
                 // A full reset. What was produced stays to be taken, and picture
                 // numbers go on, so no file's name is used twice.
-                let (cell, out) = (self.cell, std::mem::take(&mut self.out));
-                *self = Term { cell, out, next_picture: self.next_picture, ..Term::new(self.cols, self.rows) };
+                let (cell, out, title) = (self.cell, std::mem::take(&mut self.out), std::mem::take(&mut self.title));
+                let titles = std::mem::take(&mut self.titles);
+                *self = Term {
+                    cell,
+                    out,
+                    title,
+                    titles,
+                    next_picture: self.next_picture,
+                    ..Term::new(self.cols, self.rows)
+                };
             }
             _ => {}
         }
@@ -836,7 +849,7 @@ impl Term {
         self.state = State::Ground;
         let string = std::mem::take(&mut self.string);
         if std::mem::take(&mut self.string_over) {
-            return self.refuse("a control string over 4 MiB (a picture, a clipboard, a title) was dropped");
+            return;
         }
         match string.split_first().filter(|_| whole) {
             Some((b'P', data)) => {
@@ -855,13 +868,17 @@ impl Term {
         let (number, rest) = text.split_once(';').unwrap_or((text, ""));
         match number {
             "0" | "2" => {
-                self.title = rest.chars().filter(|c| !c.is_control()).take(TITLE_MAX).collect();
+                let mut title = rest.chars().filter(|c| !c.is_control());
+                self.title = title.by_ref().take(TITLE_MAX).collect();
+                if title.next().is_some() {
+                    self.refuse("a title over 256 characters was cut");
+                }
                 self.out.title = Some(self.title.clone());
             }
-            "52" => match rest.split_once(';').map_or("", |(_, what)| what) {
+            "52" => match rest.split_once(';').map(|(_, what)| what) {
                 // Setting only: a program is never told what is on the clipboard.
-                "?" => self.refuse("a program asked to read the clipboard: that is refused"),
-                what => match base64_decode(what) {
+                Some("?") => self.refuse("a program asked to read the clipboard: that is refused"),
+                what => match what.and_then(base64_decode) {
                     Some(bytes) if bytes.len() <= CLIPBOARD_MAX => self.out.clipboard = Some(bytes),
                     Some(_) => self.refuse("a clipboard over 1 MiB was dropped"),
                     None => self.refuse("a clipboard that was not base64 was dropped"),
@@ -881,7 +898,8 @@ impl Term {
             return;
         }
         if self.pictures.len() >= PICTURES_MAX {
-            self.pictures.remove(0);
+            let oldest = self.pictures.remove(0).id;
+            self.out.pictures.retain(|(id, _)| *id != oldest);
             self.refuse("a screen keeps 8 pictures: the oldest was dropped for a new one");
         }
         let mut whole = Vec::with_capacity(data.len() + 4);
@@ -1100,13 +1118,19 @@ impl Term {
                     16 => self.respond(&format!("\x1b[6;{h};{w}t")),
                     18 => self.respond(&format!("\x1b[8;{rows};{cols}t")),
                     // The title put aside (the oldest is forgotten past 8), and brought back.
-                    22 => {
-                        self.titles.drain(..self.titles.len().saturating_sub(7));
+                    // (`22;1` and `23;1` are the icon's name, which is not kept.)
+                    22 if self.arg(1, 0) != 1 => {
+                        if self.titles.len() >= 8 {
+                            self.titles.remove(0);
+                            self.refuse("more than 8 titles were put aside: the oldest was forgotten");
+                        }
                         self.titles.push(self.title.clone());
                     }
-                    23 => {
-                        self.title = self.titles.pop().unwrap_or_default();
-                        self.out.title = Some(self.title.clone());
+                    23 if self.arg(1, 0) != 1 => {
+                        if let Some(title) = self.titles.pop() {
+                            self.title = title;
+                            self.out.title = Some(self.title.clone());
+                        }
                     }
                     _ => {}
                 }
@@ -1238,10 +1262,15 @@ impl Term {
     }
 }
 
-/// Base64, as the clipboard command carries it. `None` for text that is not.
+/// Base64, as the clipboard command carries it. `None` for text that is not:
+/// a character outside the set, padding anywhere but at the end, or a length no bytes give.
 pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let text = text.strip_suffix("==").or(text.strip_suffix('=')).unwrap_or(text);
+    if text.len() % 4 == 1 {
+        return None;
+    }
     let (mut out, mut bits, mut have) = (Vec::new(), 0u32, 0u32);
-    for byte in text.bytes().filter(|b| *b != b'=') {
+    for byte in text.bytes() {
         let six = match byte {
             b'A'..=b'Z' => byte - b'A',
             b'a'..=b'z' => byte - b'a' + 26,

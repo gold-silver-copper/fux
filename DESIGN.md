@@ -59,9 +59,10 @@ folder is gone, the pane is gone: the holder leaves, which hangs up too.
 `screen.styled` when it changed, and parses it with the same emulator that
 wrote it. It sends keys with a write to `in` that never waits, opening it by
 its path each time, so that the pane typed into is the pane of that name
-now. A screen's first line is written and read by the emulator alone; the
-holder adds its own words (`pid`, `state`, `v`, `pic`) and the viewer reads
-only those. It sets the
+now. Of a screen's first line, the terminal's words (`size`, `cursor`,
+`shape`, `modes`) are written and read by the emulator alone; the holder
+adds its own (`pid`, `state`, `v`, `pic`), which the viewer, `fux wait` and
+the key scripts read. It sets the
 outer terminal's cursor-key, keypad and mouse modes to the focused program's,
 so key bytes pass through untouched and mouse reports need only their
 coordinates moved. Pictures are files the viewer passes on after

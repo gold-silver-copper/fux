@@ -159,7 +159,9 @@ other shows what fits.
 
 The keys directory is `$FUXN_KEYS`, else `$XDG_CONFIG_HOME/fux-next/keys`, else
 `~/.config/fux-next/keys`; the viewer
-writes the default scripts there if it does not exist. A key that has a file
+writes the default scripts there if it does not exist (and only then: after
+an upgrade, remove the folder, or copy `keys/` from the source over it, to
+get the new defaults). A key that has a file
 of its name runs it (a file that cannot be run says so in the corner). A key that has a directory opens it as a
 menu (each script's second line, `# what it does`, is its entry) and the next
 key is looked up there. Any other key goes to the program. So the prefix is
@@ -197,11 +199,12 @@ TERM to the pane's program), `g` arrange (`r c g m`, `t` turn). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
 not your shell but `keys/.shell`, a few lines that run it and then remove
 the pane's own folder, however the shell ended. Only when `.shell` itself
-is gone first (the pane hung up with `kill`, its holder killed, or `.shell`
-killed outright) is nobody left to remove the folder: it stays, saying
-`killed`, until the close key or `rm -r` takes it. The `a k` key sends TERM
-to the pane's program, which in a default shell pane is `.shell`: it lets
-TERM pass, as an interactive shell does. The close key moves the folder out of the
+is gone first is nobody left to remove the folder, and it stays until the
+close key or `rm -r` takes it: saying `killed` after `kill` in `ctl` or a
+`.shell` killed outright, and `lost` when the holder was killed. The `a k`
+key sends TERM to the pane's program, which in a default shell pane is
+`.shell`: that ignores TERM, as an interactive shell does, so the key does
+nothing there; it is for panes started with a program of their own. The close key moves the folder out of the
 workspace (the tile goes at once), removes its `in`, and removes the folder
 when the holder has left, within two seconds.
 

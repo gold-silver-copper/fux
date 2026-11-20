@@ -170,6 +170,8 @@ impl Holder {
         replace("status", status.as_bytes()).map_err(|e| format!("cannot write status: {e}"))?;
         // What an earlier holder of this pane left goes now that this one's
         // screen has replaced the one that named it: its history and its pictures.
+        let _ = fs::remove_file("title");
+        let _ = fs::remove_file("clipboard");
         let _ = fs::remove_file("history.1");
         File::create("history").map_err(|e| format!("cannot make history: {e}"))?;
         for old in fs::read_dir(".").into_iter().flatten().flatten().map(|entry| entry.file_name()) {

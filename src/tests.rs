@@ -98,12 +98,20 @@ fn a_title_and_a_clipboard_leave_as_text_and_bytes_and_a_string_has_one_bound() 
     term.feed(b"\x1b]52;c;?\x07\x1b]52;c;not base64!\x07");
     let out = term.take();
     assert!(out.reply.is_empty() && out.clipboard.is_none() && out.refused.len() == 2);
+    // Neither is padding in the middle base64, nor a command with nothing to set; a pop with nothing put aside changes nothing.
+    term.feed(b"\x1b]52;c;QU=JD\x07\x1b]52;c\x07\x1b[23;2t\x1b[23;2t");
+    let out = term.take();
+    assert!(out.clipboard.is_none() && out.title.is_none());
     // A string of any kind that never ends is dropped at its bound, and said; what follows is text again.
     term.feed(b"\x1b]0;");
     term.feed(&vec![b'x'; (4 << 20) + 2]);
     term.feed(b"\x07ok");
     let out = term.take();
     assert!(out.title.is_none() && out.refused.len() == 1 && term.plain().contains("afterok"));
+    // A string that never ends is still said to be dropped, when it passes its bound.
+    term.feed(b"\x1b]0;");
+    term.feed(&vec![b'x'; (4 << 20) + 2]);
+    assert_eq!(term.take().refused.len(), 1);
     // What is encoded decodes to itself, whatever its length.
     for bytes in [&b""[..], b"a", b"ab", b"abc", &[0, 255, 128, 7]] {
         assert_eq!(base64_decode(&base64_encode(bytes)).as_deref(), Some(bytes));

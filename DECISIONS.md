@@ -251,6 +251,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   one retry there is, in `fux start`, waits a moment for a `fux wait` that
   holds the pane's lock, which is this program's own doing, not a kernel's.
 
+- **D47. The fix check of D45 (1 Opus, 1 gpt-6.2-astra, one pass).** Fixed:
+  a pane started again in place no longer keeps the last program's title
+  and clipboard; the viewer relays a clipboard only when the file of the
+  pane that has the focus is another than at its last look with that same
+  pane focused (so a copy made in a hidden tab, or before the focus came, is
+  never sent), and it reads the file it took the stamp from; clipboard data
+  that is not base64, or has no payload, changes nothing and is logged; a
+  string past its bound is logged at the first byte too many; a title cut at
+  256 characters and a ninth title put aside are logged; the title stack
+  leaves the icon's name alone, an empty stack changes nothing, and a reset
+  keeps the title; a picture pushed off by a ninth takes its bytes with it.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.
