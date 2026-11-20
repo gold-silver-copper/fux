@@ -457,16 +457,16 @@ of their parts), and rows are cut on a resize instead of wrapped again.
 <!-- referee:departures -->
 | Cases | Differs from | In | |
 | --- | --- | --- | --- |
-| `unicode/devanagari-at-end`, `unicode/keycap-at-end`, `unicode/tamil-at-end`, `unicode/thai-at-end`, `unicode/vs16-at-end` | old | text, cursor | clusters |
+| `unicode/devanagari-at-end`, `unicode/keycap-at-end`, `unicode/tamil-at-end`, `unicode/thai-at-end` | old | text, cursor | clusters |
 | `unicode/family`, `unicode/family-at-end`, `unicode/family-four`, `unicode/family-four-at-end`, `unicode/keycap`, `unicode/vs16` | old, tmux | cursor | clusters |
 | `unicode/three-marks`, `unicode/three-marks-at-end` | old, tmux | text | clusters |
-| `unicode/devanagari-joiner-at-end`, `unicode/flag-at-end`, `unicode/flags-three-at-end` | old, tmux | text, cursor | clusters |
+| `unicode/devanagari-joiner-at-end`, `unicode/flag-at-end`, `unicode/flags-three-at-end`, `unicode/vs16-at-end` | old, tmux | text, cursor | clusters |
 | `unicode/prepend` | old, tmux, xterm | cursor | clusters |
 | `unicode/prepend-at-end` | old, tmux, xterm | text, cursor | clusters |
-| `unicode/devanagari-joiner`, `unicode/mark-after-letter-at-end` | tmux | cursor | clusters |
-| `unicode/keycap-at-end` | tmux, xterm | text | clusters |
-| `unicode/skin-tone`, `unicode/skin-tone-at-end` | xterm | cursor | clusters |
-| `unicode/devanagari-joiner`, `unicode/devanagari-joiner-at-end`, `unicode/family`, `unicode/family-at-end`, `unicode/family-four`, `unicode/family-four-at-end`, `unicode/joiner-after-letter`, `unicode/joiner-after-letter-at-end`, `unicode/keycap`, `unicode/mark-after-move`, `unicode/vs15`, `unicode/vs15-at-end`, `unicode/vs16`, `unicode/vs16-at-end`, `unicode/zero-width-space`, `unicode/zero-width-space-at-end` | xterm | text | clusters |
+| `unicode/devanagari-joiner`, `unicode/flags-three`, `unicode/mark-after-letter-at-end` | tmux | cursor | clusters |
+| `unicode/keycap-at-end` | tmux | text or text, cursor | clusters |
+| `unicode/skin-tone`, `unicode/skin-tone-at-end` | tmux, xterm | cursor | clusters |
+| `unicode/devanagari-joiner`, `unicode/devanagari-joiner-at-end`, `unicode/family`, `unicode/family-at-end`, `unicode/family-four`, `unicode/family-four-at-end`, `unicode/joiner-after-letter`, `unicode/joiner-after-letter-at-end`, `unicode/keycap`, `unicode/keycap-at-end`, `unicode/mark-after-move`, `unicode/vs15`, `unicode/vs15-at-end`, `unicode/vs16`, `unicode/vs16-at-end`, `unicode/zero-width-space`, `unicode/zero-width-space-at-end` | xterm | text | clusters |
 | `resize/narrow-full-screen` | old | text | no reflow |
 | `resize/alternate-leave-after`, `resize/hard-lines-narrow`, `resize/narrow` | old | text, cursor | no reflow |
 | `resize/narrow-cursor-mid-line`, `resize/narrow-wide-characters`, `resize/widen` | old, tmux | text, cursor | no reflow |
