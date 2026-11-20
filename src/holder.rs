@@ -102,7 +102,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     let Some((program, args)) = command.split_first() else {
         return Err("no program to run".into());
     };
-    let pane = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
+    // `fux start` says under what name the pane's directory was started.
+    let pane = std::env::var_os("FUX_PANE").ok_or("hold is started by `fux start`")?;
     let mut child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);

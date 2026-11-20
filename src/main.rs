@@ -171,6 +171,9 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
         let lock = lock.try_clone().map_err(|e| format!("cannot copy the lock: {e}"))?;
         let mut holder = Command::new(me);
         holder.arg("hold").arg(cwd).args(program).current_dir(dir);
+        // The pane's directory by the name it was started under (the holder's
+        // own working directory may read otherwise, through a link).
+        holder.env("FUX_PANE", std::path::absolute(dir).unwrap_or(dir.to_path_buf()));
         holder.stdin(Stdio::from(lock)).stdout(Stdio::null()).stderr(log);
         sys::new_session(&mut holder, false);
         holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?
