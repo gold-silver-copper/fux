@@ -1011,6 +1011,16 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     The resize keys make the focused pane narrower and wider rather than
     move a border, as before. A viewer killed outright leaves its FIFO and
     the terminal's modes (README).
+- **D72. `fux help agents`** (message 15; the owner asked for it). One page
+  of plain text in the binary (`src/help-agents.txt`), for a reader with
+  the binary and nothing else. Its indented lines are one shell session
+  that `tools/help-agents.sh` runs as written, in CI on both systems: a
+  command on the page that stops working fails the build, so the page
+  cannot drift from the program. Hence its shape (examples that follow
+  one another, loops with a limit, no `timeout`, which macOS lacks) and
+  what it leaves to the README (the viewer's keys, `marks` and `links` in
+  full, pictures). There is no command to wait for output: the page gives
+  the loops, since what "settled" means is the reader's to say.
 
 ## The old fux3's bugs: which classes are gone
 

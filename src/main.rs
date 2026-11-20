@@ -40,7 +40,10 @@ fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or 
 fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and last state
 fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: in a pane its own, else main)
 fux layout [EDIT…]              print the layout of the workspace (in a pane: its own; else main), or edit it
+fux help agents                 one page for a program that drives panes: start, type, read, wait, end
 The files of a pane, and everything else, are in the README.";
+/// The page for agents: complete by itself, and every command on it is run by `tools/help-agents.sh`.
+const AGENTS: &str = include_str!("help-agents.txt");
 
 /// A variable of the environment that is set and not empty, as a path.
 fn var(name: &str) -> Option<PathBuf> {
@@ -285,6 +288,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             Some((cwd, program)) => holder::hold(program, cwd),
             None => Err("hold is started by `fux start`".into()),
         },
+        Some("help") if rest == ["agents"] => say(AGENTS.trim_end().as_bytes()),
         Some("help" | "--help" | "-h") => say(USAGE.as_bytes()),
         _ => Err(format!("usage:\n{USAGE}")),
     }
