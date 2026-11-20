@@ -683,6 +683,32 @@ impl Term {
         (line, bytes)
     }
 
+    /// The same for many places at once: each row's line and the bytes of the line before the
+    /// row are counted once, so a thousand marks cost one walk over the screen.
+    fn text_places(&self, places: impl Iterator<Item = (usize, usize)>) -> Vec<(usize, usize)> {
+        let main = self.main();
+        let text = |cells: &[Cell], upto: usize| {
+            let gap = cells.last().is_some_and(|cell| cell.style.flags & PAD != 0);
+            cells.iter().take(upto.min(cells.len() - usize::from(gap))).map(Cell::bytes).sum::<usize>()
+        };
+        let (mut line, mut bytes, mut starts) = (self.top(), 0, Vec::with_capacity(main.len()));
+        for (y, cells) in main.iter().enumerate() {
+            match (y, continues(cells)) {
+                (0, true) => bytes = self.history_open.unwrap_or(0),
+                (0, false) | (_, true) => {}
+                (_, false) => (line, bytes) = (line + 1, 0),
+            }
+            starts.push((line, bytes));
+            bytes += text(cells, cells.len());
+        }
+        let last = main.len().saturating_sub(1);
+        let place = |(row, col): (usize, usize)| {
+            let (line, before) = starts.get(row.min(last)).copied().unwrap_or((self.top(), 0));
+            (line, before + main.get(row.min(last)).map_or(0, |cells| text(cells, col)))
+        };
+        places.map(place).collect()
+    }
+
     /// The place on the main screen of a line of the pane's text and so many bytes into it, if
     /// that is on the screen (and not in history, or nowhere).
     fn screen_place(&self, line: usize, bytes: usize) -> Option<(usize, usize)> {
@@ -716,10 +742,15 @@ impl Term {
 
     /// The shell's marks, a line each: `LINE AT KIND`, and the command's exit code after `end`.
     pub fn marks(&self) -> String {
+        let screen = self.marks.iter().filter_map(|mark| match mark.0 {
+            At::Screen(row, col) => Some((row, col)),
+            At::Text(..) => None,
+        });
+        let mut places = self.text_places(screen).into_iter();
         let mut out = String::new();
         for (at, kind, code) in &self.marks {
             let (line, bytes) = match *at {
-                At::Screen(row, col) => self.text_place(row, col),
+                At::Screen(..) => places.next().unwrap_or_default(),
                 At::Text(line, bytes) => (line, bytes),
             };
             let _ = write!(out, "{line} {bytes} {kind}");

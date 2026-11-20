@@ -951,6 +951,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     removed by name when the helper ends (the folder goes; a moved pane's
     old name may be another helper's by then); the picker compares names
     as text (`010` and `10`).
+  - `marks` is written with one walk over the screen however many marks
+    are on it (astra: a thousand marks at the end of one wrapped line on a
+    500 by 500 screen walked it a thousand times at every publish).
   - tests: the layout file is replaced in one step and a new pane's place
     is waited for (the CI failure of this series' first push: a plain
     write read half-way by the viewer, which then made a layout of its
@@ -972,9 +975,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     the viewer's first look that comes with a pane moved in is passed on
     once; an editor whose path has a space cannot be named in `EDITOR` or
     `FUXN_EDIT`; panes started before this series have `marks` in cells
-    (pre-release: start them again); writing `marks` walks the rows of
-    each mark's line at every publish (a thousand marks on a 500-row
-    screen are still little work); the TERM key asks after the holder's
+    (pre-release: start them again); the TERM key asks after the holder's
     number a moment after it read the program's; a paste typed in the
     instant the focus moves is wrapped as the last pane asked.
 
