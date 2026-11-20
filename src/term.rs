@@ -203,7 +203,8 @@ impl Cell {
     }
 }
 
-/// A picture the program drew: where it is, in cells. Its bytes leave in the outbox.
+/// A picture the program drew: where what the screen has of it is, in cells, and how many of
+/// its rows have gone off the screen's top (`row` is 0 then). Its bytes leave in the outbox.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Picture {
     pub id: u32,
@@ -211,6 +212,7 @@ pub struct Picture {
     pub col: usize,
     pub cols: usize,
     pub rows: usize,
+    pub off: usize,
 }
 
 /// Where a mark is: on the main screen, a row and a column, for as long as its row is there
@@ -999,18 +1001,27 @@ impl Term {
     }
 
     /// Pictures move with rows `from..=bottom` when those scroll by `n`; one
-    /// that would leave those rows, or lies across their edge, goes.
+    /// that would leave those rows, or lies across their edge, goes. Off the
+    /// screen's top a picture goes row by row: it stays while it has one left.
+    /// Past the screen's last row it is only not shown.
     fn scroll_pictures(&mut self, from: usize, n: usize, up: bool) {
         let bottom = self.bottom;
+        let low = if bottom + 1 == self.rows { usize::MAX } else { bottom + 1 };
         self.pictures.retain_mut(|p| {
             let end = p.row + p.rows;
             if end <= from || p.row > bottom {
                 return true;
             }
-            let stays =
-                p.row >= from && end <= bottom + 1 && if up { p.row >= from + n } else { end + n <= bottom + 1 };
-            p.row = if up { p.row.saturating_sub(n) } else { p.row + n };
-            stays
+            let inside = p.row >= from && end <= low;
+            if up {
+                let gone = if from == 0 { (n - n.min(p.row)).min(p.rows) } else { 0 };
+                let stays = inside && p.row + gone >= from + n && gone < p.rows;
+                (p.row, p.rows, p.off) = (p.row.saturating_sub(n), p.rows - gone, p.off + gone);
+                stays
+            } else {
+                p.row += n;
+                inside && p.off == 0 && end.saturating_add(n) <= low && p.row <= bottom
+            }
         });
     }
 
@@ -1349,7 +1360,7 @@ impl Term {
         // wrap at its row's end. First the cursor, whose line is taken to reach as far as it
         // stands (behind the alternate screen, the saved cursor is the one that will come back);
         // then the saved cursor, the row to come back to, the character printed last, and two
-        // corners of each picture.
+        // corners of each picture (the upper one on the highest of its rows that is kept still).
         let saved = self.saved.first().map_or((0, 0, false), |s| (s.row, s.col + usize::from(s.wrap), s.wrap));
         let cursor = (self.row, self.col + usize::from(self.wrap_pending), self.wrap_pending);
         let last = self.cluster.and_then(|last| last.at).filter(|_| !self.alt);
@@ -1359,6 +1370,10 @@ impl Term {
         // The rows the last resize sent to history are wrapped along: they come back if there is room.
         let held = self.above.len();
         places.iter_mut().for_each(|place| place.0 += held);
+        // (Of a picture's rows that are off the top, the last resize's are among them.)
+        for (i, picture) in main_pictures.iter().enumerate() {
+            places.get_mut(4 + 2 * i).into_iter().for_each(|place| place.0 -= picture.off.min(held));
+        }
         let old: Vec<Vec<Cell>> = self.above.iter().chain(main).cloned().collect();
         // While a shell reads a command, the line being typed is cut or padded at a new width,
         // not wrapped anew: the shell draws it again counting rows as it left them. Only where
@@ -1429,21 +1444,23 @@ impl Term {
             row.resize(cols, blank);
         }
         // A picture stays with the cells it was over, if they are still one under the other and
-        // it is whole on the screen.
+        // one of its rows is on the screen: the rows above the screen are off it, and those the
+        // last resize took are back with their text. Past the right edge and the last row it is
+        // only not shown.
         let mut kept: Vec<Picture> = Vec::new();
         for (i, picture) in main_pictures.iter().enumerate() {
             let ((row, col), (below, under)) = (at(4 + 2 * i), at(5 + 2 * i));
-            if row >= up
-                && under == col
-                && below == row + picture.rows - 1
-                && below - up < rows
-                && col + picture.cols <= cols
-            {
-                kept.push(Picture { row: row - up, col, ..picture.clone() });
+            let back = picture.off.min(held);
+            let (off, gone) = (picture.off - back, up.saturating_sub(row));
+            let stacked = under == col && below == row + back + picture.rows - 1;
+            // (One that has lost rows for good has its next row on the screen's first.)
+            if stacked && below >= up && row < up + rows && (off == 0 || row <= up) {
+                let rows = below + 1 - row - gone;
+                kept.push(Picture { row: row.saturating_sub(up), col, rows, off: off + gone, ..picture.clone() });
             }
         }
         let mut still = other_pictures.clone();
-        still.retain(|p| p.row + p.rows <= rows && p.col + p.cols <= cols);
+        still.retain(|p| p.row < rows && p.col < cols);
         // Nothing was changed until here: now the new state takes the old one's place.
         let fit = |(row, col): (usize, usize)| (row.saturating_sub(up).min(rows - 1), col);
         let ((row, col), saved_at, main_row) = (fit(at(0)), fit(at(1)), fit(at(2)).0);
@@ -2035,11 +2052,11 @@ impl Term {
         whole.extend_from_slice(b"\x1bP");
         whole.extend_from_slice(data);
         whole.extend_from_slice(b"\x1b\\");
-        self.pictures.push(Picture { id: self.next_picture, row: self.row, col: self.col, cols, rows });
+        self.pictures.push(Picture { id: self.next_picture, row: self.row, col: self.col, cols, rows, off: 0 });
         self.out.pictures.push((self.next_picture, whole));
         self.next_picture = self.next_picture.wrapping_add(1);
-        // The picture scrolls with the text; one taller than the screen leaves it.
-        for _ in 0..rows.min(self.rows + 1) {
+        // The picture scrolls with the text; of one taller than the screen the last rows stay.
+        for _ in 0..rows {
             self.linefeed();
         }
         self.col = 0;
@@ -2642,8 +2659,10 @@ fn sixel_size(data: &[u8]) -> (usize, usize) {
             match byte {
                 b'!' | b'#' | b'"' => owner = byte,
                 b'?'..=b'~' => {
+                    // (As wide as its rows are long, and as high as its lowest painted pixel.)
+                    let low = band * 6 + 8 - (byte - b'?').leading_zeros() as usize;
                     x = x.saturating_add(repeat);
-                    painted = (painted.0.max(x), (band + 1) * 6);
+                    painted = (painted.0.max(x), if byte == b'?' { painted.1 } else { painted.1.max(low) });
                 }
                 b'$' => x = 0,
                 b'-' => (x, band) = (0, band + 1),

@@ -621,8 +621,11 @@ impl Holder {
         // Every fact has a file of its own, written when it changes, before the screens. A reader
         // may find a fact one publish ahead of the text it read: it keeps the cursor inside the
         // rows it has.
-        let placed =
-            |p: &crate::term::Picture| format!("pic-{}.sixel {} {} {} {}\n", p.id, p.row, p.col, p.cols, p.rows);
+        // (A picture's rows that went off the top are counted still: its first row is then above row 0.)
+        let placed = |p: &crate::term::Picture| {
+            let row = if p.off > 0 { format!("-{}", p.off) } else { p.row.to_string() };
+            format!("pic-{}.sixel {row} {} {} {}\n", p.id, p.col, p.cols, p.rows + p.off)
+        };
         let term = &mut self.term;
         let shown = if term.cursor_shown { "shown" } else { "hidden" };
         // (The cursor's colour, if the program set one: a fifth word.)

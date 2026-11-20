@@ -971,6 +971,30 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     // Its size is the larger of what it says and what it paints: here 40 pixels, 4 cells, not 1.
     term.feed(b"\x1b[H\x1bPq\"1;1;10;6!40~\x1b\\");
     assert_eq!(term.pictures.first().map(|p| (p.cols, p.rows)), Some((4, 1)));
+    // And as high as its lowest painted pixel: 20 rows of pixels in four bands are one row of cells.
+    term.feed(b"\x1b[H\x1bPq~-~-~-A?\x1b\\");
+    assert_eq!(term.pictures.last().map(|p| (p.cols, p.rows)), Some((1, 1)));
+    // It leaves the top row by row and is there while one row of it is: of 5 rows on a screen
+    // of 4 the last 3 stay, with the cursor under them.
+    let mut term = self::term(20, 4, "\x1bPq\"1;1;30;100~\x1b\\");
+    let placed = |term: &Term| term.pictures.first().map(|p| (p.row, p.cols, p.rows, p.off));
+    assert_eq!((placed(&term), term.row), (Some((0, 3, 3, 2)), 3));
+    term.feed(b"\n\n");
+    assert_eq!(placed(&term), Some((0, 3, 1, 4)));
+    term.feed(b"\n");
+    assert_eq!(placed(&term), None);
+    // A screen too narrow for it keeps it; rows a resize takes from it come back with the resize
+    // that gives them back, and rows that scrolled away do not.
+    term.feed(b"\x1b[H\x1bPq\"1;1;30;60~\x1b\\");
+    term.resize(2, 4);
+    term.resize(20, 2);
+    assert_eq!(placed(&term), Some((0, 3, 1, 2)));
+    term.resize(20, 4);
+    assert_eq!(placed(&term), Some((0, 3, 3, 0)));
+    term.feed(b"\n");
+    term.resize(20, 3);
+    term.resize(20, 4);
+    assert_eq!(placed(&term), Some((0, 3, 2, 1)));
 }
 
 #[test]
