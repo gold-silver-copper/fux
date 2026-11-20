@@ -1144,6 +1144,32 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     lines until someone has one); a program that goes by `TERM` alone
     (a nested tmux) may use what an xterm has; an unread answer is typed
     text; SGR 6 is kept as 5.
+- **D81. Performance, measured beside tmux** (message 23, step 2; the panel
+  6 of 8: keep whole files and the poll). `tools/perf.py` runs fux and tmux
+  through the same steps and prints medians and spreads; the README's "How
+  fast" has this machine's numbers before and after. Four changes, each
+  with its numbers in its commit:
+  - the viewer composes no frame when what a frame is drawn from (the
+    files' stamps, its own state) is what the last one was drawn from:
+    idle 3.2% of a core to 0.1%;
+  - the holder publishes as soon as the program goes quiet (nothing more
+    within a millisecond), and the viewer looks every millisecond for a
+    moment after a key: a key's echo 20 ms to 4 ms typing fast. The bound
+    under a flood stays 40 screens a second; a program that writes a
+    little every few milliseconds can now be published up to 250 times a
+    second, which the README says;
+  - what goes to the terminal is written by a thread of the viewer's own,
+    so keys are served while a frame drains to a slow terminal: 52 ms
+    (up to 264) to 0.2 ms. A thread and a channel from the standard
+    library, no reopening of the terminal and nothing per platform;
+  - a scrolled line no longer makes and copies a row of blanks, and a
+    row's text is read once from its end: `seq 1 2000000` 4.4 s to 1.45 s,
+    1.5 times tmux's 0.96 (it was 4.3 times).
+  - Left: a key's echo is 2 to 4 ms against tmux's 0.2 (the holder's wait
+    for quiet, the viewer's poll, composing a frame): the price of files
+    and a poll, which the panel kept. A smaller cell would bring the flood
+    nearer; it touches every place that writes the grid and is a change of
+    its own.
 
 ## The old fux3's bugs: which classes are gone
 
