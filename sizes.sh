@@ -13,7 +13,7 @@ count() { # count WHAT FILE…: the lines of the files that are (tables) or are 
         { if (t) tables++; else hand++ } /^\];$/ { t = 0 }
         END { print (what == "tables" ? tables : hand) + 0 }' "$@"
 }
-emulator=$(count hand src/term.rs src/width.rs tools/*.py)
+emulator=$(count hand src/term.rs src/width.rs tools/unicode.py)
 program=$(ls src/*.rs | grep -v '^src/tests\.rs$')
 whole=$(($(count hand $program) + $(find keys -type f -exec cat {} + | wc -l)))
 tables=$(count tables $program)
