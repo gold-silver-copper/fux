@@ -1249,6 +1249,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     was elsewhere; the README says "each time". Kept: an `.empty` that
     fails shows its error in the corner and not the sentence; a slow one
     is waited for two seconds, as any key script.
+- **D87. The fix check of D84 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  The tester found the two files line for line the same through real
+  programs, resizes and rotation; the reviewers traced where they could
+  part. Changed, by one rule each:
+  - what waits to be written is counted on the longer of the two texts,
+    for every way rows reach history (a resize bypassed the bound; the
+    holder counted the plain text only); a row that is refused ends the
+    open line in both texts;
+  - when anything fails on either file, the log says so, `history` keeps
+    what it has and `history.styled` is begun anew: a reader never pages
+    colour that belongs to other lines. Not "check both first": a full
+    disk cannot be checked beforehand;
+  - neither file is put aside while its last rows are a resize's to take
+    back (they were moved out of reach and then showed twice; the plain
+    file had this before);
+  - the U+200B that keeps two characters apart is decided across a row
+    join too, also before the copy of a plain row;
+  - `.text` drops the rows the plain screen says are empty, in both modes.
+  - Cost: the flood 1.51 s to 1.56 s. A single write or resize that makes
+    more than 4 MiB of styled text now loses plain rows it kept before
+    (colour at every cell of a full 500 by 500 screen): the README's
+    Bounds say so. A file is 4 MiB and one write, about 4.5 MiB as a rule.
 
 ## The old fux3's bugs: which classes are gone
 
