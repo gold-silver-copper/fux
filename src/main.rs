@@ -244,14 +244,13 @@ fn wait(args: &[OsString]) -> Result<(), String> {
     let lock = File::open(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     lock.lock_shared().map_err(|e| format!("{}: {e}", dir.display()))?;
     sys::enter_directory(&lock).map_err(|e| format!("{}: {e}", dir.display()))?;
-    // What became of the program is on line 1 of its last screen.
-    let screen = read_some(Path::new("screen")).map_err(|e| format!("{}/screen: {e}", dir.display()))?;
+    // What became of the program is in `state`, and its number in `status`: the holder wrote
+    // both, and the last screen after them, before its lock went.
+    let state = read_some(Path::new("state")).map_err(|e| format!("{}/state: {e}", dir.display()))?;
+    let status = read_some(Path::new("status")).unwrap_or_default();
     drop(lock);
-    let words = screen.lines().next().unwrap_or_default().split(' ').filter_map(|word| word.split_once('='));
-    let said: Vec<String> = words
-        .filter(|(key, _)| matches!(*key, "pid" | "state"))
-        .map(|(k, v)| format!("{k} {}", v.replace(':', " ")))
-        .collect();
+    let pid = status.lines().find(|line| line.starts_with("pid ")).unwrap_or("pid 0");
+    let said = [pid.to_string(), format!("state {}", state.trim_end())];
     say(said.join("\n").as_bytes())
 }
 

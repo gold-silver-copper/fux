@@ -46,7 +46,8 @@ struct Holder {
     /// thrown away (macOS drops it when the last slave closes).
     _slave: File,
     pid: u32,
-    version: u64,
+    /// The facts as they were written last, each in its file: one is written again only when it changes.
+    facts: Vec<(&'static str, String)>,
     input: Vec<u8>,
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
@@ -152,7 +153,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         master: Some(master),
         _slave: slave,
         pid,
-        version: 0,
+        facts: Vec::new(),
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: Vec::new(),
@@ -181,8 +182,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
 impl Holder {
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader, command: &str) -> Result<(), String> {
         self.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
-        // Written once: who holds the pane and what it runs. The program's own number and state are on line 1 of the screens.
-        let status = format!("holder {}\ncommand {command}\n", std::process::id());
+        // Written once: who holds the pane, the program's own number, and what it runs.
+        let status = format!("holder {}\npid {}\ncommand {command}\n", std::process::id(), self.pid);
         replace("status", status.as_bytes()).map_err(|e| format!("cannot write status: {e}"))?;
         // What an earlier holder of this pane left goes now that this one's
         // screen has replaced the one that named it: its history and its pictures.
@@ -466,6 +467,29 @@ impl Holder {
                 self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
             }
         }
+        // Every fact has a file of its own, written when it changes, before the screens. A reader
+        // may find a fact one publish ahead of the text it read: it keeps the cursor inside the
+        // rows it has.
+        let placed =
+            |p: &crate::term::Picture| format!("pic-{}.sixel {} {} {} {}\n", p.id, p.row, p.col, p.cols, p.rows);
+        let term = &mut self.term;
+        let shown = if term.cursor_shown { "shown" } else { "hidden" };
+        let facts = [
+            ("top", format!("{}\n", term.gone)),
+            ("wraps", format!("{}\n", term.wraps())),
+            ("pictures", term.pictures.iter().map(placed).collect()),
+            ("size", format!("{} {}\n", term.cols, term.rows)),
+            ("cursor", format!("{} {} {shown} {}\n", term.row, term.col, term.cursor_shape)),
+            ("modes", format!("{}\n", term.words())),
+            ("state", format!("{}\n", self.state)),
+        ];
+        for (name, text) in facts {
+            if !self.facts.iter().any(|(fact, was)| *fact == name && *was == text) {
+                replace(name, text.as_bytes())?;
+                self.facts.retain(|(fact, _)| *fact != name);
+                self.facts.push((name, text));
+            }
+        }
         // The title is one line, rewritten only when it changes; the clipboard is the bytes the program set.
         if let Some(title) = self.pending.title.take().filter(|title| *title != self.title) {
             match replace("title", format!("{title}\n").as_bytes()) {
@@ -476,20 +500,11 @@ impl Holder {
         if let Some(Err(e)) = self.pending.clipboard.take().map(|bytes| replace("clipboard", &bytes)) {
             self.log(&format!("the clipboard could not be written: {e}"));
         }
-        let placed =
-            |p: &crate::term::Picture| format!(" pic=pic-{}.sixel@{},{}+{}x{}", p.id, p.row, p.col, p.cols, p.rows);
-        let pictures: String = self.term.pictures.iter().map(placed).collect();
-        self.version = self.version.wrapping_add(1);
-        let header = format!(
-            "pid={} state={} v={} {}{pictures}\n",
-            self.pid,
-            self.state.replace(' ', ":"),
-            self.version,
-            self.term.header()
-        );
+        // The screens are text and nothing else, written last of all, `screen.styled` at the very
+        // end: who watches a pane watches that one file, and finds every fact already there.
         let term = &self.term;
-        replace("screen", (header.clone() + &term.plain()).as_bytes())?;
-        replace("screen.styled", (header + &term.styled()).as_bytes())?;
+        replace("screen", term.plain().as_bytes())?;
+        replace("screen.styled", term.styled().as_bytes())?;
         // A picture neither screen has any more (the one shown, the one behind) has no reader left.
         self.pictures.sort_unstable();
         self.pictures.dedup();

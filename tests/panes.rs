@@ -48,10 +48,9 @@ fn until(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
-fn version(pane: &Path) -> u64 {
-    let screen = read(&pane.join("screen"));
-    let word = screen.split(' ').find_map(|word| word.strip_prefix("v=")).unwrap_or("0");
-    word.parse().unwrap_or(0)
+/// One of a pane's facts: the text of its file, without the line end.
+fn fact(pane: &Path, name: &str) -> String {
+    read(&pane.join(name)).trim_end().to_string()
 }
 
 #[test]
@@ -61,12 +60,18 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     assert_eq!(pane, session.0.join("main/build"));
     fs::write(pane.join("in"), "echo h''i; stty size\n").unwrap();
     until("the answers show", || read(&pane.join("screen")).contains("\nhi\n24 80\n"));
-    // A resize reaches the program and line 1.
+    // A resize reaches the program and the `size` file; the screen is its rows and nothing else.
     fs::write(pane.join("ctl"), "resize 91 17\nfly\n").unwrap();
     fs::write(pane.join("in"), "stty size\n").unwrap();
     until("the new size shows", || read(&pane.join("screen")).contains("\n17 91\n"));
-    assert!(read(&pane.join("screen")).lines().next().unwrap().contains("size=91x17"));
-    assert_eq!(read(&pane.join("screen")).lines().count(), 18, "line 1 and one line a row");
+    assert_eq!(fact(&pane, "size"), "91 17");
+    assert_eq!(read(&pane.join("screen")).lines().count(), 17, "one line a row");
+    assert!(read(&pane.join("screen")).starts_with("$ ") || !read(&pane.join("screen")).starts_with("pid="));
+    // Every fact has its file: where the cursor is, how input is sent, whether the program runs, who it is.
+    let cursor: Vec<String> = fact(&pane, "cursor").split(' ').map(str::to_string).collect();
+    assert!(cursor.len() == 4 && cursor[2] == "shown", "{cursor:?}");
+    assert_eq!((fact(&pane, "state").as_str(), fact(&pane, "top").as_str()), ("running", "0"));
+    assert!(read(&pane.join("status")).lines().nth(1).unwrap().starts_with("pid "));
     until("the refusal is logged", || read(&pane.join("log")).contains("fly: not a command"));
     fs::write(pane.join("ctl"), "kill \x1b]0;now\x07\n").unwrap();
     until("a refused line is logged without its control codes", || read(&pane.join("log")).contains("kill ?]0;now?"));
@@ -81,7 +86,7 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     assert!(!pane.join("in").exists() && !pane.join("ctl").exists(), "the FIFOs go with the holder");
     // A start in place that fails leaves what the last program left.
     assert!(!session.fux().args(["start", "build", "--", "/no/such/program"]).output().unwrap().status.success());
-    assert!(read(&pane.join("screen")).contains("state=exited:3") && read(&pane.join("screen")).contains("exit 3"));
+    assert!(fact(&pane, "state") == "exited 3" && read(&pane.join("screen")).contains("exit 3"));
     assert!(
         !session.fux().args(["start", "layout"]).output().unwrap().status.success(),
         "the layout file's name is taken"
@@ -110,7 +115,7 @@ fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
         env!("CARGO_PKG_VERSION")
     );
     assert_eq!(read(&pane.join("env")), expected);
-    assert_eq!(read(&pane.join("screen")).lines().next().map(|line| line.contains("size=90x24")), Some(true));
+    assert_eq!(fact(&pane, "size"), "90 24");
 }
 
 #[test]
@@ -123,15 +128,24 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
     until("the program has set its trap", || read(&pane.join("screen")).contains("ready"));
     fs::write(pane.join("ctl"), "kill\n").unwrap();
     until("the program saw the hangup", || read(&pane.join("saw")) == "hup\n");
-    until("its end is on line 1", || read(&pane.join("screen")).contains(" state=exited:0 "));
+    until("its end is in `state`", || fact(&pane, "state") == "exited 0");
+
+    // A program that ends without a word: `state` changes and the text does not. The screen is
+    // written again all the same, and after the fact: who watches that one file finds the end.
+    use std::os::unix::fs::MetadataExt;
+    let quiet = session.start("q", &["sh", "-c", "sleep 0.4"]);
+    let stamp = || fs::metadata(quiet.join("screen.styled")).map(|file| (file.ino(), file.mtime_nsec())).ok();
+    let (running, first) = (fact(&quiet, "state"), stamp());
+    until("its screen is written again", || stamp() != first);
+    assert_eq!((running.as_str(), fact(&quiet, "state").as_str()), ("running", "exited 0"));
 
     // Whoever starts a pane may ignore signals; its program does not inherit that.
     let start = format!("trap '' INT HUP; exec '{}' start c -- sleep 600", env!("CARGO_BIN_EXE_fux"));
     assert!(Command::new("sh").args(["-c", &start]).env("FUXN_DIR", &session.0).status().unwrap().success());
     let interrupted = session.0.join("main/c");
-    until("the program runs", || read(&interrupted.join("screen")).contains(" state=running "));
+    until("the program runs", || fact(&interrupted, "state") == "running");
     fs::write(interrupted.join("in"), "\x03").unwrap();
-    until("Ctrl-C ended it", || read(&interrupted.join("screen")).contains(" state=killed:2 "));
+    until("Ctrl-C ended it", || fact(&interrupted, "state") == "killed 2");
 
     let other = session.start("b", &["sh", "-c", "echo $$ > \"$FUXN_PANE/pid\"; exec sleep 600"]);
     until("the program runs", || !read(&other.join("pid")).is_empty());
@@ -149,14 +163,14 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
     let script = format!("printf '%s\\n' {}; printf ready; sleep 600", lines.join(" "));
     let pane = session.start("p", &["sh", "-c", &script]);
     let screen = || read(&pane.join("screen"));
-    let rows = || screen().split_once('\n').map(|(_, rows)| rows.to_string()).unwrap_or_default();
+    let rows = screen;
     until("the program has printed", || screen().contains("\nready\n"));
     let (before, history) = (rows(), read(&pane.join("history")));
     // Narrow: lines wrap, rows leave by the top into `history`, and every line is whole in
     // `history` and `screen` together (the screen's rows that go on are joined to tell).
     for size in ["12 24", "7 24", "40 5", "80 24"] {
         fs::write(pane.join("ctl"), format!("resize {size}\n")).unwrap();
-        until("the pane has the size", || screen().contains(&format!(" size={} ", size.replace(' ', "x"))));
+        until("the pane has the size", || fact(&pane, "size") == size);
         let all = (read(&pane.join("history")) + &rows()).replace('\n', "");
         assert_eq!(all, lines.concat() + "ready", "at {size}");
     }
@@ -166,17 +180,24 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
     // A size that is refused changes nothing and is in the log.
     fs::write(pane.join("ctl"), "resize 0 5\n").unwrap();
     until("the log says so", || read(&pane.join("log")).contains("resize"));
-    assert!(screen().contains(" size=80x24 "));
+    assert_eq!(fact(&pane, "size"), "80 24");
 }
 
 #[test]
 fn a_flood_is_published_a_bounded_number_of_times_and_loses_no_line() {
     let session = Session::new("flood");
     let pane = session.start("yes", &["sh", "-c", "yes | head -n 200000; echo done; sleep 600"]);
-    let (start, first) = (Instant::now(), version(&pane));
-    until("the flood ends", || read(&pane.join("screen")).contains("\ndone\n"));
+    // Each publish replaces `screen.styled`: they are counted by looking at it far more often than it is written.
+    use std::os::unix::fs::MetadataExt;
+    let (start, mut seen, mut publishes) = (Instant::now(), None, 0.0);
+    while !read(&pane.join("screen")).contains("\ndone\n") {
+        let now = fs::metadata(pane.join("screen.styled")).ok().map(|file| (file.ino(), file.mtime_nsec()));
+        publishes += f64::from(u8::from(std::mem::replace(&mut seen, now) != now));
+        assert!(start.elapsed() < Duration::from_secs(20), "the flood did not end");
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let seconds = start.elapsed().as_secs_f64() + 0.1;
-    let publishes = (version(&pane) - first) as f64;
+    assert!(publishes >= 2.0, "the flood was watched");
     assert!(publishes <= 41.0 * seconds + 2.0, "{publishes} publishes in {seconds} s is over 40 a second");
     let history = read(&pane.join("history.1")) + &read(&pane.join("history")) + &read(&pane.join("screen"));
     assert_eq!(history.lines().filter(|line| *line == "y").count(), 200_000);
@@ -226,11 +247,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(view.join("in"), "echo t''wo\r").unwrap();
     until("the new pane has the keys", || read(&inner.0.join("main/two/screen")).contains("\ntwo\n"));
     // Each pane was asked once to be the size of its tile.
-    let width = |pane: &str| {
-        read(&inner.0.join("main").join(pane).join("screen"))
-            .split(' ')
-            .find_map(|w| Some(w.strip_prefix("size=")?.to_string()))
-    };
+    let width = |pane: &str| Some(fact(&inner.0.join("main").join(pane), "size").replace(' ', "x"));
     until("the panes have their tiles' sizes", || {
         width("one") == Some("40x24".into()) && width("two") == Some("39x24".into())
     });
@@ -261,8 +278,8 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     until("the program is interrupted", || answers().contains("^G^C"));
     // A program that asks for the mouse gets it, counted from its own tile's corner (the tile starts at column 42).
     fs::write(view.join("in"), "printf '\\033[?1000h\\033[?1006h'; cat -v\r").unwrap();
-    until("the pane's line 1 says so", || read(&inner.0.join("main/two/screen")).contains("mouse1000,mousesgr"));
-    until("the viewer asked its own terminal", || read(&view.join("screen")).contains("mouse1000,mousesgr"));
+    until("the pane's modes say so", || fact(&inner.0.join("main/two"), "modes").contains("mouse1000 mousesgr"));
+    until("the viewer asked its own terminal", || fact(&view, "modes").contains("mouse1000 mousesgr"));
     fs::write(view.join("in"), "\x1b[<0;50;3M\r").unwrap();
     until("the click arrives translated", || read(&inner.0.join("main/two/screen")).contains("^[[<0;9;3M"));
     fs::write(view.join("in"), "\x03").unwrap();
@@ -270,8 +287,9 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     until("an edit of the file by hand is followed", || width("one") == Some("80x24".into()));
     // A folder with a screen of someone's own making: what it says reaches the terminal as text only.
     fs::create_dir(inner.0.join("main/odd")).unwrap();
-    fs::write(inner.0.join("main/odd/screen.styled"), "pid=1 size=9x2 cursor=0,0 state=x\x1b]0;T\x07\x1b[2Jy\nhi\n")
-        .unwrap();
+    fs::write(inner.0.join("main/odd/state"), "x\x1b]0;T\x07\x1b[2Jy\n").unwrap();
+    fs::write(inner.0.join("main/odd/cursor"), "99 99 shown 7\n").unwrap();
+    fs::write(inner.0.join("main/odd/screen.styled"), "hi\x1b]0;T\x07\x1b[?1049h\n").unwrap();
     // The viewer gives the new folder a tab; a hand's edit comes after that, not across it.
     until("the viewer has placed the folder", || read(&inner.0.join("main/layout")).contains("odd"));
     fs::write(inner.0.join("main/layout"), "* row(one odd) focus=one\n").unwrap();
@@ -306,10 +324,8 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
         env!("CARGO_BIN_EXE_fux")
     );
     let view = outer.start("view", &["sh", "-c", &view]);
-    let line1 = |pane: &Path| read(&pane.join("screen")).lines().next().unwrap_or_default().to_string();
-    let shown = |pane: &Path| {
-        read(&pane.join("screen")).split_once('\n').map(|(_, rows)| rows.replace('\n', "")).unwrap_or_default()
-    };
+    let line1 = |pane: &Path| format!("{} state={}", fact(pane, "modes"), fact(pane, "state").replace(' ', ":"));
+    let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
     // The viewer learns what its terminal takes and says so for the session. A program that
     // asks from then on has its flags in force, on its own line 1 and, asked of the terminal,
     // on the viewer's.

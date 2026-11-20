@@ -17,7 +17,7 @@ until_ok grep -qx hi "$D/main/build/screen"
 cat "$D/main/build/screen"
 ls "$D" "$D/main"                               # workspaces are folders, panes are folders in them
 [ "$(ls "$D")" = main ] && [ "$(ls "$D/main")" = build ]
-head -n 1 "$D/main/build/screen" | grep -q ' state=running '
+grep -qx running "$D/main/build/state"           # every fact about a pane is a small file
 echo kill > "$D/main/build/ctl"                 # hangs up the program
 "$fux" wait "$D/main/build" | grep '^state'
 echo "example: ok"

@@ -1,11 +1,11 @@
 #!/bin/sh
 # send TERM to the pane's program
 # group: Pane actions
-# Line 1 of the screen says what the program's number is and whether it runs:
-# the number of a program that ended may be another's by now. (A default
-# shell pane's program is `.shell`, which ignores TERM as a shell does; a
-# pane started with a program of its own gets it.)
-line=$(head -n 1 "$FUXN_PANE/screen" 2>/dev/null)
-case " $line " in *" state=running "*) ;; *) echo "no program is running in this pane"; exit ;; esac
-pid=${line#pid=}
-kill -TERM "${pid%% *}"
+# `state` says whether the program runs and `status` what its number is: the
+# number of a program that ended may be another's by now. (A default shell
+# pane's program is `.shell`, which ignores TERM as a shell does; a pane
+# started with a program of its own gets it.)
+read -r state < "$FUXN_PANE/state" 2>/dev/null
+[ "$state" = running ] || { echo "no program is running in this pane"; exit; }
+pid=$(sed -n 's/^pid //p' "$FUXN_PANE/status")
+[ -n "$pid" ] && kill -TERM "$pid"

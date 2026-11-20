@@ -126,7 +126,7 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
         let mut term = Term::new(9, 2);
         term.keyboard = crate::term::KEYS;
         term.feed(bytes.as_bytes());
-        (String::from_utf8(term.take().reply).unwrap(), term.header())
+        (String::from_utf8(term.take().reply).unwrap(), term.words())
     };
     // The protocol's own examples: flags are set, set aside and come back; setting adds or
     // takes bits; going back past the first is no flags; the two screens have their own.
@@ -143,10 +143,12 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     assert_eq!(asked(&deep).0, "\x1b[?1u\x1b[?0u");
     // A cursor saved and put back the old way (`CSI s`, `CSI u`) is another matter and stays one.
     assert_eq!(asked("\x1b[>1u\x1b[s\x1b[u\x1b[?u").0, "\x1b[?1u");
-    // The flags in force are a word of line 1, and a screen file read back has them.
+    // The flags in force are a word among the modes, and a reader of those words has them.
     for screen in ["", "\x1b[?1049h"] {
-        let header = asked(&format!("{screen}\x1b[>5u")).1;
-        assert!(header.ends_with(",keys5") && Term::from_screen(&header, |_, _| ()).keys() == 5, "{header}");
+        let words = asked(&format!("{screen}\x1b[>5u")).1;
+        let mut reader = Term::new(1, 1);
+        reader.set_words(&words);
+        assert!(words.ends_with("keys5") && reader.keys() == 5, "{words}");
     }
     assert!(!asked("x").1.contains("keys"));
     // The viewer still finds its keys in that protocol's forms, and tells apart what the old forms cannot.
@@ -589,23 +591,43 @@ fn keys_have_the_names_of_their_files() {
 }
 
 #[test]
-fn a_screen_file_reads_back_as_the_terminal_that_wrote_it() {
+fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_told() {
     let mut term = Term::new(12, 4);
     term.feed("\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[4 q\x1b[31m漢x\x1b[m e\u{301}\x1b[2;3H".as_bytes());
-    let file = format!("pid=1 {}\n{}", term.header(), term.styled());
-    let mut back = Term::from_screen(&file, |_, _| {});
-    assert_eq!(back.header(), term.header());
+    assert_eq!(term.words(), "appcursor paste mouse1002 mousesgr");
+    let mut back = Term::new(12, 4);
+    back.set_words(&term.words());
+    assert_eq!(back.words(), term.words());
+    // The styled rows, fed row by row, are the same screen.
+    for (row, line) in term.styled().lines().enumerate() {
+        back.feed(format!("\x1b[{};1H{line}", row + 1).as_bytes());
+    }
     assert_eq!((back.plain(), back.styled()), (term.plain(), term.styled()));
-}
-
-#[test]
-fn a_program_is_told_which_mouse_reports_are_on() {
-    let term = term(20, 2, "\x1b[?1002h\x1b[?1002$p\x1b[?1000$p\x1b[?1006$p");
+    // Which rows go on from the row above is what the plain text cannot say; and how many
+    // whole lines have gone into history numbers the line the first row is of.
+    let mut long = crate::tests::term(4, 3, "abcdefghij\r\nk");
+    assert_eq!((long.plain().as_str(), long.wraps().as_str(), long.gone), ("efgh\nij\nk\n", "0 1", 0));
+    long.feed(b"\r\nl\r\nm");
+    assert_eq!((long.plain().as_str(), long.wraps().as_str(), long.gone), ("k\nl\nm\n", "", 1));
+    // Rows a resize sent to history and took back are counted out and in again.
+    let mut back = crate::tests::term(4, 4, "abcdefgh\r\nx\r\ny");
+    assert!(back.resize(4, 2) && (back.plain().as_str(), back.gone) == ("x\ny\n", 1));
+    assert!(back.resize(4, 4) && (back.wraps().as_str(), back.gone) == ("1", 0));
+    // The form of the mouse's reports is told whether or not any report is on.
+    let term = crate::tests::term(20, 2, "\x1b[?1002h\x1b[?1002$p\x1b[?1000$p\x1b[?1006$p");
     assert_eq!(String::from_utf8_lossy(&term.peek().reply), "\x1b[?1002;1$y\x1b[?1000;2$y\x1b[?1006;2$y");
-    // The form of the reports is listed on line 1 whether or not any report is on, and reads back.
-    let mut form = crate::tests::term(20, 2, "\x1b[?1006h");
-    assert!(form.header().ends_with("modes=cursor,mousesgr"));
-    assert_eq!(Term::from_screen(&format!("{}\n", form.header()), |_, _| {}).header(), form.header());
+    assert_eq!(crate::tests::term(20, 2, "\x1b[?1006h").words(), "mousesgr");
+    // A clipboard's padding must be the padding of its length, and a number too large is no keyboard flags.
+    use crate::term::base64_decode;
+    assert_eq!(
+        (base64_decode("b2xk"), base64_decode("AA=="), base64_decode("AA")),
+        (Some(b"old".to_vec()), Some(vec![0]), Some(vec![0]))
+    );
+    assert_eq!((base64_decode("AA="), base64_decode("AB=="), base64_decode("b2xk=")), (None, None, None));
+    let mut flags = Term::new(4, 1);
+    flags.keyboard = crate::term::KEYS;
+    flags.feed(b"\x1b[=65536u\x1b[?u");
+    assert_eq!(flags.take().reply, b"\x1b[?0u");
 }
 
 #[test]

@@ -552,6 +552,34 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     under flag 1 alone a shifted sign cannot be named by its sign; `C-b C-b`
     sends the byte 02, which a program reads as Ctrl-B in either mode.
 
+- **D59. No screen header: one fact, one file** (the owner, 2026-11-20; a
+  panel of eight found nothing that breaks). `screen` and `screen.styled`
+  are text only. `size`, `cursor`, `modes`, `state`, `top`, `wraps` and
+  `pictures` are files, each written when it changes; `status` has the
+  program's number, once. What the panel's attempts to break it require is
+  kept: facts are written before the screens and `screen.styled` last, the
+  screens are written in every round (a round is only made when something
+  changed), `fux wait` is the signal for a program's end, and the viewer
+  takes its rows from the text and keeps the cursor inside them. `v=` is
+  gone with the header: nothing counted on it but one test, which now counts
+  replacements of `screen.styled`.
+  - Mine to decide: `cursor` gives the shape as the number a program sets
+    (0 to 6), not a word; `pictures` gives rows of the screen, as the header
+    did (they are written before the screens; marks and links, when they
+    come, are numbered from the pane's first line with `top`); a fact with
+    nothing to say is an empty file, not a missing one, so `read x < file`
+    never fails on a living pane; a row that goes on from the row above is
+    told by `wraps`, a line of row numbers, and the editor key joins such
+    rows as history does; `top` counts whole lines in history (a line whose
+    rest is still on the screen is not yet one), and goes down when a
+    resize takes rows back.
+  - Met on the way and fixed: OSC 52 with padding that does not fit its
+    length is refused (it wrote a NUL); a keyboard-flags number too large to
+    be one is no flags (it was taken as 5); a viewer removes a dead viewer's
+    FIFO of its own name before making its own.
+  - `sizes.sh` prints and no longer fails (the owner: "I never really said
+    I want one").
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

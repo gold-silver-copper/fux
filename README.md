@@ -52,7 +52,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 |---|---|
 | `fux dir` | prints the session directory |
 | `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`, or typed in a pane, that pane's), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place |
-| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …`: line 1 of its last screen, with a space where that has `=` or `:` |
+| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` (from `status` and `state`). When it returns, every file of the pane is the last there will be: wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
 
@@ -72,30 +72,35 @@ in `FUXN_WS`.
 |---|---|
 | `in` | FIFO. Bytes written here are typed to the program |
 | `ctl` | FIFO, one command a line: `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]` |
-| `screen` | line 1 says what rows cannot; then one line of plain text per row |
+| `screen` | the screen as plain text: one line per row, and nothing else |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them |
-| `status` | `holder N` and `command …` (its first 4,096 characters): written once, when the pane starts. The program's number and state are on line 1 of the screens, and only there |
+| `size` | `COLS ROWS` (`read cols rows < size`) |
+| `cursor` | `ROW COL shown\|hidden SHAPE`: row and column from 0, and the shape's number as a program sets it (0 to 6) |
+| `modes` | one line of words, empty when none: how input is to be sent to the program. `appcursor`, `keypad`, `paste`, `alt` (the alternate screen), `mouse9`, `mouse1000`, `mouse1002` or `mouse1003` (the mouse reports the program asked for), `mousesgr` (their newer form), `keys1`, `keys4` or `keys5` (the keyboard flags in force for it, below) |
+| `state` | what became of the program: `running`, `hungup`, `exited CODE` or `killed SIGNAL` |
+| `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
+| `top` | how many whole lines have gone into `history`: the number, from 0, of the line the screen's first row is part of |
+| `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. With it a script can copy a wrapped line whole |
+| `pictures` | a line `pic-N.sixel ROW COL COLS ROWS` for each picture on the screen: the file, where it is, its size in cells |
 | `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture over 4 MiB, history it could not write); stops at 64 KiB |
 
-Line 1 of both screens:
+**One fact, one file.** The screens are text and nothing else; everything
+else about a pane is a small file of its own, written when it changes and
+not otherwise, replaced in one step (written as `NAME.new`, then renamed),
+so a reader sees a whole old one or a whole new one. In each round of
+writing the facts come first and the screens last, `screen.styled` last of
+all, and the screens are written again whenever any fact was: to follow a
+pane, watch `screen.styled` and read what you need when it changes.
 
-```
-pid=4242 state=running v=17 size=80x24 cursor=3,8 shape=0 modes=cursor,paste pic=pic-1.sixel@0,0+12x3
-```
-
-`v` grows by one with every change written (and would start again at 0); `cursor` is row,column from 0;
-`pid` is the program's number and `state` what became of it: `running`,
-`hungup`, `exited:CODE` or `killed:SIGNAL`;
-`modes` lists what is on (`cursor` shown, `appcursor`, `keypad`, `paste`,
-`mouse9`, `mouse1000`, `mouse1002` or `mouse1003`: the mouse reports the
-program asked for, and `mousesgr`: their newer form; `keys1`, `keys4` or `keys5`: the keyboard flags in force for it (below),
-`alt` screen); each `pic=` is a file, its row and column, and its size in
-cells. A screen file is replaced in one step (written as `screen.new`, then
-renamed), so a reader sees a whole old one or a whole new one.
+Files read one after another are not one moment: a fact may be one round
+(25 ms) ahead of a text read just before it, or further apart in a folder
+copied while its pane was busy. So keep the cursor inside the rows you have,
+and take the rows that are there over what `size` says. The viewer does.
+When a pane is still, or ended, its files agree.
 
 **Bounds.** The screens are replaced at most 40 times a second, so a flood
 (`yes`) costs at most 80 file replacements a second, and an append to
@@ -149,7 +154,7 @@ Escape and the start of an arrow key with the same bytes, unless the program
 asks for the kitty keyboard protocol. A program in a pane may ask: what it
 asks for is kept by the pane's holder as the protocol says (set, set aside,
 taken back and asked about, apart for the main and the alternate screen, 16
-deep), answered with nobody watching, and shown as `keys…` on line 1. Of the
+deep), answered with nobody watching, and shown as `keys…` in `modes`. Of the
 protocol's flags fux passes on two: 1, "disambiguate escape codes", and 4,
 "report alternate keys". The others (2, 8, 16: releases, every key as an
 escape code, text) are never in force, and a program that asks is told so.
@@ -421,7 +426,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   program's keyboard flags left on, Ctrl-C reaches your shell as an escape
   sequence.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
-  kernel hangs up its program. Line 1 goes on saying `state=running` and the
+  kernel hangs up its program. `state` goes on saying `running` and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
   `printf > in` then waits for ever, as on any FIFO nobody reads. `fux start`
   with the same name starts it again in place. (A holder that ends normally
@@ -429,7 +434,7 @@ fux adds nothing to stop these. What happens is what Unix does:
 - **Don't count on `kill`, or `rm -r`, killing.** They hang up the terminal.
   A program that ignores SIGHUP lives on (after `kill`, with `state hungup`,
   and what is then written to `in` goes nowhere), and so does anything it
-  started in a session of its own. Its number is `pid=` on line 1 of `screen`.
+  started in a session of its own. Its number is `pid` in `status`.
 - **Don't remove a live pane's `in`**: that is how its holder knows the
   directory is gone, and it leaves.
 - **Don't expect a pane to drop what its starter had open.** It inherits the

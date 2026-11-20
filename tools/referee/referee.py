@@ -141,7 +141,7 @@ def fux(case, binary):
         # keeper has taken in all it wrote and published the last screen: `wait` says when.
         played.leave()
         run([binary, "wait", str(pane)], env=env)
-        return screen((pane / "screen").read_text(encoding="utf-8").split("\n", 1)[1], played.rows), cursor
+        return screen((pane / "screen").read_text(encoding="utf-8"), played.rows), cursor
     finally:
         played.leave()
         shutil.rmtree(played.dir, ignore_errors=True)

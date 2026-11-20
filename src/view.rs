@@ -40,6 +40,8 @@ struct Pane {
     /// The file's inode, time and length when it was last read.
     seen: Option<(u64, i64, i64, u64)>,
     term: Term,
+    /// The size the pane says it has (`size`), if it says one.
+    size: (usize, usize),
     pid: u32,
     state: String,
     /// Pictures on the screen: file, row, column, columns, rows.
@@ -127,6 +129,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         }
     }
     let ctl_path = session.join(format!(".view.{}", std::process::id()));
+    // (One of that name is a dead viewer's, whose number this process has now.)
+    let _ = fs::remove_file(&ctl_path);
     sys::make_fifo(&ctl_path).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
     let open = |write: bool| OpenOptions::new().read(!write).write(write).custom_flags(sys::O_NONBLOCK).open(&ctl_path);
     let ctl = open(false).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
@@ -588,7 +592,7 @@ impl View {
                 } else {
                     String::new()
                 };
-                if (pane.term.cols, pane.term.rows) != (body.w, body.h) || !cell.is_empty() {
+                if pane.size != (body.w, body.h) || !cell.is_empty() {
                     let _ = ctl
                         .and_then(|mut ctl| ctl.write_all(format!("resize {} {}{cell}\n", body.w, body.h).as_bytes()));
                 }
@@ -928,6 +932,7 @@ impl Pane {
         Pane {
             seen: None,
             term: Term::new(1, 1),
+            size: (0, 0),
             pid: 0,
             state: String::new(),
             pictures: Vec::new(),
@@ -936,40 +941,63 @@ impl Pane {
         }
     }
 
-    /// Reads the pane's screen if its file changed.
+    /// Reads the pane if its screen's file changed: the holder writes that file last, so every
+    /// fact it wrote before is there by then. A fact may still be a moment ahead of the text
+    /// (or far off, in a folder someone copied): the rows are the lines that are there, and the
+    /// cursor is kept inside them.
     fn read(&mut self, directory: &Path) {
-        let file = directory.join("screen.styled");
-        let seen = fs::metadata(&file).ok().map(|m| (m.ino(), m.mtime(), m.mtime_nsec(), m.len()));
+        let seen =
+            fs::metadata(directory.join("screen.styled")).ok().map(|m| (m.ino(), m.mtime(), m.mtime_nsec(), m.len()));
         if seen == self.seen {
             return;
         }
         self.seen = seen;
-        // Opened without waiting (should the name be a FIFO), and read up to the largest screen there is.
-        let mut bytes = Vec::new();
-        let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(&file);
-        let _ = file.map(|file| file.take(STYLED_MAX).read_to_end(&mut bytes));
+        // Opened without waiting (should the name be a FIFO), and read up to a bound.
+        let fact = |name: &str, most: u64| {
+            let mut bytes = Vec::new();
+            let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(directory.join(name));
+            let _ = file.map(|file| file.take(most).read_to_end(&mut bytes));
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        let numbers = |text: &str| {
+            text.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(SIZE_MAX + 1)).collect::<Vec<_>>()
+        };
+        let styled = fact("screen.styled", STYLED_MAX);
+        self.size = match numbers(&fact("size", 64)).as_slice() {
+            [cols @ 1..=SIZE_MAX, rows @ 1..=SIZE_MAX] => (*cols, *rows),
+            _ => (0, 0),
+        };
+        let cols = if self.size.0 == 0 { SIZE_MAX } else { self.size.0 };
+        self.term = Term::new(cols, styled.lines().count().clamp(1, SIZE_MAX));
+        // (No wrapping: a line longer than the pane is said to be wide is cut.)
+        self.term.feed(b"\x1b[?7l");
+        for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
+            self.term.feed(format!("\x1b[{};1H\x1b[m{line}", row + 1).as_bytes());
+        }
+        self.term.set_words(&fact("modes", 256));
+        let cursor = fact("cursor", 64);
+        let mut cursor = cursor.split_whitespace();
+        let mut place = || cursor.next().and_then(|n| n.parse::<usize>().ok());
+        let at = (place(), place());
+        self.term.cursor_shown = cursor.next() == Some("shown") && at.0.is_some_and(|row| row < self.term.rows);
+        (self.term.row, self.term.col) = (at.0.unwrap_or(0).min(self.term.rows - 1), at.1.unwrap_or(0).min(cols - 1));
+        self.term.cursor_shape =
+            cursor.next().and_then(|shape| shape.parse().ok()).filter(|shape| *shape <= 6).unwrap_or(0);
+        self.state = fact("state", 64).trim_end().to_string();
+        let status = fact("status", 256);
+        self.pid = status.lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0);
+        // A picture is kept only if it lies on a screen of the largest size there is.
         self.pictures.clear();
-        self.state.clear();
-        let (pid, state, pictures) = (&mut self.pid, &mut self.state, &mut self.pictures);
-        self.term = Term::from_screen(&String::from_utf8_lossy(&bytes), |key, value| {
-            let numbers: Vec<usize> = value.split(['@', ',', '+', 'x']).filter_map(|n| n.parse().ok()).collect();
-            match (key, numbers.as_slice()) {
-                ("pid", [n]) => *pid = *n as u32,
-                ("state", _) => *state = value.replace(':', " "),
-                // A picture is kept only if it lies on a screen of the largest size there is.
-                ("pic", [row, col, cols, rows]) if numbers.iter().all(|n| *n <= SIZE_MAX) => {
-                    let name = value.split('@').next().unwrap_or_default();
-                    if is_name(name) {
-                        pictures.push((name.into(), *row, *col, *cols, *rows));
-                    }
-                }
-                _ => {}
+        for line in fact("pictures", 4096).lines() {
+            let (name, place) = line.split_once(' ').unwrap_or_default();
+            if let [row, col, cols, rows] = numbers(place).as_slice()
+                && [row, col, cols, rows].iter().all(|n| **n <= SIZE_MAX)
+                && is_name(name)
+            {
+                self.pictures.push((name.into(), *row, *col, *cols, *rows));
             }
-        });
-        let mut title = Vec::new();
-        let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(directory.join("title"));
-        let _ = file.map(|file| file.take(1024).read_to_end(&mut title));
-        let title = String::from_utf8_lossy(&title);
+        }
+        let title = fact("title", 1024);
         self.title = title.lines().next().unwrap_or_default().chars().filter(|c| !c.is_control()).take(256).collect();
     }
 }

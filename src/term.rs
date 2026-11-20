@@ -214,6 +214,10 @@ pub struct Term {
     last: char,
     /// The character printed last, and what the next one needs to know to join it.
     cluster: Option<Last>,
+    /// How many whole lines have gone into history: the number of the line the screen's first row is of.
+    pub gone: usize,
+    /// (How many of them are in the rows the last resize sent there.)
+    above_lines: usize,
     /// The last row that went to history was not ended: its line goes on in the screen's first row.
     history_open: bool,
     /// The rows the last resize sent to history, while they are still its last lines: a later
@@ -295,6 +299,8 @@ impl Term {
             saved: [Saved::default(); 2],
             last: '\0',
             cluster: None,
+            gone: 0,
+            above_lines: 0,
             history_open: false,
             above: Vec::new(),
             above_bytes: 0,
@@ -442,9 +448,8 @@ impl Term {
     }
 
     /// The modes line 1 of a screen file lists by name, and where each is kept.
-    fn modes(&mut self) -> [(&'static str, &mut bool); 5] {
+    fn modes(&mut self) -> [(&'static str, &mut bool); 4] {
         [
-            ("cursor", &mut self.cursor_shown),
             ("appcursor", &mut self.app_cursor),
             ("keypad", &mut self.app_keypad),
             ("paste", &mut self.paste),
@@ -458,53 +463,33 @@ impl Term {
         self.keys.get(usize::from(self.alt)).map_or(0, |(flags, _)| *flags)
     }
 
-    /// What line 1 of a screen file says of the terminal: `size= cursor= shape= modes=`.
-    pub fn header(&mut self) -> String {
+    /// How input is to be sent to the program, as words: what the `modes` file says.
+    pub fn words(&mut self) -> String {
         // Which reports (`mouse1002`) and in what form (`mousesgr`) are two things a program sets apart.
         let mouse = (self.mouse != 0).then(|| format!("mouse{}", self.mouse));
         let sgr = self.mouse_sgr.then(|| "mousesgr".to_string());
         // And the keyboard flags a program asked for (the kitty protocol), as a number.
         let keys = (self.keys() != 0).then(|| format!("keys{}", self.keys()));
         let on = self.modes().into_iter().filter(|m| *m.1).map(|m| m.0.to_string());
-        let modes: Vec<String> = on.chain(mouse).chain(sgr).chain(keys).collect();
-        let modes = if modes.is_empty() { "-".into() } else { modes.join(",") };
-        format!(
-            "size={}x{} cursor={},{} shape={} modes={modes}",
-            self.cols, self.rows, self.row, self.col, self.cursor_shape
-        )
+        on.chain(mouse).chain(sgr).chain(keys).collect::<Vec<String>>().join(" ")
     }
 
-    /// A terminal read back from a screen file (`header`'s words on line 1, then the rows of
-    /// `styled`, or of `plain`, which is text only: two cells that read as one character are one). Each word of line 1 that is not the terminal's goes to `other`.
-    pub fn from_screen(text: &str, mut other: impl FnMut(&str, &str)) -> Term {
-        let mut lines = text.lines();
-        let (mut term, mut cursor) = (Term::new(1, 1), (0, 0));
-        term.cursor_shown = false;
-        for (key, value) in lines.next().unwrap_or_default().split(' ').filter_map(|word| word.split_once('=')) {
-            let numbers: Vec<usize> = value.split(['x', ',']).filter_map(|n| n.parse().ok()).collect();
-            match (key, numbers.as_slice()) {
-                ("size", [cols, rows]) => term = Term::new(*cols, *rows),
-                ("cursor", [row, col]) => cursor = (*row, *col),
-                ("shape", [shape]) => term.cursor_shape = (*shape).min(6) as u8,
-                ("modes", _) => {
-                    let has = |mode: &str| value.split(',').any(|m| m == mode);
-                    term.modes().into_iter().for_each(|(name, on)| *on = has(name));
-                    term.mouse = [9, 1000, 1002, 1003].into_iter().find(|m| has(&format!("mouse{m}"))).unwrap_or(0);
-                    term.mouse_sgr = has("mousesgr");
-                    let keys = value.split(',').find_map(|m| m.strip_prefix("keys")?.parse().ok());
-                    // (Whichever screen is shown has them.)
-                    let keys = keys.unwrap_or(0);
-                    (term.keys, term.keyboard) = ([(keys, Vec::new()), (keys, Vec::new())], KEYS);
-                }
-                _ => other(key, value),
-            }
-        }
-        for (row, line) in lines.enumerate().take(term.rows) {
-            term.feed(format!("\x1b[{};1H", row + 1).as_bytes());
-            term.feed(line.as_bytes());
-        }
-        (term.row, term.col) = cursor;
-        term
+    /// Takes the modes those words say (a reader's side of `words`).
+    pub fn set_words(&mut self, words: &str) {
+        let has = |mode: &str| words.split_whitespace().any(|m| m == mode);
+        self.modes().into_iter().for_each(|(name, on)| *on = has(name));
+        self.mouse = [9, 1000, 1002, 1003].into_iter().find(|m| has(&format!("mouse{m}"))).unwrap_or(0);
+        self.mouse_sgr = has("mousesgr");
+        // (Whichever screen is shown has the keyboard flags.)
+        let keys = words.split_whitespace().find_map(|m| m.strip_prefix("keys")?.parse().ok()).unwrap_or(0);
+        (self.keys, self.keyboard) = ([(keys, Vec::new()), (keys, Vec::new())], KEYS);
+    }
+
+    /// The rows of the screen that go on from the row above (the text wrapped into them), as
+    /// numbers from 0: what `plain` cannot say. The first row may go on from history's last line.
+    pub fn wraps(&self) -> String {
+        let rows = self.grid.iter().enumerate().filter(|(y, row)| continues(row) && (*y > 0 || self.history_open));
+        rows.map(|(y, _)| y.to_string()).collect::<Vec<String>>().join(" ")
     }
 
     // ---- the grid --------------------------------------------------------
@@ -591,7 +576,7 @@ impl Term {
         let Some(region) = self.grid.get_mut(from..=self.bottom) else {
             return;
         };
-        let mut full = false;
+        let (mut full, before) = (false, self.out.history.len());
         for i in 0..n {
             // (The row the text is just wrapping out of has no next row yet.)
             let goes_on = region.get(i + 1).map_or(self.wrapping, |next| continues(next));
@@ -604,6 +589,7 @@ impl Term {
             row.clone_from(&blank);
         }
         region.rotate_left(n);
+        self.gone += self.out.history.get(before..).map_or(0, |new| new.matches('\n').count());
         self.scroll_pictures(from, n, true);
         // The rows have new neighbours at both ends of what moved. (The row now at the top of
         // the main screen may go on from the line that history has the start of.)
@@ -949,6 +935,9 @@ impl Term {
         let waiting = self.out.history.len().saturating_sub(back);
         self.out.unhistory += back.saturating_sub(self.out.history.len());
         self.out.history = self.out.history.get(..waiting).unwrap_or_default().to_string() + &history;
+        let lines = |text: Option<&str>| text.map_or(0, |text| text.matches('\n').count());
+        self.gone = (self.gone + lines(Some(&history))).saturating_sub(if held > 0 { self.above_lines } else { 0 });
+        self.above_lines = lines(history.get(before..));
         (self.above_bytes, self.above_open, self.above) = (history.len() - before, was_open, above);
         self.history_open = open;
         (self.cols, self.rows) = (cols, rows);
@@ -1130,6 +1119,7 @@ impl Term {
                     titles,
                     next_picture: self.next_picture,
                     history_open: self.history_open,
+                    gone: self.gone,
                     colours: std::mem::take(&mut self.colours),
                     keyboard: self.keyboard,
                     ..Term::new(self.cols, self.rows)
@@ -1487,7 +1477,9 @@ impl Term {
             // terminal known, nothing is, and the answer is 0. What a program was told stays so.
             (b'=' | b'>' | b'<' | b'?', 0, b'u') => {
                 let alt = usize::from(self.alt);
-                let (asked, how) = ((self.arg(0, 0) & usize::from(KEYS & self.keyboard)) as u8, self.arg(1, 1));
+                // (A number too large to be flags is no flags, not the largest number kept.)
+                let given = Some(self.arg(0, 0)).filter(|n| *n < usize::from(u16::MAX)).unwrap_or(0);
+                let (asked, how) = ((given & usize::from(KEYS & self.keyboard)) as u8, self.arg(1, 1));
                 // (Going back takes a count: one if none is given, none if it is 0.)
                 let (back, which) = (if self.bare { 1 } else { self.arg(0, 0) }, self.private);
                 let Some((flags, kept)) = self.keys.get_mut(alt) else { return };
@@ -1665,8 +1657,11 @@ impl Term {
 /// Base64, as the clipboard command carries it. `None` for text that is not:
 /// a character outside the set, padding anywhere but at the end, or a length no bytes give.
 pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    let text = text.strip_suffix("==").or(text.strip_suffix('=')).unwrap_or(text);
-    if text.len() % 4 == 1 {
+    // Padding, if there is any, must be the padding of that length; and what is left over of
+    // the last character must be nothing.
+    let padded = text.len() - text.trim_end_matches('=').len();
+    let text = text.trim_end_matches('=');
+    if text.len() % 4 == 1 || (padded > 0 && !(text.len() + padded).is_multiple_of(4)) || padded > 2 {
         return None;
     }
     let (mut out, mut bits, mut have) = (Vec::new(), 0u32, 0u32);
@@ -1686,7 +1681,7 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
             bits &= (1 << have) - 1;
         }
     }
-    Some(out)
+    (bits == 0).then_some(out)
 }
 
 pub fn base64_encode(bytes: &[u8]) -> String {

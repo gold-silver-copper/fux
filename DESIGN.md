@@ -49,20 +49,20 @@ folder is called.
 **Holding.** One loop waits on the pty, `in`, `ctl` and a pipe on which a
 waiting thread reports the program's end. No signal is handled anywhere.
 Output goes through the emulator; at most every 25 ms the screens are
-written. When the program ends the holder writes its last screen (whose first line says how the
-program ended), removes its FIFOs and leaves. `kill` closes the pty's master: that
+written: first each fact that changed, in a small file of its own, then the two screens, which
+are text and nothing else. When the program ends the holder writes `state` and its last screen,
+removes its FIFOs and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
 is a hangup, and the rest is the kernel's and the program's business. If the
 folder is gone, the pane is gone: the holder leaves, which hangs up too.
 
 **Viewing.** The viewer has no channel to holders. It looks at files (every
 4 ms just after something happened, every 50 ms at rest), reads a pane's
-`screen.styled` when it changed, and parses it with the same emulator that
-wrote it. It sends keys with a write to `in` that never waits, opening it by
+facts and its `screen.styled` when that file changed (it is written last), and
+parses it with the same emulator that wrote it. It sends keys with a write to `in` that never waits, opening it by
 its path each time, so that the pane typed into is the pane of that name
-now. Of a screen's first line, the terminal's words (`size`, `cursor`,
-`shape`, `modes`) are written and read by the emulator alone; the holder
-adds its own (`pid`, `state`, `v`, `pic`), which the viewer, `fux wait` and
-the key scripts read. It sets the
+now. There is no header and no version: a reader that
+takes a fact and a text one write apart is wrong for one frame, and the next
+look puts it right; it keeps the cursor inside the rows it read. It sets the
 outer terminal's cursor-key, keypad and mouse modes to the focused program's,
 so key bytes pass through untouched and mouse reports need only their
 coordinates moved. Pictures are files the viewer passes on after
