@@ -1,5 +1,11 @@
 #!/bin/sh
 # yes, close this pane
-# Removing the directory is what ends a pane: the holder sees it go and hangs up.
+# Its folder leaves the workspace at once, so its tile goes; its holder sees
+# `in` gone within two seconds, hangs up the program and leaves; then nothing
+# writes there any more and the folder is removed. No `kill`: a folder removed
+# under a holder still writing was left behind half the time.
 [ -n "$FUXN_PANE" ] || exit 0
-rm -rf "$FUXN_PANE"
+gone=$(mktemp -d "$FUXN_DIR/.closed.XXXXXX") || exit
+mv "$FUXN_PANE" "$gone/pane" || { rmdir "$gone"; exit 1; }
+rm -f "$gone/pane/in"
+(fux wait "$gone/pane" >/dev/null; rm -rf "$gone") >/dev/null 2>&1 &

@@ -1,0 +1,12 @@
+#!/bin/sh
+# What a pane started by the default keys runs: your shell (or the command
+# given), and when that has ended, the removal of the pane's own folder. That a
+# pane closes when its shell exits is this script's doing, not fux's.
+# A shell killed outright never gets here: its folder stays for the close key.
+here=$(ls -di "$FUXN_PANE")
+# TERM (the `C-b a k` key) is for what runs in the shell, not for this wrapper.
+trap : TERM
+if [ $# -gt 0 ]; then "$@"; else "${SHELL:-sh}"; fi
+# Only its own folder: if it was moved and another pane has its old name by
+# now, that one is not this script's to remove.
+[ "$(ls -di "$FUXN_PANE" 2>/dev/null)" = "$here" ] && rm -rf "$FUXN_PANE"

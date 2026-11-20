@@ -213,6 +213,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   key does the same. The price, in the README: a shell or editor killed
   outright leaves its folder (and the editor its text file).
 
+- **D44. The fix check of D42 and D43 (1 Opus, 1 gpt-6.2-sol, one pass).**
+  Fixed: the wrapper of a default pane is one script, `keys/.shell`, which
+  outlives the TERM key, and removes the folder only if it is still its own
+  (a pane moved away no longer removes whatever took its name); the close
+  key moves the folder out of the workspace, removes `in`, and removes the
+  folder once the holder has left, so that nothing writes into a folder
+  being removed (12 of 24 busy panes were left behind by a bare `rm -rf`);
+  `fux start` takes a pane that is gone with its holder as started and done
+  (an editor that ends at once); a row with text is never dropped by a
+  resize, it goes to history; `mousesgr` is listed on its own; the boundary
+  check compiles `width.rs` alone too. This is more than "the close key only
+  removes the folder" as voted: it still sends no `kill`, which was the
+  point, and it is what makes the removal whole.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

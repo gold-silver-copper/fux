@@ -292,10 +292,11 @@ impl Term {
 
     /// What line 1 of a screen file says of the terminal: `size= cursor= shape= modes=`.
     pub fn header(&mut self) -> String {
-        let sgr = if self.mouse_sgr { ",mousesgr" } else { "" };
-        let mouse = (self.mouse != 0).then(|| format!("mouse{}{sgr}", self.mouse));
+        // Which reports (`mouse1002`) and in what form (`mousesgr`) are two things a program sets apart.
+        let mouse = (self.mouse != 0).then(|| format!("mouse{}", self.mouse));
+        let sgr = self.mouse_sgr.then(|| "mousesgr".to_string());
         let on = self.modes().into_iter().filter(|m| *m.1).map(|m| m.0.to_string());
-        let modes: Vec<String> = on.chain(mouse).collect();
+        let modes: Vec<String> = on.chain(mouse).chain(sgr).collect();
         let modes = if modes.is_empty() { "-".into() } else { modes.join(",") };
         format!(
             "size={}x{} cursor={},{} shape={} modes={modes}",
@@ -586,9 +587,13 @@ impl Term {
         if self.alt {
             std::mem::swap(&mut self.grid, &mut self.other);
         }
-        // `grid` is the main screen here. Blank rows below the cursor go first.
+        // `grid` is the main screen here. Blank rows below the cursor go first;
+        // a row with something on it is never dropped: it goes to history.
         let cursor = if self.alt { self.main_row } else { self.row };
-        while self.grid.len() > rows && self.grid.len() > cursor + 1 {
+        while self.grid.len() > rows
+            && self.grid.len() > cursor + 1
+            && self.grid.last().is_some_and(|row| row.iter().all(|c| *c == blank))
+        {
             self.grid.pop();
         }
         let extra = self.grid.len().saturating_sub(rows);

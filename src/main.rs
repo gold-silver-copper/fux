@@ -204,6 +204,11 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
         if read_some(&dir.join("status")).is_ok_and(|status| status.contains(&ours)) {
             return Ok(());
         }
+        // A pane may remove its own folder when its program is done (the default
+        // shell panes do): gone with its holder, it started, ran and ended.
+        if ended && !dir.exists() {
+            return Ok(());
+        }
         if ended {
             let log = read_some(&dir.join("log")).unwrap_or_default();
             let why = log.lines().last().unwrap_or("the holder ended without a word");

@@ -88,8 +88,8 @@ pid=4242 state=running v=17 size=80x24 cursor=3,8 shape=0 modes=cursor,paste pic
 `v` grows by one with every change written (and would start again at 0); `cursor` is row,column from 0;
 `state` is `status`'s, with `:` for its space (`exited:0`);
 `modes` lists what is on (`cursor` shown, `appcursor`, `keypad`, `paste`,
-`mouse9`, `mouse1000`, `mouse1002` or `mouse1003` with `mousesgr`: the mouse
-reports the program asked for,
+`mouse9`, `mouse1000`, `mouse1002` or `mouse1003`: the mouse reports the
+program asked for, and `mousesgr`: their newer form,
 `alt` screen); each `pic=` is a file, its row and column, and its size in
 cells. A screen file is replaced in one step (written as `screen.new`, then
 renamed), so a reader sees a whole old one or a whole new one.
@@ -192,10 +192,12 @@ workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
 TERM to the program), `g` arrange (`r c g m`, `t` turn). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
-the shell inside `sh -c '"${SHELL:-sh}"; rm -rf "$FUXN_PANE"'`, so a pane
-removes its own folder when its shell ends. A shell killed outright (or hung
-up with `kill`) never reaches the `rm`: its folder stays, saying `killed`,
-until the close key or `rm -r` takes it.
+not your shell but `keys/.shell`, a few lines that run it and then remove
+the pane's own folder. A shell killed outright (or hung up with `kill`)
+never reaches the `rm`: its folder stays, saying `killed`, until the close
+key or `rm -r` takes it. The close key moves the folder out of the
+workspace (the tile goes at once), removes its `in`, and removes the folder
+when the holder has left, within two seconds.
 
 In a menu's directory, a file `.about` holds the words shown for it in the
 menu above, and a file `.repeat` keeps the menu open after each key (until a
@@ -213,10 +215,11 @@ its screen in one private file and opens it in `$EDITOR` (which may hold
 arguments, split at spaces), else `$PAGER`, else `less`, in a new tab. `vi`, `vim`, `nvim`,
 `nano`, `emacs` and `less` are opened at the file's end; any other editor
 gets the file alone, as not every editor reads `+LINE`. The file is removed
-when the editor ends. If it ended well (exit 0) its tab goes too (the
+when the editor ends. Its tab goes too (the
 pane removes its own folder, as a shell pane does), and the
 tab shown before it is shown again (the one you came from, unless you looked
-at another meanwhile); if it failed, its tab stays with what it said.
+at another meanwhile); an editor that failed first waits for Enter, so that
+what it said can be read.
 
 There is no zoom either: a pane shown alone is a tab with one pane. If you
 want the key, these two scripts are it (`keys/C-b/z` and `keys/C-b/S-z`).
@@ -299,7 +302,8 @@ fux adds nothing to stop these. What happens is what Unix does:
 - **Don't `mv` a live pane across filesystems** (that is a copy and an `rm`).
   Within one, the pane simply has the new name; the program's `FUXN_PANE`
   still says the old one, so a default shell pane that was moved no longer
-  removes its folder when its shell ends.
+  removes its folder when its shell ends (it removes a folder only if it is
+  still its own).
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `status` goes on saying `running` and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain

@@ -4,8 +4,6 @@
 n=1
 while [ -e "$FUXN_DIR/w$n" ] && [ "$n" -lt 1000 ]; do n=$((n + 1)); done
 mkdir "$FUXN_DIR/w$n" || exit
-# The pane's shell runs inside a wrapper that removes the pane's folder when the
-# shell ends: that is this script's choice, not fux's. A shell killed outright
-# leaves its folder, for the close key or `rm -r`.
-p=$(fux start "w$n/" -- sh -c '"${SHELL:-sh}"; rm -rf "$FUXN_PANE"') || exit
+# `.shell` runs your shell and removes the pane's folder when it ends.
+p=$(fux start "w$n/" -- "$FUXN_KEYS/.shell") || exit
 echo "workspace w$n"

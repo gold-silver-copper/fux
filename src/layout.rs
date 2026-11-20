@@ -150,13 +150,7 @@ impl Node {
     /// Changes the share of the part in the nearest row (or column) that holds the pane.
     fn change_share(&mut self, name: &str, of_row: bool, change: i64) -> bool {
         let Node::Split(row, parts) = self else { return false };
-        let Some(at) = parts.iter().position(|(part, _)| {
-            let mut names = Vec::new();
-            part.panes(&mut names);
-            names.contains(&name)
-        }) else {
-            return false;
-        };
+        let Some(at) = parts.iter().position(|(part, _)| part.contains(name)) else { return false };
         if parts.get_mut(at).is_some_and(|(part, _)| part.change_share(name, of_row, change)) {
             return true;
         }

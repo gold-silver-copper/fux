@@ -9,6 +9,7 @@ out=$(mktemp -d) && trap 'rm -rf "$out"' EXIT
 alone() { rustc --edition 2024 -A dead_code --crate-type lib --emit metadata "$@"; }
 printf '#[path = "%s/width.rs"]\npub mod width;\n#[path = "%s/term.rs"]\npub mod term;\n' "$PWD" "$PWD" |
     alone -F unsafe-code --crate-name emulator -o "$out/emulator.rmeta" -
+alone -F unsafe-code --crate-name widths -o "$out/widths.rmeta" width.rs
 alone --crate-name system -o "$out/system.rmeta" sys.rs
 alone -F unsafe-code --crate-name keys -o "$out/keys.rmeta" keys.rs
 echo "boundary: ok"

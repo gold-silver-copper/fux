@@ -290,6 +290,10 @@ fn a_wide_character_cut_by_a_resize_goes_whole_on_both_screens() {
 fn a_program_is_told_which_mouse_reports_are_on() {
     let term = term(20, 2, "\x1b[?1002h\x1b[?1002$p\x1b[?1000$p\x1b[?1006$p");
     assert_eq!(String::from_utf8_lossy(&term.reply), "\x1b[?1002;1$y\x1b[?1000;2$y\x1b[?1006;2$y");
+    // The form of the reports is listed on line 1 whether or not any report is on, and reads back.
+    let mut form = crate::tests::term(20, 2, "\x1b[?1006h");
+    assert!(form.header().ends_with("modes=cursor,mousesgr"));
+    assert_eq!(Term::from_screen(&format!("{}\n", form.header()), |_, _| {}).header(), form.header());
 }
 
 #[test]
@@ -320,4 +324,10 @@ fn a_resize_under_the_alternate_screen_keeps_the_main_screens_lines() {
     term.resize(10, 3);
     term.feed(b"\x1b[?1047l");
     assert_eq!(term.history.clone() + &term.plain(), "l1\nl2\nl3\nl4\nl5\n\n");
+    // A row with text below the cursor is kept as well: rows leave by the top, into history.
+    let mut below = Term::new(10, 6);
+    below.feed(b"TOP\x1b[5;1HBOTTOM\x1b[1;1H\x1b[?1049h");
+    below.resize(10, 3);
+    below.feed(b"\x1b[?1049l");
+    assert!((below.history.clone() + &below.plain()).contains("TOP") && below.plain().contains("BOTTOM"));
 }

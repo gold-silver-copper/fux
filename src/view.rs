@@ -391,6 +391,10 @@ impl View {
         match input.and_then(|mut input| input.write(&typed)) {
             Ok(n) if n == typed.len() => {}
             Ok(n) => self.message = format!("{name}: only {n} of {} typed bytes were queued", typed.len()),
+            // A FIFO nobody reads (6, on Linux and macOS alike), or none at all: the pane has ended.
+            Err(e) if e.raw_os_error() == Some(6) || e.kind() == io::ErrorKind::NotFound => {
+                self.message = format!("{name} has ended: nothing reads what you type");
+            }
             Err(e) => self.message = format!("{name}: {e}: what you typed was dropped"),
         }
     }
