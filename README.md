@@ -24,36 +24,27 @@ printf 'echo hi\n' > "$D/main/build/in"; cat "$D/main/build/screen"     # plain 
 ls "$D" "$D/main"                           # workspaces are folders, panes are folders in them
 fux view                                   # tiles, tabs, workspaces; vim, less and htop work in a pane
 # a key is a script: C-b then `v` runs an executable file you can read and replace
-cat ~/.config/fux/keys/C-b/v              # or under $FUX_KEYS or $XDG_CONFIG_HOME, if you set them
+cat ~/.config/fux-next/keys/C-b/v         # or under $FUXN_KEYS or $XDG_CONFIG_HOME, if you set them
 echo kill > "$D/main/build/ctl"             # hangs up the program; what Unix does next is what happens
 ```
 
 `./example.sh` runs the first lines for real; CI runs it on both systems.
 Two notes on it: the screen is written a few milliseconds after the program
 prints, so a script looks again until it sees what it waits for; and the key
-scripts are written on the first `fux view`, to `$FUX_KEYS`, else
-`$XDG_CONFIG_HOME/fux/keys`, else `~/.config/fux/keys`.
+scripts are written on the first `fux view`, to `$FUXN_KEYS`, else
+`$XDG_CONFIG_HOME/fux-next/keys`, else `~/.config/fux-next/keys`.
 
 ## While fux 1 is the one you use daily
 
-This is the fux that will replace it, on a branch. Until it does, do not
-`cargo install` it: `fux` on your `PATH` stays fux 1, and this one is run by
-its path (`target/release/fux`), as the example does with `PATH` for one
-shell. The two do not meet:
-
-- Session: `$FUX_DIR`, else `$XDG_RUNTIME_DIR/fux/workspaces`, else
-  `~/.cache/fux/workspaces`. fux 1 keeps its socket and a folder of its own
-  in `$XDG_RUNTIME_DIR/fux`, which is why this one's workspaces are a folder
-  further in. The parent is made (0700) if missing and never changed if there.
-- Keys: `$FUX_KEYS`, else `$XDG_CONFIG_HOME/fux/keys`, else
-  `~/.config/fux/keys`; the defaults are written only when that folder is
-  absent. fux 1 keeps other files in `~/.config/fux`.
-- A program in a pane of this fux sees `TERM_PROGRAM=fux`,
-  `TERM_PROGRAM_VERSION=0.40.0` and `FUX_PANE=/…/workspace/pane`, a
-  directory. In fux 1 it sees `FUX_PANE=%N` and `FUX_SOCKET`: the first
-  character of `FUX_PANE` tells them apart. Run inside a fux 1 pane, this
-  one passes none of fux 1's `FUX…` names on to its own panes; run inside a
-  pane of this one, fux 1 sees a `FUX_PANE` it did not set.
+This is the fux that is to replace fux 1, on the branch `next`. Until fux 1
+is retired its names are temporary, so that the two never meet: the
+variables are `FUXN_…` (to become `FUX_…`), the session is
+`$FUXN_DIR`, else `$XDG_RUNTIME_DIR/fux-next`, else `~/.cache/fux-next`, the
+keys are `$FUXN_KEYS`, else `$XDG_CONFIG_HOME/fux-next/keys`, else
+`~/.config/fux-next/keys`, and a pane's program sees `TERM_PROGRAM=fux-next`.
+Do not `cargo install` it meanwhile: `fux` on your `PATH` stays fux 1, and
+this one is run by its path (`target/release/fux`), as the example does with
+`PATH` for one shell.
 
 ## Commands
 
@@ -70,10 +61,10 @@ with a dot, and not `-` alone; a pane cannot be called `layout` or
 `layout.new`, in any case of letters.
 
 Typed in a pane, a command means "here": with no workspace named, it is the
-workspace that pane is in (and that pane's session, unless `FUX_DIR` says
+workspace that pane is in (and that pane's session, unless `FUXN_DIR` says
 otherwise). Elsewhere it is `main`. So the example above, typed in a pane of
 another workspace, starts `build` there and not in `main`. A key script is told the workspace shown
-in `FUX_WS`.
+in `FUXN_WS`.
 
 ## A pane's files
 
@@ -113,14 +104,14 @@ is lost, with a line in `log`. When the program ends, at most 4 MiB of what
 it wrote last is still read; a `resize` first draws, at the old size, up to
 1 MiB of what the program had already written.
 
-The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux`,
-`TERM_PROGRAM_VERSION` and `FUX_PANE` (its pane's directory, whole path), in
+The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux-next`,
+`TERM_PROGRAM_VERSION` and `FUXN_PANE` (its pane's directory, whole path), in
 the directory `fux start` was run in, with the rest of that environment and
-the signals 1 to 31 at their defaults. Of the names beginning with `FUX` it
-gets only `FUX_PANE` and, if they were set, `FUX_DIR` and `FUX_KEYS`; and
-neither `COLUMNS` nor `LINES`, which the holder reads for itself: the pane's
-first size is `COLUMNS`x`LINES` if the starter set them (each 1 to 500;
-otherwise `log` says so), else 80x24.
+the signals 1 to 31 at their defaults. Of this program's own `FUXN_…` names
+it gets only `FUXN_PANE` and, if they were set, `FUXN_DIR` and `FUXN_KEYS`;
+and neither `COLUMNS` nor `LINES`, which the holder reads for itself: the
+pane's first size is `COLUMNS`x`LINES` if the starter set them (each 1 to
+500; otherwise `log` says so), else 80x24.
 
 Is a pane alive? Its holder keeps a lock on the directory for as long as it
 lives: `flock -n "$D/main/build" true` fails while it does (Linux), and
@@ -161,8 +152,8 @@ other shows what fits.
 
 ### Keys are scripts
 
-The keys directory is `$FUX_KEYS`, else `$XDG_CONFIG_HOME/fux/keys`, else
-`~/.config/fux/keys`; the viewer
+The keys directory is `$FUXN_KEYS`, else `$XDG_CONFIG_HOME/fux-next/keys`, else
+`~/.config/fux-next/keys`; the viewer
 writes the default scripts there if it does not exist. A key that has a file
 of its name runs it (a file that cannot be run says so in the corner). A key that has a directory opens it as a
 menu (each script's second line, `# what it does`, is its entry) and the next
@@ -176,8 +167,8 @@ names differ by more than case, for macOS); `C-b`, `M-x`, `enter`, `tab`,
 `home` `end` `pgup` `pgdn` `insert` `delete`, `f1`…`f12`, with `C-`, `M-`,
 `S-` before them when held (`C-left`, `S-f5`).
 
-A script gets `FUX_DIR` (the session), `FUX_WS` (the workspace shown),
-`FUX_PANE` (the focused pane's directory), `FUX_KEYS`, `FUX_VIEW`,
+A script gets `FUXN_DIR` (the session), `FUXN_WS` (the workspace shown),
+`FUXN_PANE` (the focused pane's directory), `FUXN_KEYS`, `FUXN_VIEW`,
 `COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; a script that
@@ -188,7 +179,7 @@ viewer showed before, which is also where it goes when the one shown is
 removed; failing that, `main`, if there is one), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key. A key with no file, pressed in an
 open menu, closes the menu and goes nowhere. Writing the same lines to the FIFO
-`$FUX_VIEW` does the same from anywhere.
+`$FUXN_VIEW` does the same from anywhere.
 
 The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `s` split stacked (both start in the directory the viewer was started in),
@@ -230,14 +221,14 @@ line in the pane's folder; the second writes that line back.
 #!/bin/sh
 # show this pane alone, in a tab of its own
 # The tab's line of the layout is kept in the pane's folder; `C-b Z` puts it back.
-[ -n "$FUX_PANE" ] || exit 0
-[ -f "$FUX_PANE/alone" ] && { echo "already alone: C-b Z puts it back"; exit; }
-fux layout | grep '^\*' > "$FUX_PANE/alone.new" || exit
+[ -n "$FUXN_PANE" ] || exit 0
+[ -f "$FUXN_PANE/alone" ] && { echo "already alone: C-b Z puts it back"; exit; }
+fux layout | grep '^\*' > "$FUXN_PANE/alone.new" || exit
 fux layout break
 # A pane that was alone already has not moved: there is nothing to put back.
-if fux layout | grep '^\*' | cmp -s - "$FUX_PANE/alone.new"
-then rm -f "$FUX_PANE/alone.new"
-else mv "$FUX_PANE/alone.new" "$FUX_PANE/alone"
+if fux layout | grep '^\*' | cmp -s - "$FUXN_PANE/alone.new"
+then rm -f "$FUXN_PANE/alone.new"
+else mv "$FUXN_PANE/alone.new" "$FUXN_PANE/alone"
 fi
 ```
 
@@ -246,8 +237,8 @@ fi
 # put this pane back where `C-b z` took it from
 # The layout is text: the kept line replaces the line of the tab the pane left,
 # and the pane's own line goes.
-[ -f "$FUX_PANE/alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
-ws=$FUX_DIR/$FUX_WS me=${FUX_PANE##*/}
+[ -f "$FUXN_PANE/alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
+ws=$FUXN_DIR/$FUXN_WS me=${FUXN_PANE##*/}
 # Under the lock `fux layout` takes (flock on the workspace's folder), by way of perl, which Linux and macOS both have.
 [ -n "$LOCKED" ] || LOCKED=1 exec perl -e 'use Fcntl ":flock"; open(D, "<", shift) && flock(D, LOCK_EX) or die; exit(system({ $ARGV[0] } @ARGV) >> 8)' "$ws" "$0"
 awk -v me="$me" '
@@ -261,7 +252,7 @@ awk -v me="$me" '
   !done { for (p in here) if (p in near) { print kept; done = 1; next } }
   { print }
   END { if (!done) print own }
-' "$FUX_PANE/alone" "$ws/layout" > "$ws/.layout.$$" && mv "$ws/.layout.$$" "$ws/layout" && rm -f "$FUX_PANE/alone"
+' "$FUXN_PANE/alone" "$ws/layout" > "$ws/.layout.$$" && mv "$ws/.layout.$$" "$ws/layout" && rm -f "$FUXN_PANE/alone"
 ```
 
 Put back: the tab, the pane's place in it, every share, the focus. Not put
@@ -300,7 +291,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   notices within 2 seconds, hangs up the program and leaves. That is also how
   to close one. `rm -r` of a workspace ends all its panes.
 - **Don't `mv` a live pane across filesystems** (that is a copy and an `rm`).
-  Within one, the pane simply has the new name; the program's `FUX_PANE`
+  Within one, the pane simply has the new name; the program's `FUXN_PANE`
   still says the old one, and so does a key script that waits to remove it.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `status` goes on saying `running` and the
@@ -335,9 +326,9 @@ fux adds nothing to stop these. What happens is what Unix does:
 Differences are left as they are:
 
 - The default session directory is usually in memory on Linux
-  (`$XDG_RUNTIME_DIR/fux/workspaces`) and on disk on macOS, which sets no such
-  variable (`~/.cache/fux/workspaces`): a flood there is up to 80 small file
-  replacements a second on your disk. Point `FUX_DIR` at a RAM disk if that
+  (`$XDG_RUNTIME_DIR/fux-next`) and on disk on macOS, which sets no such
+  variable (`~/.cache/fux-next`): a flood there is up to 80 small file
+  replacements a second on your disk. Point `FUXN_DIR` at a RAM disk if that
   matters.
 - One write of up to 4096 bytes to a FIFO arrives whole on Linux; 512 on macOS.
 - macOS ships no `flock(1)`; `fux wait` is the same test.

@@ -2,8 +2,8 @@
 # new workspace
 # group: Workspaces
 n=1
-while [ -e "$FUX_DIR/w$n" ] && [ "$n" -lt 1000 ]; do n=$((n + 1)); done
-mkdir "$FUX_DIR/w$n" || exit
+while [ -e "$FUXN_DIR/w$n" ] && [ "$n" -lt 1000 ]; do n=$((n + 1)); done
+mkdir "$FUXN_DIR/w$n" || exit
 p=$(fux start "w$n/") || exit
 echo "workspace w$n"
 # When the shell ends, its pane goes: that is this script's choice, not fux's.

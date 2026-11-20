@@ -178,6 +178,19 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   Not taken: the restore script choosing the first tab that holds an old
   neighbour when they have been spread over several (said in the README).
 
+- **D41. Temporary names until fux 1 is retired, by the owner's word** ("go
+  with option A for now then just to keep it simple and bare"); this
+  replaces D34's names and the part of D35 about them. The program, package
+  and README are `fux`; the branch is `next`; the variables are `FUXN_DIR`,
+  `FUXN_KEYS`, `FUXN_WS`, `FUXN_VIEW`, `FUXN_PANE`; the session is
+  `$XDG_RUNTIME_DIR/fux-next` (no subfolder) and the keys
+  `…/fux-next/keys`; `TERM_PROGRAM=fux-next`, as the owner's tooling reads
+  `TERM_PROGRAM=fux` as "fux 1 is here". No code knows fux 1: its variables
+  pass through a pane like anyone's. The prefix, the folder and the
+  `TERM_PROGRAM` word are three lines at the top of `src/main.rs`; the
+  switch to the plain names is those three lines and one `sed` over `keys/`,
+  the README and the tests, which spell the variables out.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

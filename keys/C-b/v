@@ -1,7 +1,7 @@
 #!/bin/sh
 # split side by side
 # group: Panes
-p=$(fux start "$FUX_WS/") || exit
+p=$(fux start "$FUXN_WS/") || exit
 fux layout split row "${p##*/}"
 # When the shell ends, its pane goes: that is this script's choice, not fux's.
 h=$(sed -n 2p "$p/status")

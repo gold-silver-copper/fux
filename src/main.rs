@@ -2,6 +2,19 @@
 //! directory kept by one small process; a workspace is a folder of panes;
 //! the viewer and every other client only read and write files.
 
+/// The names that tell this program from the fux it is to replace. They are
+/// temporary: when that fux is retired, these three lines become `FUX_`,
+/// `fux` and `fux` (and the key scripts' variables with them).
+macro_rules! name {
+    ($suffix:literal) => {
+        concat!("FUXN_", $suffix)
+    };
+}
+/// The folder of a session (in the runtime or cache directory) and of the keys (in the config directory).
+const FOLDER: &str = "fux-next";
+/// What `TERM_PROGRAM` says in a pane.
+pub const TERM_PROGRAM: &str = "fux-next";
+
 mod holder;
 mod keys;
 mod layout;
@@ -22,7 +35,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 const USAGE: &str = "\
-fux dir                         print the session directory (FUX_DIR sets it)
+fux dir                         print the session directory
 fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/
 fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its status
 fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: in a pane its own, else main)
@@ -34,31 +47,30 @@ fn var(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-/// The pane a command was typed in: `$FUX_PANE`, when it is a directory's
-/// whole path (the fux before this one put `%N` there).
+/// The pane a command was typed in: `$FUXN_PANE`, when it is a directory's whole path.
 fn here() -> Option<PathBuf> {
-    var("FUX_PANE").filter(|pane| pane.is_absolute())
+    var(name!("PANE")).filter(|pane| pane.is_absolute())
 }
 
-/// The session directory: `$FUX_DIR`; else, in a pane, the session that pane
-/// is in; else `$XDG_RUNTIME_DIR/fux/workspaces`; else `~/.cache/fux/workspaces`.
+/// The session directory: `$FUXN_DIR`; else, in a pane, the session that pane
+/// is in; else `$XDG_RUNTIME_DIR/fux-next`; else `~/.cache/fux-next`.
 fn session() -> Result<PathBuf, String> {
     let from_pane = || Some(here()?.parent()?.parent()?.to_path_buf());
     // A directory named by a relative path is meant from here: panes and scripts get its whole path.
     let whole = |dir: PathBuf| std::path::absolute(&dir).unwrap_or(dir);
-    var("FUX_DIR")
+    var(name!("DIR"))
         .map(whole)
         .or_else(from_pane)
-        .or_else(|| var("XDG_RUNTIME_DIR").map(|d| d.join("fux/workspaces")))
-        .or_else(|| var("HOME").map(|d| d.join(".cache/fux/workspaces")))
-        .ok_or_else(|| "no session directory: set FUX_DIR".into())
+        .or_else(|| var("XDG_RUNTIME_DIR").map(|d| d.join(FOLDER)))
+        .or_else(|| var("HOME").map(|d| d.join(".cache").join(FOLDER)))
+        .ok_or_else(|| concat!("no session directory: set ", name!("DIR")).into())
 }
 
-/// The workspace meant when none is named: `$FUX_WS` (a key script's); else,
+/// The workspace meant when none is named: `$FUXN_WS` (a key script's); else,
 /// in a pane, the folder that holds the pane; else `main`.
 fn workspace() -> String {
     let from_pane = || here()?.parent()?.file_name()?.to_str().map(String::from);
-    let named = std::env::var("FUX_WS").ok().or_else(from_pane);
+    let named = std::env::var(name!("WS")).ok().or_else(from_pane);
     named.filter(|name| is_name(name)).unwrap_or("main".into())
 }
 
@@ -178,7 +190,7 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
         holder.arg("hold").arg(cwd).args(program).current_dir(dir);
         // The pane's directory by the name it was started under (the holder's
         // own working directory may read otherwise, through a link).
-        holder.env("FUX_PANE", std::path::absolute(dir).unwrap_or(dir.to_path_buf()));
+        holder.env(name!("PANE"), std::path::absolute(dir).unwrap_or(dir.to_path_buf()));
         holder.stdin(Stdio::from(lock)).stdout(Stdio::null()).stderr(log);
         sys::new_session(&mut holder, false);
         holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?
@@ -227,9 +239,9 @@ fn run(args: &[OsString]) -> Result<(), String> {
                 return Err("view takes one workspace's name".into());
             }
             let config = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")));
-            let keys = var("FUX_KEYS").or_else(|| config.map(|config| config.join("fux/keys")));
+            let keys = var(name!("KEYS")).or_else(|| config.map(|config| config.join(FOLDER).join("keys")));
             let keys = keys.map(|keys| std::path::absolute(&keys).unwrap_or(keys));
-            view::view(session()?, workspace, keys.ok_or("no keys directory: set FUX_KEYS")?)
+            view::view(session()?, workspace, keys.ok_or(concat!("no keys directory: set ", name!("KEYS")))?)
         }
         Some("layout") => {
             let workspace = workspace();

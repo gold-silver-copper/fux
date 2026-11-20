@@ -103,16 +103,16 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         return Err("no program to run".into());
     };
     // `fux start` says under what name the pane's directory was started.
-    let pane = std::env::var_os("FUX_PANE").ok_or("hold is started by `fux start`")?;
+    let pane = std::env::var_os(name!("PANE")).ok_or("hold is started by `fux start`")?;
     let mut child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
-        // The program is told what terminal it is in and which pane. Of the
-        // `FUX…` names it gets no other but the session's and the keys' (a
-        // key script's, or an older fux's, would say things that are not so
-        // here), and no size but the terminal's own.
-        let ours =
-            |name: &OsString| name.as_encoded_bytes().starts_with(b"FUX") && name != "FUX_DIR" && name != "FUX_KEYS";
+        // The program is told what terminal it is in and which pane. Of this
+        // program's own names it gets the session's and the keys' if they
+        // were set, and no other (a key script's workspace is not this
+        // pane's); and no size but the terminal's own.
+        let (dir, keys) = (name!("DIR"), name!("KEYS"));
+        let ours = |n: &OsString| n.as_encoded_bytes().starts_with(name!("").as_bytes()) && n != dir && n != keys;
         for name in std::env::vars_os().map(|(name, _)| name).filter(ours) {
             child.env_remove(name);
         }
@@ -120,10 +120,10 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
             .args(args)
             .current_dir(cwd)
             .env("TERM", TERM)
-            .env("FUX_PANE", pane)
+            .env(name!("PANE"), pane)
             .env_remove("COLUMNS")
             .env_remove("LINES");
-        child.env("TERM_PROGRAM", "fux").env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        child.env("TERM_PROGRAM", crate::TERM_PROGRAM).env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         child.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
         sys::new_session(&mut child, true);
         child.spawn().map_err(|e| format!("cannot start {}: {e}", program.to_string_lossy()))?

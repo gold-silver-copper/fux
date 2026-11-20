@@ -2,8 +2,8 @@
 # next workspace
 # group: Workspaces
 found=
-for d in "$FUX_DIR"/*/; do
+for d in "$FUXN_DIR"/*/; do
   n=${d%/}; n=${n##*/}
   [ -n "$found" ] && { echo "workspace $n"; exit; }
-  [ "$n" = "$FUX_WS" ] && found=1
+  [ "$n" = "$FUXN_WS" ] && found=1
 done

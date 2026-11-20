@@ -381,13 +381,8 @@ impl View {
         let output = || OpenOptions::new().write(true).open(&self.ctl_path).map(Stdio::from);
         let (Ok(out), Ok(err)) = (output(), output()) else { return };
         let mut script = Command::new(file);
-        // Of the `FUX…` names a script gets these five and no other (an older fux's would mislead it).
-        let theirs = |name: &std::ffi::OsString| name.as_encoded_bytes().starts_with(b"FUX");
-        for name in std::env::vars_os().map(|(name, _)| name).filter(theirs) {
-            script.env_remove(name);
-        }
-        script.env("FUX_DIR", &self.session).env("FUX_WS", &self.workspace).env("FUX_KEYS", &self.keys);
-        script.env("FUX_PANE", pane.unwrap_or_default()).env("FUX_VIEW", &self.ctl_path).env("PATH", path);
+        script.env(name!("DIR"), &self.session).env(name!("WS"), &self.workspace).env(name!("KEYS"), &self.keys);
+        script.env(name!("PANE"), pane.unwrap_or_default()).env(name!("VIEW"), &self.ctl_path).env("PATH", path);
         // A pane a script starts begins at the size of the whole view, right for a new tab.
         script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.to_string());
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {

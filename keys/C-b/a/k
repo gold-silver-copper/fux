@@ -2,5 +2,5 @@
 # send TERM to the running command
 # group: Pane actions
 # Only while it runs: the number of a program that ended may be another's by now.
-grep -q '^state running' "$FUX_PANE/status" 2>/dev/null || { echo "no program is running in this pane"; exit; }
-kill -TERM "$(sed -n 's/^pid //p' "$FUX_PANE/status")"
+grep -q '^state running' "$FUXN_PANE/status" 2>/dev/null || { echo "no program is running in this pane"; exit; }
+kill -TERM "$(sed -n 's/^pid //p' "$FUXN_PANE/status")"

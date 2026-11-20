@@ -1,4 +1,4 @@
 #!/bin/sh
 # send C-b to the pane
 # group: Session
-[ -p "$FUX_PANE/in" ] && printf '\002' 1<>"$FUX_PANE/in"
+[ -p "$FUXN_PANE/in" ] && printf '\002' 1<>"$FUXN_PANE/in"

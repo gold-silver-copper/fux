@@ -23,9 +23,9 @@ impl Session {
     }
     fn fux(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_fux"));
-        command.env("FUX_DIR", &self.0).env_remove("COLUMNS").env_remove("LINES");
+        command.env("FUXN_DIR", &self.0).env_remove("COLUMNS").env_remove("LINES");
         // Run in a pane of fux, the suite must not take that pane's workspace or keys for its own.
-        command.env_remove("FUX_PANE").env_remove("FUX_WS").env_remove("FUX_KEYS");
+        command.env_remove("FUXN_PANE").env_remove("FUXN_WS").env_remove("FUXN_KEYS");
         command
     }
     fn start(&self, name: &str, program: &[&str]) -> PathBuf {
@@ -92,24 +92,19 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
 fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     let session = Session::new("names");
     let mut start = session.fux();
-    // What a key script, or the fux before this one, would leave in the environment.
-    start
-        .env("FUX_WS", "main")
-        .env("FUX_VIEW", "/nowhere")
-        .env("FUX_SOCKET", "/old")
-        .env("FUX", "old")
-        .env("COLUMNS", "90");
+    // What a key script would leave in the environment is not this pane's; another program's names are not ours to judge.
+    start.env("FUXN_WS", "main").env("FUXN_VIEW", "/nowhere").env("FUX_SOCKET", "/another").env("COLUMNS", "90");
     assert!(start.args(["start", "w2/p", "--", "sh"]).status().unwrap().success());
     let pane = session.0.join("w2/p");
     let me = env!("CARGO_BIN_EXE_fux");
     let typed = format!(
-        "env | grep -E '^(FUX|TERM=|TERM_PROGRAM|COLUMNS)' | LC_ALL=C sort > \"$FUX_PANE/env\"; '{me}' layout > \"$FUX_PANE/here\"\n"
+        "env | grep -E '^(FUXN|FUX_SOCKET=|TERM=|TERM_PROGRAM|COLUMNS)' | LC_ALL=C sort > \"$FUXN_PANE/env\"; '{me}' layout > \"$FUXN_PANE/here\"\n"
     );
     fs::write(pane.join("in"), typed).unwrap();
     // A command typed in a pane means its own workspace, not `main`.
     until("the layout of its own workspace is printed", || read(&pane.join("here")) == "* p focus=p\n");
     let expected = format!(
-        "FUX_DIR={}\nFUX_PANE={}\nTERM=xterm-256color\nTERM_PROGRAM=fux\nTERM_PROGRAM_VERSION={}\n",
+        "FUXN_DIR={}\nFUXN_PANE={}\nFUX_SOCKET=/another\nTERM=xterm-256color\nTERM_PROGRAM=fux-next\nTERM_PROGRAM_VERSION={}\n",
         session.0.display(),
         pane.display(),
         env!("CARGO_PKG_VERSION")
@@ -123,7 +118,7 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
     let session = Session::new("end");
     let pane = session.start(
         "a",
-        &["sh", "-c", "trap 'echo hup > \"$FUX_PANE/saw\"; exit 0' HUP; echo r''eady; while :; do sleep 1; done"],
+        &["sh", "-c", "trap 'echo hup > \"$FUXN_PANE/saw\"; exit 0' HUP; echo r''eady; while :; do sleep 1; done"],
     );
     until("the program has set its trap", || read(&pane.join("screen")).contains("ready"));
     fs::write(pane.join("ctl"), "kill\n").unwrap();
@@ -132,13 +127,13 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
 
     // Whoever starts a pane may ignore signals; its program does not inherit that.
     let start = format!("trap '' INT HUP; exec '{}' start c -- sleep 600", env!("CARGO_BIN_EXE_fux"));
-    assert!(Command::new("sh").args(["-c", &start]).env("FUX_DIR", &session.0).status().unwrap().success());
+    assert!(Command::new("sh").args(["-c", &start]).env("FUXN_DIR", &session.0).status().unwrap().success());
     let interrupted = session.0.join("main/c");
     until("the program runs", || read(&interrupted.join("status")).contains("state running"));
     fs::write(interrupted.join("in"), "\x03").unwrap();
     until("Ctrl-C ended it", || read(&interrupted.join("status")).contains("state killed 2"));
 
-    let other = session.start("b", &["sh", "-c", "echo $$ > \"$FUX_PANE/pid\"; exec sleep 600"]);
+    let other = session.start("b", &["sh", "-c", "echo $$ > \"$FUXN_PANE/pid\"; exec sleep 600"]);
     until("the program runs", || !read(&other.join("pid")).is_empty());
     let pid = read(&other.join("pid")).trim().to_string();
     let alive = || Command::new("kill").args(["-0", &pid]).output().unwrap().status.success();
@@ -166,13 +161,13 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     let (outer, inner) = (Session::new("outer"), Session::new("inner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b")).unwrap();
-    let script = "#!/bin/sh\n# split\n# group: Panes\np=$(fux start \"$FUX_WS/two\" -- sh) && fux layout split row two\necho made $FUX_KEYS\n";
+    let script = "#!/bin/sh\n# split\n# group: Panes\np=$(fux start \"$FUXN_WS/two\" -- sh) && fux layout split row two\necho made $FUXN_KEYS\n";
     fs::write(keys.join("C-b/v"), script).unwrap();
-    fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>\"$FUX_PANE/in\"\n").unwrap();
+    fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>\"$FUXN_PANE/in\"\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/v")).arg(keys.join("C-b/e")).status().unwrap();
     let one = inner.start("one", &["sh"]);
     let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
-    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
     let screen = || read(&view.join("screen"));
     fs::write(view.join("in"), "echo o''ne\r").unwrap();
