@@ -24,7 +24,7 @@ Prints one table: the median and (least to most) of each, for fux and for tmux
 system can pin a process (Linux), takes about a minute and a half, and leaves
 no process behind. Python's standard library only.
 """
-import fcntl, os, pty, random, re, select, shutil, signal, statistics, struct, subprocess, sys, tempfile, termios, time
+import fcntl, glob, os, pty, random, select, shlex, shutil, signal, statistics, struct, subprocess, sys, tempfile, termios, time
 
 COLS, ROWS = 200, 60
 # The program of the busy and slow steps: SECONDS FRAMES-A-SECOND (0: as fast as read) RESULT.
@@ -60,12 +60,17 @@ os.rename(result + ".part", result)
 
 
 def cpu(pid):
-    """The CPU time a process has used, in seconds."""
-    try:
-        with open(f"/proc/{pid}/schedstat") as file:
-            return int(file.read().split()[0]) / 1e9
-    except OSError:
-        pass
+    """The CPU time a process has used, in seconds: all of its threads (fux's viewer writes to
+    its terminal from a second one)."""
+    used = 0
+    for task in glob.glob(f"/proc/{pid}/task/*/schedstat"):
+        try:
+            with open(task) as file:
+                used += int(file.read().split()[0])
+        except OSError:
+            pass
+    if used:
+        return used / 1e9
     # ([[days-]hours:]minutes:seconds, to the hundredth where the system tells it.)
     text = subprocess.run(["ps", "-o", "time=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
     days, _, clock = text.rpartition("-")
@@ -83,7 +88,7 @@ class Mux:
         self.env.update(TERM="xterm-256color", PS1="$ ", EDITOR="true", COLUMNS=str(COLS), LINES=str(ROWS))
         self.slow = None  # (bytes, seconds): the most read from the viewer in one go, and how often
         self.next_read = 0.0
-        self.kill, self.fd, self.screen_side, self.sock = [], None, None, None
+        self.fd, self.screen_side, self.sock, self.pane, self.tail = None, None, None, None, b""
         try:
             self.start(fux)
         except BaseException:
@@ -95,9 +100,9 @@ class Mux:
         if kind == "fux":
             self.env.update(FUXN_DIR=os.path.join(self.root, "session"), FUXN_KEYS=os.path.join(self.root, "keys"))
             pane = subprocess.run([fux, "start", "main/p", "--", "sh"], env=self.env, capture_output=True, text=True, check=True)
-            status = dict(line.split(" ", 1) for line in open(os.path.join(pane.stdout.strip(), "status")).read().splitlines())
+            self.fux, self.pane = fux, pane.stdout.strip()
+            status = dict(line.split(" ", 1) for line in open(os.path.join(self.pane, "status")).read().splitlines())
             self.pane_side = int(status["holder"])
-            self.kill += [self.pane_side, int(status["pid"])]
             argv = [fux, "view", "main"]
         else:
             self.sock = os.path.join(self.root, "sock")
@@ -107,10 +112,12 @@ class Mux:
         if self.screen_side == 0:
             fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, COLS, 0, 0))
             os.execvpe(argv[0], argv, self.env)
-        self.kill.append(self.screen_side)
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, COLS, 0, 0))
-        if not self.until(b"$", 10):
-            raise SystemExit(f"{kind}: no prompt came out of the viewer")
+        # (The shell says that it is there: a `$` alone may be the viewer's own, asking its terminal.)
+        self.rest(0.3)
+        self.type("printf 'SHELL%sREADY\\n' IS\r")
+        if not self.until(b"SHELLISREADY", 10):
+            raise SystemExit(f"{kind}: no shell answered through the viewer")
         if kind == "tmux":
             pid = subprocess.run(["tmux", "-S", self.sock, "display", "-p", "#{pid}"], env=self.env, capture_output=True, text=True)
             self.pane_side = int(pid.stdout.strip())
@@ -131,8 +138,10 @@ class Mux:
         if self.slow:
             self.next_read = time.monotonic() + self.slow[1]
         # A terminal says what it is when asked: fux's viewer waits a second for that.
-        if b"\x1b[c" in data:
+        # (The question may come in two reads.)
+        if b"\x1b[c" in self.tail + data:
             os.write(self.fd, b"\x1b[?62c")
+        self.tail = data[-2:]
         return data
 
     def until(self, mark, limit):
@@ -156,19 +165,30 @@ class Mux:
         return cpu(self.screen_side), cpu(self.pane_side)
 
     def stop(self):
+        """Ends what was started through what is this script's own: tmux by its socket, the pane
+        by its folder (its holder hangs the program up, and is waited for), the viewer, a child."""
         if self.sock:
             subprocess.run(["tmux", "-S", self.sock, "kill-server"], env=self.env, capture_output=True)
-        for pid in self.kill:
+        if self.pane:
             try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
+                fd = os.open(os.path.join(self.pane, "ctl"), os.O_WRONLY | os.O_NONBLOCK)
+                os.write(fd, b"kill\n")
+                os.close(fd)
+                subprocess.run([self.fux, "wait", self.pane], env=self.env, capture_output=True, timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
                 pass
         if self.screen_side:
+            os.kill(self.screen_side, signal.SIGKILL)
             os.close(self.fd)
             os.waitpid(self.screen_side, 0)
 
 
+# How many values each row must have: fewer, and the row says so.
+NEED = {}
+
+
 def flood(mux, add):
+    NEED["flood: seq 1 2000000, until its end is on the screen"] = 3
     for _ in range(3):
         code = "".join(random.choice("abcdefgh") for _ in range(6))
         start = time.monotonic()
@@ -186,6 +206,7 @@ def keys(mux, add):
     for label, count, gap in [("key to echo, typed slowly (50 to 90 ms apart)", 40, (0.05, 0.09)),
                               ("key to echo, typed fast (10 ms apart)", 120, (0.01, 0.01))]:
         waiting, next_key, typed = [], time.monotonic(), 0
+        NEED[label] = count
         while typed < count or (waiting and time.monotonic() < next_key + 1):
             now = time.monotonic()
             if typed < count and now >= next_key:
@@ -217,7 +238,8 @@ def idle(mux, add):
 def busy(mux, seconds, rate):
     """Runs the repainting program in the pane; its frames, its seconds, and when it read each key."""
     result = os.path.join(mux.root, "result")
-    mux.type(f"python3 {os.path.join(os.path.dirname(mux.root), 'busy.py')} {seconds} {rate} {result}\r")
+    program = os.path.join(os.path.dirname(mux.root), "busy.py")
+    mux.type(f"python3 {shlex.quote(program)} {seconds} {rate} {shlex.quote(result)}\r")
     yield None
     end = time.monotonic() + seconds + 30
     while not os.path.exists(result) and time.monotonic() < end:
@@ -250,8 +272,11 @@ def slow(mux, add):
         mux.rest(0.2)
     _, _, read = next(run)
     mux.slow = None
-    for written, got in zip(typed, read):
-        add("slow link (100 KiB/s read from the viewer): key until the program reads it", "ms", (got - written) / 1e6)
+    label = "slow link (100 KiB/s read from the viewer): key until the program reads it"
+    NEED[label] = len(typed)
+    # (A key that never arrived leaves no way to tell which one each of the others was.)
+    for written, got in zip(typed, read if len(read) == len(typed) else []):
+        add(label, "ms", (got - written) / 1e6)
     mux.rest(1)
 
 
@@ -268,6 +293,9 @@ def main():
         os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[-2:])
         cores = f", on cores {sorted(os.sched_getaffinity(0))}"
     kinds = ["fux"] + (["tmux"] if shutil.which("tmux") else [])
+    # (Told to end, it ends as it does at its own end: what it started is stopped and removed.)
+    for told in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(told, lambda *_: sys.exit(1))
     root = tempfile.mkdtemp(prefix="fux-perf-")
     with open(os.path.join(root, "busy.py"), "w") as file:
         file.write(BUSY)
@@ -289,11 +317,13 @@ def main():
         shutil.rmtree(root, ignore_errors=True)
 
     def cell(kind, label):
-        got = values.get((kind, label))
+        got, need = values.get((kind, label), []), NEED.get(label)
+        short = f"INCOMPLETE: {len(got)} of {need}" if need and len(got) != need else ""
         if not got:
-            return "-"
+            return short or "-"
         digits = lambda value: f"{value:.3g}" if value < 100 else f"{value:.0f}"
-        return f"{digits(statistics.median(got))} ({digits(min(got))} to {digits(max(got))}), {len(got)} runs"
+        runs = short or f"{len(got)} runs"
+        return f"{digits(statistics.median(got))} ({digits(min(got))} to {digits(max(got))}), {runs}"
     version = subprocess.run(["tmux", "-V"], capture_output=True, text=True).stdout.strip() if "tmux" in kinds else "no tmux"
     print(f"{fux} beside {version}{cores}: median (least to most)")
     table = [("", *kinds)] + [(f"{label} [{unit}]", *(cell(kind, label) for kind in kinds)) for label, unit in rows]

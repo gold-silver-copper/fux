@@ -105,16 +105,20 @@ all, and the screens are written again whenever any fact was: to follow a
 pane, watch `screen.styled` and read what you need when it changes.
 
 Files read one after another are not one moment: a fact may be one round
-(25 ms) ahead of a text read just before it, or further apart in a folder
+(the next writing of the files) ahead of a text read just before it, or further apart in a folder
 copied while its pane was busy. So keep the cursor inside the rows you have,
 and take the rows that are there over what `size` says. The viewer does.
 When a pane is still, or ended, its files agree.
 
-**Bounds.** While a program keeps writing, the screens are replaced at most 40 times a second, so a flood
-(`yes`) costs at most 80 file replacements a second (what a program wrote before it stopped for a
-millisecond is shown at once, though never within 4 ms of the last time), and an append to
-`history` with each pair (one more whenever 512 KiB of it wait); the holder reads at most 512 KiB of output between two of them, and
-past that the program waits, as on any slow terminal. The holder keeps at most 64 KiB of typed bytes for a program that is not
+**Bounds.** Each pane's two screens are replaced as a pair, with the facts that changed (once
+a program scrolls, `top` with every pair) and an append to `history` (one more whenever 512 KiB
+of it wait). While a program keeps writing (never a millisecond without output) that is at most
+40 pairs a second: a flood (`yes`) costs 80 replacements of screens a second. What a program
+wrote before it wrote nothing for a millisecond is shown at once, though never within 8 ms of
+the last pair: a program that writes a little every few milliseconds costs at most 125 pairs
+a second, 250 replacements of screens. Nothing is synced to disk. The holder reads at most
+512 KiB of output between two pairs (while a program is in the middle of drawing, below, in
+any 25 ms), and past that the program waits, as on any slow terminal. The holder keeps at most 64 KiB of typed bytes for a program that is not
 reading; past that it stops reading `in`, and once the FIFO's own buffer
 (the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
 cells. A program that says it is in the middle of drawing (mode 2026) is not
@@ -138,21 +142,28 @@ for (at 21cf936b4) and after them:
 
 | | fux before | fux after | tmux |
 |---|---|---|---|
-| `seq 1 2000000`, until its end is on the screen | 4.37 s (4.37 to 4.41) | 1.46 s (1.44 to 1.46) | 1.01 s (1.00 to 1.02) |
-| A key until its echo, typed slowly | 9.5 ms (5.6 to 13.2) | 4.0 ms (1.8 to 4.2) | 0.15 ms (0.07 to 2.7) |
-| A key until its echo, typed fast (10 ms apart) | 20.1 ms (6.3 to 33.5) | 4.5 ms (2.3 to 6.4) | 0.11 ms (0.03 to 1.7) |
-| At rest: the viewer (tmux: the client) | 3.2% of a core (2.6 to 4.3) | 0.12% (0.11 to 0.13) | 0% |
+| `seq 1 2000000`, until its end is on the screen | 4.37 s (4.37 to 4.41) | 1.44 s (1.43 to 1.44) | 0.99 s (0.99 to 1.00) |
+| A key until its echo, typed slowly | 9.5 ms (5.6 to 13.2) | 4.1 ms (1.8 to 5.4) | 0.13 ms (0.03 to 0.32) |
+| A key until its echo, typed fast (10 ms apart) | 20.1 ms (6.3 to 33.5) | 5.2 ms (2.1 to 6.5) | 0.11 ms (0.02 to 0.25) |
+| At rest: the viewer (tmux: the client) | 3.2% of a core (2.6 to 4.3) | 0.12% (0.12 to 0.13) | 0% |
 | At rest: the holder (tmux: the server) | 0.001% of a core | 0.001% | 0% (0 to 0.04) |
-| All 200x60 cells repainted: frames the program wrote | 704 a second (702 to 707) | 686 a second (672 to 689) | 954 a second (942 to 957) |
-| Meanwhile: the viewer (tmux: the client) | 27% of a core (25 to 29) | 13% (13 to 14) | 0% |
-| Meanwhile: the holder (tmux: the server) | 55% of a core (52 to 57) | 54% (53 to 56) | 99% |
-| Read at 100 KiB a second: a key until the program reads it | 52 ms (0.2 to 264) | 0.19 ms (0.08 to 1.9) | 0.11 ms (0.03 to 0.15) |
+| All 200x60 cells repainted: frames the program wrote | 704 a second (702 to 707) | 702 a second (698 to 703) | 948 a second (947 to 962) |
+| Meanwhile: the viewer (tmux: the client) | 27% of a core (25 to 29) | 13% (13 to 13) | 0% |
+| Meanwhile: the holder (tmux: the server) | 55% of a core (52 to 57) | 54% (54 to 55) | 98% |
+| Read at 100 KiB a second: a key until the program reads it | 52 ms (0.2 to 264) | 0.17 ms (0.05 to 3.4) | 0.11 ms (0.07 to 1.8) |
 
-(tmux's server writes to the terminal itself, so its client does nothing; and
+(The middle and right columns are one run of the script as it is now, on fux as it is
+now; the left column is the same steps on the binary built at 21cf936b4. CPU is the time
+the scheduler says all of a process's threads ran, from `/proc/PID/task/*/schedstat`; the
+left column's is that of each process's first thread only, which in that binary did all
+the work: its viewer had one thread, its holder a second that only waits for the program's
+end. tmux's server writes to the terminal itself, so its client does nothing; and
 fux's holder reads at most 512 KiB between two screens, which is what bounds
 the frames a program can write. A key's four milliseconds are the holder
 waiting a millisecond to see that the program is done, the viewer's look at
-the files every millisecond after a key, and its putting the frame together.)
+the files every millisecond after a key that went to a pane, and its putting the frame
+together. From run to run the key rows move by a millisecond and the flood by a few
+hundredths of a second.)
 
 The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux-next`,
 `TERM_PROGRAM_VERSION`, `COLORTERM=truecolor` and `FUXN_PANE` (its pane's directory, whole path), in
