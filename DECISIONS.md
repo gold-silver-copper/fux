@@ -1170,6 +1170,31 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     and a poll, which the panel kept. A smaller cell would bring the flood
     nearer; it touches every place that writes the grid and is a change of
     its own.
+- **D83. The fix check of D81 (1 Opus, 1 gpt-6.2-astra, a tester; one pass).**
+  Opus and the tester found wording only; astra traced six faults. Changed:
+  - what input needs of a pane (does it take a paste in brackets, the
+    mouse) is read from the pane's `modes` when the input is sent, not
+    from what the last frame remembered: with frames skipped while one
+    drains, the memory could be as old as the terminal was slow. Whatever
+    empties the viewer's memory of panes empties its memory of the last
+    frame's inputs too (two workspace commands at once left it empty and
+    "unchanged" for good; a test shows it);
+  - "quiet" is a millisecond since the program last wrote, whatever woke
+    the holder; a quiet publish comes at most every 8 ms (it was 4): 125
+    screen pairs a second for a program that trickles, 40 for one that
+    never pauses. Typing measured the same at 8 as at 4. The README's
+    Bounds say this in pairs of files and say that nothing is synced;
+  - an escape prefix waits 4 ms from its last byte, apart from the poll;
+    the fast look for an echo follows only a key that went to a pane; a
+    slow terminal no longer makes the viewer poll fast (the writer says on
+    a pipe when it has written); the cell's pixel size is part of what a
+    frame is drawn from; the read budget is filled at each publish;
+  - `tools/perf.py` counts every thread of a process, says when samples
+    are missing, and cleans up on a signal.
+  - Open: the tester saw the bar missing in 1 of 30 samples of the outer
+    pane's screen during a flood. Every write that draws cells is one
+    string inside mode 2026's brackets; no cause was found by reading,
+    and it was not reproduced.
 
 ## The old fux3's bugs: which classes are gone
 
