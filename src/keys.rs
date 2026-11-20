@@ -1,16 +1,18 @@
 //! Keys: the bytes a terminal sends, cut into keys with names, and the
 //! default key scripts. A key's name is the name of the file that is run for
-//! it: `C-b` (a directory: a menu), `v`, `up`, `S-h`, `M-left`, `f5`.
+//! it: `C-b` (a directory: a menu), `v`, `up`, `S-h`, `M-left`, `f5`. In a
+//! menu's directory, `.about` names it and `.repeat` keeps it open.
 
 /// The scripts written to the keys directory when it does not exist yet.
 macro_rules! scripts {
     ($($name:literal)*) => { &[$(($name, include_str!(concat!("../keys/", $name)))),*] };
 }
 pub const DEFAULT: &[(&str, &str)] = scripts!(
-    "C-b/c" "C-b/v" "C-b/s" "C-b/x" "C-b/h" "C-b/j" "C-b/k" "C-b/l" "C-b/left" "C-b/down" "C-b/up" "C-b/right"
-    "C-b/o" "C-b/n" "C-b/p" "C-b/1" "C-b/2" "C-b/3" "C-b/4" "C-b/5" "C-b/6" "C-b/7" "C-b/8" "C-b/9" "C-b/z"
-    "C-b/!" "C-b/{" "C-b/}" "C-b/r" "C-b/S-h" "C-b/S-j" "C-b/S-k" "C-b/S-l" "C-b/a/r" "C-b/a/c" "C-b/a/g"
-    "C-b/a/m" "C-b/d" "C-b/[" "C-b/(" "C-b/)" "C-b/w" "C-b/C-b"
+    "C-b/C-b" "C-b/a/.about" "C-b/a/k" "C-b/a/n" "C-b/b" "C-b/c" "C-b/d" "C-b/g/.about" "C-b/g/c" "C-b/g/g"
+    "C-b/g/m" "C-b/g/r" "C-b/g/t" "C-b/h" "C-b/j" "C-b/k" "C-b/l" "C-b/m/.about" "C-b/m/.repeat" "C-b/m/h" "C-b/m/j"
+    "C-b/m/k" "C-b/m/l" "C-b/n" "C-b/o" "C-b/r/.about" "C-b/r/.repeat" "C-b/r/h" "C-b/r/j" "C-b/r/k" "C-b/r/l"
+    "C-b/s" "C-b/t/.about" "C-b/t/h" "C-b/t/l" "C-b/t/n" "C-b/v" "C-b/w/.about" "C-b/w/h" "C-b/w/l" "C-b/w/n"
+    "C-b/x/.about" "C-b/x/y" "C-b/z"
 );
 
 /// The key at the start of `bytes`: how many bytes it is and its name. The
@@ -72,6 +74,10 @@ fn sequence(parameters: &str, last: u8) -> String {
     let mut modifier = numbers.next().and_then(|n| n.parse::<u8>().ok()).unwrap_or(1).saturating_sub(1);
     let f = |n: u8| format!("f{n}");
     let key = match (last, first.parse::<u8>().ok()) {
+        // A mouse report (always asked for in this form): not a key either.
+        (b'M' | b'm', _) if first.starts_with('<') => {
+            return format!("mouse:{}{}", parameters.trim_start_matches('<'), char::from(last));
+        }
         // The terminal's answer to "what are you": not a key, but ours to read.
         (b'c', _) if first.starts_with('?') => return format!("terminal:{parameters}"),
         (b'A', _) => "up".into(),

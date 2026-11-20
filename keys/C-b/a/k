@@ -1,0 +1,3 @@
+#!/bin/sh
+# send TERM to the running command
+pid=$(sed -n "s/^pid //p" "$FUX3C_PANE/status") && [ -n "$pid" ] && kill -TERM "$pid"

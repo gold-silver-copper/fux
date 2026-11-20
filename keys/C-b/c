@@ -1,6 +1,16 @@
 #!/bin/sh
-# new shell in a new tab
-p=$(fux3 start "$FUX3C_WS/") || exit
+# history in the editor
+# The pane's text (older history, history, then the screen) as one private file,
+# opened at its end in $EDITOR, else $PAGER, else less; removed when that ends.
+[ -n "$FUX3C_PANE" ] || exit 0
+f=$(mktemp "$FUX3C_DIR/.text.XXXXXX") || exit
+{
+  cat "$FUX3C_PANE/history.1" "$FUX3C_PANE/history" 2>/dev/null
+  # The screen without its first line and without the blank rows at its end.
+  tail -n +2 "$FUX3C_PANE/screen" | awk '{ row[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) print row[i] }'
+} > "$f"
+n=$(wc -l < "$f")
+if [ -n "$EDITOR" ]; then show="$EDITOR +$n"; else show="${PAGER:-less +G}"; fi
+p=$(fux3 start "$FUX3C_WS/" -- sh -c '$1 "$2"; rm -f "$2"' sh "$show" "$f") || { rm -f "$f"; exit; }
 fux3 layout focus "${p##*/}"
-# When the shell ends, its pane goes: that is this script's choice, not fux3's.
-(fux3 wait "$p" >/dev/null; rm -rf "$p") >/dev/null 2>&1 &
+(fux3 wait "$p" >/dev/null; rm -rf "$p" "$f") >/dev/null 2>&1 &

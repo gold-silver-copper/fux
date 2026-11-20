@@ -1,8 +1,9 @@
 #!/bin/sh
-# new workspace with a shell
+# new workspace
 n=1
 while [ -e "$FUX3C_DIR/w$n" ] && [ "$n" -lt 1000 ]; do n=$((n + 1)); done
 mkdir "$FUX3C_DIR/w$n" || exit
 p=$(fux3 start "w$n/") || exit
 echo "workspace w$n"
+# When the shell ends, its pane goes: that is this script's choice, not fux3's.
 (fux3 wait "$p" >/dev/null; rm -rf "$p") >/dev/null 2>&1 &

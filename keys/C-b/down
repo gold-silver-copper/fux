@@ -1,3 +1,0 @@
-#!/bin/sh
-# focus the pane below
-fux3 layout focus down

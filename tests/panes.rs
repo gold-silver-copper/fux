@@ -151,11 +151,13 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     until("the script's typing came first", || screen().contains("\nin order\n"));
     // The prefix opens the menu the directory gives; the key runs the script.
     fs::write(view.join("in"), "\x02").unwrap();
-    until("the menu shows the script's second line", || screen().contains("v  split"));
+    until("the menu and the bar show", || {
+        screen().contains("v  split") && screen().contains(" main  one ") && screen().contains("C-b …")
+    });
     fs::write(view.join("in"), "v").unwrap();
     until("the layout file has the split", || read(&inner.0.join("main/layout")) == "* row(one two) focus=two\n");
     until("both panes are drawn with a line between", || {
-        screen().contains("─ one ─") && screen().contains("│  two") && screen().contains('│')
+        screen().lines().filter(|line| line.contains('│')).count() >= 23
     });
     until("the script's words are shown", || screen().contains("made "));
     fs::write(view.join("in"), "echo t''wo\r").unwrap();
@@ -167,14 +169,21 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
             .find_map(|w| Some(w.strip_prefix("size=")?.to_string()))
     };
     until("the panes have their tiles' sizes", || {
-        width("one") == Some("40x22".into()) && width("two") == Some("39x22".into())
+        width("one") == Some("40x24".into()) && width("two") == Some("39x24".into())
     });
+    // A program that asks for the mouse gets it, counted from its own tile's corner (the tile starts at column 42).
+    fs::write(view.join("in"), "printf '\\033[?1000h\\033[?1006h'; cat -v\r").unwrap();
+    until("the pane's line 1 says so", || read(&inner.0.join("main/two/screen")).contains("mouse1000,mousesgr"));
+    until("the viewer asked its own terminal", || read(&view.join("screen")).contains("mouse1000,mousesgr"));
+    fs::write(view.join("in"), "\x1b[<0;50;3M\r").unwrap();
+    until("the click arrives translated", || read(&inner.0.join("main/two/screen")).contains("^[[<0;9;3M"));
+    fs::write(view.join("in"), "\x03").unwrap();
     fs::write(inner.0.join("main/layout"), "* col(two one) focus=one zoom\n").unwrap();
-    until("an edit of the file by hand is followed", || width("one") == Some("80x23".into()));
+    until("an edit of the file by hand is followed", || width("one") == Some("80x24".into()));
     // A folder with a screen of someone's own making: what it says reaches the terminal as text only.
     fs::create_dir(inner.0.join("main/odd")).unwrap();
     fs::write(inner.0.join("main/odd/screen.styled"), "pid=1 size=9x2 cursor=0,0 state=x\x1b]0;T\x07\x1b[2Jy\nhi\n")
         .unwrap();
     fs::write(inner.0.join("main/layout"), "* row(one odd) focus=one\n").unwrap();
-    until("its title is drawn with the codes as marks", || screen().contains("─ odd [x?]0;T??[2Jy] ─"));
+    until("its title is drawn with the codes as marks", || screen().contains(" x?]0;T??[2Jy\n"));
 }

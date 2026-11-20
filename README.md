@@ -130,7 +130,7 @@ other shows what fits.
 
 The keys directory is `$FUX3C_KEYS`, else `~/.config/fux3c/keys`; the viewer
 writes the default scripts there if it does not exist. A key that has a file
-of its name runs it (a file that cannot be run says so on the last line). A key that has a directory opens it as a
+of its name runs it (a file that cannot be run says so in the corner). A key that has a directory opens it as a
 menu (each script's second line, `# what it does`, is its entry) and the next
 key is looked up there. Any other key goes to the program. So the prefix is
 only a directory: `keys/C-b/v` is "C-b, then v", and `keys/M-left` would be
@@ -146,22 +146,49 @@ A script gets `FUX3C_DIR` (the session), `FUX3C_WS` (the workspace shown),
 `FUX3C_PANE` (the focused pane's directory), `FUX3C_KEYS`, `FUX3C_VIEW`,
 `COLUMNS` and `LINES` (the size of a pane that fills the view), and this
 `fux3` first in `PATH`. Keys typed after it wait until it ends (two seconds
-at most), so `C-b c` and then text types into the new shell; a script that
+at most), so `C-b t n` and then text types into the new shell; a script that
 takes longer puts its work in the background, as the defaults do.
 What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace, and anything else (an error
-from `sh`, say) is shown on the last line. A key with no file, pressed in an
+from `sh`, say) is shown in the bottom right corner until the next key. A key with no file, pressed in an
 open menu, closes the menu and goes nowhere. Writing the same lines to the FIFO
 `$FUX3C_VIEW` does the same from anywhere.
 
-The defaults, all in `keys/C-b/`: `c` new shell in a tab, `v` beside, `s`
-below (all three in the directory the viewer was started in), `x` close
-(remove the pane's directory), `h j k l` and arrows focus,
-`o` next pane, `n p 1`…`9` tabs, `z` zoom, `!` break, `{ }` swap, `r` rotate,
-`S-h S-j S-k S-l` size, `a` then `r c g m` arrange, `[` history in `less`,
-`( )` workspaces, `w` new workspace, `d` leave, `C-b` send C-b itself.
-Whether a pane closes when its shell exits is the script's choice too: the
-defaults run `fux3 wait` in the background and remove the directory.
+The defaults are fux's keys, all under `keys/C-b/`: `v` split side by side,
+`s` split stacked (both start in the directory the viewer was started in),
+`x` then `y` close the pane (remove its directory), `z` zoom, `h j k l` focus,
+`o` next pane, `n` `b` next and previous tab, `d` detach, `c` the pane's text
+in the editor, `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
+workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
+the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
+TERM to the program), `g` arrange (`r c g m`, `t` turn). Whether a pane
+closes when its shell exits is the script's choice too: the defaults run
+`fux3 wait` in the background and remove the directory.
+
+In a menu's directory, a file `.about` holds the words shown for it in the
+menu above, and a file `.repeat` keeps the menu open after each key (until a
+key it has not): that is all "resize mode" is. A directory with one script,
+like `x/y`, is a question.
+
+There is no copy mode: `C-b c` puts the pane's older history, its history and
+its screen in one private file and opens it at its end in `$EDITOR` (as
+`$EDITOR +LINE FILE`), else `$PAGER`, else `less +G`, in a new tab; the file
+is removed when the editor ends.
+
+**The look** is fux's. A pane has every cell but the one-cell line between it
+and its neighbour (`│`, `─`, a tee or a cross where lines meet); the lines
+touching the focused pane are green. There are no titles and no bar: while a
+prefix is in use, the last row shows the workspace, its tabs and the keys
+typed so far, and the corner above it the keys that can follow. A message
+(a script's words, what is wrong with `layout`) sits in the bottom right
+corner until the next key. A pane whose program ended, or whose holder is
+gone, says so in the corner of its own last row (`exited 0`, `lost`).
+
+**The mouse** passes through. When the focused pane's program asks for mouse
+reports, the viewer asks your terminal for the same and forwards each one to
+that pane, counted from its tile's corner. A click on another tile gives that
+tile the keys. The viewer uses the mouse for nothing else, and when the
+focused program does not ask, your terminal's own selection works as ever.
 
 Pictures: when the terminal says it draws sixel, a pane's picture is drawn in
 its tile if it fits whole. Another protocol later is another file extension
@@ -179,7 +206,7 @@ fux3 adds nothing to stop these. What happens is what Unix does:
   still says the old one, and so does a key script that waits to remove it.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `status` goes on saying `running` and the
-  FIFOs stay, with no reader: the viewer shows `[lost]`, and a plain
+  FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
   `printf > in` then waits for ever, as on any FIFO nobody reads. `fux3 start`
   with the same name starts it again in place. (A holder that ends normally
   removes its FIFOs, so a late `echo kill > ctl` only leaves a small file.)
@@ -202,8 +229,8 @@ fux3 adds nothing to stop these. What happens is what Unix does:
   another workspace or session it is fine.
 - **Don't put other folders in a workspace**: every folder there is shown as
   a pane. Files are fine.
-- **Don't write nonsense to `layout`**: the viewer says what is wrong on its
-  last line and shows every pane as a tab until it is fixed.
+- **Don't write nonsense to `layout`**: the viewer says what is wrong in the corner
+  of its last row and shows every pane as a tab until it is fixed.
 
 ## Linux and macOS
 
@@ -223,21 +250,24 @@ Differences are left as they are:
 ## Coming from tmux
 
 `ls "$(fux3 dir)"` lists the workspaces (tmux's sessions); `fux3 view NAME`
-attaches to one and `C-b d` detaches; `C-b c` starts the first shell in an
+attaches to one and `C-b d` detaches; `C-b t n` starts the first shell in an
 empty one. Tabs are tmux's windows. There is no chooser and no "last tab"
 key: both would be scripts.
 
 ## Left out
 
-The kitty keyboard protocol; mouse reporting (no click to focus either);
+The kitty keyboard protocol; of the mouse, the UTF-8 and urxvt report forms
+(1005, 1015: programs get the SGR form or the oldest one), dragging a line
+to resize, and any menu use;
 hyperlinks, window titles and the clipboard (OSC 8, 0, 52 are read and
 dropped); colour queries and palette changes (OSC 4, 10, 11) and the
 queries DECRQSS, XTGETTCAP and XTVERSION; the bell, the visual bell and the
 printer codes; reflow on resize (rows keep their text, what does not fit is
 cut or goes to history); left and right margins; double underline and
 underline colours (drawn as one plain underline); more than two combining
-marks on a character; a copy mode (use the `[` key: it is `less` on
-`history`); Windows. `clear` clears the screen, not the `history` file.
+marks on a character; headings in the menu, choosers and prompts (renaming
+and picking from a list would be scripts); a copy mode (`C-b c` is the
+editor on the pane's text); Windows. `clear` clears the screen, not the `history` file.
 
 Pictures: one that does not fit its tile whole is not drawn. After a picture
 the cursor goes to the start of the line below it (xterm leaves it on the

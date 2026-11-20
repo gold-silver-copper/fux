@@ -168,7 +168,7 @@ fn a_layout_reads_back_as_written_and_its_tiles_fill_the_area_without_overlap() 
         let tiles = layout.tabs.first().expect("a tab").tiles(area);
         let covered: usize = tiles.iter().map(|(_, r)| r.w * r.h).sum();
         let lines: usize = area.w * area.h - covered;
-        assert!(lines < area.h * tiles.len(), "only the lines between a row's parts are uncovered");
+        assert!(lines < (area.w + area.h) * tiles.len(), "only the lines between parts are uncovered");
         for (i, (_, a)) in tiles.iter().enumerate() {
             assert!(a.x + a.w <= area.w && a.y + a.h <= area.h);
             for (_, b) in tiles.iter().skip(i + 1) {

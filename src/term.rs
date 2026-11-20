@@ -142,6 +142,9 @@ pub struct Term {
     pub app_cursor: bool,
     pub app_keypad: bool,
     pub paste: bool,
+    /// The mouse reports the program asked for: 0 for none, else 9, 1000, 1002 or 1003; and whether as SGR (1006).
+    pub mouse: u16,
+    pub mouse_sgr: bool,
     tabs: Vec<bool>,
     graphics: [bool; 2],
     shift: bool,
@@ -199,6 +202,8 @@ impl Term {
             app_cursor: false,
             app_keypad: false,
             paste: false,
+            mouse: 0,
+            mouse_sgr: false,
             tabs: (0..SIZE_MAX).map(|c| c % 8 == 0).collect(),
             graphics: [false; 2],
             shift: false,
@@ -947,6 +952,7 @@ impl Term {
                 // A soft reset: modes and the scroll region back to how they start.
                 (self.insert, self.origin, self.autowrap, self.cursor_shown) = (false, false, true, true);
                 (self.app_cursor, self.app_keypad, self.graphics, self.shift) = (false, false, [false; 2], false);
+                (self.mouse, self.mouse_sgr) = (0, false);
                 (self.top, self.bottom, self.style) = (0, self.rows - 1, Style::default());
                 self.saved = [Saved::default(); 2];
             }
@@ -1017,6 +1023,8 @@ impl Term {
                 self.restore_cursor();
             }
             2004 => self.paste = on,
+            9 | 1000 | 1002 | 1003 => self.mouse = if on { mode as u16 } else { 0 },
+            1006 => self.mouse_sgr = on,
             _ => {}
         }
     }

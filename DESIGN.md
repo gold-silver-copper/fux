@@ -58,8 +58,9 @@ folder is gone, the pane is gone: the holder leaves, which hangs up too.
 4 ms just after something happened, every 50 ms at rest), reads a pane's
 `screen.styled` when it changed, and parses it with the same emulator that
 wrote it. It sends keys with a write to `in` that never waits. It sets the
-outer terminal's cursor-key and keypad modes to the focused program's, so key
-bytes pass through untouched. Pictures are files the viewer passes on after
+outer terminal's cursor-key, keypad and mouse modes to the focused program's,
+so key bytes pass through untouched and mouse reports need only their
+coordinates moved. Pictures are files the viewer passes on after
 checking that each is one sixel string.
 
 **Keys.** The viewer names each key and looks for a file of that name in the

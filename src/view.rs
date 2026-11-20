@@ -6,7 +6,7 @@
 
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
-use crate::term::{BOLD, Cell, PICTURE_MAX, REVERSE, SIZE_MAX, Style, Term};
+use crate::term::{BOLD, Cell, Color, DIM, PICTURE_MAX, SIZE_MAX, Style, Term};
 use crate::width::width;
 use crate::{is_name, keys};
 use std::collections::HashMap;
@@ -55,8 +55,10 @@ struct View {
     front: Vec<Cell>,
     panes: HashMap<String, Pane>,
     focus: Option<String>,
+    /// Where each pane's screen was drawn last, for the mouse.
+    tiles: Vec<(String, Rect)>,
     /// The open menu: its directory and its entries.
-    menu: Option<(PathBuf, Vec<String>)>,
+    menu: Option<(PathBuf, Vec<(String, String)>)>,
     message: String,
     /// Whether the terminal said it draws sixel pictures.
     sixel: bool,
@@ -81,7 +83,7 @@ struct View {
 struct Restore(File, sys::Termios);
 impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?1049l");
+        let _ = self.0.write_all(b"\x1b[?2004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?1049l");
         let _ = sys::restore_mode(&self.0, &self.1);
     }
 }
@@ -94,7 +96,9 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         for (name, script) in keys::DEFAULT {
             let path = keys.join(name);
             let made = path.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::write(&path, script));
-            let made = made.and_then(|()| fs::set_permissions(&path, fs::Permissions::from_mode(0o755)));
+            let made = made.and_then(|()| {
+                fs::set_permissions(&path, fs::Permissions::from_mode(if name.contains("/.") { 0o644 } else { 0o755 }))
+            });
             made.map_err(|e| format!("{}: {e}", path.display()))?;
         }
     }
@@ -115,6 +119,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         front: Vec::new(),
         panes: HashMap::new(),
         focus: None,
+        tiles: Vec::new(),
         menu: None,
         message: String::new(),
         sixel: false,
@@ -259,6 +264,7 @@ impl View {
                     self.pasting = true;
                     self.typed.extend_from_slice(if wants_paste { raw } else { &[] });
                 }
+                name if name.starts_with("mouse:") => self.mouse(name.trim_start_matches("mouse:")),
                 name if name.starts_with("terminal:") => self.sixel = name.split([':', '?', ';']).any(|n| n == "4"),
                 name => self.key(name, raw),
             }
@@ -281,9 +287,43 @@ impl View {
             Ok(kind) if !name.is_empty() && kind.is_file() => {
                 self.send();
                 self.script(&file);
+                // A menu with a file `.repeat` in it stays for the next key (to resize, say), until a key it has not.
+                self.menu = menu.filter(|(directory, _)| directory.join(".repeat").exists());
             }
             _ if menu.is_none() => self.typed.extend_from_slice(raw),
             _ => {}
+        }
+    }
+
+    /// A mouse report from the terminal. It goes to the focused pane's
+    /// program, counted from its own tile's corner and in the form it asked
+    /// for; a press on another tile gives that one the keys.
+    fn mouse(&mut self, report: &str) {
+        let release = report.ends_with('m');
+        let mut numbers = report.trim_end_matches(['M', 'm']).split(';').filter_map(|n| n.parse::<usize>().ok());
+        let (Some(button), Some(x), Some(y)) = (numbers.next(), numbers.next(), numbers.next()) else { return };
+        let inside = |r: &Rect| (r.x + 1..=r.x + r.w).contains(&x) && (r.y + 1..=r.y + r.h).contains(&y);
+        let Some((name, body)) = self.tiles.iter().find(|(_, body)| inside(body)).cloned() else { return };
+        if self.focus.as_ref() != Some(&name) {
+            if !release && button < 3 {
+                let _ = layout::command(&self.session.join(&self.workspace), &["focus", &name]);
+            }
+            return;
+        }
+        let Some(term) = self.panes.get(&name).map(|pane| &pane.term) else { return };
+        let (x, y) = (x - body.x, y - body.y);
+        // The oldest kind of report (9) knows only presses of the three buttons.
+        if term.mouse == 0 || (term.mouse == 9 && (release || button > 2)) {
+            return;
+        }
+        let old = |n: usize| u8::try_from(n + 32).ok();
+        if term.mouse_sgr {
+            self.typed
+                .extend_from_slice(format!("\x1b[<{button};{x};{y}{}", if release { 'm' } else { 'M' }).as_bytes());
+        } else if let (Some(button), Some(x), Some(y)) =
+            (old(if release { button | 3 } else { button }), old(x), old(y))
+        {
+            self.typed.extend_from_slice(&[0x1b, b'[', b'M', button, x, y]);
         }
     }
 
@@ -352,28 +392,26 @@ impl View {
             layout = Layout::load(&directory).1;
         }
         let tab = layout.tab();
-        let tiles = tab.map(|tab| tab.tiles(Rect { x: 0, y: 0, w, h: h.saturating_sub(1) })).unwrap_or_default();
-        // What no tile covers is the line between the parts of a row.
-        let line = Cell { ch: if tiles.is_empty() { ' ' } else { '│' }, ..Cell::blank(Style::default()) };
-        let mut back = vec![line; w * h];
+        // Panes get every cell but the lines between them: no titles, and no row for a bar.
+        let tiles = tab.map(|tab| tab.tiles(Rect { x: 0, y: 0, w, h })).unwrap_or_default();
+        let colour = |fg: u8, bg: Option<u8>, flags: u16| Style {
+            fg: Color::Indexed(fg),
+            bg: bg.map_or(Color::Default, Color::Indexed),
+            flags,
+        };
+        // What no tile covers is a line: marked here, drawn once the tiles are in place.
+        let line = Cell { ch: '\u{2}', ..Cell::blank(Style::default()) };
+        let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
         self.focus = tab.map(|tab| tab.focus.clone());
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
+        self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
         let cell_size = (size.xpixel / size.cols.max(1), size.ypixel / size.rows.max(1));
-        for (name, rect) in &tiles {
+        for (name, body) in &tiles {
             let pane = self.panes.entry(name.clone()).or_insert_with(Pane::new);
             let pane_directory = directory.join(name);
             pane.read(&pane_directory);
             let focused = self.focus.as_ref() == Some(name);
-            let state = match (pane.input.is_some(), pane.state.as_str()) {
-                (true, "running") => String::new(),
-                (false, "running") => " [lost]".into(),
-                (_, "") => " [no pane here]".into(),
-                (_, state) => format!(" [{state}]"),
-            };
-            // A title when there is more than one tile, or something to say.
-            let titled = usize::from(tiles.len() > 1 || !state.is_empty());
-            let body = Rect { y: rect.y + titled, h: rect.h.saturating_sub(titled), ..*rect };
             if body.w == 0 || body.h == 0 {
                 continue;
             }
@@ -392,18 +430,6 @@ impl View {
                         .and_then(|mut ctl| ctl.write_all(format!("resize {} {}{cell}\n", body.w, body.h).as_bytes()));
                 }
             }
-            if titled == 1 {
-                let style = Style { flags: if focused { REVERSE | BOLD } else { 0 }, ..Style::default() };
-                let fill = if focused { " " } else { "─" };
-                put(
-                    &mut back,
-                    w,
-                    rect.x,
-                    rect.y,
-                    rect.w,
-                    &cells(&format!("{fill} {name}{state} {}", fill.repeat(rect.w)), style),
-                );
-            }
             for y in 0..body.h {
                 for x in 0..body.w {
                     let mut cell = pane.term.cell_at(y, x).copied().unwrap_or(Cell::blank(Style::default()));
@@ -415,6 +441,16 @@ impl View {
                     }
                 }
             }
+            // A pane whose program ended, or whose holder is gone, says so in its last row's corner.
+            let state = match (pane.input.is_some(), pane.state.as_str()) {
+                (true, "running") => String::new(),
+                (false, "running") => " lost ".into(),
+                (_, "") => " no pane here ".into(),
+                (_, state) => format!(" {state} "),
+            };
+            let state = cells(&state, colour(11, Some(236), 0));
+            let room = state.len().min(body.w);
+            put(&mut back, w, body.x + body.w - room, body.y + body.h - 1, room, &state);
             if focused && pane.term.cursor_shown && pane.term.row < body.h && pane.term.col < body.w {
                 let (row, col) = (body.y + pane.term.row + 1, body.x + pane.term.col + 1);
                 cursor = format!("\x1b[{row};{col}H\x1b[{} q\x1b[?25h", pane.term.cursor_shape);
@@ -424,6 +460,11 @@ impl View {
                 let (cursor_keys, keypad) = (pane.term.app_cursor, pane.term.app_keypad);
                 cursor.push_str(if cursor_keys { "\x1b[?1h" } else { "\x1b[?1l" });
                 cursor.push_str(if keypad { "\x1b=" } else { "\x1b>" });
+                // And reports the mouse when, and as far as, that program asked (always in the SGR form).
+                cursor.push_str("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
+                if pane.term.mouse != 0 {
+                    cursor.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.term.mouse));
+                }
             }
             for (file, row, col, cols, rows) in &pane.pictures {
                 if self.sixel && file.ends_with(".sixel") && row + rows <= body.h && col + cols <= body.w {
@@ -431,48 +472,87 @@ impl View {
                 }
             }
         }
-        // The last line: the workspace, then what there is to say (what is
-        // wrong with the layout file first), then the tabs: as many as fit,
-        // the one shown among them.
-        let (bold, plain) = (Style { flags: REVERSE | BOLD, ..Style::default() }, Style::default());
-        let mut bar = cells(&format!(" {} ", self.workspace), bold);
-        let hint = format!("no panes in {}: keys are scripts in {}", self.workspace, self.keys.display());
-        let note =
-            wrong.as_ref().unwrap_or(if tiles.is_empty() && self.message.is_empty() { &hint } else { &self.message });
-        if !note.is_empty() {
-            bar.extend(cells(&format!(" {note} "), plain).into_iter().take(w * 2 / 3));
-            bar.extend(cells("│", plain));
-        }
-        let labels = layout.tabs.iter().enumerate().map(|(i, tab)| {
-            let style = Style { flags: if i == layout.current { REVERSE } else { 0 }, ..plain };
-            cells(&format!(" {}:{} ", i + 1, tab.focus), style)
-        });
-        let labels: Vec<Vec<Cell>> = labels.collect();
-        let fits = |first: usize| {
-            let shown = labels.iter().take(layout.current + 1).skip(first);
-            bar.len() + shown.map(Vec::len).sum::<usize>() <= w
+        // The lines between panes: `│` and `─`, a tee or a cross where they
+        // meet, and green where they touch the focused pane.
+        let focus = tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name)).map(|(_, body)| *body);
+        let lines: Vec<bool> = back.iter().map(|cell| cell.ch == '\u{2}').collect();
+        let is_line = |x: Option<usize>, y: Option<usize>| match (x, y) {
+            (Some(x), Some(y)) if x < w => lines.get(y * w + x) == Some(&true),
+            _ => false,
         };
-        let first = (0..=layout.current).find(|first| fits(*first)).unwrap_or(layout.current);
-        bar.extend(labels.iter().skip(first).flatten());
-        put(&mut back, w, 0, h.saturating_sub(1), w, &cells(&" ".repeat(w), plain));
-        put(&mut back, w, 0, h.saturating_sub(1), w, &bar);
+        for (i, cell) in back.iter_mut().enumerate().filter(|(i, _)| lines.get(*i) == Some(&true)) {
+            let (x, y) = (i % w, i / w);
+            let (up, down) = (is_line(Some(x), y.checked_sub(1)), is_line(Some(x), Some(y + 1)));
+            let (left, right) = (is_line(x.checked_sub(1), Some(y)), is_line(Some(x + 1), Some(y)));
+            let ch = match (up || down, left || right) {
+                (true, true) if !left => '├',
+                (true, true) if !right => '┤',
+                (true, true) if !up => '┬',
+                (true, true) if !down => '┴',
+                (true, true) => '┼',
+                (false, true) => '─',
+                (true, false) => '│',
+                // A line one cell long: upright if panes are beside it.
+                (false, false) if x > 0 && x + 1 < w => '│',
+                (false, false) => '─',
+            };
+            let near = focus.is_some_and(|f| x + 1 >= f.x && x <= f.x + f.w && y + 1 >= f.y && y <= f.y + f.h);
+            *cell = Cell { ch, marks: ['\0'; 2], style: colour(if near { 2 } else { 240 }, None, 0) };
+        }
+        // A notice sits in the bottom right corner until the next key: what is
+        // wrong with the layout file, what a script said, or that there are no panes.
+        let hint = format!("no panes in {}: keys are scripts in {}", self.workspace, self.keys.display());
+        let (note, style) = match &wrong {
+            Some(wrong) => (wrong, colour(9, Some(236), 0)),
+            None if tiles.is_empty() && self.message.is_empty() => (&hint, colour(11, Some(236), 0)),
+            None => (&self.message, colour(11, Some(236), 0)),
+        };
+        let last = h.saturating_sub(1);
+        if !note.is_empty() && self.menu.is_none() {
+            let note = cells(&format!(" {note} "), style);
+            let room = note.len().min(w.saturating_sub(1));
+            put(&mut back, w, w.saturating_sub(room + 1), last, room, &note);
+        }
         if let Some((directory, entries)) = &self.menu {
-            // The menu, above the last line: its keys in as many columns as it takes to show them all.
-            let room = h.saturating_sub(2).max(1);
-            let across = entries.len().div_ceil(room).clamp(1, (w / 16).max(1));
-            let down = entries.len().div_ceil(across).min(room);
-            let more = entries.len().saturating_sub(across * down);
-            let more = if more > 0 { format!(" ({more} more do not fit)") } else { String::new() };
-            let name = directory.strip_prefix(&self.keys).unwrap_or(directory).display();
-            let title = format!(" {name}: a key runs its script, any other key closes this{more}");
-            let top = h.saturating_sub(down + 2);
-            for y in top..h.saturating_sub(1) {
-                put(&mut back, w, 0, y, w, &cells(&" ".repeat(w), bold));
+            // While a prefix is in use: the bar over the last row (the
+            // workspace, its tabs, the keys typed so far), and above it, in
+            // the corner, the keys that can follow.
+            let (bar, panel) = (colour(250, Some(236), 0), colour(255, Some(238), 0));
+            let typed: Vec<String> = directory
+                .strip_prefix(&self.keys)
+                .into_iter()
+                .flat_map(|path| path.iter())
+                .map(|key| key.to_string_lossy().into_owned())
+                .collect();
+            let typed = typed.join(" ");
+            let mut left = cells(&format!(" {} ", self.workspace), colour(250, Some(236), BOLD));
+            for (i, tab) in layout.tabs.iter().enumerate() {
+                let style = if i == layout.current { colour(0, Some(2), BOLD) } else { bar };
+                left.extend(cells(&format!(" {} ", tab.focus), style));
             }
-            put(&mut back, w, 0, top, w, &cells(&title, bold));
-            for (i, entry) in entries.iter().enumerate().take(across * down) {
-                let (x, width) = ((i / down) * (w / across), w / across);
-                put(&mut back, w, x, top + 1 + i % down, width.saturating_sub(1), &cells(&format!(" {entry}"), bold));
+            let right = cells(&format!("{typed} …"), colour(0, Some(11), BOLD));
+            put(&mut back, w, 0, last, w, &cells(&" ".repeat(w), bar));
+            put(&mut back, w, 0, last, w.saturating_sub(right.len() + 2), &left);
+            put(&mut back, w, w.saturating_sub(right.len() + 1), last, right.len(), &right);
+            let room = last.saturating_sub(1);
+            let shown = if entries.len() > room { room.saturating_sub(1) } else { entries.len() };
+            let key_width = entries.iter().map(|(key, _)| key.chars().count()).max().unwrap_or(0);
+            let mut lines = vec![(typed, BOLD)];
+            lines.extend(entries.iter().take(shown).map(|(key, about)| (format!("{key:>key_width$}  {about}"), 0)));
+            if shown < entries.len() {
+                lines.push((format!("▼ {} more", entries.len() - shown), DIM));
+            }
+            let width = (lines.iter().map(|(line, _)| line.chars().count()).max().unwrap_or(0) + 2).min(w);
+            for (i, (text, flags)) in lines.iter().enumerate() {
+                let y = last.saturating_sub(lines.len()) + i;
+                put(
+                    &mut back,
+                    w,
+                    w - width,
+                    y,
+                    width,
+                    &cells(&format!(" {text:<width$}"), Style { flags: *flags, ..panel }),
+                );
             }
             cursor = String::new();
         }
@@ -614,6 +694,8 @@ impl Pane {
                     self.term.cursor_shown = has("cursor");
                     (self.term.app_cursor, self.term.app_keypad, self.term.paste) =
                         (has("appcursor"), has("keypad"), has("paste"));
+                    let mouse = [9, 1000, 1002, 1003].into_iter().find(|mode| has(&format!("mouse{mode}")));
+                    (self.term.mouse, self.term.mouse_sgr) = (mouse.unwrap_or(0), has("mousesgr"));
                 }
                 // A picture is kept only if it lies on a screen of the largest size there is.
                 ("pic", [row, col, cols, rows]) if numbers.iter().all(|n| *n <= SIZE_MAX) => {
@@ -634,23 +716,28 @@ impl Pane {
 }
 
 /// The entries of a menu: each key in the directory and, from the second
-/// line of its script, what it does. At most 200.
-fn menu_entries(directory: &Path) -> Vec<String> {
+/// line of its script, what it does (`…` after it when the key opens another
+/// menu, whose words are in its file `.about`). At most 200.
+fn menu_entries(directory: &Path) -> Vec<(String, String)> {
     let names = fs::read_dir(directory).into_iter().flatten().flatten();
     let names = names.filter_map(|entry| entry.file_name().into_string().ok()).filter(|name| !name.starts_with('.'));
     let mut names: Vec<String> = names.take(MENU_MAX + 1).collect();
     let more = names.len() > MENU_MAX;
     names.truncate(MENU_MAX);
     names.sort();
-    let described = names.iter().map(|name| {
-        let path = directory.join(name);
-        if path.is_dir() {
-            return format!("{name}  …");
-        }
+    let head = |path: &Path| {
         let mut head = Vec::new();
-        let _ = File::open(&path).map(|file| file.take(400).read_to_end(&mut head));
-        let head = String::from_utf8_lossy(&head);
-        format!("{name}  {}", head.lines().nth(1).and_then(|line| line.strip_prefix("# ")).unwrap_or_default())
+        let _ = File::open(path).map(|file| file.take(400).read_to_end(&mut head));
+        String::from_utf8_lossy(&head).into_owned()
+    };
+    let described = names.into_iter().map(|name| {
+        let path = directory.join(&name);
+        if path.is_dir() {
+            let about = head(&path.join(".about"));
+            return (name, format!("{}…", about.lines().next().unwrap_or_default()));
+        }
+        let about = head(&path).lines().nth(1).and_then(|line| line.strip_prefix("# ")).unwrap_or_default().to_string();
+        (name, about)
     });
-    described.chain(more.then(|| "…  more keys than a menu lists".to_string())).collect()
+    described.chain(more.then(|| ("…".to_string(), "more keys than a menu lists".to_string()))).collect()
 }

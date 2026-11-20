@@ -1,3 +1,3 @@
 #!/bin/sh
-# swap with the previous pane
+# move pane earlier
 fux3 layout swap prev

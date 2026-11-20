@@ -1,3 +1,3 @@
 #!/bin/sh
-# leave the viewer; the panes stay
+# detach
 echo quit

@@ -90,6 +90,29 @@ Append-only.
   XTGETTCAP; `clear` leaving `history`; the bell; a picture at the bottom row
   scrolling one line (D21). All are in the README's "Left out".
 
+- **D29. The look of fux 1, by the owner's word** ("I mainly want the look of
+  fux 1 … ur new fux wastes more cells than old one"). No title rows and no
+  bar row; one-cell lines with tees, green by the focused pane; the bar and
+  the key menu drawn over the panes only while a prefix is in use; notices in
+  the corner. Taken from a capture of fux 0.37 on a private server and from
+  reading what its drawing code draws; none of that code is copied. Not
+  matched: the menu's group headings and the selected line (a directory has
+  no groups), choosers and prompts (none here), and `[zoom]`.
+- **D30. The mouse passes through, by the owner's word** ("I dont care about
+  using mouse to resize panes … I just want it to pass through"). The outer
+  terminal reports the mouse only while the focused program asks. A click on
+  another tile focuses it (four lines, and otherwise it would go nowhere).
+- **D31. No copy mode; `C-b c` is the editor script, by the owner's word.**
+  It opens in a new tab, not in a split as fux does: a new tab's program
+  starts at its final size, a split's is resized in its first instant, and a
+  full-screen program that is resized while it starts can draw for the old
+  size (seen with vim once in six tries; any terminal resized at that moment
+  does the same). The holder now draws what a program wrote before a resize
+  at the old size, which removes the part of that race that was ours.
+- **D32. fux's default keys** where this viewer has the action; `.about` and
+  `.repeat` in a menu's directory give its name and fux's repeating maps.
+  The `less`-only history key and the tab numbers went: fux has neither.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

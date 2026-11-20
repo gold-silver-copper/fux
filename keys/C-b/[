@@ -1,6 +1,0 @@
-#!/bin/sh
-# read this pane's history in less
-[ -n "$FUX3C_PANE" ] || exit 0
-p=$(fux3 start "$FUX3C_WS/" -- less +G "$FUX3C_PANE/history") || exit
-fux3 layout focus "${p##*/}"
-(fux3 wait "$p" >/dev/null; rm -rf "$p") >/dev/null 2>&1 &

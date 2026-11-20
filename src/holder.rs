@@ -386,7 +386,10 @@ impl Holder {
             (term.paste, "paste"),
             (term.alt, "alt"),
         ];
-        let modes: Vec<&str> = modes.iter().filter(|m| m.0).map(|m| m.1).collect();
+        let mut modes: Vec<String> = modes.iter().filter(|m| m.0).map(|m| m.1.to_string()).collect();
+        if term.mouse != 0 {
+            modes.push(format!("mouse{}{}", term.mouse, if term.mouse_sgr { ",mousesgr" } else { "" }));
+        }
         let header = format!(
             "pid={} state={} v={} size={}x{} cursor={},{} shape={} modes={}{pictures}\n",
             self.pid,

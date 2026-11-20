@@ -1,0 +1,3 @@
+#!/bin/sh
+# move to a new tab
+fux3 layout break

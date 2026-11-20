@@ -91,14 +91,14 @@ impl Node {
         }
     }
 
-    /// Gives every pane its rectangle. Parts of a row have one column between
-    /// them (the viewer draws a line there).
+    /// Gives every pane its rectangle. Between two parts there is one column
+    /// or one row that is neither's (the viewer draws a line there).
     fn place(&self, area: Rect, into: &mut Vec<(String, Rect)>) {
         let (row, parts) = match self {
             Node::Pane(name) => return into.push((name.clone(), area)),
             Node::Split(row, parts) => (*row, parts),
         };
-        let gaps = if row { parts.len().saturating_sub(1) } else { 0 };
+        let gaps = parts.len().saturating_sub(1);
         let room = if row { area.w } else { area.h }.saturating_sub(gaps);
         let total: usize = parts.iter().map(|p| p.1.max(1) as usize).sum();
         let mut sizes: Vec<usize> = parts.iter().map(|p| room * p.1.max(1) as usize / total.max(1)).collect();
@@ -111,7 +111,7 @@ impl Node {
         for ((part, _), size) in parts.iter().zip(sizes) {
             let rect = if row { Rect { x: at, w: size, ..area } } else { Rect { y: at, h: size, ..area } };
             part.place(rect, into);
-            at += size + usize::from(row);
+            at += size + 1;
         }
     }
 

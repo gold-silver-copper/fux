@@ -1,5 +1,6 @@
 #!/bin/sh
-# new shell below this pane
+# split stacked
 p=$(fux3 start "$FUX3C_WS/") || exit
 fux3 layout split col "${p##*/}"
+# When the shell ends, its pane goes: that is this script's choice, not fux3's.
 (fux3 wait "$p" >/dev/null; rm -rf "$p") >/dev/null 2>&1 &
