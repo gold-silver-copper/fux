@@ -1137,21 +1137,25 @@ impl View {
         // A workspace that has no pane when it is first shown is not left blank: the keys'
         // `.empty` is run (a new shell, by default). One whose last pane ends while it is
         // shown stays empty, and says how to go on.
+        // (No pane is what the layout says, not what there was room to draw. A script that is
+        // being waited for is still waited for: the keys typed after it are its workspace's.)
         if self.greeted.as_deref() != Some(self.workspace.as_str()) {
             self.greeted = Some(self.workspace.clone());
             let first = self.keys.join(".empty");
-            if tiles.is_empty() && wrong.is_none() && first.is_file() {
+            if layout.tabs.is_empty() && wrong.is_none() && first.is_file() {
+                let waiting = self.waiting;
                 self.script(&first);
+                self.waiting = waiting.or(self.waiting);
             }
         }
-        let hint = format!(
-            "no panes in {}: C-b t n starts a shell (keys are scripts in {})",
-            self.workspace,
-            self.keys.display()
-        );
+        // (The key is named if it is there: the keys are the user's own.)
+        let hint = match self.keys.join("C-b/t/n").is_file() {
+            true => format!("no panes in {}: C-b t n starts a shell", self.workspace),
+            false => format!("no panes in {}: keys are scripts in {}", self.workspace, self.keys.display()),
+        };
         let (note, style) = match &wrong {
             Some(wrong) => (wrong, colour(9, Some(236), 0)),
-            None if tiles.is_empty() && self.message.is_empty() => (&hint, colour(11, Some(236), 0)),
+            None if layout.tabs.is_empty() && self.message.is_empty() => (&hint, colour(11, Some(236), 0)),
             None => (&self.message, colour(11, Some(236), 0)),
         };
         let last = h.saturating_sub(1);

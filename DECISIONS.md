@@ -1227,6 +1227,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     left, and tmux users expect the last `exit` to end something.
   - A keys directory written by an earlier build has no `.empty`: the
     viewer then shows the sentence as before.
+- **D86. The fix check of D85 (1 Opus, 1 gpt-6.2-astra, a tester; one pass).**
+  Opus found no must-fix; astra three. Changed: "no pane" is what the
+  layout says, not what there was room to draw (a terminal of no rows
+  started a second shell in a workspace that had one); two viewers that
+  find a workspace empty in the same moment start one shell (`.empty`
+  claims with a folder `.first`, which the other finds; the claim goes
+  when the script ends); a script that is being waited for when `.empty`
+  is started is still waited for; the sentence names `C-b t n` only if
+  that key is there. The test types through the viewer and counts the
+  runs of an `.empty` of its own.
+  - CI: the sentence was longer than the test's screen on a machine with
+    a long temporary path (it is short now, without the path).
+  - Kept: a layout made invalid in the instant between the viewer's two
+    reads of it can still get `.empty` run against it.
 
 ## The old fux3's bugs: which classes are gone
 

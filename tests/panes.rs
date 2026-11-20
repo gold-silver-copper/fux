@@ -279,16 +279,37 @@ fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
     let (outer, inner) = (Session::new("eouter"), Session::new("einner"));
     let keys = inner.0.join(".keys");
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
-    let view =
-        outer.start("view", &[&command[..], &["env", "SHELL=/bin/sh", env!("CARGO_BIN_EXE_fux"), "view"]].concat());
-    until("the first pane runs a shell", || fact(&inner.0.join("main/1"), "state") == "running");
-    assert!(read(&inner.0.join("main/1/status")).contains(".keys/.shell"));
+    let viewer = ["env", "SHELL=/bin/sh", env!("CARGO_BIN_EXE_fux"), "view"];
+    let view = outer.start("view", &[&command[..], &viewer[..]].concat());
+    let first = inner.0.join("main/1");
+    until("the first pane runs a shell", || {
+        fact(&first, "state") == "running" && read(&first.join("status")).contains(".keys/.shell")
+    });
+    // What is typed to the viewer is the shell's, and the viewer shows it.
+    until("the shell's prompt is shown", || {
+        read(&view.join("screen")).lines().next().is_some_and(|row| row.ends_with(['$', '#']))
+    });
+    fs::write(view.join("in"), "echo $((6*7))\r").unwrap();
+    until("the shell answered", || read(&view.join("screen")).contains("\n42\n"));
     // The shell ends, and its pane with it: the workspace stays empty, and the viewer says how
-    // to go on. It is not started over and over.
-    fs::write(inner.0.join("main/1/in"), "exit\r").unwrap();
+    // to go on. Nothing is started again: not then, and not when the viewer draws anew.
+    fs::write(view.join("in"), "exit\r").unwrap();
     until("the viewer says so", || read(&view.join("screen")).contains("no panes in main: C-b t n starts a shell"));
-    std::thread::sleep(Duration::from_millis(400));
+    fs::write(view.join("ctl"), "resize 70 20\n").unwrap();
+    until("the viewer drew at the new size", || {
+        fact(&view, "size") == "70 20" && read(&view.join("screen")).contains("no panes")
+    });
+    std::thread::sleep(Duration::from_millis(300));
     assert!(fs::read_dir(inner.0.join("main")).unwrap().flatten().all(|entry| !entry.path().is_dir()));
+    // A workspace the viewer is taken to runs the keys' own `.empty`, once: here one that only
+    // notes that it ran.
+    fs::write(keys.join(".empty"), "#!/bin/sh\necho \"$FUXN_WS\" >> \"$FUXN_KEYS/ran\"\n").unwrap();
+    fs::create_dir_all(inner.0.join("other")).unwrap();
+    let ctl =
+        fs::read_dir(&inner.0).unwrap().flatten().find(|file| file.file_name().to_string_lossy().starts_with(".view."));
+    fs::write(ctl.unwrap().path(), "workspace other\n").unwrap();
+    until("the other workspace is shown", || read(&view.join("screen")).contains("no panes in other"));
+    assert_eq!(read(&keys.join("ran")), "other\n");
 }
 
 #[test]
