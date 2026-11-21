@@ -1215,7 +1215,13 @@ impl View {
         }
         let mut style = None;
         let mut at = None;
+        // The link the terminal has open (OSC 8) is changed here alone, and only to another.
         let mut pen = 0;
+        let mut link = |out: &mut String, next: u16| {
+            if std::mem::replace(&mut pen, next) != next {
+                out.extend(["\x1b]8;;", address(&links, next).unwrap_or_default(), "\x1b\\"]);
+            }
+        };
         // The cells from here to `again` are sent whether they changed or not: a character before
         // them may have been drawn over them.
         let mut again = 0;
@@ -1251,9 +1257,7 @@ impl View {
             // edge stays on its row: every row starts with its place.)
             if at != Some(i) || !ascii || x == 0 {
                 // (A link is closed before the cursor moves: none is open over cells not drawn.)
-                if std::mem::take(&mut pen) != 0 {
-                    out.push_str("\x1b]8;;\x1b\\");
-                }
+                link(&mut out, 0);
                 out.push_str(&place);
             }
             if style != Some(new.style) {
@@ -1263,37 +1267,24 @@ impl View {
             if apart {
                 out.push('\u{200b}');
             }
-            let link = |out: &mut String, number: u16| {
-                out.push_str(&format!("\x1b]8;;{}\x1b\\", address(&links, number).unwrap_or_default()));
-            };
             // A wide character that may come out narrower (one of several parts, an emoji) is
             // drawn over two blanks, of its link as it is (closed again before the cursor goes
             // back over them); the cells one may come out over are sent after it.
             if new.wide() && !new.plain() {
-                if new.link != pen {
-                    link(&mut out, new.link);
-                }
+                link(&mut out, new.link);
                 out.push_str("  ");
-                if new.link != 0 {
-                    link(&mut out, 0);
-                }
-                pen = 0;
+                link(&mut out, 0);
                 out.push_str(&place);
             }
             // A cell that is part of a link is drawn inside it (OSC 8): the link is opened before
             // the first such cell and closed before the next cell that is not part of it, so
             // none reaches past its tile or over a line between tiles.
-            if new.link != pen {
-                link(&mut out, new.link);
-                pen = new.link;
-            }
+            link(&mut out, new.link);
             out.extend(new.chars());
             again = again.max(i + 1 + usize::from(new.wide()) + new.spill());
             at = ascii.then_some(i + 1);
         }
-        if pen != 0 {
-            out.push_str("\x1b]8;;\x1b\\");
-        }
+        link(&mut out, 0);
         self.links = links;
         if redraw {
             for (key, x, y, ..) in &pictures {
