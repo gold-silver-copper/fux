@@ -1594,7 +1594,7 @@ impl Term {
         match byte {
             0x07 => self.notice(""),
             0x08 => self.move_to_col(self.screen.cursor.col.saturating_sub(1)),
-            0x09 => self.tab(1),
+            0x09 => self.tab(1, false),
             0x0a..=0x0c => self.linefeed(false),
             0x0d => self.move_to_col(0),
             0x0e => self.screen.cursor.shift = true,
@@ -1603,11 +1603,14 @@ impl Term {
         }
     }
 
-    fn tab(&mut self, n: usize) {
-        for _ in 0..n {
-            let next = (self.screen.cursor.col + 1..self.screen.cols).find(|&c| self.tabs.get(c) == Some(&true));
-            self.screen.cursor.col = next.unwrap_or(self.screen.cols - 1);
-        }
+    /// To the `n`th tab stop after the cursor, or before it (`back`): to the row's edge, if it has not as many.
+    fn tab(&mut self, n: usize, back: bool) {
+        let (col, stop) = (self.screen.cursor.col, |c: &usize| self.tabs.get(*c) == Some(&true));
+        self.screen.cursor.col = match back {
+            true => (0..col).rev().filter(stop).nth(n - 1).unwrap_or(0),
+            false => (col + 1..self.screen.cols).filter(stop).nth(n - 1).unwrap_or(self.screen.cols - 1),
+        };
+        self.screen.cursor.wrap &= !back;
     }
 
     fn escape(&mut self, byte: u8) {
@@ -2019,14 +2022,7 @@ impl Term {
             (0, 0, b'G' | b'`') => self.move_to_col(n - 1),
             (0, 0, b'H' | b'f') => self.move_to(n - 1, self.arg(1, 1) - 1),
             (0, 0, b'd') => self.move_to(n - 1, col),
-            (0, 0, b'I') => self.tab(n),
-            (0, 0, b'Z') => {
-                for _ in 0..n {
-                    self.screen.cursor.col =
-                        (0..self.screen.cursor.col).rev().find(|&c| self.tabs.get(c) == Some(&true)).unwrap_or(0);
-                }
-                self.screen.cursor.wrap = false;
-            }
+            (0, 0, b'I' | b'Z') => self.tab(n, last == b'Z'),
             // (The marks on what is erased are, in their order, where the erased part begins:
             // what they marked is gone, and they mark nothing of what is written there next.)
             (0 | b'?', 0, b'J') => match self.arg(0, 0) {
