@@ -1984,6 +1984,37 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
      which a plain script over the file does not take.
   Nothing of that size was taken: the tree is at the least this run
   could prove.
+- **D112. The review of this run, round one** (six readers: the
+  emulator; the holder and a pane's files; the viewer and the layout;
+  `fuxix` and every unsafe block; the keys, scripts and agents' page;
+  the docs against the code; two blind testers beside them). Taken,
+  each with a test that failed first where one can be made: a wrap
+  that waits on the alternate screen is forgotten when a shorter
+  screen cuts its row (D110 kept it too widely); `pictures` lists only
+  pictures with a row on the screen, on either screen; a styled text
+  is read at any width without a sum that can overflow; a mark goes
+  with its cell when a character before it grows wider in insert
+  mode; a key's script is never told a size that is no size (the
+  viewer knows its terminal's size from the start, and a terminal of
+  no rows or columns leaves `COLUMNS` and `LINES` unset: the first
+  shell starts 80 by 24, as before D102); the clipboard's stamp and
+  bytes are of one open file (a copy could be sent twice); `C-b w n`
+  starts the shell before it shows the workspace (D104's change let
+  what was typed next find no pane); a part asked to be narrower is
+  never made wider, in a row of any length (D107 and D110 held for
+  two parts); a picker's or editor's file that cannot be moved leaves
+  mv's words until Enter. Taken back: D108's reading of a file again
+  when its inode's change time moves (a chmod of `clipboard` or
+  `notice` sent the copy and the notice again): a `colours` file that
+  could not be read stays unread until it is written, as before D108.
+  Not taken, and why: the earlier `state` of a pane whose start in
+  place fails before its program runs stays, with the earlier
+  `status` (the two agree; a test says a failed start leaves what the
+  last program left; the README's sentence was narrowed to say so);
+  allocations a reader counted on paths nobody measures as slower
+  (one small list per line read from a FIFO; a tab's panes listed at
+  each load of the layout; UTF-8 by std, D100); an overflow on a
+  machine with a 32-bit `usize`, which `fuxix` does not build for.
 
 ## The old fux3's bugs: which classes are gone
 

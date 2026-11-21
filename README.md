@@ -438,7 +438,7 @@ names differ by more than case, for macOS; a terminal that tells the key's lette
 
 A script gets `FUXN_DIR` (the session), `FUXN_WS` (the workspace shown),
 `FUXN_PANE` (the focused pane's directory, empty with no pane), `FUXN_KEYS`, `FUXN_VIEW`,
-`COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has),
+`COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has; neither is set for a terminal that says it has no columns or no rows, and `fux start` then makes a pane 80 by 24),
 `FUXN_ROW` and `FUXN_COL` (the size, as `COLSxROWS`, of the tile a split of the
 focused pane would make: `FUXN_ROW` side by side, as `C-b v` splits, `FUXN_COL`
 one above the other, as `C-b s` does; the split keys
