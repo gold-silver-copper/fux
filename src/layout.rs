@@ -185,6 +185,25 @@ impl Tab {
         }
         tiles
     }
+
+    /// Puts a pane beside (in a row) or below (in a column) one of the tab's panes, and gives
+    /// it the keys.
+    pub fn beside(&mut self, anchor: &str, name: &str, row: bool) {
+        self.focus = name.to_string();
+        let found = self.root.with_parent(anchor, &mut |parent_row, parts, at| {
+            if *parent_row == row {
+                // The new part is as large as the one it is put beside (parts that were
+                // given shares since would leave one of share 1 a sliver).
+                let share = parts.get(at).map_or(1, |part| part.1);
+                parts.insert(at + 1, (Node::Pane(name.to_string()), share));
+            } else if let Some(part) = parts.get_mut(at) {
+                part.0 = Node::Split(row, vec![(part.0.clone(), 1), (Node::Pane(name.to_string()), 1)]);
+            }
+        });
+        if !found {
+            self.root = Node::Split(row, vec![(self.root.clone(), 1), (Node::Pane(name.to_string()), 1)]);
+        }
+    }
 }
 
 fn tab_of(name: &str) -> Tab {
@@ -378,20 +397,7 @@ impl Layout {
                     self.current = self.tabs.len() - 1;
                     return Ok(());
                 };
-                tab.focus = name.to_string();
-                let found = tab.root.with_parent(&beside, &mut |parent_row, parts, at| {
-                    if *parent_row == row {
-                        // The new part is as large as the one it is put beside (parts that were
-                        // given shares since would leave one of share 1 a sliver).
-                        let share = parts.get(at).map_or(1, |part| part.1);
-                        parts.insert(at + 1, (Node::Pane(name.to_string()), share));
-                    } else if let Some(part) = parts.get_mut(at) {
-                        part.0 = Node::Split(row, vec![(part.0.clone(), 1), (Node::Pane(name.to_string()), 1)]);
-                    }
-                });
-                if !found {
-                    tab.root = Node::Split(row, vec![(tab.root.clone(), 1), (Node::Pane(name.to_string()), 1)]);
-                }
+                tab.beside(&beside, name, row);
                 self.current = at.unwrap_or(0);
             }
             ["focus", way @ ("left" | "right" | "up" | "down")] => {
@@ -427,8 +433,7 @@ impl Layout {
                     std::mem::swap(*a, *b);
                 }
             }
-            // `pane NAME` is `focus NAME` for a pane whose name is a direction's word.
-            ["focus" | "pane", name] => {
+            ["pane", name] => {
                 self.current = self.tab_with(name)?;
                 self.tab_mut()?.focus = name.to_string();
             }
@@ -489,7 +494,7 @@ impl Layout {
 /// `fux layout [WORDS…]`: edits the workspace's layout file, or with no
 /// words only settles it against the panes there; says how it reads then.
 /// The workspace's folder is locked meanwhile, so two edits never mix.
-pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {
+pub fn command(workspace: &Path, words: &[&str]) -> Result<Layout, String> {
     let lock = fs::File::open(workspace).map_err(|e| format!("{}: {e}", workspace.display()))?;
     lock.lock().map_err(|e| format!("{}: {e}", workspace.display()))?;
     let (old, mut layout, wrong) = Layout::load(workspace);
@@ -504,5 +509,5 @@ pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {
         parse(&text)?;
         replace(&file, text.as_bytes()).map_err(|e| format!("{}: {e}", file.display()))?;
     }
-    Ok(text)
+    Ok(layout)
 }

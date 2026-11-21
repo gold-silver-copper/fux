@@ -814,17 +814,13 @@ impl View {
         script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.to_string());
         let area = Rect { x: 0, y: 0, w: usize::from(self.size.cols), h: usize::from(self.size.rows) };
         let layout = Layout::load(&self.session.join(&self.workspace)).1;
-        for (name, way) in [(name!("ROW"), "row"), (name!("COL"), "col")] {
-            // A pane no folder can be named after is split off in a copy of the layout.
-            let mut split = layout.clone();
-            split.tabs.push(layout::Tab { root: layout::Node::Pane("\0".into()), focus: "\0".into() });
-            // Beside the pane the script is told of, as the split keys split: the same pane for both.
-            let words: &[&str] = match &self.focus {
-                Some(focus) => &["split", way, "\0", "beside", focus],
-                None => &["split", way, "\0"],
-            };
-            let tile = split.edit(words).ok().and_then(|()| {
-                split.tab()?.tiles(area).into_iter().find(|(pane, _)| pane == "\0").map(|(_, tile)| tile)
+        for (name, row) in [(name!("ROW"), true), (name!("COL"), false)] {
+            // A pane no folder can be named after is put, in a copy of the tab shown, beside the
+            // pane the script is told of, as the split keys split.
+            let tile = layout.tab().zip(self.focus.as_ref()).and_then(|(tab, focus)| {
+                let mut split = tab.clone();
+                split.beside(focus, "\0", row);
+                split.tiles(area).into_iter().find(|(pane, _)| pane == "\0").map(|(_, tile)| tile)
             });
             let tile = tile.unwrap_or(area);
             script.env(name, format!("{}x{}", tile.w, tile.h));
@@ -891,8 +887,10 @@ impl View {
         // The file says what is shown: when panes came or went, it is written
         // again, so that an edit is always an edit of what is on the screen.
         if wrong.is_none() && text != layout.print() {
-            wrong = layout::command(&directory, &[]).err();
-            layout = Layout::load(&directory).1;
+            match layout::command(&directory, &[]) {
+                Ok(settled) => layout = settled,
+                Err(why) => wrong = Some(why),
+            }
         }
         let tab = layout.tab();
         // Panes get every cell but the lines between them: no titles, and no row for a bar.

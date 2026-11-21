@@ -200,10 +200,10 @@ the next key; Escape closes them. It shows each pane as a tab unless the workspa
 FUXN_WS (in a pane: that pane's own). Two panes above and one below, across:
     FUXN_WS=agent-demo fux layout split col w2 beside ls    # w2 below ls: do this one first
     FUXN_WS=agent-demo fux layout split row w1 beside ls    # w1 to the right of ls, above w2
-    FUXN_WS=agent-demo fux layout focus ls                  # ls gets the keys
+    FUXN_WS=agent-demo fux layout pane ls                   # ls gets the keys
     FUXN_WS=agent-demo fux layout                           # print it: * marks the tab shown
-Edits: split row|col PANE [beside PANE] · focus left|right|up|down|next|prev|PANE · tab
-next|prev|N|- (and break, swap, size, rotate, arrange).
+Edits: split row|col PANE [beside PANE] · pane PANE · focus left|right|up|down|next|prev ·
+tab next|prev|N|- (and break, swap, size, rotate, arrange).
 To see what a person would, run the viewer in a pane of ANOTHER workspace and read it:
     V=$(COLUMNS=100 LINES=30 fux start agent-view/v -- fux view agent-demo); seen '│' "$V/screen"
     printf 'notify %s\n' 'look here' > "$W/ctl"; seen ' broad: look here$' "$V/notice"
