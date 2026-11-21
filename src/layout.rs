@@ -283,7 +283,7 @@ impl Layout {
     /// settled against the folders, and what is wrong with the file if it
     /// cannot be read as a layout (it then counts as empty, and is left alone).
     pub fn load(workspace: &Path) -> (String, Layout, Option<String>) {
-        let (bytes, read) = crate::read(fs::File::open(workspace.join("layout")), FILE_MAX + 1);
+        let (bytes, read) = crate::read(crate::sys::open(workspace.join("layout"), false), FILE_MAX + 1);
         let read = read.or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(0) } else { Err(e) });
         let text = read.map_err(|e| format!("the layout file cannot be read: {e}")).and_then(|n| {
             check_file_size(n)?;

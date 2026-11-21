@@ -1449,3 +1449,32 @@ fn a_menu_opens_whatever_kind_of_file_a_key_is() {
     fs::write(view.join("in"), "v").unwrap();
     until_or("the viewer still answers", screen, || screen().contains(" said"));
 }
+
+#[test]
+fn a_workspace_whose_layout_is_a_fifo_is_drawn_and_left_all_the_same() {
+    // A FIFO where the workspace's layout would be, which nobody writes to: the viewer does not
+    // wait for it. It draws the pane that is there and still takes its keys, the one to leave too.
+    let (outer, inner) = (Session::new("youter"), Session::new("yinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    fs::write(keys.join("C-b/d"), "#!/bin/sh\necho quit\n").unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("C-b/d")).status().unwrap();
+    inner.start("one", &["sh"]);
+    assert!(Command::new("mkfifo").arg(inner.0.join("main/layout")).status().unwrap().success());
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    let screen = || read(&view.join("screen"));
+    // (A few seconds, not `until`'s minute: a viewer that waits for the FIFO waits for good.)
+    let soon = |what: &str, ready: &dyn Fn() -> bool| {
+        let start = Instant::now();
+        while !ready() {
+            assert!(start.elapsed() < Duration::from_secs(8), "after 8 s the viewer had not {what}: {:?}", screen());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    soon("shown the pane", &|| screen().contains('$') || screen().contains('#'));
+    // (It read nothing there, and wrote the layout it shows in the FIFO's place.)
+    assert_eq!(read(&inner.0.join("main/layout")), "* one focus=one\n");
+    fs::write(view.join("in"), "\x02d").unwrap();
+    soon("left", &|| fact(&view, "state").starts_with("exited"));
+}
