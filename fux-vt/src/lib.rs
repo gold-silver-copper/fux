@@ -1457,8 +1457,9 @@ impl Term {
         self.interrupt();
         if self.screen.alt {
             self.cluster = None;
-            // (A wrap that waits is done still if the width is the one it waited at, as in xterm.)
-            self.screen.cursor.wrap &= cols == self.screen.cols;
+            // (A wrap that waits is done still if the width is the one it waited at, as in xterm,
+            // and its row was not cut.)
+            self.screen.cursor.wrap &= cols == self.screen.cols && self.screen.cursor.row < rows;
             (self.screen.cursor.row, self.screen.cursor.col) =
                 (self.screen.cursor.row.min(rows - 1), self.screen.cursor.col.min(cols - 1));
         } else {

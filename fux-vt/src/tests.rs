@@ -1496,6 +1496,16 @@ fn a_wrap_that_waits_on_the_alternate_screen_is_done_after_a_resize_that_keeps_t
 }
 
 #[test]
+fn a_wrap_that_waits_on_the_alternate_screen_is_forgotten_when_its_row_is_cut() {
+    let mut term = term(4, 3, "\x1b[?1049hTOP\r\nMID\r\nABCD");
+    term.resize(4, 2);
+    term.feed(b"E");
+    let row =
+        |row: usize| (0..4).filter_map(|col| term.screen.cell_at(row, col)).map(|cell| cell.ch).collect::<String>();
+    assert_eq!((row(0).as_str(), row(1).as_str()), ("TOP ", "MIDE"));
+}
+
+#[test]
 fn a_picture_on_the_alternate_screen_keeps_its_column_on_a_screen_too_narrow_to_show_it() {
     let mut term = term(10, 4, "\x1b[?1049h\x1b[1;8H\x1bPq@\x1b\\");
     for cols in [5, 10] {
