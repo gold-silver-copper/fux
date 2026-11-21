@@ -1020,14 +1020,11 @@ impl View {
         let focus = tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name)).map(|(_, body)| *body);
         self.tiles = tiles;
         let lines: Vec<bool> = back.iter().map(|cell| cell.ch == '\u{2}').collect();
-        let is_line = |x: Option<usize>, y: Option<usize>| match (x, y) {
-            (Some(x), Some(y)) if x < w => lines.get(y * w + x) == Some(&true),
-            _ => false,
-        };
-        for (i, cell) in back.iter_mut().enumerate().filter(|(i, _)| lines.get(*i) == Some(&true)) {
+        let is_line = |i: usize| lines.get(i) == Some(&true);
+        for (i, cell) in back.iter_mut().enumerate().filter(|(i, _)| is_line(*i)) {
             let (x, y) = (i % w, i / w);
-            let (up, down) = (is_line(Some(x), y.checked_sub(1)), is_line(Some(x), Some(y + 1)));
-            let (left, right) = (is_line(x.checked_sub(1), Some(y)), is_line(Some(x + 1), Some(y)));
+            let (up, down) = (i >= w && is_line(i - w), is_line(i + w));
+            let (left, right) = (x > 0 && is_line(i - 1), x + 1 < w && is_line(i + 1));
             let ch = match (up || down, left || right) {
                 (true, true) if !left => '├',
                 (true, true) if !right => '┤',
