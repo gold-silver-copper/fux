@@ -1964,3 +1964,20 @@ fn a_line_of_ctl_that_has_not_ended_writes_no_screen() {
     until("the whole line is taken", || fact(&pane, "notice") == "1 the first half");
     until("the screen follows the notice", || screen() != first);
 }
+
+#[test]
+fn a_pane_started_again_with_a_program_that_cannot_be_run_leaves_no_state_of_the_run_before() {
+    // The holder ends before it has a program at all (none of that name, or COLUMNS that is no size): the
+    // earlier program's end is not the end of this start, and `fux wait` has none to tell of.
+    let session = Session::new("norun");
+    let pane = session.start("p", &["sh", "-c", "exit 37"]);
+    let wait = || session.fux().arg("wait").arg(&pane).output().unwrap();
+    assert!(String::from_utf8_lossy(&wait().stdout).ends_with("state exited 37\n"));
+    let again = session.fux().args(["start", "p", "--", "/no/such/program"]).output().unwrap();
+    assert!(!again.status.success(), "{again:?}");
+    let (waited, state) = (wait(), read(&pane.join("state")));
+    assert!(!waited.status.success() && state.is_empty(), "{waited:?} {state:?}");
+    fs::write(pane.join("state"), "exited 37\n").unwrap();
+    let again = session.fux().args(["start", "p"]).env("COLUMNS", "abc").output().unwrap();
+    assert!(!again.status.success() && read(&pane.join("state")).is_empty(), "{again:?}");
+}
