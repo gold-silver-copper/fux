@@ -1201,7 +1201,7 @@ impl View {
                 cells(&format!(" {note} "), style)
             };
             let right: Vec<Cell> = right.into_iter().take(w * 3 / 4).collect();
-            put(&mut back, w, 0, last, w, &cells(&" ".repeat(w), bar));
+            put(&mut back, w, 0, last, w, &vec![Cell::blank(bar); w]);
             // As many tabs as fit, the one shown among them.
             let room = w.saturating_sub(right.len() + 2);
             let fits = |first: usize| {
@@ -1249,7 +1249,7 @@ impl View {
                     let y = last.saturating_sub(height) + i;
                     let hides = n + 1 == boxes.len() && boxes.len() < all && i + 1 == height;
                     let line = if hides { Some(&more) } else { part.get(i) };
-                    put(&mut back, w, right, y, width, &cells(&" ".repeat(width), panel));
+                    put(&mut back, w, right, y, width, &vec![Cell::blank(panel); width]);
                     put(&mut back, w, right, y, width, line.map_or(&[], |line| line));
                 }
             }

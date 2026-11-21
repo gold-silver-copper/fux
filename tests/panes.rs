@@ -528,6 +528,29 @@ fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
 }
 
 #[test]
+fn the_bar_covers_the_whole_last_row_of_a_wide_terminal() {
+    // A terminal 300 columns wide, and a pane whose last row is text from end to end: while the
+    // prefix is held the bar is on that row, and none of the text shows through it.
+    let (outer, inner) = (Session::new("wouter"), Session::new("winner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    let wide = |session: &Session, name: &str, program: &[&str]| {
+        let mut start = session.fux();
+        start.env("COLUMNS", "300").env("LINES", "20").args(["start", name, "--"]).args(program);
+        PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim())
+    };
+    let fills = "printf '\\033[20;1H%s' \"$(head -c 300 /dev/zero | tr '\\0' x)\"; sleep 600";
+    wide(&inner, "full", &["sh", "-c", fills]);
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = wide(&outer, "view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    let last = || read(&view.join("screen")).lines().nth(19).unwrap_or_default().to_string();
+    until("the pane's last row is shown", || last() == "x".repeat(300));
+    fs::write(view.join("in"), "\x02").unwrap();
+    until("the bar is shown", || last().starts_with(" main "));
+    assert!(!last().contains('x'), "{}", last());
+}
+
+#[test]
 fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     // The viewer needs a terminal: it runs in a pane of an outer session.
     let (outer, inner) = (Session::new("outer"), Session::new("inner"));
