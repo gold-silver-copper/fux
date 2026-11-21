@@ -65,8 +65,6 @@ struct Holder {
 /// process's standard input: it is held for exactly as long as the holder lives.
 pub fn hold(args: &[OsString]) -> Result<(), String> {
     let [cwd, program, program_args @ ..] = args else { return Err("hold is started by `fux start`".into()) };
-    // (The end of the program an earlier holder kept is not this start's, however soon this one ends.)
-    let _ = fs::remove_file("state");
     // The first size is COLUMNS x LINES when the starter set them (the viewer
     // does, for key scripts), and 80x24 otherwise. `resize` changes it later.
     let number = |name: &str, or: u16| {
@@ -149,9 +147,9 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
 impl Holder {
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
         // What an earlier holder of this pane left goes before this one's first screen is there: its clipboard,
-        // its history and its title (a fact with none). Not its pictures' files: each stays until a picture of
-        // its number is written.
-        for old in ["clipboard", "notice"] {
+        // its history, its title (a fact with none) and its program's end, which is not that of the one `status`
+        // names now. Not its pictures' files: each stays until a picture of its number is written.
+        for old in ["clipboard", "notice", "state"] {
             let _ = fs::remove_file(old);
         }
         for history in ["history", "history.styled"] {
