@@ -492,13 +492,12 @@ impl Screen {
     }
 
     /// The modes the `modes` file lists by name, and where each is kept.
-    fn modes(&mut self) -> [(&'static str, &mut bool); 5] {
+    fn modes(&mut self) -> [(&'static str, &mut bool); 4] {
         [
             ("appcursor", &mut self.app_cursor),
             ("keypad", &mut self.app_keypad),
             ("paste", &mut self.paste),
             ("focus", &mut self.focus),
-            ("alt", &mut self.alt),
         ]
     }
 

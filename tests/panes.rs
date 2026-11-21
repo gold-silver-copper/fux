@@ -231,7 +231,7 @@ fn the_main_screen_a_full_screen_program_covers_is_in_files_of_its_own_until_it_
     let (main, styled) = (file("screen.main"), file("screen.main.styled"));
     assert!(main.starts_with("green and a line of forty characters or so\n") && main.lines().count() == 24, "{main:?}");
     assert!(styled.starts_with("\x1b[0;32mgreen\x1b[") && bare(&styled) == main, "{styled:?}");
-    assert!(fact(&pane, "modes").contains("alt") && !file("screen").contains("green"));
+    assert!(!file("screen").contains("green"));
     // What the program draws meanwhile is not the covered screen's: its files are not written again.
     use std::os::unix::fs::MetadataExt;
     let stamp = |name: &str| fs::metadata(pane.join(name)).map(|file| (file.ino(), file.mtime_nsec())).ok();
@@ -251,8 +251,8 @@ fn the_main_screen_a_full_screen_program_covers_is_in_files_of_its_own_until_it_
     // The program leaves: the files go, and the screen is what they said.
     let covered = file("screen.main");
     fs::write(pane.join("in"), "\n").unwrap();
-    until("the main screen is shown again", || !fact(&pane, "modes").contains("alt"));
-    assert!(!pane.join("screen.main").exists() && !pane.join("screen.main.styled").exists());
+    until("the main screen is shown again", || !pane.join("screen.main").exists());
+    assert!(!pane.join("screen.main.styled").exists());
     until("the screen is the main one", || file("screen") == covered && file("lines") == "0\n1 2\n");
 }
 

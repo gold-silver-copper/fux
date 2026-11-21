@@ -95,17 +95,16 @@ cursor  ROW COL shown|hidden SHAPE, from 0, e.g. `2 8 shown 0`: row 2 is line 3 
         (a fifth word, `#rrggbb`, if the program gave the cursor a colour; a colour a program
         sets for its pane is in `screen.styled` as direct colour: `38;2;R;G;B`, `48;2;R;G;B`
         on every cell for a background, `58:2::R:G:B` for an underline)
-modes   words, or an empty line: `alt` (a full-screen program has the alternate screen),
-        paste, appcursor, keypad, focus, mouseN, mousesgr, keysN
+modes   words, or an empty line: paste, appcursor, keypad, focus, mouseN, mousesgr, keysN
 state   running | hungup | exited CODE | killed SIGNAL
 status  three lines: holder N / pid N (the program's) / command ...
-screen.main, screen.main.styled   only while `modes` says alt: the main screen that the
-        full-screen program covers, as screen and screen.styled would have it
+screen.main, screen.main.styled   only while a full-screen program has the alternate
+        screen: the main screen it covers, as screen and screen.styled would have it
 lines   two lines: the number, from 0, of the screen's first row among all lines the pane
         printed; then the screen rows (from 0) that continue the row above, `1 2` being one
         line in 3 rows (empty if none). `{ read -r top; read -r wraps; } < lines`. While
-        `modes` says alt a third: the rows of screen.main that continue (the first line
-        counts its lines, the second is of `screen`)
+        screen.main is there a third: its rows that continue (the first line counts its
+        lines, the second is of `screen`)
 title   the window title the program set (absent until it does)
 cwd     the program's directory, if it announces it (absent else): a shell must, at each
         prompt. For bash: PROMPT_COMMAND='printf "\033]7;file://%s\007" "$PWD"'
@@ -151,14 +150,14 @@ So never wait for "an end": wait for one MORE than there were before you typed.
     grep ' end' "$S/marks" | tail -n 1; cat "$S/cwd"       # LINE AT end 1, and /
 
 FULL-SCREEN PROGRAMS (vim, less, htop)
-`modes` says alt while one is on the alternate screen; `screen` is then its screen, and
-`screen.main` the main screen it covers (there before `modes` says alt, gone when it
-leaves): what the shell showed before the program opened, read without leaving it. Send
-keys as bytes; after each, wait for a changed frame or for the text you expect.
-    printf 'less "%s/status"\r' "$P" > "$P/in"; seen alt "$P/modes"
+`screen.main` is there while one is on the alternate screen, and gone when it leaves:
+`screen` is then the program's screen, and `screen.main` the main screen it covers, what
+the shell showed before the program opened, read without leaving it. Send keys as bytes;
+after each, wait for a changed frame or for the text you expect.
+    printf 'less "%s/status"\r' "$P" > "$P/in"; seen '^' "$P/screen.main"
     grep '<<t1' "$P/screen.main"              # under less: the shell's screen, with the tag printed above
     f=$(frame "$P"); printf '/pid\r' > "$P/in"; changed "$P" "$f"      # search; vim: printf '\033:wq\r'
-    printf 'q' > "$P/in"; unseen alt "$P/modes"; [ ! -e "$P/screen.main" ]
+    printf 'q' > "$P/in"; unseen '^' "$P/screen.main"
 A program that asks what its terminal is gets fux's own answers: XTVERSION `fux-next N`;
 COLORTERM=truecolor in its environment; and by name (XTGETTCAP) only what fux does: TN name
 Co colors RGB Tc setrgbf setrgbb Smulx Setulc Ss Se. So Neovim uses true colour and

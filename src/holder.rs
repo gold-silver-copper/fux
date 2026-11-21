@@ -542,8 +542,8 @@ impl Holder {
         // (The cursor's colour, if the program set one: a fifth word.)
         let colour = term.cursor_colour().map_or(String::new(), |[r, g, b]| format!(" #{r:02x}{g:02x}{b:02x}"));
         // While a program has the alternate screen, the main screen it covers has two files, as
-        // the screens are written; they are there before `modes` says `alt`, and gone before it
-        // no longer does. Which of its rows go on is a third line of `lines` meanwhile.
+        // the screens are written: that they are there is what says so. Which of its rows go on
+        // is a third line of `lines` meanwhile.
         let (main, looks, under) = match term.covered() {
             Some((plain, styled, wraps)) => (Some(plain.into_bytes()), Some(styled.into_bytes()), wraps + "\n"),
             None => (None, None, String::new()),
