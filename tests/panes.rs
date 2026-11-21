@@ -103,7 +103,7 @@ fn the_two_histories_keep_their_bounds_and_the_same_lines() {
     let mut most = 0;
     until("the bars are printed", || {
         most = most.max(size(&pane, "history.styled")).max(size(&pane, "history.styled.1"));
-        read(&pane.join("screen")).contains("done")
+        read(&pane.join("shown/screen")).contains("done")
     });
     assert!(most < 6 << 20 && size(&pane, "history.styled.1") > 4 << 20, "{most}");
     // A file is not put aside while its last rows are a resize's to take back: they are taken
@@ -113,7 +113,7 @@ fn the_two_histories_keep_their_bounds_and_the_same_lines() {
     let mut start = session.fux();
     start.env("COLUMNS", "2").env("LINES", "2").args(["start", "long", "--", "sh", "-c", long]);
     let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
-    let texts = |pane: &Path| (read(&pane.join("screen")), read(&pane.join("history")));
+    let texts = |pane: &Path| (read(&pane.join("shown/screen")), read(&pane.join("history")));
     until("the line is printed", || texts(&pane).0 == "b\nZ\n" && size(&pane, "history") == 700_000);
     assert!(size(&pane, "history.styled") > 4 << 20);
     fs::write(pane.join("ctl"), "resize 2 1\n").unwrap();
@@ -160,7 +160,7 @@ fn a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines(
     let session = Session::new("aside");
     let prints = "mkdir \"$FUXN_PANE/history.styled.1\"; awk 'BEGIN { for (i = 0; i < 56000; i++) printf \"%079d\\n\", i }'; printf done; sleep 600";
     let pane = session.start("p", &["sh", "-c", prints]);
-    until("the lines are printed", || read(&pane.join("screen")).contains("done"));
+    until("the lines are printed", || read(&pane.join("shown/screen")).contains("done"));
     let (aside, history) = (read(&pane.join("history.1")), read(&pane.join("history")));
     let lines = aside.lines().count() + history.lines().count();
     assert!(aside.starts_with("0000") && lines == 56000 - 23, "{lines} lines, {} put aside", aside.len());
@@ -218,7 +218,7 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     // (The other's arguments have no blank in them, and what a shell would expand.)
     let other = session.start("v/other", &["printf", "%s\\n", "*", "the-needle;$HOME"]);
     until("both have printed", || {
-        read(&old.join("history")).contains("needle") && read(&other.join("screen")).contains("$HOME")
+        read(&old.join("history")).contains("needle") && read(&other.join("shown/screen")).contains("$HOME")
     });
     fs::write(session.0.join("ed"), "#!/bin/sh\nsed -n \"${1#+}p\" \"$2\" > \"$OUT\"\n").unwrap();
     Command::new("chmod").arg("+x").arg(session.0.join("ed")).status().unwrap();
@@ -231,14 +231,14 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
         .env("PATH", format!("{}:{path}", session.0.join("none").display()));
     let found = search.args(["start", "w/find", "--"]).arg(keys.join(".search")).output().unwrap();
     let find = PathBuf::from(String::from_utf8(found.stdout).unwrap().trim());
-    until("it asks", || read(&find.join("screen")).contains("search every pane for:"));
+    until("it asks", || read(&find.join("shown/screen")).contains("search every pane for:"));
     fs::write(find.join("in"), "NEEDLE\r").unwrap();
     // (With a finder installed the list is its own; without, the lines are numbered.)
     if ["fzf", "sk", "fzy"].iter().all(|finder| {
         Command::new("sh").args(["-c", &format!("command -v {finder}")]).output().is_ok_and(|o| !o.status.success())
     }) {
-        until("the lines found are listed", || read(&find.join("screen")).contains("w/old 1:a needle in old"));
-        assert!(read(&find.join("screen")).contains("v/other 2:the-needle;$HOME"));
+        until("the lines found are listed", || read(&find.join("shown/screen")).contains("w/old 1:a needle in old"));
+        assert!(read(&find.join("shown/screen")).contains("v/other 2:the-needle;$HOME"));
         fs::write(find.join("in"), "1\r").unwrap();
         until("the editor was opened at the line", || read(&out) == "the-needle;$HOME\n");
     }
@@ -260,51 +260,56 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started v/other again\n");
     assert!(!home.join(named).exists(), "the pane was started in a session of that name under its own directory");
     until("it has run again", || {
-        read(&other.join("status")) != was && read(&other.join("screen")).starts_with("*\nthe-needle;$HOME\n")
+        read(&other.join("status")) != was && read(&other.join("shown/screen")).starts_with("*\nthe-needle;$HOME\n")
     });
     assert!(read(&other.join("before")).contains("the-needle;$HOME") && !other.join("argv").exists());
     assert_eq!(read(&old.join("status")), runs);
 }
 
 #[test]
-fn the_main_screen_a_full_screen_program_covers_is_in_files_of_its_own_until_it_leaves() {
+fn each_screen_has_a_folder_of_its_own_and_shown_leads_to_the_one_that_is_drawn() {
     let session = Session::new("covered");
     let shows = "printf '\\033[32mgreen\\033[m and a line of forty characters or so\\n\\033[?1049hfull'; read x; \
         printf '\\033[?1049l'; read x";
     let pane = session.start("p", &["sh", "-c", shows]);
     let file = |name: &str| read(&pane.join(name));
-    // The facts are written before the screens: when `screen` is the program's, they are there.
-    until("the program has the alternate screen", || file("screen").contains("\nfull\n"));
-    assert!(
-        pane.join("screen.main").exists(),
-        "the covered main screen has a file while a program has the alternate screen"
-    );
-    let (main, styled) = (file("screen.main"), file("screen.main.styled"));
+    let shown = || fs::read_link(pane.join("shown")).unwrap_or_default();
+    // `alt` is filled before `shown` is turned to it: whoever finds the link there finds the screen.
+    until("the program has the alternate screen", || shown() == Path::new("alt"));
+    assert!(file("alt/screen").contains("\nfull\n") && file("shown/screen") == file("alt/screen"));
+    // The main screen has the names it always has, and is told as before it was covered. The
+    // alternate screen is in no text: its lines are counted from its own first row.
+    let (main, styled) = (file("main/screen"), file("main/screen.styled"));
     assert!(main.starts_with("green and a line of forty characters or so\n") && main.lines().count() == 24, "{main:?}");
     assert!(styled.starts_with("\x1b[0;32mgreen\x1b[") && bare(&styled) == main, "{styled:?}");
-    assert!(!file("screen").contains("green"));
-    // What the program draws meanwhile is not the covered screen's: its files are not written again.
+    assert!(!file("alt/screen").contains("green") && file("alt/lines") == "0\n\n");
+    let folder = |name: &str| {
+        let mut names: Vec<_> = fs::read_dir(pane.join(name)).unwrap().flatten().map(|file| file.file_name()).collect();
+        names.sort();
+        names
+    };
+    assert_eq!(folder("alt"), folder("main"), "the same names in each screen's folder");
+    assert_eq!(folder("main"), ["lines", "links", "pictures", "screen", "screen.styled"]);
+    assert!(!pane.join("screen").exists() && !pane.join("lines").exists() && !pane.join("screen.main").exists());
+    // What the program draws meanwhile is not the main screen's: its files are not written again.
     use std::os::unix::fs::MetadataExt;
     let stamp = |name: &str| fs::metadata(pane.join(name)).map(|file| (file.ino(), file.mtime_nsec())).ok();
-    let written = (stamp("screen.main"), stamp("screen.main.styled"));
+    let written = (stamp("main/screen"), stamp("main/screen.styled"));
     fs::write(pane.join("in"), "more").unwrap();
-    until("the program's screen has changed", || file("screen").contains("\nfullmore\n"));
-    assert_eq!((stamp("screen.main"), stamp("screen.main.styled")), written);
-    // A resize wraps the covered screen anew, and the files say so.
+    until("the program's screen has changed", || file("alt/screen").contains("\nfullmore\n"));
+    assert_eq!((stamp("main/screen"), stamp("main/screen.styled")), written);
+    // A resize wraps the main screen anew under the program, and its files say so.
     fs::write(pane.join("ctl"), "resize 20 24\n").unwrap();
     until("the covered screen is wrapped anew", || {
-        file("screen.main").starts_with("green and a line of \nforty characters or \nso\n")
-            && bare(&file("screen.main.styled")).starts_with("green and a line of \nforty")
+        file("main/screen").starts_with("green and a line of \nforty characters or \nso\n")
+            && bare(&file("main/screen.styled")).starts_with("green and a line of \nforty")
     });
-    // (Which of its rows go on from the row above is a third line of `lines` meanwhile: the
-    // second is of the screen shown, where nothing wraps.)
-    assert_eq!(file("lines"), "0\n\n1 2\n");
-    // The program leaves: the files go, and the screen is what they said.
-    let covered = file("screen.main");
+    until("its rows that go on are told", || file("main/lines") == "0\n1 2\n" && file("alt/lines") == "0\n\n");
+    // The program leaves: `shown` is turned back, `alt` goes, and the main screen is what its files said.
+    let covered = file("main/screen");
     fs::write(pane.join("in"), "\n").unwrap();
-    until("the main screen is shown again", || !pane.join("screen.main").exists());
-    assert!(!pane.join("screen.main.styled").exists());
-    until("the screen is the main one", || file("screen") == covered && file("lines") == "0\n1 2\n");
+    until("the main screen is shown again", || shown() == Path::new("main") && !pane.join("alt").exists());
+    assert!(file("shown/screen") == covered && file("main/lines") == "0\n1 2\n");
 }
 
 /// Gives a session's `main` workspace a layout, as an editor that saves in one step does: the
@@ -331,6 +336,12 @@ fn until_or(what: &str, more: impl Fn() -> String, mut ready: impl FnMut() -> bo
     }
 }
 
+/// Which file a pane has of a name, and when it was written.
+fn stamp_of(pane: &Path, name: &str) -> Option<(u64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(pane.join(name)).map(|file| (file.ino(), file.mtime_nsec())).ok()
+}
+
 /// One of a pane's facts: the text of its file, without the line end.
 fn fact(pane: &Path, name: &str) -> String {
     read(&pane.join(name)).trim_end().to_string()
@@ -342,17 +353,17 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     let pane = session.start("build", &["sh"]);
     assert_eq!(pane, session.0.join("main/build"));
     fs::write(pane.join("in"), "echo h''i; stty size\n").unwrap();
-    until("the answers show", || read(&pane.join("screen")).contains("\nhi\n24 80\n"));
+    until("the answers show", || read(&pane.join("shown/screen")).contains("\nhi\n24 80\n"));
     // A resize reaches the program and the `size` file; the screen is its rows and nothing else.
     fs::write(pane.join("ctl"), "resize 91 17\nfly\n").unwrap();
     fs::write(pane.join("in"), "stty size\n").unwrap();
-    until("the new size shows", || read(&pane.join("screen")).contains("\n17 91\n"));
+    until("the new size shows", || read(&pane.join("shown/screen")).contains("\n17 91\n"));
     assert_eq!(fact(&pane, "size"), "91 17");
-    assert_eq!(read(&pane.join("screen")).lines().count(), 17, "one line a row");
+    assert_eq!(read(&pane.join("shown/screen")).lines().count(), 17, "one line a row");
     // Every fact has its file: where the cursor is, how input is sent, whether the program runs, who it is.
     let cursor: Vec<String> = fact(&pane, "cursor").split(' ').map(str::to_string).collect();
     assert!(cursor.len() == 4 && cursor[2] == "shown", "{cursor:?}");
-    assert_eq!((fact(&pane, "state").as_str(), read(&pane.join("lines")).as_str()), ("running", "0\n\n"));
+    assert_eq!((fact(&pane, "state").as_str(), read(&pane.join("main/lines")).as_str()), ("running", "0\n\n"));
     assert!(read(&pane.join("status")).lines().nth(1).unwrap().starts_with("pid "));
     until("the refusal is logged", || read(&pane.join("log")).contains("fly: not a command"));
     fs::write(pane.join("ctl"), "kill \x1b]0;now\x07\n").unwrap();
@@ -370,7 +381,7 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     assert!(!pane.join("in").exists() && !pane.join("ctl").exists(), "the FIFOs go with the holder");
     // A start in place that fails leaves what the last program left.
     assert!(!session.fux().args(["start", "build", "--", "/no/such/program"]).output().unwrap().status.success());
-    assert!(fact(&pane, "state") == "exited 3" && read(&pane.join("screen")).contains("exit 3"));
+    assert!(fact(&pane, "state") == "exited 3" && read(&pane.join("shown/screen")).contains("exit 3"));
     assert!(
         !session.fux().args(["start", "layout"]).output().unwrap().status.success(),
         "the layout file's name is taken"
@@ -436,26 +447,38 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
         "a",
         &["sh", "-c", "trap 'echo hup > \"$FUXN_PANE/saw\"; exit 0' HUP; echo r''eady; while :; do sleep 1; done"],
     );
-    until("the program has set its trap", || read(&pane.join("screen")).contains("ready"));
+    until("the program has set its trap", || read(&pane.join("shown/screen")).contains("ready"));
     fs::write(pane.join("ctl"), "kill\n").unwrap();
     until("the program saw the hangup", || read(&pane.join("saw")) == "hup\n");
     until("its end is in `state`", || fact(&pane, "state") == "exited 0");
 
-    // A program that ends without a word: `state` changes and the text does not. The screen is
-    // written again all the same, and after the fact: who watches that one file finds the end.
+    // A program that ends without a word: `state` changes and the text does not. `generation` is
+    // written again all the same, an even number, after the fact: who watches that one file finds the end.
     use std::os::unix::fs::MetadataExt;
     let quiet = session.start("q", &["sh", "-c", "sleep 0.4"]);
-    let stamp = || fs::metadata(quiet.join("screen.styled")).map(|file| (file.ino(), file.mtime_nsec())).ok();
-    let (running, first) = (fact(&quiet, "state"), stamp());
-    until("its screen is written again", || stamp() != first);
+    let stamp = || fs::metadata(quiet.join("generation")).map(|file| (file.ino(), file.mtime_nsec())).ok();
+    let (running, first, text) = (fact(&quiet, "state"), stamp(), stamp_of(&quiet, "main/screen.styled"));
+    until("its end is written", || {
+        stamp() != first && fact(&quiet, "generation").parse::<u64>().is_ok_and(|n| n % 2 == 0)
+    });
     assert_eq!((running.as_str(), fact(&quiet, "state").as_str()), ("running", "exited 0"));
-    // Every fact is written before the screens and `screen.styled` last of all: in a pane that
-    // has ended, no fact is younger than it.
+    assert_eq!(stamp_of(&quiet, "main/screen.styled"), text, "a screen that did not change is not written again");
+    // `generation` is written last of all: in a pane that has ended, no file is younger than it.
     let written = |name: &str| fs::metadata(quiet.join(name)).unwrap().modified().unwrap();
     let wait = session.fux().arg("wait").arg(&quiet).output().unwrap();
     assert!(String::from_utf8_lossy(&wait.stdout).ends_with("state exited 0\n"));
-    for name in ["size", "cursor", "modes", "state", "status", "lines", "pictures", "screen"] {
-        assert!(written(name) <= written("screen.styled"), "{name} was written after screen.styled");
+    for name in [
+        "size",
+        "cursor",
+        "modes",
+        "state",
+        "status",
+        "main/lines",
+        "main/pictures",
+        "main/screen",
+        "main/screen.styled",
+    ] {
+        assert!(written(name) <= written("generation"), "{name} was written after generation");
     }
 
     // Whoever starts a pane may ignore signals; its program does not inherit that.
@@ -481,7 +504,7 @@ fn what_is_written_to_in_after_a_kill_goes_nowhere_and_its_writer_does_not_wait(
     // is read and dropped: more than a FIFO holds is written at once, by a process of its own.
     let session = Session::new("afterkill");
     let pane = session.start("a", &["sh", "-c", "trap '' HUP; echo r''eady; exec sleep 20"]);
-    until("the program ignores the hangup", || read(&pane.join("screen")).contains("ready"));
+    until("the program ignores the hangup", || read(&pane.join("shown/screen")).contains("ready"));
     fs::write(pane.join("ctl"), "kill\n").unwrap();
     until("the pty is closed", || fact(&pane, "state") == "hungup");
     let mut writer =
@@ -505,7 +528,7 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
     let lines: Vec<String> = (1..=8).map(|n| format!("line{n}-{}", "abcdefghij".repeat(n % 4 + 1))).collect();
     let script = format!("printf '%s\\n' {}; printf ready; sleep 600", lines.join(" "));
     let pane = session.start("p", &["sh", "-c", &script]);
-    let screen = || read(&pane.join("screen"));
+    let screen = || read(&pane.join("shown/screen"));
     let rows = screen;
     until("the program has printed", || screen().contains("\nready\n"));
     let history = || (read(&pane.join("history")), read(&pane.join("history.styled")));
@@ -536,19 +559,19 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
 fn a_flood_is_published_a_bounded_number_of_times_and_loses_no_line() {
     let session = Session::new("flood");
     let pane = session.start("yes", &["sh", "-c", "yes | head -n 200000; echo done; sleep 600"]);
-    // Each publish replaces `screen.styled`: they are counted by looking at it far more often than it is written.
-    use std::os::unix::fs::MetadataExt;
+    // Each publish replaces `generation` twice (as it begins and as it ends): they are counted by
+    // looking at it far more often than it is written.
     let (start, mut seen, mut publishes) = (Instant::now(), None, 0.0);
-    while !read(&pane.join("screen")).contains("\ndone\n") {
-        let now = fs::metadata(pane.join("screen.styled")).ok().map(|file| (file.ino(), file.mtime_nsec()));
-        publishes += f64::from(u8::from(std::mem::replace(&mut seen, now) != now));
+    while !read(&pane.join("shown/screen")).contains("\ndone\n") {
+        let now = stamp_of(&pane, "generation");
+        publishes += f64::from(u8::from(std::mem::replace(&mut seen, now) != now)) / 2.0;
         assert!(start.elapsed() < Duration::from_secs(20), "the flood did not end");
         std::thread::sleep(Duration::from_millis(1));
     }
     let seconds = start.elapsed().as_secs_f64() + 0.1;
     assert!(publishes >= 2.0, "the flood was watched");
     assert!(publishes <= 41.0 * seconds + 2.0, "{publishes} publishes in {seconds} s is over 40 a second");
-    let history = read(&pane.join("history.1")) + &read(&pane.join("history")) + &read(&pane.join("screen"));
+    let history = read(&pane.join("history.1")) + &read(&pane.join("history")) + &read(&pane.join("shown/screen"));
     assert_eq!(history.lines().filter(|line| *line == "y").count(), 200_000);
 }
 
@@ -560,7 +583,7 @@ fn a_program_that_draws_frame_after_frame_without_a_pause_is_shown_while_it_does
     // stays while the rest of the frame scrolls under it.
     let frames = "f=$(head -c 200000 /dev/zero | tr '\\0' x); printf 'start\\033[?1049h\\033[2;24r'; i=0; while :; do i=$((i + 1)); printf '\\033[?2026h\\033[H%s\\033[2;1H%s\\033[?2026l' $i \"$f\"; done";
     let pane = session.start("frames", &["sh", "-c", frames]);
-    let frame = || read(&pane.join("screen")).lines().next().and_then(|n| n.parse::<u32>().ok());
+    let frame = || read(&pane.join("shown/screen")).lines().next().and_then(|n| n.parse::<u32>().ok());
     // (Not `until`: a pane that is never written again says so in a few seconds, not a minute.)
     let (start, mut first) = (Instant::now(), None);
     while first.is_none() || frame() == first {
@@ -584,7 +607,7 @@ fn a_viewer_whose_panes_do_not_change_does_no_work_and_draws_the_next_change() {
     let started = start.args([env!("CARGO_BIN_EXE_fux"), "view"]).output().unwrap();
     let view = PathBuf::from(String::from_utf8(started.stdout).unwrap().trim());
     until("the pane has its tile's size and is drawn", || {
-        fact(&one, "size") == "500 500" && read(&view.join("screen")).starts_with("ready\n")
+        fact(&one, "size") == "500 500" && read(&view.join("shown/screen")).starts_with("ready\n")
     });
     let pid = read(&view.join("status")).lines().find_map(|line| Some(line.strip_prefix("pid ")?.to_string())).unwrap();
     let worked = || {
@@ -601,7 +624,7 @@ fn a_viewer_whose_panes_do_not_change_does_no_work_and_draws_the_next_change() {
     assert!(work <= 2.0, "the viewer worked for {work} s of 6 in which nothing changed");
     // And what changes next is drawn.
     fs::write(one.join("in"), "next\n").unwrap();
-    until("the change is drawn", || read(&view.join("screen")).starts_with("ready\nnext\nnext\n"));
+    until("the change is drawn", || read(&view.join("shown/screen")).starts_with("ready\nnext\nnext\n"));
 }
 
 #[test]
@@ -619,20 +642,20 @@ fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
     });
     // What is typed to the viewer is the shell's, and the viewer shows it.
     until("the shell's prompt is shown", || {
-        read(&view.join("screen")).lines().next().is_some_and(|row| row.ends_with(['$', '#']))
+        read(&view.join("shown/screen")).lines().next().is_some_and(|row| row.ends_with(['$', '#']))
     });
     fs::write(view.join("in"), "echo $((6*7))\r").unwrap();
-    until("the shell answered", || read(&view.join("screen")).contains("\n42\n"));
+    until("the shell answered", || read(&view.join("shown/screen")).contains("\n42\n"));
     // The shell ends, and its pane with it: the workspace stays empty, and the viewer says how
     // to go on. Nothing is started again: not then, and not when the viewer draws anew.
     fs::write(view.join("in"), "exit\r").unwrap();
-    let seen = || format!(": the viewer shows {:?}", read(&view.join("screen")).trim());
+    let seen = || format!(": the viewer shows {:?}", read(&view.join("shown/screen")).trim());
     until_or("the viewer says so", seen, || {
-        read(&view.join("screen")).contains("no panes in main: C-b t n starts a shell")
+        read(&view.join("shown/screen")).contains("no panes in main: C-b t n starts a shell")
     });
     fs::write(view.join("ctl"), "resize 70 20\n").unwrap();
     until("the viewer drew at the new size", || {
-        fact(&view, "size") == "70 20" && read(&view.join("screen")).contains("no panes")
+        fact(&view, "size") == "70 20" && read(&view.join("shown/screen")).contains("no panes")
     });
     std::thread::sleep(Duration::from_millis(300));
     assert!(fs::read_dir(inner.0.join("main")).unwrap().flatten().all(|entry| !entry.path().is_dir()));
@@ -644,11 +667,11 @@ fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
         fs::read_dir(&inner.0).unwrap().flatten().find(|file| file.file_name().to_string_lossy().starts_with(".view."));
     let ctl = ctl.unwrap().path();
     fs::write(&ctl, "workspace other\n").unwrap();
-    until("the other workspace is shown", || read(&view.join("screen")).contains("no panes in other"));
+    until("the other workspace is shown", || read(&view.join("shown/screen")).contains("no panes in other"));
     assert_eq!(read(&keys.join("ran")), "other\n");
     // The viewer keeps no workspace but the one it shows: `-` is no name, and names none.
     fs::write(&ctl, "workspace -\n").unwrap();
-    until("the viewer says that it is none", || read(&view.join("screen")).contains("no workspace -"));
+    until("the viewer says that it is none", || read(&view.join("shown/screen")).contains("no workspace -"));
     assert_eq!(read(&keys.join("ran")), "other\n");
 }
 
@@ -668,7 +691,7 @@ fn the_bar_covers_the_whole_last_row_of_a_wide_terminal() {
     wide(&inner, "full", &["sh", "-c", fills]);
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = wide(&outer, "view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
-    let last = || read(&view.join("screen")).lines().nth(19).unwrap_or_default().to_string();
+    let last = || read(&view.join("shown/screen")).lines().nth(19).unwrap_or_default().to_string();
     until("the pane's last row is shown", || last() == "x".repeat(300));
     fs::write(view.join("in"), "\x02").unwrap();
     until("the bar is shown", || last().starts_with(" main "));
@@ -694,10 +717,10 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
-    let screen = || read(&view.join("screen"));
+    let screen = || read(&view.join("shown/screen"));
     fs::write(view.join("in"), "echo o''ne\r").unwrap();
     until("what is typed reaches the pane and its screen the viewer", || screen().contains("\none\n"));
-    assert!(read(&one.join("screen")).contains("\none\n"));
+    assert!(read(&one.join("shown/screen")).contains("\none\n"));
     // Keys typed after a key with a script wait for the script: here it types `echo `.
     fs::write(view.join("in"), "\x02ein or''der\r").unwrap();
     until("the script's typing came first", || screen().contains("\nin order\n"));
@@ -717,7 +740,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     });
     until("the script's words are shown", || screen().contains("made "));
     fs::write(view.join("in"), "echo t''wo\r").unwrap();
-    until("the new pane has the keys", || read(&inner.0.join("main/two/screen")).contains("\ntwo\n"));
+    until("the new pane has the keys", || read(&inner.0.join("main/two/shown/screen")).contains("\ntwo\n"));
     // Each pane was asked once to be the size of its tile.
     let width = |pane: &str| Some(fact(&inner.0.join("main").join(pane), "size").replace(' ', "x"));
     until("the panes have their tiles' sizes", || {
@@ -733,7 +756,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(inner.0.join("main/one/in"), format!("clear; printf '\\033[9;39H{family}\\033[11;39H\u{6f22}\\n'\r"))
         .unwrap();
     until("the family is in its pane and in the viewer", || {
-        read(&inner.0.join("main/one/screen")).contains(family)
+        read(&inner.0.join("main/one/shown/screen")).contains(family)
             && screen().contains(&format!("{family}│"))
             && screen().contains("\u{6f22}│")
     });
@@ -742,7 +765,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     let told = "foreground #102030\nbackground #fdf6e3\ncursor #0a0b0c\n4 #268bd2\n";
     until("the session knows its colours", || read(&inner.0.join("colours")) == told);
     fs::write(view.join("in"), "clear; printf '\\033]11;?\\007\\033]4;4;?\\007\\033]4;5;?\\007'; cat -v\r").unwrap();
-    let answers = || read(&inner.0.join("main/two/screen")).replace('\n', "");
+    let answers = || read(&inner.0.join("main/two/shown/screen")).replace('\n', "");
     until("the program is told", || answers().contains("^[]11;rgb:fdfd/f6f6/e3e3^G^[]4;4;rgb:2626/8b8b/d2d2^G"));
     assert!(!answers().contains("]4;5;rgb"));
     // (The interrupt empties what was typed after it: the next line waits until it is through.)
@@ -756,7 +779,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     // (A wide character that has no room in its row's last cell leaves that cell empty.)
     fs::write(view.join("in"), format!("printf '{set}\\033[31mr''ed\\033[m\\n%38s\u{754c}\\n' ''\r")).unwrap();
     fs::write(inner.0.join("main/one/in"), "clear; printf '\\033[31mpl''ain\\033[m\\n'\r").unwrap();
-    let styled = || read(&view.join("screen.styled"));
+    let styled = || read(&view.join("shown/screen.styled"));
     let drawn = |text: &str| styled().lines().find_map(|line| Some(line.split_once(text)?.0.to_string()));
     until_or("the pane is drawn in its colours, and the one beside it is not", styled, || {
         let own = drawn("red").is_some_and(|before| before.ends_with("\x1b[0;38;2;18;52;86;48;2;101;67;33m"));
@@ -766,7 +789,9 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     // one a wide character left empty among them.)
     let cells = |row: &str| bare(row).chars().map(|c| 1 + usize::from(c == '\u{754c}')).sum::<usize>();
     let whole = |row: &str| row.contains("48;2;101;67;33m") && !row.contains("\x1b[0m") && cells(row) == 39;
-    assert!(read(&inner.0.join("main/two/screen.styled")).contains(&format!("{}\u{200b} \x1b[m\n", " ".repeat(38))));
+    assert!(
+        read(&inner.0.join("main/two/shown/screen.styled")).contains(&format!("{}\u{200b} \x1b[m\n", " ".repeat(38)))
+    );
     assert!(styled().lines().all(|line| line.split_once('│').is_some_and(|(_, row)| whole(row))), "{}", styled());
     assert_eq!(fact(&inner.0.join("main/two"), "cursor").split(' ').nth(4), Some("#abcdef"));
     let cursor = || fact(&view, "cursor").split(' ').nth(4).map(str::to_string);
@@ -791,14 +816,14 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     until("the pane's modes say so", || fact(&inner.0.join("main/two"), "modes").contains("mousesgr mouse1000"));
     until("the viewer asked its own terminal", || fact(&view, "modes").contains("mousesgr mouse1000"));
     fs::write(view.join("in"), "\x1b[<0;50;3M\r").unwrap();
-    until("the click arrives translated", || read(&inner.0.join("main/two/screen")).contains("^[[<0;9;3M"));
+    until("the click arrives translated", || read(&inner.0.join("main/two/shown/screen")).contains("^[[<0;9;3M"));
     // What a paste and a click are sent as is what the program asks now, whatever the viewer last
     // drew: here it has just been shown another workspace and this one again, in one go, with
     // nothing on the screen changed by it.
     fs::write(view.join("in"), "\x03").unwrap();
-    until("the program is interrupted", || read(&inner.0.join("main/two/screen")).matches("^C").count() >= 2);
+    until("the program is interrupted", || read(&inner.0.join("main/two/shown/screen")).matches("^C").count() >= 2);
     fs::write(view.join("in"), "printf '\\033[?2004hre''ady\\n'; cat -v\r").unwrap();
-    until("the program asks for pastes marked", || read(&inner.0.join("main/two/screen")).contains("\nready\n"));
+    until("the program asks for pastes marked", || read(&inner.0.join("main/two/shown/screen")).contains("\nready\n"));
     until("the pane's modes say so", || fact(&inner.0.join("main/two"), "modes").contains("paste"));
     fs::create_dir(inner.0.join("other")).unwrap();
     let mut own = fs::read_dir(&inner.0).unwrap().flatten().map(|entry| entry.path());
@@ -808,9 +833,9 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(view.join("in"), "\x1b[200~pasted\x1b[201~\x1b[<0;51;4M\r").unwrap();
     until_or(
         "the paste arrives marked and the click translated",
-        || read(&inner.0.join("main/two/screen")),
+        || read(&inner.0.join("main/two/shown/screen")),
         || {
-            let screen = read(&inner.0.join("main/two/screen"));
+            let screen = read(&inner.0.join("main/two/shown/screen"));
             screen.contains("^[[200~pasted^[[201~") && screen.contains("^[[<0;10;4M")
         },
     );
@@ -822,7 +847,9 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::write(inner.0.join("main/odd/state"), "x\x1b]0;T\x07\x1b[2Jy\n").unwrap();
     fs::write(inner.0.join("main/odd/cursor"), "99 99 shown 7 #abcdef\n").unwrap();
     fs::write(inner.0.join("main/odd/size"), "5 9\n").unwrap();
-    fs::write(inner.0.join("main/odd/screen.styled"), "h\x1b[1mi\x1b]0;T\x07\x1b[?1049h ho-hum\n").unwrap();
+    fs::create_dir(inner.0.join("main/odd/main")).unwrap();
+    fs::write(inner.0.join("main/odd/main/screen.styled"), "h\x1b[1mi\x1b]0;T\x07\x1b[?1049h ho-hum\n").unwrap();
+    std::os::unix::fs::symlink("main", inner.0.join("main/odd/shown")).unwrap();
     // The viewer gives the new folder a tab; a hand's edit comes after that, not across it.
     until("the viewer has placed the folder", || read(&inner.0.join("main/layout")).contains("odd"));
     lay(&inner.0, "* row(one odd) focus=odd\n");
@@ -849,7 +876,7 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
     let asking = "stty raw -echo; printf '\\033[?1049h\\033[>1u\\033[?u'; exec cat -vt";
     let early = inner.start("early", &["sh", "-c", asking]);
     let plain = inner.start("plain", &["sh", "-c", "stty raw -echo; exec cat -vt"]);
-    until("the first answer", || read(&early.join("screen")).contains("^[[?0u"));
+    until("the first answer", || read(&early.join("shown/screen")).contains("^[[?0u"));
     // The layout is changed as a person changes it, by `fux layout`, which takes the lock the viewer takes.
     let layout = |edits: &[&[&str]]| {
         for edit in edits {
@@ -872,14 +899,14 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
     );
     let view = outer.start("view", &["sh", "-c", &view]);
     let modes = |pane: &Path| fact(pane, "modes");
-    let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
+    let shown = |pane: &Path| read(&pane.join("shown/screen")).replace('\n', "");
     // (When the viewer is waited for in vain, what its pane says is printed.)
     let seen = || {
         format!(
             ": the viewer's pane has modes {:?}, state {:?} and shows\n{}",
             modes(&view),
             fact(&view, "state"),
-            read(&view.join("screen"))
+            read(&view.join("shown/screen"))
         )
     };
     // The viewer learns what its terminal takes and says so for the session. A program that
@@ -937,7 +964,7 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     let path = format!("PATH={}", std::env::var("PATH").unwrap());
     let command = ["env", &path, &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
-    let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
+    let shown = |pane: &Path| read(&pane.join("shown/screen")).replace('\n', "");
     // The pane that has the keys is told so, having asked (mode 1004), and the viewer asks its
     // own terminal to tell it of the window's focus.
     until("the first pane is told it has the keys", || shown(&p1) == "^[[I");
@@ -950,7 +977,7 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
         &["sh", "-c", "printf '\\033]7;file:///usr\\007\\033]7;file://elsewhere.example/home/x\\007'; sleep 600"],
     );
     until("the far pane runs", || {
-        fact(&far, "state") == "running" && read(&far.join("screen.styled")).is_empty().eq(&false)
+        fact(&far, "state") == "running" && read(&far.join("shown/screen.styled")).is_empty().eq(&false)
     });
     assert!(!far.join("cwd").exists());
     // Anyone may have something noticed through `ctl`; a program rings the bell. Each is the
@@ -962,18 +989,18 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     until("the notice is written", || read(&p2.join("notice")) == "1 the build is done\n");
     until("the viewer passed it on", || read(&view.join("notice")).ends_with(" p2: the build is done\n"));
     fs::write(view.join("in"), "\x02").unwrap();
-    until("the tab is marked", || read(&view.join("screen")).contains(" p2! "));
+    until("the tab is marked", || read(&view.join("shown/screen")).contains(" p2! "));
     // The terminal's window loses and gains the keys with the menu open: the menu stays, and
     // the pane that asked is told.
     fs::write(view.join("in"), "\x1b[O\x1b[I").unwrap();
     until("the pane is told of the window", || shown(&p1) == "^[[I^[[O^[[I");
-    assert!(read(&view.join("screen")).contains(" p2! "));
+    assert!(read(&view.join("shown/screen")).contains(" p2! "));
     // The next tab: the pane has the keys, the mark goes, and the panes are told who has them.
     fs::write(view.join("in"), "n").unwrap();
     until("the second pane is told", || shown(&p2) == "^[[I" && shown(&p1) == "^[[I^[[O^[[I^[[O");
     fs::write(view.join("in"), "\x02").unwrap();
     until("the mark is gone", || {
-        read(&view.join("screen")).contains(" p2 ") && !read(&view.join("screen")).contains("p2!")
+        read(&view.join("shown/screen")).contains(" p2 ") && !read(&view.join("shown/screen")).contains("p2!")
     });
     fs::write(view.join("in"), "\x1b").unwrap();
     // A program that stops asking (it ends, and a shell is there again) is told nothing more:
@@ -1012,8 +1039,8 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     // often it says that it draws.
     let draws = inner.start("draws", &["sh", "-c", "printf '\\033[?2026hhalf'; sleep 0.3; printf ' whole\\033[?2026l'; sleep 0.3; printf '\\033[?2026h stuck'; while sleep 0.1; do printf '\\033[?2026h'; done"]);
     let start = Instant::now();
-    while !read(&draws.join("screen")).contains("stuck") {
-        assert!(!read(&draws.join("screen")).starts_with("half\n"), "half a frame was shown");
+    while !read(&draws.join("shown/screen")).contains("stuck") {
+        assert!(!read(&draws.join("shown/screen")).starts_with("half\n"), "half a frame was shown");
         assert!(start.elapsed() < Duration::from_secs(10), "a program that never ends its drawing froze its pane");
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -1024,7 +1051,7 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     until("the first tab is shown", || shown(&p1).ends_with("^[[I"));
     fs::write(view.join("in"), "\x02fp").unwrap();
     until("the list is shown", || {
-        read(&view.join("screen")).contains("p2") && read(&view.join("screen")).contains("draws")
+        read(&view.join("shown/screen")).contains("p2") && read(&view.join("shown/screen")).contains("draws")
     });
     std::thread::sleep(Duration::from_millis(300));
     // (A finder takes a moment to narrow its list to what was typed.)
@@ -1064,7 +1091,11 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     // One file says how the screen's rows are lines of the pane's text: the number of the line
     // its first row is of (the wrapped one, 13 lines in), then the rows that go on from the row
     // above (the first, from history). No other file says either.
-    assert_eq!(read(&pane.join("lines")), "13\n0\n", "the number of the first row's line, then the rows that go on");
+    assert_eq!(
+        read(&pane.join("main/lines")),
+        "13\n0\n",
+        "the number of the first row's line, then the rows that go on"
+    );
     assert!(!pane.join("top").exists() && !pane.join("wraps").exists());
     // An editor for the test: it is called `vim`, so it is given a line number; it notes that
     // and copies the file it was to open. (The copy has its name only when it is whole, and the
@@ -1123,10 +1154,12 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     // The rows left out at the screen's end are those with no text: a colour alone is none.
     // And the cell a wide character left empty at a row's end is no text: the rows are joined without it.
     let blue = session.start("blue", &["sh", "-c", "printf 'x\\033[44m\\033[J%78s\u{754c}\\033[m' ''; sleep 600"]);
-    until("the screen is blue", || read(&blue.join("screen.styled")).matches("\x1b[0;44m").count() == 24);
+    until("the screen is blue", || read(&blue.join("shown/screen.styled")).matches("\x1b[0;44m").count() == 24);
     let mut text = Command::new(keys.join(".text"));
     assert!(text.arg(&out).arg("styled").env("FUXN_PANE", &blue).output().unwrap().status.success());
-    assert!(read(&blue.join("screen.styled")).starts_with(&format!("x\x1b[0;44m{}\u{200b} \x1b[m\n", " ".repeat(78))));
+    assert!(
+        read(&blue.join("shown/screen.styled")).starts_with(&format!("x\x1b[0;44m{}\u{200b} \x1b[m\n", " ".repeat(78)))
+    );
     let joined = format!("x\x1b[0;44m{}\x1b[m\x1b[0;44m\u{754c} ", " ".repeat(78));
     assert!(read(&out).starts_with(&joined) && read(&out).lines().count() == 1, "{:?}", read(&out));
     // A command that prints nothing has no output to open, and the key says so; one whose
@@ -1185,11 +1218,13 @@ fn a_shell_that_ends_with_127_closes_its_pane_and_a_command_that_cannot_be_run_s
     let mut start = session.fux();
     start.env("SHELL", session.0.join("sh127")).args(["start", "ran", "--", wrapper]);
     let ran = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
-    let seen = || format!(": its screen is {:?}", read(&ran.join("screen")).trim());
+    let seen = || format!(": its screen is {:?}", read(&ran.join("shown/screen")).trim());
     until_or("the pane of a shell that ended with 127 is gone", seen, || !ran.exists());
     // A command that is not there could not be run: that is said, and stays until Enter.
     let none = session.start("none", &[wrapper, "/no/such/program"]);
-    until("it says that it could not be run", || read(&none.join("screen")).contains("it could not be run: Enter"));
+    until("it says that it could not be run", || {
+        read(&none.join("shown/screen")).contains("it could not be run: Enter")
+    });
     fs::write(none.join("in"), "\r").unwrap();
     until("Enter closed the pane", || !none.exists());
 }
@@ -1219,7 +1254,7 @@ fn the_workspace_chosen_is_told_to_the_viewer_that_is_there_and_no_file_is_made_
         script.env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main").env_remove("FUXN_PANE");
         assert!(script.status().unwrap().success());
         let pane = session.0.join("main/1");
-        until("the list is shown", || read(&pane.join("screen")).contains("main"));
+        until("the list is shown", || read(&pane.join("shown/screen")).contains("main"));
         // (A finder takes a moment to narrow its list to what was typed; with none it is the name.)
         std::thread::sleep(Duration::from_millis(300));
         fs::write(pane.join("in"), "main").unwrap();
@@ -1305,7 +1340,7 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     // A program asks for escape codes told apart, presses and releases, and every key as a code.
     let asking = "stty raw -echo; printf '\\033[>11u\\033[?u'; exec cat -vt";
     let asks = inner.start("asks", &["sh", "-c", asking]);
-    let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
+    let shown = |pane: &Path| read(&pane.join("shown/screen")).replace('\n', "");
     until("it is told they are in force", || shown(&asks) == "^[[?11u" && fact(&asks, "modes") == "keys11");
     lay(&inner.0, "* row(asks plain) focus=asks\n");
     until("the viewer asked its terminal for them", || fact(&view, "modes").contains("keys11"));
@@ -1318,10 +1353,10 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     // press to the pane, and the pane hears of nothing else.
     let ctrl = "\x1b[57442;5:1u\x1b[98;5:1u\x1b[98;5:2u\x1b[98;5:3u\x1b[57441;2:1u\x1b[57441;1:3u\x1b[57442;1:3u";
     fs::write(view.join("in"), ctrl).unwrap();
-    until("the menu is open, and stays", || read(&view.join("screen")).contains("o  other"));
+    until("the menu is open, and stays", || read(&view.join("shown/screen")).contains("o  other"));
     let held = "^[[?11u^[[97;1:1u^[[97;1:3u^[[120;1:1u^[[57442;5:1u^[[57442;1:3u";
     until("Ctrl went down and up in the pane", || shown(&asks) == held);
-    assert!(read(&view.join("screen")).contains("o  other"));
+    assert!(read(&view.join("shown/screen")).contains("o  other"));
     // The menu's key and its release: the script runs once and the other pane has the keys.
     fs::write(view.join("in"), "\x1b[111;1:1u\x1b[111;1:3u").unwrap();
     until("the other pane has the keys", || read(&inner.0.join("main/layout")).contains("focus=plain"));
@@ -1339,7 +1374,7 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     // flag) does not take a later press of that key for its own: the prefix, then the menu's key,
     // and `b` typed in the pane that has the keys again, down and up.
     fs::write(view.join("in"), "\x1b[98;5:1u").unwrap();
-    until("the menu is open", || read(&view.join("screen")).contains("o  other"));
+    until("the menu is open", || read(&view.join("shown/screen")).contains("o  other"));
     fs::write(view.join("in"), "\x1b[111;1:1u\x1b[111;1:3u").unwrap();
     until("the first pane has the keys", || fact(&view, "modes").contains("keys11"));
     fs::write(view.join("in"), "\x1b[98;1:1u\x1b[98;1:3u").unwrap();
@@ -1387,7 +1422,7 @@ fn a_held_key_does_again_what_its_press_did_and_there_only_and_a_program_started
     let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
-    let shown = |pane: &Path| read(&pane.join("screen")).replace('\n', "");
+    let shown = |pane: &Path| read(&pane.join("shown/screen")).replace('\n', "");
     until("the viewer asked its terminal for the flags", || fact(&view, "modes").contains("keys11"));
     // A key (down and up) for each of: the prefix, a menu, Escape; and `h` down, held, up.
     let tap = |key: &str| format!("\x1b[{key}:1u\x1b[{key}:3u");
@@ -1446,8 +1481,8 @@ fn a_link_a_program_makes_is_a_line_of_links_and_the_viewer_draws_it_inside_its_
     let left = inner.start("left", &["sh", "-c", &prints]);
     inner.start("right", &["sh", "-c", "echo right; sleep 600"]);
     let above = format!("0 0 1 {address}1\n0 1 1 {address}2\n1 2 4 {address}\n2 39 1 {address}3\n");
-    until("the link is the pane's", || read(&left.join("links")) == format!("{above}3 34 10 {address}\n"));
-    assert!(!read(&left.join("screen.styled")).contains("\x1b]"));
+    until("the link is the pane's", || read(&left.join("shown/links")) == format!("{above}3 34 10 {address}\n"));
+    assert!(!read(&left.join("shown/screen.styled")).contains("\x1b]"));
     fs::create_dir_all(inner.0.join("main")).unwrap();
     lay(&inner.0, "* row(left right) focus=right\n");
     // (Whatever ran before the viewer left a link open on its terminal: no cell of the viewer's is part of it.)
@@ -1459,19 +1494,19 @@ fn a_link_a_program_makes_is_a_line_of_links_and_the_viewer_draws_it_inside_its_
     // line between the tiles. Each cell has its own address and no other: the flag's halves are
     // two characters still, and the line between the tiles is no part of the character before it.
     until("the pane has its tile's size", || {
-        read(&left.join("links")) == format!("{above}3 34 10 {address}\n") && fact(&left, "size") == "40 24"
+        read(&left.join("shown/links")) == format!("{above}3 34 10 {address}\n") && fact(&left, "size") == "40 24"
     });
     let drawn = format!("{above}3 34 6 {address}\n4 0 4 {address}\n");
     // (A pane's facts are written before its screen: the one may be read a round ahead of the other.)
     until("the viewer drew the links", || {
-        read(&view.join("links")) == drawn
-            && read(&view.join("screen")).lines().nth(3).is_some_and(|row| row.contains("012345│"))
+        read(&view.join("shown/links")) == drawn
+            && read(&view.join("shown/screen")).lines().nth(3).is_some_and(|row| row.contains("012345│"))
     });
     // The pane's text scrolls into history and its first link with it; the viewer's terminal
     // then has that one no more.
     fs::write(left.join("ctl"), "resize 40 2\n").unwrap();
-    until("the first link is in history", || read(&left.join("links")) == format!("3 34 10 {address}\n"));
-    until("the viewer follows", || read(&view.join("links")) == format!("0 34 6 {address}\n1 0 4 {address}\n"));
+    until("the first link is in history", || read(&left.join("shown/links")) == format!("3 34 10 {address}\n"));
+    until("the viewer follows", || read(&view.join("shown/links")) == format!("0 34 6 {address}\n1 0 4 {address}\n"));
 }
 
 #[test]
@@ -1492,7 +1527,7 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     );
     let left = inner.start("left", &["sh", "-c", &prints]);
     inner.start("right", &["sh", "-c", "echo right; sleep 600"]);
-    until("the picture is the pane's", || fact(&left, "pictures") == "pic-1.sixel 0 0 60 3");
+    until("the picture is the pane's", || fact(&left, "shown/pictures") == "pic-1.sixel 0 0 60 3 10 20");
     let whole = fs::read(left.join("pic-1.sixel")).unwrap();
     assert_eq!(whole, format!("\x1bP{picture}\x1b\\").as_bytes());
     lay(&inner.0, "* row(left right) focus=right\n");
@@ -1501,9 +1536,10 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     // The picture the viewer drew last: where it is and its file; and a picture's pixels in a
     // rectangle of it, each with its colour.
     let drawn = || {
-        let pictures = fact(&view, "pictures");
+        let pictures = fact(&view, "shown/pictures");
         let (name, place) = pictures.lines().last().and_then(|line| line.split_once(' ')).unwrap_or_default();
-        (place.to_string(), fs::read(view.join(name)).unwrap_or_default())
+        let place: Vec<&str> = place.split(' ').take(4).collect();
+        (place.join(" "), fs::read(view.join(name)).unwrap_or_default())
     };
     let pixels = |picture: &[u8], rectangle: [usize; 4]| {
         let inside = picture.strip_prefix(b"\x1bP").and_then(|rest| rest.strip_suffix(b"\x1b\\")).unwrap_or_default();
@@ -1521,21 +1557,21 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     let (w, h, colours) = pixels(&part, [0, 0, 1000, 100]).expect("the viewer drew a sixel picture");
     assert_eq!((w, h, colours[394], colours[395], colours[399], colours[30 * 400]), (400, 60, red, blue, blue, green));
     assert!(Some((w, h, colours)) == pixels(&whole, [0, 0, 400, 60]));
-    let screen = read(&view.join("screen"));
+    let screen = read(&view.join("shown/screen"));
     assert!(screen.starts_with(&format!("{:40}│right\n{:40}│\n{:40}│\n", "", "", "")), "{screen}");
-    assert_eq!(fact(&left, "pictures"), "pic-1.sixel 0 0 60 3");
+    assert_eq!(fact(&left, "shown/pictures"), "pic-1.sixel 0 0 60 3 10 20");
     assert_eq!(fs::read(left.join("pic-1.sixel")).unwrap(), whole);
     // In a tile wide enough the picture is whole again: the program's own bytes.
     lay(&inner.0, "* col(left right) focus=right\n");
     until("the picture is drawn whole", || drawn() == ("0 0 60 3".to_string(), whole.clone()));
     // A menu that covers no cell of it leaves it drawn.
     fs::write(view.join("in"), "\x02").unwrap();
-    until("the menu is open", || read(&view.join("screen")).contains("C-b …"));
+    until("the menu is open", || read(&view.join("shown/screen")).contains("C-b …"));
     assert_eq!(drawn(), ("0 0 60 3".to_string(), whole.clone()));
     fs::write(view.join("in"), "\x1b").unwrap();
     // Scrolled one row off its pane's top, it is drawn from its 21st row of pixels on.
     fs::write(left.join("in"), "\n").unwrap();
-    until("the pane has it one row up", || fact(&left, "pictures") == "pic-1.sixel -1 0 60 3");
+    until("the pane has it one row up", || fact(&left, "shown/pictures") == "pic-1.sixel -1 0 60 3 10 20");
     until("the rest of it is drawn", || drawn().0 == "0 0 60 2");
     let (w, h, colours) = pixels(&drawn().1, [0, 0, 1000, 100]).expect("the viewer drew a sixel picture");
     assert_eq!((w, h, colours[9 * 600], colours[10 * 600], colours[599]), (600, 40, red, green, blue));
@@ -1552,7 +1588,42 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     // band in a register past the last: what a picture paints outside its part counts for nothing.)
     anew(format!("q\"1;1;600;60#256{}", ["!600~"; 10].join("-")));
     let why = "left: a picture is not drawn: it names a colour register over 255";
-    until("the corner says why", || read(&view.join("screen")).contains(why) && fact(&view, "pictures").is_empty());
+    until("the corner says why", || {
+        read(&view.join("shown/screen")).contains(why) && fact(&view, "shown/pictures").is_empty()
+    });
+}
+
+#[test]
+fn a_picture_is_cut_by_the_cells_it_was_laid_out_in_whatever_the_viewers_are() {
+    // A pane told that a cell is 10 by 30 pixels: a picture of 600 by 60, red above and green from
+    // its 31st row of pixels on, is two rows of it. Its program scrolls it one row up and ends:
+    // the list says one row of it is above the screen, and of what cells.
+    let (outer, inner) = (Session::new("couter"), Session::new("cinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let bands: Vec<String> = (0..10).map(|band| format!("#{}!600~", if band < 5 { 0 } else { 2 })).collect();
+    let picture = format!("q\"1;1;600;60#0;2;100;0;0#2;2;0;100;0{}", bands.join("-"));
+    let prints = format!(
+        "stty -echo; read line; printf '\\033P%s\\033\\\\' '{picture}'; set -- $(stty size); i=2; while [ $i -lt $1 ]; do echo; i=$((i + 1)); done"
+    );
+    let pane = inner.start("tall", &["sh", "-c", &prints]);
+    fs::write(pane.join("ctl"), "resize 80 24 10 30\n").unwrap();
+    fs::write(pane.join("in"), "\n").unwrap();
+    assert!(inner.fux().arg("wait").arg(&pane).status().unwrap().success());
+    assert_eq!(fact(&pane, "main/pictures"), "pic-1.sixel -1 0 60 2 10 30");
+    // A viewer whose terminal has cells of 10 by 20 draws what is below that row: 30 rows of
+    // pixels are above the screen, not 20, and what it draws is all green.
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer drew a picture", || !fact(&view, "shown/pictures").is_empty());
+    let (name, _) = fact(&view, "shown/pictures").split_once(' ').map(|(name, _)| (name.to_string(), ())).unwrap();
+    let drawn = fs::read(view.join(name)).unwrap();
+    let inside = drawn.strip_prefix(b"\x1bP").and_then(|rest| rest.strip_suffix(b"\x1b\\")).unwrap_or_default();
+    let part = sixel::read(inside, [0, 0, 1000, 100]).expect("the viewer drew a sixel picture");
+    let green = sixel::Colour::Rgb([0, 100, 0]);
+    let colours: Vec<_> =
+        part.pixels.iter().filter_map(|pen| usize::from(*pen).checked_sub(1)).map(|pen| part.colours[pen]).collect();
+    assert!((part.w, part.h) == (600, 30) && colours.len() == 600 * 30 && colours.iter().all(|c| *c == green));
 }
 
 #[test]
@@ -1580,8 +1651,11 @@ fn a_click_gives_a_tile_the_keys_also_between_programs_that_ask_for_presses_only
     // old form, counted from its tile's corner (which is at column 42).
     until("the pane is the size of its tile", || fact(&b, "size") == "39 24");
     fs::write(view.join("in"), "\x1b[<0;50;3M\x1b[<0;50;3m\x1b[<0;51;4M\x1b[<0;51;4m").unwrap();
-    until("the presses arrive", || read(&b.join("screen")).contains("^[[M )#^[[M *$"));
-    assert_eq!((read(&b.join("screen")).trim_end(), read(&a.join("screen")).trim_end()), ("^[[M )#^[[M *$", ""));
+    until("the presses arrive", || read(&b.join("shown/screen")).contains("^[[M )#^[[M *$"));
+    assert_eq!(
+        (read(&b.join("shown/screen")).trim_end(), read(&a.join("shown/screen")).trim_end()),
+        ("^[[M )#^[[M *$", "")
+    );
 }
 
 #[test]
@@ -1609,10 +1683,14 @@ fn a_click_whose_release_the_terminal_never_told_of_does_not_take_the_next_click
     let start = Instant::now();
     until_or(
         "the click is the program's",
-        || read(&a.join("screen")),
+        || read(&a.join("shown/screen")),
         || {
-            assert!(start.elapsed() < Duration::from_secs(8), "the click went nowhere: {:?}", read(&a.join("screen")));
-            read(&a.join("screen")).contains("^[[<0;5;3M^[[<0;5;3m")
+            assert!(
+                start.elapsed() < Duration::from_secs(8),
+                "the click went nowhere: {:?}",
+                read(&a.join("shown/screen"))
+            );
+            read(&a.join("shown/screen")).contains("^[[<0;5;3M^[[<0;5;3m")
         },
     );
 }
@@ -1636,7 +1714,7 @@ fn a_press_after_the_program_asked_for_no_mouse_for_a_while_is_a_new_click() {
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
     until("the viewer asked its terminal for the mouse", || fact(&view, "modes").contains("mouse1000"));
     fs::write(view.join("in"), "\x1b[<0;5;3M").unwrap();
-    until("the press is the program's", || read(&a.join("screen")).contains("<0;5;3M"));
+    until("the press is the program's", || read(&a.join("shown/screen")).contains("<0;5;3M"));
     fs::write(a.join("off"), "").unwrap();
     until("the viewer asks for the mouse no more", || !fact(&view, "modes").contains("mouse1000"));
     fs::write(a.join("on"), "").unwrap();
@@ -1648,7 +1726,7 @@ fn a_press_after_the_program_asked_for_no_mouse_for_a_while_is_a_new_click() {
         assert!(
             start.elapsed() < Duration::from_secs(8),
             "the press was the first program's: {:?}",
-            read(&a.join("screen"))
+            read(&a.join("shown/screen"))
         );
         layout().contains("focus=b")
     });
@@ -1668,7 +1746,7 @@ fn a_menu_on_a_terminal_of_one_row_leaves_the_bar_to_be_read() {
     start.env("COLUMNS", "80").env("LINES", "1").args(["start", "view", "--"]).args(command);
     start.args([env!("CARGO_BIN_EXE_fux"), "view"]);
     let view = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
-    let screen = || read(&view.join("screen"));
+    let screen = || read(&view.join("shown/screen"));
     until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
     fs::write(view.join("in"), "\x02").unwrap();
     until_or("the bar is shown", screen, || screen().starts_with(" main "));
@@ -1691,7 +1769,7 @@ fn a_menu_with_no_room_for_its_count_shows_no_part_of_a_number() {
     start.env("COLUMNS", "4").env("LINES", "3").args(["start", "view", "--"]).args(command);
     start.args([env!("CARGO_BIN_EXE_fux"), "view"]);
     let view = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
-    let screen = || read(&view.join("screen"));
+    let screen = || read(&view.join("shown/screen"));
     until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
     fs::write(view.join("in"), "\x02").unwrap();
     until_or("the menu is shown", screen, || screen().contains('▼'));
@@ -1713,7 +1791,7 @@ fn a_menu_opens_whatever_kind_of_file_a_key_is() {
     inner.start("one", &["sh"]);
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
-    let screen = || read(&view.join("screen"));
+    let screen = || read(&view.join("shown/screen"));
     until("the pane is shown", || screen().contains('$') || screen().contains('#'));
     fs::write(view.join("in"), "\x02").unwrap();
     until_or("the menu shows", screen, || screen().contains("v  says") && screen().contains("sub  …"));
@@ -1734,7 +1812,7 @@ fn a_workspace_whose_layout_is_a_fifo_is_drawn_and_left_all_the_same() {
     assert!(Command::new("mkfifo").arg(inner.0.join("main/layout")).status().unwrap().success());
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
-    let screen = || read(&view.join("screen"));
+    let screen = || read(&view.join("shown/screen"));
     // (A few seconds, not `until`'s minute: a viewer that waits for the FIFO waits for good.)
     let soon = |what: &str, ready: &dyn Fn() -> bool| {
         let start = Instant::now();
@@ -1765,12 +1843,12 @@ fn keys_typed_after_the_key_that_leaves_are_not_typed_into_the_pane() {
     fs::write(one.join("in"), "shown\n").unwrap();
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
-    until("the pane is shown", || read(&view.join("screen")).contains("shown\nshown"));
+    until("the pane is shown", || read(&view.join("shown/screen")).contains("shown\nshown"));
     fs::write(view.join("in"), "\x02dZ").unwrap();
     until("the viewer has left", || fact(&view, "state").starts_with("exited"));
     fs::write(one.join("in"), "END\n").unwrap();
-    until("the pane has what was typed", || read(&one.join("screen")).contains("END\n"));
-    assert_eq!(read(&one.join("screen")).trim_end(), "shown\nshown\nEND\nEND");
+    until("the pane has what was typed", || read(&one.join("shown/screen")).contains("END\n"));
+    assert_eq!(read(&one.join("shown/screen")).trim_end(), "shown\nshown\nEND\nEND");
 }
 
 #[test]
@@ -1785,7 +1863,7 @@ fn a_clipboard_set_while_a_workspace_with_no_pane_was_shown_is_not_sent_on_the_w
     let pane = inner.start("a", &["sh", "-c", copies]);
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
-    let (screen, sent) = (|| read(&view.join("screen")), || read(&view.join("clipboard")));
+    let (screen, sent) = (|| read(&view.join("shown/screen")), || read(&view.join("clipboard")));
     // What the pane copies while it has the keys reaches the viewer's own terminal.
     until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
     std::thread::sleep(Duration::from_millis(300));
@@ -1857,14 +1935,14 @@ fn a_fifo_where_a_workspace_would_be_is_refused_at_once() {
 
 #[test]
 fn rounds_of_writing_that_fail_do_not_leave_their_pictures_for_good() {
-    // A program that draws a picture, erases it and draws the next, while the screen cannot be
-    // written (a directory where its new file would be made): a round that fails still removes
+    // A program that draws a picture, erases it and draws the next, while the list of them cannot
+    // be written (a directory where its new file would be made): a round that fails still removes
     // the files of pictures no screen has any more, so they do not grow in number while it lasts.
     let session = Session::new("picfail");
     let draws = "until [ -e \"$FUXN_PANE/go\" ]; do sleep 0.05; done; i=0; while [ $i -lt 12 ]; do i=$((i + 1)); \
         printf '\\033[2J\\033[H\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\'; sleep 0.1; done; : > \"$FUXN_PANE/drawn\"; sleep 600";
     let pane = session.start("p", &["sh", "-c", draws]);
-    fs::create_dir(pane.join("screen.styled.new")).unwrap();
+    fs::create_dir(pane.join("main/pictures.new")).unwrap();
     fs::write(pane.join("go"), "").unwrap();
     let files = || {
         fs::read_dir(&pane)
@@ -1923,8 +2001,8 @@ fn the_windows_focus_is_not_told_to_a_program_that_asks_no_more() {
     assert!(Command::new("kill").args(["-CONT", &pid]).status().unwrap().success());
     std::thread::sleep(Duration::from_millis(300));
     fs::write(one.join("in"), "END").unwrap();
-    until("the pane has what was typed", || read(&one.join("screen")).contains("END"));
-    assert_eq!(read(&one.join("screen")).trim_end(), "^[[IEND");
+    until("the pane has what was typed", || read(&one.join("shown/screen")).contains("END"));
+    assert_eq!(read(&one.join("shown/screen")).trim_end(), "^[[IEND");
 }
 
 /// The FIFO of the one viewer of a session (`.view.PID`).
@@ -1999,19 +2077,18 @@ fn a_program_that_writes_its_cwd_as_soon_as_it_runs_keeps_it() {
 
 #[test]
 fn a_line_of_ctl_that_has_not_ended_writes_no_screen() {
-    // The first half of a line is no command yet: who watches `screen.styled` of a quiet pane is
-    // not woken for it. The line's end is what has the notice written, and the screen after it.
-    use std::os::unix::fs::MetadataExt;
+    // The first half of a line is no command yet: who watches `generation` of a quiet pane is
+    // not woken for it. The line's end is what has the notice written, and `generation` after it.
     let session = Session::new("halfline");
     let pane = session.start("p", &["sleep", "600"]);
-    let screen = || fs::metadata(pane.join("screen.styled")).unwrap().ino();
-    let first = screen();
+    let first = stamp_of(&pane, "generation");
     fs::write(pane.join("ctl"), "notify the first").unwrap();
     std::thread::sleep(Duration::from_millis(300));
-    assert_eq!((screen(), fact(&pane, "notice")), (first, String::new()), "a screen was written for half a line");
+    let now = (stamp_of(&pane, "generation"), fact(&pane, "notice"));
+    assert_eq!(now, (first, String::new()), "a round was written for half a line");
     fs::write(pane.join("ctl"), " half\n").unwrap();
     until("the whole line is taken", || fact(&pane, "notice") == "1 the first half");
-    until("the screen follows the notice", || screen() != first);
+    until("the round has ended", || stamp_of(&pane, "generation") != first && fact(&pane, "generation") == "4");
 }
 
 #[test]
@@ -2068,9 +2145,13 @@ fn what_is_typed_right_after_the_new_workspace_key_goes_to_its_shell() {
     fs::write(view.join("in"), "\x02wnZ").unwrap();
     let shell = inner.0.join("w2/1");
     let seen = || {
-        format!(": the new shell shows {:?}, the viewer {:?}", read(&shell.join("screen")), read(&view.join("screen")))
+        format!(
+            ": the new shell shows {:?}, the viewer {:?}",
+            read(&shell.join("shown/screen")),
+            read(&view.join("shown/screen"))
+        )
     };
-    until_or("the letter is typed to the new shell", seen, || read(&shell.join("screen")).contains('Z'));
+    until_or("the letter is typed to the new shell", seen, || read(&shell.join("shown/screen")).contains('Z'));
 }
 
 #[test]
@@ -2080,13 +2161,13 @@ fn a_picture_below_a_shortened_alternate_screen_is_not_listed_until_its_row_is_b
     let session = Session::new("altpic");
     let draws = "printf '\\033[?1049h\\033[4;1H\\033Pq\"1;1;10;20#0;2;100;0;0#0!10~-!10~-!10~\\033\\\\'; sleep 600";
     let pane = session.start("p", &["sh", "-c", draws]);
-    until("the picture is listed", || fact(&pane, "pictures").starts_with("pic-1.sixel 3 "));
-    let listed = fact(&pane, "pictures");
+    until("the picture is listed", || fact(&pane, "shown/pictures").starts_with("pic-1.sixel 3 "));
+    let listed = fact(&pane, "shown/pictures");
     fs::write(pane.join("ctl"), "resize 10 2\n").unwrap();
     until("the screen is two rows", || fact(&pane, "size") == "10 2");
-    assert_eq!(fact(&pane, "pictures"), "");
+    assert_eq!(fact(&pane, "shown/pictures"), "");
     fs::write(pane.join("ctl"), "resize 80 24\n").unwrap();
-    until("the picture is listed again", || fact(&pane, "pictures") == listed);
+    until("the picture is listed again", || fact(&pane, "shown/pictures") == listed);
 }
 
 #[test]
@@ -2101,7 +2182,7 @@ fn a_restore_that_failed_keeps_the_text_and_a_pane_started_again_is_told_the_key
     for pane in [&lost, &told] {
         assert!(session.fux().arg("wait").arg(pane).status().unwrap().success());
     }
-    assert!(read(&lost.join("history")).contains("\n17\n") && read(&told.join("screen")).trim().is_empty());
+    assert!(read(&lost.join("history")).contains("\n17\n") && read(&told.join("shown/screen")).trim().is_empty());
     fs::create_dir(lost.join("marks.new")).unwrap();
     // (Run as a login runs it: by the script's path, with no FUXN_KEYS.)
     // (A CDPATH that leads to the script's folder makes `cd` print where it went: the keys are still one path.)
@@ -2113,8 +2194,8 @@ fn a_restore_that_failed_keeps_the_text_and_a_pane_started_again_is_told_the_key
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started w/told again\n");
     until_or(
         "the pane started again says where the keys are",
-        || read(&told.join("screen")),
-        || read(&told.join("screen")).replace('\n', "") == keys.display().to_string(),
+        || read(&told.join("shown/screen")),
+        || read(&told.join("shown/screen")).replace('\n', "") == keys.display().to_string(),
     );
     // The start that failed had begun the pane's files anew: what it had printed is in `before`.
     assert!(!read(&lost.join("history")).contains("\n17\n"), "the start did not get as far as the test means");
@@ -2140,8 +2221,12 @@ fn a_paste_ends_marked_as_it_began_whatever_the_program_asks_by_then() {
     fs::write(view.join("in"), "\x1b[200~a").unwrap();
     until("the program asks for them no more", || !fact(&pane, "modes").contains("paste"));
     fs::write(view.join("in"), "b\x1b[201~Z").unwrap();
-    until("the rest arrives", || read(&pane.join("screen")).contains('Z'));
-    assert_eq!(read(&pane.join("screen")).trim_end(), "b^[[201~Z", "a paste that began marked did not end marked");
+    until("the rest arrives", || read(&pane.join("shown/screen")).contains('Z'));
+    assert_eq!(
+        read(&pane.join("shown/screen")).trim_end(),
+        "b^[[201~Z",
+        "a paste that began marked did not end marked"
+    );
 }
 
 #[test]
@@ -2180,9 +2265,14 @@ fn what_is_typed_before_a_workspace_with_no_pane_is_first_drawn_goes_to_its_shel
     fs::write(view.join("in"), "gZ").unwrap();
     let shell = inner.0.join("main/1");
     until("the workspace has its shell", || fact(&shell, "state") == "running");
-    let seen =
-        || format!(": the shell shows {:?}, the viewer {:?}", read(&shell.join("screen")), read(&view.join("screen")));
-    until_or("the letter is typed to the shell", seen, || read(&shell.join("screen")).contains('Z'));
+    let seen = || {
+        format!(
+            ": the shell shows {:?}, the viewer {:?}",
+            read(&shell.join("shown/screen")),
+            read(&view.join("shown/screen"))
+        )
+    };
+    until_or("the letter is typed to the shell", seen, || read(&shell.join("shown/screen")).contains('Z'));
 }
 
 #[test]
@@ -2202,13 +2292,18 @@ fn what_is_typed_after_a_key_that_shows_a_workspace_with_no_pane_goes_to_its_she
     let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
-    until("the viewer shows the first workspace", || read(&view.join("screen")).contains("READY"));
+    until("the viewer shows the first workspace", || read(&view.join("shown/screen")).contains("READY"));
     fs::write(view.join("in"), "\x02wlZ").unwrap();
     let shell = inner.0.join("other/1");
     until("the workspace has its shell", || fact(&shell, "state") == "running");
-    let seen =
-        || format!(": the shell shows {:?}, the viewer {:?}", read(&shell.join("screen")), read(&view.join("screen")));
-    until_or("the letter is typed to the shell", seen, || read(&shell.join("screen")).contains('Z'));
+    let seen = || {
+        format!(
+            ": the shell shows {:?}, the viewer {:?}",
+            read(&shell.join("shown/screen")),
+            read(&view.join("shown/screen"))
+        )
+    };
+    until_or("the letter is typed to the shell", seen, || read(&shell.join("shown/screen")).contains('Z'));
 }
 
 #[test]
@@ -2228,14 +2323,14 @@ fn what_is_typed_after_a_key_whose_script_makes_the_pane_waits_for_it_though_emp
     let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
-    until("the viewer shows the first workspace", || read(&view.join("screen")).contains("READY"));
+    until("the viewer shows the first workspace", || read(&view.join("shown/screen")).contains("READY"));
     fs::write(view.join("in"), "\x02wlZ").unwrap();
     let shell = inner.0.join("other/1");
     until("the workspace has its pane", || fact(&shell, "state") == "running");
     until("the viewer shows it", || read(&inner.0.join("other/layout")).contains("focus=1"));
     // (A letter the viewer had dropped before the pane was there never comes: a second is given.)
     std::thread::sleep(Duration::from_secs(1));
-    assert!(read(&shell.join("screen")).contains('Z'), "the pane shows {:?}", read(&shell.join("screen")));
+    assert!(read(&shell.join("shown/screen")).contains('Z'), "the pane shows {:?}", read(&shell.join("shown/screen")));
 }
 
 #[test]
@@ -2247,10 +2342,11 @@ fn a_restore_that_cannot_copy_what_a_pane_printed_does_not_start_it_again() {
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
     let pane = session.start("w/kept", &["echo", "KEEP"]);
     assert!(session.fux().arg("wait").arg(&pane).status().unwrap().success());
-    let mode =
-        |mode: &str| assert!(Command::new("chmod").arg(mode).arg(pane.join("screen")).status().unwrap().success());
+    let mode = |mode: &str| {
+        assert!(Command::new("chmod").arg(mode).arg(pane.join("shown/screen")).status().unwrap().success())
+    };
     mode("000");
-    if fs::read(pane.join("screen")).is_ok() {
+    if fs::read(pane.join("shown/screen")).is_ok() {
         return; // (Whoever may read every file, root, has no file that cannot be copied.)
     }
     let mut restore = Command::new("sh");
@@ -2258,7 +2354,7 @@ fn a_restore_that_cannot_copy_what_a_pane_printed_does_not_start_it_again() {
     restore.env("FUXN_DIR", &session.0).env_remove("FUXN_KEYS").env_remove("FUXN_PANE").env_remove("FUXN_WS");
     let restored = restore.output().unwrap();
     mode("600");
-    let (said, kept) = (String::from_utf8_lossy(&restored.stdout).into_owned(), read(&pane.join("screen")));
+    let (said, kept) = (String::from_utf8_lossy(&restored.stdout).into_owned(), read(&pane.join("shown/screen")));
     let before = fs::read_to_string(pane.join("before")).ok();
     assert!(said.is_empty() && kept.contains("KEEP") && before.is_none(), "{said:?} {kept:?} {before:?}");
     assert!(String::from_utf8_lossy(&restored.stderr).contains("screen"), "cat says which file it could not read");
@@ -2355,7 +2451,7 @@ fn the_blank_lines_a_command_ended_with_are_in_its_output() {
     let pane = session.start("sh", &["sh", "-c", shell]);
     // (The holder writes `marks` before `screen`: the key is pressed when both are there.)
     until("the marks and the output are there", || {
-        read(&pane.join("marks")).lines().count() == 2 && read(&pane.join("screen")).starts_with('A')
+        read(&pane.join("marks")).lines().count() == 2 && read(&pane.join("shown/screen")).starts_with('A')
     });
     let out = session.0.join("out");
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
@@ -2387,11 +2483,11 @@ fn a_notice_that_cannot_be_opened_is_old_when_it_can_be() {
     let path = format!("PATH={}", std::env::var("PATH").unwrap());
     let command = ["env", &path, &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={keys}")];
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
-    until("the viewer shows the first pane", || read(&view.join("screen")).contains("SHOWN"));
+    until("the viewer shows the first pane", || read(&view.join("shown/screen")).contains("SHOWN"));
     std::thread::sleep(Duration::from_millis(600));
     fs::write(view.join("in"), "\x02").unwrap();
-    until("the tabs are shown", || read(&view.join("screen")).contains(" p2"));
-    let marked = read(&view.join("screen")).contains(" p2! ");
+    until("the tabs are shown", || read(&view.join("shown/screen")).contains(" p2"));
+    let marked = read(&view.join("shown/screen")).contains(" p2! ");
     mode("600");
     std::thread::sleep(Duration::from_millis(600));
     fs::write(p2.join("ctl"), "notify new\n").unwrap();
@@ -2442,18 +2538,21 @@ fn a_start_from_a_directory_that_is_gone_claims_no_name() {
 #[test]
 fn two_files_of_a_pane_that_floods_are_read_as_of_one_moment() {
     // Line n of the pane's text (from 0) is the number n + 1: the screen's first row reads one more
-    // than the lines `lines` says are before it, if the two files are of one round of writing.
+    // than the lines `main/lines` says are before it, if the two files are of one round of writing.
+    // They are when `generation` is the same even number before and after they are read.
     let session = Session::new("moment");
     let pane = session.start("seq", &["sh", "-c", "seq 1 100000000"]);
     let number = |name: &str| read(&pane.join(name)).lines().next().and_then(|line| line.parse::<u64>().ok());
-    until("the flood scrolls", || number("lines") > Some(1000));
-    let (start, mut reads, mut apart) = (Instant::now(), 0, 0);
+    until("the flood scrolls", || number("main/lines") > Some(1000));
+    let (start, mut kept, mut apart) = (Instant::now(), 0, 0);
     while start.elapsed() < Duration::from_secs(2) && apart == 0 {
-        let (top, first) = (number("lines"), number("screen"));
-        reads += 1;
-        apart += u32::from(top.map(|top| top + 1) != first);
+        let (before, top, first) = (number("generation"), number("main/lines"), number("main/screen"));
+        if before.is_some_and(|n| n % 2 == 0) && number("generation") == before {
+            kept += 1;
+            apart += u32::from(top.map(|top| top + 1) != first);
+        }
     }
-    assert_eq!(apart, 0, "of {reads} reads of `lines` then `screen`, one was of two rounds of writing");
+    assert!(kept > 100 && apart == 0, "of {kept} reads kept, {apart} were of two rounds of writing");
 }
 
 #[test]
@@ -2469,7 +2568,10 @@ fn a_mark_in_a_line_that_never_ends_is_found_in_the_text_after_history_was_put_a
     let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
     until("the program has ended", || fact(&pane, "state") == "exited 0");
     assert!(session.fux().arg("wait").arg(&pane).status().unwrap().success());
-    assert!(pane.join("history.styled.1").exists() && read(&pane.join("log")).is_empty());
+    // (The line was ended where history was put aside, and `log` says so each time.)
+    assert!(
+        pane.join("history.styled.1").exists() && read(&pane.join("log")).matches("was ended in history").count() == 2
+    );
     // The pane's text as the keys make it, and the marks' places in it.
     let text = session.0.join("text");
     let mut script = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.text"));

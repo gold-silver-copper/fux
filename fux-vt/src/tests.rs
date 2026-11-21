@@ -7,6 +7,17 @@ use crate::width::Joiner;
 use crate::{Cell, Out, PICTURES_MAX, Screen, Term, continues, with_next};
 
 impl Term {
+    /// For tests: of the screen shown, the rows that go on, the links, and the lines before it.
+    pub fn wraps(&self) -> String {
+        self.files(self.screen.alt).map(|files| files.wraps).unwrap_or_default()
+    }
+    pub fn links(&self) -> String {
+        self.files(self.screen.alt).map(|files| files.links).unwrap_or_default()
+    }
+    pub fn top(&self) -> usize {
+        self.files(self.screen.alt).map_or(0, |files| files.top)
+    }
+
     /// What waits to be taken, for the tests to look at.
     pub fn peek(&self) -> &Out {
         &self.out
@@ -800,23 +811,59 @@ fn the_command_being_typed_is_not_wrapped_anew_where_the_shell_marks_its_prompt(
 }
 
 #[test]
-fn the_main_screen_under_the_alternate_screen_is_told_as_it_will_be_shown_again() {
-    // Colours, a colour of the pane's own and a wrapped line: covered, the main screen is what
-    // the screens said of it before; uncovered, nothing is told of it apart.
-    let mut term = term(8, 4, "\x1b]10;#102030\x07\x1b[31mred\x1b[m\r\na line that wraps");
-    let before = (term.plain(), term.styled(), term.wraps());
-    assert_eq!((term.covered(), before.2.as_str()), (None, "2 3"));
-    term.feed(b"\x1b[?1049h\x1b[Hfull\r\nscreen");
-    assert!(term.plain().starts_with("full\nscreen\n") && term.covered() == Some(before.clone()));
-    // (Which rows go on is told of both: the program's screen has none.)
-    assert_eq!(term.wraps(), "");
-    // A resize wraps it anew under the program, and it is told anew: as the screens then have
-    // it when the program leaves.
+fn each_screen_is_told_by_its_own_name_whichever_is_shown_and_in_its_own_numbering() {
+    // Colours, a colour of the pane's own, a link and a wrapped line, two lines into the text:
+    // covered, the main screen is told as before; the alternate screen is there only while a
+    // program has it.
+    let link = "\x1b]8;;http://m/\x07red\x1b]8;;\x07";
+    let mut term = term(8, 4, &format!("0\r\n1\r\n\x1b]10;#102030\x07\x1b[31m{link}\x1b[m\r\na line that wraps"));
+    let told = |term: &Term, alt: bool| {
+        term.files(alt).map(|files| (files.screen, files.styled, files.top, files.wraps, files.links))
+    };
+    let before = told(&term, false).expect("the main screen is always told");
+    assert_eq!(
+        (told(&term, true), before.2, before.3.as_str(), before.4.as_str()),
+        (None, 2, "2 3", "2 0 3 http://m/\n")
+    );
+    assert_eq!((term.plain(), term.styled()), (before.0.clone(), before.1.clone()));
+    term.feed(b"\x1b[?1049h\x1b[Hfull\r\n\x1b]8;;http://a/\x07screen that wraps\x1b]8;;\x07");
+    assert_eq!(told(&term, false), Some(before));
+    // The alternate screen is in no text: its lines are counted from its own first row, its
+    // links in them, and the main screen's links are told meanwhile.
+    let alt = told(&term, true).expect("a program has it");
+    assert!(alt.0.starts_with("full\nscreen t\n") && alt.0 == term.plain() && alt.1 == term.styled());
+    assert_eq!((alt.2, alt.3.as_str(), alt.4.as_str()), (0, "2 3", "1 0 17 http://a/\n"));
+    // A resize wraps the main screen anew under the program, and it is told anew: as it is
+    // shown when the program leaves.
     term.resize(12, 4);
-    let wrapped = term.covered().expect("it is covered still");
-    assert!(wrapped.2 == "2" && wrapped.0.starts_with("red\na line that \nwraps\n"), "{wrapped:?}");
+    let wrapped = told(&term, false).expect("the main screen is always told");
+    assert!(wrapped.3 == "2" && wrapped.0.starts_with("red\na line that \nwraps\n"), "{wrapped:?}");
     term.feed(b"\x1b[?1049l");
-    assert_eq!((term.covered(), (term.plain(), term.styled(), term.wraps())), (None, wrapped));
+    assert_eq!((told(&term, true), told(&term, false), term.plain()), (None, Some(wrapped.clone()), wrapped.0));
+}
+
+#[test]
+fn a_line_ended_where_history_has_it_is_two_lines_of_the_text_and_its_marks_are_on_the_second() {
+    // A line of 12 characters in rows of 4, a mark at its 8th and one at its end: two rows are
+    // in history, and whoever keeps it ends the line there (a line that never ends is cut).
+    let mark = |kind: &str| format!("\x1b]133;{kind}\x07");
+    let mut term = term(4, 2, &format!("abcdefgh{}ijkl{}\r\nz", mark("C"), mark("D")));
+    let _ = term.take(0);
+    assert_eq!((term.marks().as_str(), term.top(), term.wraps().as_str()), ("0 8 output\n0 12 end\n", 0, "0"));
+    assert!(term.end_line() && !term.end_line());
+    // The text is `abcdefgh`, a line's end that whoever keeps history writes, then `ijkl`: the
+    // marks are where what they marked is, and the screen's first row is a line's first.
+    assert_eq!((term.marks().as_str(), term.top(), term.wraps().as_str()), ("1 0 output\n1 4 end\n", 1, ""));
+    assert!(term.peek().history.is_empty() && term.plain() == "ijkl\nz\n");
+    // The text goes on as any: the next rows are that second line's, and the marks stay on it.
+    term.feed(b"\r\ny\r\nx");
+    assert_eq!(
+        (term.peek().history.as_str(), term.marks().as_str(), term.top()),
+        ("ijkl\nz\n", "1 0 output\n1 4 end\n", 3)
+    );
+    // While not all of the line's start was taken, nothing is ended.
+    let mut waits = crate::tests::term(4, 2, "abcdefghij");
+    assert!(!waits.end_line() && waits.top() == 0);
 }
 
 #[test]

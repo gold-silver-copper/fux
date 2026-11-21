@@ -16,7 +16,7 @@ IFS= read -r words
 list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") && text=$FUXN_PANE/text || exit
 for p in "$FUXN_DIR"/*/*/; do
   p=${p%/}
-  [ -f "$p/lines" ] && [ ! "$p" -ef "$FUXN_PANE" ] || continue
+  [ -f "$p/main/lines" ] && [ ! "$p" -ef "$FUXN_PANE" ] || continue
   FUXN_PANE=$p "$FUXN_KEYS/.text" "$text" > /dev/null
   LC_ALL=C grep -n -i -F -e "$words" "$text" | LC_ALL=C sed "s|^[0-9]*|${p#"$FUXN_DIR"/}:&	${p#"$FUXN_DIR"/} &|"
 done > "$list"

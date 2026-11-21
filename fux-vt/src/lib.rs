@@ -224,7 +224,8 @@ impl Cell {
 }
 
 /// A picture the program drew: where what the screen has of it is, in cells, and how many of
-/// its rows have gone off the screen's top (`row` is 0 then); and its bytes, until they are taken.
+/// its rows have gone off the screen's top (`row` is 0 then); the size in pixels of the cells it
+/// was laid out in (what the program was told then); and its bytes, until they are taken.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Picture {
     pub id: u32,
@@ -233,7 +234,21 @@ pub struct Picture {
     pub cols: usize,
     pub rows: usize,
     pub off: usize,
+    pub cell: (usize, usize),
     bytes: Option<Vec<u8>>,
+}
+
+/// One of the two screens as its files tell it: its rows as plain text and with their looks; how
+/// its rows are lines (how many lines are before its first row, and `wraps`: the rows that go on
+/// from the row above); its links, a line each; its pictures. The main screen's lines are the
+/// pane's text's. The alternate screen is in no text: its lines are counted from its first row.
+pub struct Files<'a> {
+    pub screen: String,
+    pub styled: String,
+    pub top: usize,
+    pub wraps: String,
+    pub links: String,
+    pub pictures: &'a [Picture],
 }
 
 /// Where a mark is: on the main screen, a row and a column, for as long as its row is there
@@ -685,10 +700,17 @@ impl Term {
         Term::text(&self.screen.grid)
     }
 
-    /// The main screen while the alternate screen covers it, as `plain`, `styled` and `wraps`
-    /// would have it.
-    pub fn covered(&self) -> Option<(String, String, String)> {
-        self.screen.alt.then(|| (Term::text(&self.other), self.looks(&self.other), self.goes_on(&self.other, true)))
+    /// What the files of a screen say: the main one, whichever is shown, or (`alt`) the alternate
+    /// one, while a program has it.
+    pub fn files(&self, alt: bool) -> Option<Files<'_>> {
+        let (grid, pictures) = match (alt, self.screen.alt) {
+            (false, true) => (&self.other, &self.other_pictures),
+            (true, false) => return None,
+            _ => (&self.screen.grid, &self.screen.pictures),
+        };
+        let top = if alt { 0 } else { self.tail.lines };
+        let (screen, styled, wraps) = (Term::text(grid), self.looks(grid), self.goes_on(grid, !alt));
+        Some(Files { screen, styled, top, wraps, links: self.links_of(grid, top), pictures })
     }
 
     fn text(grid: &[Vec<Cell>]) -> String {
@@ -779,10 +801,23 @@ impl Term {
         }
     }
 
-    /// How many lines are before the main screen's first row: those gone into history whole
-    /// (one that history has the start of is whole once what it went on in was erased: `settle`).
-    pub fn top(&self) -> usize {
-        self.tail.lines
+    /// Ends the line history has the start of, where history has it: a line break the program
+    /// did not print, which whoever keeps history writes there (a line that never ends is cut
+    /// where a file ends, and the files hold whole lines all the same). What the screen has of the
+    /// line is a line of its own from there, the next one, and a mark there is at its start.
+    /// False, and nothing is ended, if history has the start of no line or has not been given
+    /// all of it, or its last rows are a resize's to take back.
+    pub fn end_line(&mut self) -> bool {
+        let (line, waits) = (self.tail.lines, self.out.history.len().max(self.out.styled.len()));
+        let Some(cut) = self.tail.open.filter(|_| waits == 0 && self.lent.is_none()) else { return false };
+        let main = if self.screen.alt { &mut self.other } else { &mut self.screen.grid };
+        main.first_mut().and_then(|row| row.first_mut()).into_iter().for_each(|first| first.style.flags &= !CONT);
+        self.marks
+            .iter_mut()
+            .filter(|mark| mark.0 == At::Text(line, cut))
+            .for_each(|mark| mark.0 = At::Text(line + 1, 0));
+        self.tail = Tail { lines: line + 1, ..Tail::default() };
+        true
     }
 
     /// The number of a link's address in the table, which keeps at most `LINKS_MAX`: when it is
@@ -816,15 +851,14 @@ impl Term {
         at as u16 + 1
     }
 
-    /// The links on the screen, a line each: `LINE COL LEN ADDRESS`. LINE is the line's
-    /// number as a mark has it; COL counts cells from the start of that line's first row on the
-    /// screen, a whole row for each row before; LEN is how many cells, in reading order.
-    pub fn links(&self) -> String {
+    /// The links on a screen, a line each: `LINE COL LEN ADDRESS`. LINE is the line's number,
+    /// the first row's being `top` (on the main screen, as a mark has it); COL counts cells from
+    /// the start of that line's first row on the screen, a whole row for each row before; LEN is
+    /// how many cells, in reading order.
+    fn links_of(&self, grid: &[Vec<Cell>], top: usize) -> String {
         // (A list that would be longer than a reader reads ends before the run that makes it so.)
         let (mut out, mut full) = (String::new(), false);
-        // (Of the screen shown: a program on the alternate screen has links too. Its lines are
-        // numbered on from `top` as the main screen's are, though none of them goes to history.)
-        for (line, rows) in (self.top()..).zip(self.screen.grid.chunk_by(|_, next| continues(next))) {
+        for (line, rows) in (top..).zip(grid.chunk_by(|_, next| continues(next))) {
             // A run is a line's cells of one link, one after the other: no link after the line's
             // last cell ends the run that reaches it.
             let (mut start, mut open) = (0, 0);
@@ -853,7 +887,7 @@ impl Term {
     fn screen_place(&self, line: usize, bytes: usize) -> Option<(usize, usize)> {
         let main = self.main();
         let goes_on = |y: usize| main.get(y).is_some_and(|cells| continues(cells));
-        let mut number = self.top();
+        let mut number = self.tail.lines;
         let first = (0..main.len()).find(|&y| {
             number += usize::from(y > 0 && !goes_on(y));
             number == line && (y > 0 || !goes_on(0) || self.tail.open.is_some())
@@ -889,7 +923,7 @@ impl Term {
             _ => None,
         };
         let down = self.marks.iter().filter_map(|mark| on(mark.0)).map(|(row, _)| row + 1).max().unwrap_or(0);
-        let (mut line, mut bytes, mut starts) = (self.top(), 0, Vec::with_capacity(down));
+        let (mut line, mut bytes, mut starts) = (self.tail.lines, 0, Vec::with_capacity(down));
         for (y, cells) in main.iter().enumerate().take(down) {
             match (y, continues(cells)) {
                 (0, true) => bytes = self.tail.open.unwrap_or(0),
@@ -900,7 +934,7 @@ impl Term {
             bytes += text(cells, cells.len());
         }
         let place = |(row, col): (usize, usize)| {
-            let (line, before) = starts.get(row).copied().unwrap_or((self.top(), 0));
+            let (line, before) = starts.get(row).copied().unwrap_or((self.tail.lines, 0));
             At::Text(line, before + main.get(row).map_or(0, |cells| text(cells, col)))
         };
         self.marks.iter().map(|mark| on(mark.0).map_or(mark.0, place)).collect()
@@ -943,12 +977,9 @@ impl Term {
         }
     }
 
-    /// The rows of the screen that go on from the row above (the text wrapped into them), as
-    /// numbers from 0: what `plain` cannot say. The first row may go on from history's last line.
-    pub fn wraps(&self) -> String {
-        self.goes_on(&self.screen.grid, !self.screen.alt)
-    }
-
+    /// The rows of a screen that go on from the row above (the text wrapped into them), as
+    /// numbers from 0: what its plain text cannot say. The main screen's first row may go on from
+    /// history's last line.
     fn goes_on(&self, grid: &[Vec<Cell>], main: bool) -> String {
         let open = self.tail.open.is_some() && main;
         let rows = grid.iter().enumerate().filter(|(y, row)| continues(row) && (*y > 0 || open));
@@ -1953,7 +1984,16 @@ impl Term {
         let room = if (self.top..=self.bottom).contains(&row) && rows <= self.bottom - self.top { rows } else { 0 };
         (0..room).for_each(|_| self.linefeed(false));
         let row = self.screen.cursor.row.saturating_sub(room);
-        self.screen.pictures.push(Picture { id: self.next_picture, row, col, cols, rows, off: 0, bytes });
+        self.screen.pictures.push(Picture {
+            id: self.next_picture,
+            row,
+            col,
+            cols,
+            rows,
+            off: 0,
+            cell: self.told.cell,
+            bytes,
+        });
         self.next_picture = self.next_picture.wrapping_add(1);
         (room..rows).for_each(|_| self.linefeed(false));
         self.move_to_col(0);

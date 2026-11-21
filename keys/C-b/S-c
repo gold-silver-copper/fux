@@ -7,7 +7,6 @@
 # from the last `output` mark to the `end` after it (or to the end of the text,
 # if the command still runs) is opened in the editor.
 [ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
-[ ! -e "$FUXN_PANE/screen.main" ] || { echo "this pane shows a program's own screen: the marks are of the shell's"; exit; }
 set -- $(awk '$3 == "output" { from = $1 " " $2; to = "" } $3 == "end" && from != "" && to == "" { to = $1 " " $2 } END { print from, to }' "$FUXN_PANE/marks")
 [ -n "$1" ] || { echo "no command has run here yet"; exit; }
 [ "$1 $2" != "$3 $4" ] || { echo "nothing of the last command's output is here (it printed none, or the screen was cleared)"; exit; }

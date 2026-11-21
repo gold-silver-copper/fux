@@ -5,7 +5,6 @@
 # `marks` has the line numbers. The pane's text is opened in the editor
 # at the last marked prompt but one, wherever the cursor is.
 [ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
-[ ! -e "$FUXN_PANE/screen.main" ] || { echo "this pane shows a program's own screen: the marks are of the shell's"; exit; }
 # (The only prompt there is, if there is one only.)
 line=$(awk '$3 == "prompt" { before = last; last = $1 } END { print (before != "" ? before : last) }' "$FUXN_PANE/marks")
 [ -n "$line" ] || { echo "no prompt is marked here"; exit; }

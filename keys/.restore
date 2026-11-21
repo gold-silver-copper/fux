@@ -14,7 +14,7 @@ for p in "$D"/*/*/; do
   p=${p%/}
   command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)
   [ -n "$command" ] || continue
-  for f in history.1 history screen; do [ ! -e "$p/$f" ] || cat "$p/$f" || { rm -f "$p/before.$$"; continue 2; }; done > "$p/before.$$" || continue
+  for f in history.1 history main/screen; do [ ! -e "$p/$f" ] || cat "$p/$f" || { rm -f "$p/before.$$"; continue 2; }; done > "$p/before.$$" || continue
   dir=
   IFS= read -r dir 2>/dev/null < "$p/cwd"
   if said=$(cd "${dir:-$HOME}" 2>/dev/null || cd; set -f; set -- $command; fux start "${p#"$D"/}" -- "$@" 2>&1 > /dev/null)
