@@ -68,7 +68,7 @@ example above, typed in a pane of another workspace, starts `build` there and no
 | File | What it is |
 |---|---|
 | `in` | FIFO. Bytes written here are typed to the program |
-| `ctl` | FIFO, one command a line (a line over 1,280 bytes is dropped, with a line in `log`): `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]`, `notify TEXT` (have something noticed, as a program does: `printf 'notify %s\n' 'the build is done' > ctl`) |
+| `ctl` | FIFO, one command a line (a line over 1,280 bytes, counted as they were written, is dropped, with a line in `log`): `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]`, `notify TEXT` (have something noticed, as a program does: `printf 'notify %s\n' 'the build is done' > ctl`) |
 | `screen` | the screen as plain text: one line per row, and nothing else |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them. The cell a wide character left empty at a row's end, having no room there, is no text; where it has a colour it is told all the same, as U+200B and a blank at the row's end, so that the row is coloured to its last cell |
 | `screen.main`, `screen.main.styled` | there while a program has the alternate screen (and after a pane ended under one), and that they are there is what says it has: the main screen it covers, as `screen` and `screen.styled` would have it (the same rows, with the same colours of the pane's own), so that what was on the terminal before an editor or a pager was opened can be read without leaving it (`[ -e screen.main ]` asks). They are written with the facts, before the screens; written again only when the covered screen changes (a resize wraps it anew under the program; a colour the program sets for its pane is one in `screen.main.styled` too), not when the program draws; and removed when the program leaves the alternate screen. Meanwhile `marks` are the main screen's still and `links` the shown screen's; `lines` has a line for each (its row says which) |
@@ -697,7 +697,9 @@ fux adds nothing to stop these. What happens is what Unix does:
   started in a session of its own. Its number is `pid` in `status`.
 - **Don't expect a start that failed to tidy up.** `fux start` makes a
   folder and never removes one: a program that could not be run leaves its
-  pane's folder with a `log` that says why. Start the name again, or `rm -r` it.
+  pane's folder with a `log` that says why. Start the name again, or `rm -r` it. A program that
+  removes its pane's folder before the holder's first screen fails its start
+  too (`the holder ended without a word`: the log went with the folder).
 - **Don't remove a live pane's `in`**: that is how its holder knows the
   directory is gone, and it leaves.
 - **Don't expect a pane to drop what its starter had open.** Past 0, 1 and 2, its
