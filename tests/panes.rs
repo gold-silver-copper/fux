@@ -715,8 +715,8 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     });
     // A program that asks for the mouse gets it, counted from its own tile's corner (the tile starts at column 42).
     fs::write(view.join("in"), "printf '\\033[?1000h\\033[?1006h'; cat -v\r").unwrap();
-    until("the pane's modes say so", || fact(&inner.0.join("main/two"), "modes").contains("mouse1000 mousesgr"));
-    until("the viewer asked its own terminal", || fact(&view, "modes").contains("mouse1000 mousesgr"));
+    until("the pane's modes say so", || fact(&inner.0.join("main/two"), "modes").contains("mousesgr mouse1000"));
+    until("the viewer asked its own terminal", || fact(&view, "modes").contains("mousesgr mouse1000"));
     fs::write(view.join("in"), "\x1b[<0;50;3M\r").unwrap();
     until("the click arrives translated", || read(&inner.0.join("main/two/screen")).contains("^[[<0;9;3M"));
     // What a paste and a click are sent as is what the program asks now, whatever the viewer last
@@ -1497,7 +1497,7 @@ fn a_click_gives_a_tile_the_keys_also_between_programs_that_ask_for_presses_only
     // The viewer asks its own terminal for releases too: a click that only moves the focus ends
     // with its release, which a terminal asked for presses alone would never tell of.
     until("the viewer asked its terminal for the mouse", || fact(&view, "modes").contains("mouse"));
-    assert!(fact(&view, "modes").contains("mouse1000 mousesgr"), "{}", fact(&view, "modes"));
+    assert!(fact(&view, "modes").contains("mousesgr mouse1000"), "{}", fact(&view, "modes"));
     let focus = || read(&inner.0.join("main/layout"));
     for (click, tile) in [("50;3", "b"), ("5;3", "a"), ("50;3", "b")] {
         fs::write(view.join("in"), format!("\x1b[<0;{click}M\x1b[<0;{click}m")).unwrap();
@@ -1521,7 +1521,7 @@ fn a_click_whose_release_the_terminal_never_told_of_does_not_take_the_next_click
     fs::create_dir_all(&keys).unwrap();
     let a = inner.start("a", &["sh", "-c", "stty raw -echo; printf '\\033[?1000h\\033[?1006h'; exec cat -v"]);
     inner.start("b", &["sh", "-c", "stty raw -echo; exec cat -v"]);
-    until("the first asks for the mouse", || fact(&a, "modes") == "mouse1000 mousesgr");
+    until("the first asks for the mouse", || fact(&a, "modes") == "mousesgr mouse1000");
     lay(&inner.0, "* row(a b) focus=a\n");
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());

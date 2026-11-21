@@ -374,6 +374,7 @@ pub struct Screen {
     /// The mouse reports the program asked for: 0 for none, else 9, 1000, 1002 or 1003; and whether as SGR (1006).
     pub mouse: u16,
     pub mouse_sgr: bool,
+    autowrap: bool,
     pub pictures: Vec<Picture>,
 }
 
@@ -398,7 +399,6 @@ pub struct Term {
     other: Vec<Vec<Cell>>,
     top: usize,
     bottom: usize,
-    autowrap: bool,
     insert: bool,
     tabs: Vec<bool>,
     saved: [Cursor; 2],
@@ -481,13 +481,20 @@ impl Screen {
         }
     }
 
-    /// The modes the `modes` file lists by name, and where each is kept.
-    fn modes(&mut self) -> [(&'static str, &mut bool); 4] {
+    /// The modes that are one switch: the DEC mode that sets it and answers for it (the keypad has
+    /// none: `ESC =` and `ESC >` set it), its word in the `modes` file ("": none), where it is kept.
+    fn switches(&mut self) -> [(usize, &'static str, &mut bool); 9] {
         [
-            ("appcursor", &mut self.app_cursor),
-            ("keypad", &mut self.app_keypad),
-            ("paste", &mut self.paste),
-            ("focus", &mut self.focus),
+            (1, "appcursor", &mut self.app_cursor),
+            (usize::MAX, "keypad", &mut self.app_keypad),
+            (2004, "paste", &mut self.paste),
+            (1004, "focus", &mut self.focus),
+            // (Which reports, `mouse1002`, and in what form are two things a program sets apart.)
+            (1006, "mousesgr", &mut self.mouse_sgr),
+            (6, "", &mut self.cursor.origin),
+            (7, "", &mut self.autowrap),
+            (25, "", &mut self.cursor_shown),
+            (2026, "", &mut self.sync),
         ]
     }
 
@@ -498,21 +505,18 @@ impl Screen {
     }
 
     fn words(&mut self) -> String {
-        // Which reports (`mouse1002`) and in what form (`mousesgr`) are two things a program sets apart.
         let mouse = (self.mouse != 0).then(|| format!("mouse{}", self.mouse));
-        let sgr = self.mouse_sgr.then(|| "mousesgr".to_string());
         // And the keyboard flags a program asked for (the kitty protocol), as a number.
         let keys = (self.keys() != 0).then(|| format!("keys{}", self.keys()));
-        let on = self.modes().into_iter().filter(|m| *m.1).map(|m| m.0.to_string());
-        on.chain(mouse).chain(sgr).chain(keys).collect::<Vec<String>>().join(" ")
+        let on = self.switches().into_iter().filter(|s| *s.2 && !s.1.is_empty()).map(|s| s.1.to_string());
+        on.chain(mouse).chain(keys).collect::<Vec<String>>().join(" ")
     }
 
     /// Takes the modes those words say (a reader's side of `words`).
     pub fn set_words(&mut self, words: &str) {
         let has = |mode: &str| words.split_whitespace().any(|m| m == mode);
-        self.modes().into_iter().for_each(|(name, on)| *on = has(name));
+        self.switches().into_iter().filter(|s| !s.1.is_empty()).for_each(|(_, name, on)| *on = has(name));
         self.mouse = [9, 1000, 1002, 1003].into_iter().find(|m| has(&format!("mouse{m}"))).unwrap_or(0);
-        self.mouse_sgr = has("mousesgr");
         // (Whichever screen is shown has the keyboard flags.)
         let keys = words.split_whitespace().find_map(|m| m.strip_prefix("keys")?.parse().ok()).unwrap_or(0);
         self.keys = [(keys, Vec::new()), (keys, Vec::new())];
@@ -524,12 +528,11 @@ impl Term {
         let (cols, rows) = (cols.clamp(1, SIZE_MAX), rows.clamp(1, SIZE_MAX));
         let grid = vec![vec![Cell::blank(Style::default()); cols]; rows];
         Term {
-            screen: Screen { cols, rows, grid: grid.clone(), cursor_shown: true, ..Screen::default() },
+            screen: Screen { cols, rows, grid: grid.clone(), cursor_shown: true, autowrap: true, ..Screen::default() },
             told: Told { cell: (10, 20), ..Told::default() },
             other: grid,
             top: 0,
             bottom: rows - 1,
-            autowrap: true,
             insert: false,
             tabs: (0..SIZE_MAX).map(|c| c % 8 == 0).collect(),
             saved: [Cursor::default(); 2],
@@ -1196,7 +1199,7 @@ impl Term {
         if grown.wide() && !was_wide {
             // U+FE0F asked an emoji for its picture, which takes a second column: the
             // character is put again, and at a row's end it wraps whole.
-            if self.screen.cols < 2 || (col + 2 > self.screen.cols && !self.autowrap) {
+            if self.screen.cols < 2 || (col + 2 > self.screen.cols && !self.screen.autowrap) {
                 *cell = whole;
                 return;
             }
@@ -1221,7 +1224,7 @@ impl Term {
             return;
         }
         if self.screen.cursor.wrap || (wide && self.screen.cursor.col + 2 > self.screen.cols) {
-            if self.autowrap {
+            if self.screen.autowrap {
                 // The text goes on in the next row, whose first cell will say so. A wide
                 // character that had no room in this row's last cell leaves it as no text, if
                 // nothing is in it.
@@ -2117,7 +2120,7 @@ impl Term {
                 let set = match mode {
                     47 | 1047 | 1049 => Some(self.screen.alt),
                     9 | 1000 | 1002 | 1003 => Some(usize::from(self.screen.mouse) == mode),
-                    _ => self.switch(mode).map(|on| *on),
+                    _ => self.screen.switches().into_iter().find(|s| s.0 == mode).map(|s| *s.2),
                 };
                 // Text is always cut into grapheme clusters (2027): permanently set.
                 let answer = if mode == 2027 { 3 } else { set.map_or(0, |on| 2 - u8::from(on)) };
@@ -2125,7 +2128,7 @@ impl Term {
             }
             (0, b'!', b'p') => {
                 // A soft reset: modes and the scroll region back to how they start.
-                (self.insert, self.autowrap, self.screen.cursor_shown, self.link) = (false, true, true, 0);
+                (self.insert, self.screen.autowrap, self.screen.cursor_shown, self.link) = (false, true, true, 0);
                 (self.screen.app_cursor, self.screen.app_keypad) = (false, false);
                 (self.screen.mouse, self.screen.mouse_sgr) = (0, false);
                 (self.top, self.bottom) = (0, self.screen.rows - 1);
@@ -2220,23 +2223,8 @@ impl Term {
         self.screen.cursor.wrap = false;
     }
 
-    /// Where a mode that is one switch is kept: what sets it, resets it and answers for it.
-    fn switch(&mut self, mode: usize) -> Option<&mut bool> {
-        Some(match mode {
-            1 => &mut self.screen.app_cursor,
-            6 => &mut self.screen.cursor.origin,
-            7 => &mut self.autowrap,
-            25 => &mut self.screen.cursor_shown,
-            1004 => &mut self.screen.focus,
-            1006 => &mut self.screen.mouse_sgr,
-            2004 => &mut self.screen.paste,
-            2026 => &mut self.screen.sync,
-            _ => return None,
-        })
-    }
-
     fn private_mode(&mut self, mode: usize, on: bool) {
-        self.switch(mode).into_iter().for_each(|switch| *switch = on);
+        self.screen.switches().into_iter().filter(|s| s.0 == mode).for_each(|s| *s.2 = on);
         match mode {
             6 => self.move_to(0, 0),
             47 => self.set_alt(on, false),

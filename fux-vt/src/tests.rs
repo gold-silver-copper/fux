@@ -1176,7 +1176,7 @@ fn a_part_cut_out_of_a_picture_has_exactly_its_pixels_and_too_much_is_refused() 
 fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_told() {
     let mut term = Term::new(12, 4);
     term.feed("\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[4 q\x1b[31m漢x\x1b[m e\u{301}\x1b[2;3H".as_bytes());
-    assert_eq!(term.words(), "appcursor paste mouse1002 mousesgr");
+    assert_eq!(term.words(), "appcursor paste mousesgr mouse1002");
     let mut back = Term::new(12, 4);
     back.screen.set_words(&term.words());
     assert_eq!(back.words(), term.words());
