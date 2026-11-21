@@ -1164,14 +1164,14 @@ impl Term {
         let mut joiner = self.going_on().map_or(Joiner::default(), |last| last.joiner);
         if joiner.joins(c) {
             self.join(c);
-        } else if let columns @ 1.. = width(c, &[]) {
+        } else if width(c, &[]) == 0 {
+            // A mark or a joiner with nothing to go on: it has no place on a screen.
+            self.cluster = None;
+        } else {
             // Until it is placed it has no cell: what joins a character that found no room goes with it.
             (self.last, self.cluster) = (c, Some(Last { at: None, cursor: here, joiner }));
             let new = Cell { ch: c, more: ['\0'; MORE], style: self.screen.cursor.style, link: self.link };
-            self.place(new, columns == 2, self.insert);
-        } else {
-            // A mark or a joiner with nothing to go on: it has no place on a screen.
-            self.cluster = None;
+            self.place(new, width(c, &[]) == 2, self.insert);
         }
         // What the next character must find to go on from this one.
         let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
