@@ -1100,6 +1100,9 @@ fn a_part_cut_out_of_a_picture_has_exactly_its_pixels_and_too_much_is_refused() 
         assert_eq!(part.pixels.iter().filter(|pen| **pen != 0).count(), painted);
     }
     assert_eq!(cut(b"q~", [0, 0, 0, 6], 100), Ok(String::new()));
+    // (A register past the last that paints only outside the part is no part of it either.)
+    let under = read(cut(b"q#256~-#1@", [0, 6, 1, 1], 100).expect("a part").as_bytes(), all).expect("a picture");
+    assert_eq!(pixels(&under), [Some(Colour::Register(1))]);
     // What is too much is refused in a few words: pixels, colours, a register past the last,
     // painting over and over, and more sixel than a picture may be.
     let colours: String = (0..257).map(|n| format!("#0;2;{};{};0~", n % 101, n / 101)).collect();

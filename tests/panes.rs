@@ -1350,8 +1350,9 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     anew(format!("q\"1;1;600;60#1;2;0;0;100{}", ["!600~"; 10].join("-")));
     let all_blue = |(w, h, colours): (usize, usize, Vec<_>)| (w, h) == (600, 40) && colours.iter().all(|c| *c == blue);
     until("the new picture is drawn", || pixels(&drawn().1, [0, 0, 1000, 100]).is_some_and(all_blue));
-    // One that cannot be cut is not drawn, and the viewer's corner says why.
-    anew(String::from("q\"1;1;600;60#256!600~"));
+    // One that cannot be cut is not drawn, and the viewer's corner says why. (It paints every
+    // band in a register past the last: what a picture paints outside its part counts for nothing.)
+    anew(format!("q\"1;1;600;60#256{}", ["!600~"; 10].join("-")));
     let why = "left: a picture is not drawn: it names a colour register over 255";
     until("the corner says why", || read(&view.join("screen")).contains(why) && fact(&view, "pictures").is_empty());
 }

@@ -60,7 +60,7 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
     let mut pixels = vec![0u16; area];
     let mut paints = area.saturating_mul(PAINTED_MAX);
     // The colour each register has now, and the pen it paints with (0: not looked up since).
-    let (mut registers, mut pens) = ([None::<[u8; 3]>; COLOURS_MAX], [0u16; COLOURS_MAX]);
+    let mut registers = [(None::<[u8; 3]>, 0u16); COLOURS_MAX];
     let mut colours: Vec<Colour> = Vec::new();
     let (mut register, mut x, mut band, mut size) = (0usize, 0usize, 0usize, (0usize, 0usize));
     // (A repeat count is the next command's, whatever that is.)
@@ -82,10 +82,7 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
                     && numbers.split(|&b| b == b';').count() == 5
                     && (1..=2).contains(&n1)
                 {
-                    *slot = Some(if n1 == 1 { hls([n2, n3, n4]) } else { [n2, n3, n4].map(|n| n.min(100) as u8) });
-                    pens.get_mut(register).into_iter().for_each(|pen| *pen = 0);
-                } else if register >= COLOURS_MAX {
-                    wrong = wrong.or(Some("it names a colour register over 255"));
+                    *slot = (Some(if n1 == 1 { hls([n2, n3, n4]) } else { [n2, n3, n4].map(|n| n.min(100) as u8) }), 0);
                 }
             }
             b'?'..=b'~' => {
@@ -100,14 +97,16 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
                 if painted == 0 || wrong.is_some() {
                     continue;
                 }
+                let Some((colour, pen)) = registers.get_mut(register) else {
+                    wrong = Some("it names a colour register over 255");
+                    continue;
+                };
                 let Some(left_to_paint) = paints.checked_sub(painted) else {
                     wrong = Some("it paints its part in the tile over too many times");
                     continue;
                 };
                 paints = left_to_paint;
-                let mut pen = pens.get(register).copied().unwrap_or(0);
-                if pen == 0 {
-                    let colour = registers.get(register).copied().flatten();
+                if *pen == 0 {
                     let colour = colour.map_or(Colour::Register(register as u8), Colour::Rgb);
                     let known = colours.iter().position(|c| *c == colour);
                     let place = known.unwrap_or_else(|| {
@@ -118,12 +117,11 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
                         wrong = Some("its part in the tile has more than 256 colours");
                         continue;
                     }
-                    pen = place as u16 + 1;
-                    pens.get_mut(register).into_iter().for_each(|slot| *slot = pen);
+                    *pen = place as u16 + 1;
                 }
                 for start in rows.map(|row| (row - top) * width) {
                     let cells = pixels.get_mut(start + (from - left)..start + (to - left));
-                    cells.into_iter().for_each(|cells| cells.fill(pen));
+                    cells.into_iter().for_each(|cells| cells.fill(*pen));
                 }
             }
             b'$' => x = 0,
