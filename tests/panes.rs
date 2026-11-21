@@ -453,6 +453,40 @@ fn a_flood_is_published_a_bounded_number_of_times_and_loses_no_line() {
 }
 
 #[test]
+fn a_viewer_whose_panes_do_not_change_does_no_work_and_draws_the_next_change() {
+    // The viewer on a terminal of 500 by 500 cells: putting a frame of that size together is
+    // work that shows in its processor time, which `ps` tells (in whole seconds, on Linux).
+    let (outer, inner) = (Session::new("iouter"), Session::new("iinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let one = inner.start("one", &["sh", "-c", "echo r''eady; exec cat"]);
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let mut start = outer.fux();
+    start.env("COLUMNS", "500").env("LINES", "500").args(["start", "view", "--"]).args(command);
+    let started = start.args([env!("CARGO_BIN_EXE_fux"), "view"]).output().unwrap();
+    let view = PathBuf::from(String::from_utf8(started.stdout).unwrap().trim());
+    until("the pane has its tile's size and is drawn", || {
+        fact(&one, "size") == "500 500" && read(&view.join("screen")).starts_with("ready\n")
+    });
+    let pid = read(&view.join("status")).lines().find_map(|line| Some(line.strip_prefix("pid ")?.to_string())).unwrap();
+    let worked = || {
+        let told = Command::new("ps").args(["-o", "time=", "-p", &pid]).output().unwrap().stdout;
+        let told = String::from_utf8(told).unwrap();
+        told.trim().split(':').fold(0.0, |seconds, part| seconds * 60.0 + part.parse::<f64>().unwrap())
+    };
+    // Six seconds in which nothing changes: no frame is put together. (One that were put together
+    // each time the viewer looks would take all of them here; however slow the machine, a viewer
+    // that does nothing uses none.)
+    let before = worked();
+    std::thread::sleep(Duration::from_secs(6));
+    let work = worked() - before;
+    assert!(work <= 2.0, "the viewer worked for {work} s of 6 in which nothing changed");
+    // And what changes next is drawn.
+    fs::write(one.join("in"), "next\n").unwrap();
+    until("the change is drawn", || read(&view.join("screen")).starts_with("ready\nnext\nnext\n"));
+}
+
+#[test]
 fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
     // The viewer in a pane of an outer session, with no keys directory yet: it writes the
     // default keys, and `.empty` among them starts a shell in the workspace it finds empty.
