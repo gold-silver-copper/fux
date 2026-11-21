@@ -1937,6 +1937,30 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   `arrange` presets and their keys (34 lines), OSC 99 notices (17),
   OSC 777 (5), `C-b w h` and `C-b w l` (10), `rotate` and `C-b g t`
   (10), `split` without `beside` (8), `TERM_PROGRAM_VERSION` (1).
+- **D110. The tenth wave, the last of this run** (three new readers with
+  the eighth's brief). Bugs, each with a test that failed first unless
+  said: a mark goes with its cell when a character is printed before
+  it in insert mode; an erase that takes the whole screen because half
+  a wide character began it is a cleared screen (so is `CSI K` on a
+  screen of one row); a wrap that waits on the alternate screen is done
+  after a resize that keeps the width (fixed from memory of xterm; the
+  referee has a case for it now, so CI asks xterm); a picture on the
+  alternate screen keeps its place on a screen too small to show it,
+  as on the main screen; half a line of `ctl` writes no screen; a batch
+  of `ctl` commands is as old as its first (no test: a matter of
+  time); a pane of one column asked to be narrower is not made wider;
+  a press after the program asked for no mouse for a while is a new
+  click; a menu on a terminal of one row leaves the bar; each run of
+  `.restore` keeps a pane's text under a name of its own (no test: a
+  race of two shells). Cuts: about thirty lines in small pieces (plain
+  mechanics: the holder takes its words apart once; one search claims
+  a pane's name; one fill; the layout's parser says when its text is
+  too long; the pipe's end says the writer ended). Left: `FIONBIO`
+  for the pty (the number differs per system: one more constant pair);
+  a malformed OSC 7 naming this machine, after a good one in the same
+  read, loses the good one (the emulator cannot tell which host is
+  this one; the holder's fix is more than three lines); a kitty key
+  release sent for a press that a full `in` dropped.
 
 ## The old fux3's bugs: which classes are gone
 
