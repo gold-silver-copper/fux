@@ -1558,9 +1558,11 @@ fn a_picture_drawn_at_the_bottom_of_a_scroll_region_is_above_the_cursor_as_at_th
 
 #[test]
 fn a_program_that_asks_about_a_mode_that_is_not_private_is_answered() {
-    // Insert mode (4) has a state, 2 for reset and 1 for set; no other is known (0). Unanswered, the program waits.
-    let asked = term(8, 1, "\x1b[4$p\x1b[4h\x1b[4$p\x1b[4l\x1b[4$p\x1b[2$p\x1b[1049$p");
-    assert_eq!(String::from_utf8_lossy(&asked.peek().reply), "\x1b[4;2$y\x1b[4;1$y\x1b[4;2$y\x1b[2;0$y\x1b[1049;0$y");
+    // Insert mode (4) has a state, 2 for reset and 1 for set; no other is known (0), and each is
+    // answered by the number it was asked with, 0 too. Unanswered, the program waits.
+    let asked = term(8, 1, "\x1b[4$p\x1b[4h\x1b[4$p\x1b[4l\x1b[4$p\x1b[2$p\x1b[1049$p\x1b[0$p\x1b[$p");
+    let told = "\x1b[4;2$y\x1b[4;1$y\x1b[4;2$y\x1b[2;0$y\x1b[1049;0$y\x1b[0;0$y\x1b[0;0$y";
+    assert_eq!(String::from_utf8_lossy(&asked.peek().reply), told);
 }
 
 #[test]

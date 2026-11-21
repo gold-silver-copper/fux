@@ -2102,7 +2102,8 @@ impl Term {
                 self.respond(&format!("\x1b[?{mode};{answer}$y"));
             }
             // A mode that is not private: insert mode has a state (1 set, 2 reset), no other is known (0).
-            (0, b'$', b'p') => self.respond(&format!("\x1b[{n};{}$y", u8::from(n == 4) * (2 - u8::from(self.insert)))),
+            (0, b'$', b'p') if n == 4 => self.respond(&format!("\x1b[4;{}$y", 2 - u8::from(self.insert))),
+            (0, b'$', b'p') => self.respond(&format!("\x1b[{};0$y", self.arg(0, 0))),
             (0, b'!', b'p') => {
                 // A soft reset: modes and the scroll region back to how they start.
                 (self.insert, self.screen.autowrap, self.screen.cursor_shown, self.link) = (false, true, true, 0);
