@@ -1947,12 +1947,14 @@ impl Term {
         }
         let bytes = Some([b"\x1bP", data, b"\x1b\\"].concat());
         let Cursor { row, col, .. } = self.screen.cursor;
+        // The picture scrolls with the text; of one taller than the screen the last rows stay. For one the
+        // scroll region has room for, the room is made first: scrolled there, it lies across the region's end.
+        let room = if (self.top..=self.bottom).contains(&row) && rows <= self.bottom - self.top { rows } else { 0 };
+        (0..room).for_each(|_| self.linefeed(false));
+        let row = self.screen.cursor.row.saturating_sub(room);
         self.screen.pictures.push(Picture { id: self.next_picture, row, col, cols, rows, off: 0, bytes });
         self.next_picture = self.next_picture.wrapping_add(1);
-        // The picture scrolls with the text; of one taller than the screen the last rows stay.
-        for _ in 0..rows {
-            self.linefeed(false);
-        }
+        (room..rows).for_each(|_| self.linefeed(false));
         self.move_to_col(0);
     }
 

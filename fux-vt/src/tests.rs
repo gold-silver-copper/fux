@@ -1533,3 +1533,25 @@ fn a_picture_on_the_alternate_screen_keeps_its_column_on_a_screen_too_narrow_to_
         assert_eq!(term.screen.pictures.first().map(|p| (p.row, p.col)), Some((0, 7)), "{cols} columns");
     }
 }
+
+#[test]
+fn a_picture_drawn_at_the_bottom_of_a_scroll_region_is_above_the_cursor_as_at_the_screens() {
+    // A screen of 10 rows with cells of 10 by 20 pixels: the picture is `height` pixels high and
+    // is drawn at row `at` (counted from 1) of the scroll region `region`.
+    let placed = |region: &str, at: usize, height: usize| {
+        let term = term(20, 10, &format!("{region}\x1b[{at};1H\x1bP0;0;0q\"1;1;10;{height}#0!10~-!10~\x1b\\"));
+        (term.screen.pictures.first().map(|p| (p.row, p.rows, p.off)), term.screen.cursor.row)
+    };
+    // The region is the whole screen: the picture's two rows are above the cursor.
+    assert_eq!(placed("", 10, 40), (Some((7, 2, 0)), 9));
+    // The region ends above the screen's last row (apt's progress bar sets such a one): the same.
+    assert_eq!(placed("\x1b[1;9r", 9, 40), (Some((6, 2, 0)), 8));
+    assert_eq!(placed("\x1b[3;9r", 9, 40), (Some((6, 2, 0)), 8));
+    // One as high as the room above the region's last row fills it; one with room below it scrolls nothing.
+    assert_eq!(placed("\x1b[3;9r", 6, 120), (Some((2, 6, 0)), 8));
+    assert_eq!(placed("\x1b[1;9r", 3, 40), (Some((2, 2, 0)), 4));
+    // One taller than the region lies across its edge when it scrolls, and goes; below the region
+    // nothing scrolls, and its rows past the screen's last are only not shown.
+    assert_eq!(placed("\x1b[1;9r", 9, 200), (None, 8));
+    assert_eq!(placed("\x1b[1;9r", 10, 40), (Some((9, 2, 0)), 9));
+}
