@@ -1770,3 +1770,37 @@ fn a_line_of_ctl_is_measured_in_the_bytes_that_were_written() {
     until("the next line is taken", || fact(&pane, "notice") == "2 next");
     assert_eq!(read(&pane.join("log")), "ctl: a line over 1280 bytes was dropped\n");
 }
+
+#[test]
+fn the_windows_focus_is_not_told_to_a_program_that_asks_no_more() {
+    // A program that asked to be told of the focus (mode 1004) and was told it has the keys. It
+    // stops asking while the viewer is stopped, and the terminal says in that time that its window
+    // lost the focus: the viewer, going on, reads that before it draws, and tells the program nothing.
+    let (outer, inner) = (Session::new("focusout"), Session::new("focusin"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let asks_then_stops = "stty raw -echo; printf '\\033[?1004h'; until [ -e \"$FUXN_PANE/go\" ]; do sleep 0.05; done; printf '\\033[?1004l'; exec cat -vt";
+    let one = inner.start("one", &["sh", "-c", asks_then_stops]);
+    until("it asks", || fact(&one, "modes") == "focus");
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer asks its terminal for the focus", || fact(&view, "modes").contains("focus"));
+    std::thread::sleep(Duration::from_millis(500));
+    let pid = view_fifo(&inner.0).extension().unwrap().to_string_lossy().into_owned();
+    assert!(Command::new("kill").args(["-STOP", &pid]).status().unwrap().success());
+    fs::write(one.join("go"), "").unwrap();
+    until("it asks no more", || fact(&one, "modes").is_empty());
+    fs::write(view.join("in"), "\x1b[O").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(Command::new("kill").args(["-CONT", &pid]).status().unwrap().success());
+    std::thread::sleep(Duration::from_millis(300));
+    fs::write(one.join("in"), "END").unwrap();
+    until("the pane has what was typed", || read(&one.join("screen")).contains("END"));
+    assert_eq!(read(&one.join("screen")).trim_end(), "^[[IEND");
+}
+
+/// The FIFO of the one viewer of a session (`.view.PID`).
+fn view_fifo(session: &Path) -> PathBuf {
+    let files = fs::read_dir(session).unwrap().flatten().map(|entry| entry.path());
+    files.into_iter().find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".view.")).unwrap()
+}

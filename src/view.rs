@@ -471,9 +471,9 @@ impl View {
                 ("keyboard", flags) => self.keyboard = flags.parse::<u8>().unwrap_or(0) & KEYS,
                 // The window's own focus: for the pane that has the keys, if it asked to be told.
                 ("focus", way) => {
-                    // (To the pane that was told it has the keys, whichever the layout names by now.)
+                    // (To the pane that was told it has the keys, whichever the layout names by now, if it still asks.)
                     self.window = way == "I";
-                    if let Some(pane) = self.told_focus.clone() {
+                    if let Some(pane) = self.told_focus.clone().filter(|pane| asks(pane).focus) {
                         self.send();
                         let _ = send_to(&pane.join("in"), raw);
                     }
