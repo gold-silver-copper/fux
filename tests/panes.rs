@@ -1267,8 +1267,11 @@ fn a_link_a_program_makes_is_a_line_of_links_and_the_viewer_draws_it_inside_its_
         read(&left.join("links")) == format!("{above}3 34 10 {address}\n") && fact(&left, "size") == "40 24"
     });
     let drawn = format!("{above}3 34 6 {address}\n4 0 4 {address}\n");
-    until("the viewer drew the links", || read(&view.join("links")) == drawn);
-    assert!(read(&view.join("screen")).lines().nth(3).unwrap().contains("012345│"));
+    // (A pane's facts are written before its screen: the one may be read a round ahead of the other.)
+    until("the viewer drew the links", || {
+        read(&view.join("links")) == drawn
+            && read(&view.join("screen")).lines().nth(3).is_some_and(|row| row.contains("012345│"))
+    });
     // The pane's text scrolls into history and its first link with it; the viewer's terminal
     // then has that one no more.
     fs::write(left.join("ctl"), "resize 40 2\n").unwrap();
