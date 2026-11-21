@@ -83,6 +83,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // `fux start` says under what name the pane's directory was started, and its program is told
     // the same. The session is found as by any command in a pane: the one named, or two folders up.
     let session = crate::here().ok_or("hold is started by `fux start`".into()).and_then(|_| crate::session())?;
+    // (The `cwd` an earlier holder left goes before the program starts: the file is the program's to write too.)
+    let _ = fs::remove_file("cwd");
     let mut child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
@@ -156,7 +158,7 @@ impl Holder {
         // What an earlier holder of this pane left goes before this one's first screen is there: its clipboard,
         // its history, its title (a fact with none) and its program's end, which is not that of the one `status`
         // names now. Not its pictures' files: each stays until a picture of its number is written.
-        for old in ["clipboard", "cwd", "notice", "state"] {
+        for old in ["clipboard", "notice", "state"] {
             let _ = fs::remove_file(old);
         }
         for history in ["history", "history.styled"] {

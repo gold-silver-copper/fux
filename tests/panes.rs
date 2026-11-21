@@ -1840,3 +1840,22 @@ fn a_pane_started_again_that_never_came_up_leaves_no_state_of_the_run_before() {
     let (waited, state) = (wait(), read(&pane.join("state")));
     assert!(!waited.status.success() && waited.stdout.is_empty() && state.is_empty(), "{waited:?} {state:?}");
 }
+
+#[test]
+fn a_program_that_writes_its_cwd_as_soon_as_it_runs_keeps_it() {
+    // The program writes where it is (`pwd > "$FUXN_PANE/cwd"`, as the README says a shell may)
+    // before its holder has come up: here the holder waits meanwhile, at a `status.new` that is a
+    // FIFO, until the file is there. What an earlier holder left went before the program started.
+    let session = Session::new("owncwd");
+    let pane = session.0.join("main/p");
+    fs::create_dir_all(&pane).unwrap();
+    assert!(Command::new("mkfifo").arg(pane.join("status.new")).status().unwrap().success());
+    fs::write(pane.join("cwd"), "/left/by/an/earlier/holder\n").unwrap();
+    let says = "pwd > \"$FUXN_PANE/cwd.mine\" && mv \"$FUXN_PANE/cwd.mine\" \"$FUXN_PANE/cwd\"; exec sleep 600";
+    let start = session.fux().args(["start", "p", "--", "sh", "-c", says]).spawn().unwrap();
+    let here = format!("{}\n", std::env::current_dir().unwrap().display());
+    until("the program has said where it is", || read(&pane.join("cwd")) == here);
+    assert!(read(&pane.join("status.new")).contains("command sh -c pwd"));
+    assert!(start.wait_with_output().unwrap().status.success());
+    assert_eq!((fact(&pane, "state").as_str(), read(&pane.join("cwd"))), ("running", here));
+}
