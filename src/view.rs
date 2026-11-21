@@ -83,7 +83,7 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
 /// What a frame is drawn from, other than the terminal's size and the workspace (another one
 /// forgets it): the layout and what is wrong with it, the message, what the terminal is like and
 /// whether its window has the keys, each tile's `generation` file (as `Pane::seen`: a holder writes
-/// it anew after any file of its pane, last in each round of writing) and whether its holder lives,
+/// it anew last in each round of writing, after every file it changed) and whether its holder lives,
 /// the focused pane's `clipboard` file, and each picture's file.
 type From = (String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Stamp, bool)>, Stamp, Vec<Stamp>);
 
@@ -896,7 +896,7 @@ impl View {
         for ((name, body), &(seen, held)) in tiles.iter().zip(&from.4) {
             let pane = self.panes.entry(name.clone()).or_insert_with(unread);
             let pane_directory = directory.join(name);
-            pane.read(&pane_directory, seen);
+            pane.read(&pane_directory, seen, held);
             let focused = self.focus.as_ref() == Some(name);
             // Each holder is asked once to take the tile's size, and told the size of a cell in pixels.
             let asked = (pane.pid, body.w, body.h, cell_size);
@@ -1363,7 +1363,7 @@ impl Pane {
     /// Reads the pane if its `generation` file changed (`seen`: the file as the frame found it; a holder
     /// writes it last). What was read is kept only if it is the same file afterwards: then every file is of
     /// one round. (In a folder made by hand they may disagree: the rows are the lines there are, the cursor inside.)
-    fn read(&mut self, directory: &Path, seen: Stamp) {
+    fn read(&mut self, directory: &Path, seen: Stamp, held: bool) {
         if self.seen == Some(seen) {
             return;
         }
@@ -1449,7 +1449,9 @@ impl Pane {
         }
         let title = fact("title", 1024);
         self.title = title.lines().next().unwrap_or_default().chars().filter(|c| !c.is_control()).take(256).collect();
-        if generation(directory, last.looked).0 != seen {
+        // (Nor is a first read kept that was taken while a living holder was writing.)
+        let now = generation(directory, last.looked);
+        if now.0 != seen || now.1 && held {
             *self = last;
         }
     }

@@ -11,7 +11,8 @@ fux is a view over the filesystem and pane daemons. Everything else follows.
 - **One source of truth for each fact.** What a terminal shows: the holder's
   emulator, published as a folder for each of its two screens (`main/`
   always, `alt/` while a program has the alternate screen), the same names
-  in each. Which of them is drawn: the link `shown`. Whether a pane lives:
+  in each. Which of them is drawn: the link `shown` (that `alt/` is there
+says the same in the same round, of the program). Whether a pane lives:
   the kernel's lock on its directory, held by its holder. Which panes exist:
   the folders. Where they are drawn and which has the keys: the `layout`
   file. What a key does: the file of its name. Whether the pane's files
@@ -75,9 +76,10 @@ facts and the `screen.styled` that `shown` leads to when the pane's `generation`
 (it is written last), keeps what it read if it is still that file afterwards, and
 parses the screen with the same emulator that wrote it. It sends keys with a write to `in` that never waits, opening it by
 its path each time, so that the pane typed into is the pane of that name
-now. There is no header and no version: a reader that
-takes a fact and a text one write apart is wrong for one frame, and the next
-look puts it right; it keeps the cursor inside the rows it read. It sets the
+now. There is no header and no version: what says that
+files are of one moment is `generation`, read before and after them (in a
+folder made by hand they may still disagree: the viewer takes the rows that
+are there and keeps the cursor inside them). It sets the
 outer terminal's cursor-key and keypad modes to the focused program's, so key
 bytes pass through untouched; mouse reports it asks for in the SGR form, and
 gives the program in its own, counted from the tile's corner. Pictures are files the viewer passes on after

@@ -2138,7 +2138,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   Decided here, where the panel left a choice or this run found better:
   - **`alt/lines` begins with `0`, not `-`.** The panel offered both.
     With a number one rule reads both folders (a row's line is that
-    number plus the rows above it that do not go on; a link's LINE
+    number plus how many of the rows from 1 to it do not go on; a link's LINE
     counts the same way), and the viewer reads `shown/lines` with no
     branch. What says "this is not the pane's text" is the folder's
     name. Against: `-` would fail a script that did arithmetic on it;
@@ -2176,6 +2176,32 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     written.
   - **`keys/.text` reads under `generation`, ten tries**, then takes the
     files as they are (a flood, a killed holder): a key must not hang.
+  - **The review, round one** (six readers, one area each: the
+    holder's order of writing, the emulator's numbering, the viewer,
+    the key scripts, the docs as a user, and the model). Fixed, each
+    from a traced sequence: an odd number that could not be written no
+    longer lets anything change under the even one (history is not
+    added to, no picture's file goes: the round fails first); the odd
+    number is written once a round, not again when the round adds to
+    history; what was in `alt/` is forgotten before the folder is
+    removed, so a removal that fails half way cannot leave `shown` at
+    files that are gone; a mark where a line was ended is on the
+    screen's row and moves with it; a character that joins the one
+    printed last still does when the line was ended in between; the
+    viewer keeps no first read taken while a living holder wrote; the
+    flood test counts rounds from the numbers, exactly; the help
+    page waits for the link `shown` and not for a file of `alt/`, its
+    recipe counts in a name of its own and says a command that writes
+    a file must write it anew each try; the rule from a row to its
+    line counts the rows from 1 to it. Left, with the reason: a
+    history file that cannot be put aside loses its lines for good and
+    the round still ends even (`log` says so: an odd number that never
+    turns would say less); `cwd` is outside what the number speaks for
+    (the program writes it too); the text keys read `marks` before the
+    text and not in one read with it (so does the base: a mark's line
+    and byte are of the text's numbering and hold unless the text is
+    erased in that moment; a later change may have `.text` hand the
+    marks out with the text).
   - The emulator tells each screen through one function, `files(alt)`;
     `plain`, `styled`, `covered`, `wraps`, `links` and `top` are gone
     from its interface (its tests keep the first two and the last

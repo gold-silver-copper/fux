@@ -93,9 +93,10 @@ READ IT
     cat "$P/size" "$P/cursor" "$P/modes" "$P/state" "$P/status"
 One fact, one small file (absent until there is something to say, where noted):
 size    COLS ROWS, e.g. `80 24`
-cursor  ROW COL shown|hidden SHAPE, from 0, e.g. `2 8 shown 0`: row 2 is line 3 of screen
+cursor  ROW COL shown|hidden SHAPE, from 0, of the screen that is drawn: `2 8 shown 0` is
+        row 2, line 3 of `shown/screen`
         (a fifth word, `#rrggbb`, if the program gave the cursor a colour; a colour a program
-        sets for its pane is in `screen.styled` as direct colour: `38;2;R;G;B`, `48;2;R;G;B`
+        sets for its pane is in `shown/screen.styled` as direct colour: `38;2;R;G;B`, `48;2;R;G;B`
         on every cell of the default background, `58:2::R:G:B` for an underline)
 modes   words, or an empty line: appcursor, keypad, paste, focus, mousesgr, mouseN, keysN
 state   running | hungup | exited CODE | killed SIGNAL (lost ERROR: the holder could not wait)
@@ -122,23 +123,30 @@ links   (in a screen's folder) `LINE COL LEN ADDRESS` for each link (OSC 8) on t
         e.g. `24 0 4 https://x.y`: LINE counts as the first line of that folder's `lines`
         does (screen row = LINE - that number, if no row above wraps), COL is the first cell
         from 0, LEN the number of cells
-log     what the holder refused or lost. (Also: clipboard, pic-N.sixel, and `pictures` in a screen's folder.)
+log     what the holder refused or lost. (Also: clipboard; and in a screen's folder `pictures`,
+        a line `pic-N.sixel ROW COL COLS ROWS CELL-WIDTH CELL-HEIGHT` for each picture on that
+        screen, the file being in the pane's folder.)
 One file read by itself is always whole. Two files read one after the other may be of two
 writings of the files (a `lines` one scroll behind its `screen`). Where they must agree,
 read `generation`, the files, and `generation` again, and keep what you read only if both
 times it was the same even number; else read again, with a limit:
-    together() { d=$1; shift; n=0; until g=$(cat "$d/generation") && [ $((g % 2)) -eq 0 ] && "$@" && [ "$g" = "$(cat "$d/generation")" ]; do n=$((n+1)); [ $n -lt 100 ] || return 1; sleep 0.05; done; }
+    together() { d=$1; shift; tries=0; until g=$(cat "$d/generation") && [ $((g % 2)) -eq 0 ] && "$@" && [ "$g" = "$(cat "$d/generation")" ]; do tries=$((tries+1)); [ $tries -lt 100 ] || return 1; sleep 0.05; done; }
     first() { top=$(sed -n 1p "$P/main/lines") && row=$(sed -n 1p "$P/main/screen"); }
     together "$P" first && echo "the main screen's first row is line $top of the pane's text: $row"
-(It runs the command after DIR until the read is one to keep. A pane whose holder was killed
-while it wrote stays odd: the limit runs out, and you take the files as they are.)
+(It runs the command after DIR until the read is one to keep, so the command starts anew
+each time: one that writes a file writes it anew, `> file` inside it and not after `together`.
+It counts in `tries`: leave that name alone in the command. DIR must name the same pane
+throughout. A pane whose holder was killed while it wrote stays odd: the limit runs out, and
+you take the files as they are.)
 The text a pane keeps, oldest first, wrapped rows joined into lines:
     whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(sed -n 2p "$1/main/lines")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/main/screen"; }
     whole "$P" | tail -n 5
-It is exact for a pane that is still or ended, whichever screen it shows (of one that prints
-meanwhile, take it under `together`, into a file), but for: colours, blanks at a line's end,
+    snap() { whole "$P" > "$P/whole.new"; }; together "$P" snap && tail -n 1 "$P/whole.new"; rm -f "$P/whole.new"
+It is exact for a pane that is still or ended, whichever screen it shows, and under `together`
+(the line above) for one that prints meanwhile, but for: colours, blanks at a line's end,
 empty lines at the very end, what was erased or written over, and text older than the two
-history files keep (4 MiB or more).
+history files keep (4 MiB or more; a line of over 8 MiB that never ends is ended there: the
+text has a line end the program did not print, and `log` says so).
 
 RUN A COMMAND, GET ITS OUTPUT AND EXIT CODE
 Surest: make the command the pane's program. `fux wait DIR` returns when the pane's holder
@@ -172,11 +180,14 @@ the last thousand: in a pane with more, the count stands still, and a tag is the
 FULL-SCREEN PROGRAMS (vim, less, htop)
 While one has the alternate screen, there is `alt/` with the program's own screen, `shown`
 leads there, and `main/screen` is still what the shell showed before it opened, read without
-leaving it. Send keys as bytes; after each, wait for a changed frame or for the text you expect.
-    printf 'less "%s/status"\r' "$P" > "$P/in"; seen '^' "$P/alt/screen"; readlink "$P/shown"     # alt
+leaving it. `alt/` is filled before `shown` is turned to it, and removed after it is turned
+back: wait for the link, not for a file. Send keys as bytes; after each, wait for a changed
+frame or for the text you expect.
+    shows() { n=0; until [ "$(readlink "$1/shown")" = "$2" ]; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
+    printf 'less "%s/status"\r' "$P" > "$P/in"; shows "$P" alt; readlink "$P/shown"; ls "$P/alt"     # alt, and its five files
     grep '<<t1' "$P/main/screen"              # under less: the shell's screen, with the tag printed above
     f=$(frame "$P"); printf '/pid\r' > "$P/in"; changed "$P" "$f"      # search; vim: printf '\033:wq\r'
-    printf 'q' > "$P/in"; unseen '^' "$P/alt/screen"; readlink "$P/shown"                         # main
+    printf 'q' > "$P/in"; shows "$P" main; readlink "$P/shown"                                    # main
 A program that asks what its terminal is gets fux's own answers: XTVERSION `fux-next N`;
 COLORTERM=truecolor in its environment; and by name (XTGETTCAP) these, any other being "not
 valid": TN name Co colors RGB Tc setrgbf setrgbb Smulx Setulc Ss Se. So Neovim uses true

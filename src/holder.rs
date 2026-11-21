@@ -384,8 +384,11 @@ impl Holder {
     /// so: it is not kept to try again, and what a resize sent there is no longer taken back.
     /// Before them, the bytes a resize took back from each file's end go from it (the third of each).
     fn history(&mut self, files: [(&str, &str, usize); 2]) {
-        // (The text is ahead of what the screens' files say of it until the next round has ended.)
-        self.turn(true).unwrap_or_else(|e| self.log(&format!("cannot write generation: {e}")));
+        // (The text is ahead of the screens' files until the next round has ended: none is written under an even number.)
+        if let Err(e) = self.turn(true) {
+            self.term.keep_lent();
+            return self.log(&format!("history was lost, as generation could not be written: {e}"));
+        }
         for (name, _, back) in &files {
             let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(*back as u64));
             let cut = if *back > 0 { OpenOptions::new().write(true).open(name).and_then(cut) } else { Ok(()) };
@@ -419,10 +422,13 @@ impl Holder {
         }
     }
 
-    /// Says in `generation` that the files are being written (the next `odd` number, or the one it has) or agree (even).
+    /// Says in `generation` that the files are being written (`odd`: nothing, if it says so) or agree again (even).
     fn turn(&mut self, odd: bool) -> io::Result<()> {
-        self.generation = self.generation.wrapping_add(u64::from(odd == self.generation.is_multiple_of(2)));
-        replace("generation", format!("{}\n", self.generation).as_bytes())
+        if odd == self.generation.is_multiple_of(2) {
+            replace("generation", format!("{}\n", self.generation.wrapping_add(1)).as_bytes())?;
+            self.generation = self.generation.wrapping_add(1);
+        }
+        Ok(())
     }
 
     /// A round of writing: `generation` is odd, what changed is written, history first, and
@@ -430,7 +436,9 @@ impl Holder {
     /// one ends well). `ended` is what became of the program (`exited CODE`, `killed SIGNAL`), once
     /// it has ended: the `state` file, which until then says `running`, or `hungup` once the pty is closed.
     fn publish(&mut self, ended: Option<&str>) -> io::Result<()> {
-        let written = self.turn(true).and_then(|()| self.write(ended));
+        // (Nothing is changed while `generation` says the files agree, no picture's file either.)
+        self.turn(true)?;
+        let written = self.write(ended);
         // A picture neither screen has any more has no reader left, after a round that failed too.
         self.pictures.retain(|id| {
             let kept = self.term.has_picture(*id);
@@ -504,9 +512,9 @@ impl Holder {
         // (One that cannot be written fails the round: it is written in a later one, the newest of each.)
         for (name, bytes) in files {
             if self.facts.get(name) != Some(&bytes) {
-                write(name, bytes.as_deref())?;
-                // (What was in a folder that is gone is written again when the folder is there again.)
+                // (What was in a folder that goes is forgotten first: removing it may fail with its files gone.)
                 self.facts.retain(|file, _| bytes.is_some() || !file.starts_with(name));
+                write(name, bytes.as_deref())?;
                 self.facts.insert(name, bytes);
             }
         }

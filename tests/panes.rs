@@ -357,6 +357,8 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     let session = Session::new("io");
     let pane = session.start("build", &["sh"]);
     assert_eq!(pane, session.0.join("main/build"));
+    // (What is typed before the shell's first prompt is answered on that prompt's row.)
+    until("the shell's prompt shows", || read(&pane.join("shown/screen")).contains('$'));
     fs::write(pane.join("in"), "echo h''i; stty size\n").unwrap();
     until("the answers show", || read(&pane.join("shown/screen")).contains("\nhi\n24 80\n"));
     // A resize reaches the program and the `size` file; the screen is its rows and nothing else.
@@ -564,15 +566,15 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
 fn a_flood_is_published_a_bounded_number_of_times_and_loses_no_line() {
     let session = Session::new("flood");
     let pane = session.start("yes", &["sh", "-c", "yes | head -n 200000; echo done; sleep 600"]);
-    // Each publish replaces `generation` twice (as it begins and as it ends): they are counted by
-    // looking at it far more often than it is written.
-    let (start, mut seen, mut publishes) = (Instant::now(), None, 0.0);
+    // Each round of writing ends with the next even number in `generation`: how many there were is
+    // read from the numbers, however often the file was looked at.
+    let rounds = || fact(&pane, "generation").parse::<f64>().map_or(0.0, |n| (n / 2.0).floor());
+    let (start, first) = (Instant::now(), rounds());
     while !read(&pane.join("shown/screen")).contains("\ndone\n") {
-        let now = stamp_of(&pane, "generation");
-        publishes += f64::from(u8::from(std::mem::replace(&mut seen, now) != now)) / 2.0;
         assert!(start.elapsed() < Duration::from_secs(20), "the flood did not end");
         std::thread::sleep(Duration::from_millis(1));
     }
+    let publishes = rounds() - first;
     let seconds = start.elapsed().as_secs_f64() + 0.1;
     assert!(publishes >= 2.0, "the flood was watched");
     assert!(publishes <= 41.0 * seconds + 2.0, "{publishes} publishes in {seconds} s is over 40 a second");
@@ -2594,4 +2596,26 @@ fn a_mark_in_a_line_that_never_ends_is_found_in_the_text_after_history_was_put_a
     let marked = text.split(|byte| *byte == b'\n').nth((line + add - 1) as usize).unwrap_or_default();
     let marked = String::from_utf8_lossy(marked.get(from..to).unwrap_or_default());
     assert_eq!(marked, "MARKED-TAIL", "the marks ({marks:?}) are not where the text has what was marked");
+}
+
+#[test]
+fn nothing_of_a_pane_changes_under_an_even_generation_also_when_the_odd_one_cannot_be_written() {
+    // A directory where `generation` is written anew: the holder cannot say that it is writing, so
+    // it writes nothing, neither the screens nor the history that waits (which is lost: `log` says so).
+    let session = Session::new("even");
+    let pane = session.start("p", &["sh", "-c", "read x; seq 1 100000; echo done; sleep 600"]);
+    let files = |pane: &Path| (fact(pane, "generation"), read(&pane.join("history")), read(&pane.join("main/screen")));
+    let before = files(&pane);
+    fs::create_dir(pane.join("generation.new")).unwrap();
+    fs::write(pane.join("in"), "\n").unwrap();
+    until("the rounds fail", || {
+        let log = read(&pane.join("log"));
+        log.contains("history was lost") && log.contains("cannot write the pane's files")
+    });
+    assert!(files(&pane) == before, "a file changed while `generation` said {}", before.0);
+    // When it can be written again, the next round is written whole and ends even.
+    fs::remove_dir(pane.join("generation.new")).unwrap();
+    fs::write(pane.join("ctl"), "notify again\n").unwrap();
+    let even = |pane: &Path| fact(pane, "generation").parse::<u64>().is_ok_and(|n| n % 2 == 0 && n > 2);
+    until("a round is written", || even(&pane) && files(&pane).2.contains("\ndone\n"));
 }

@@ -850,7 +850,8 @@ fn a_line_ended_where_history_has_it_is_two_lines_of_the_text_and_its_marks_are_
     // A line of 12 characters in rows of 4, a mark at its 8th and one at its end: two rows are
     // in history, and whoever keeps it ends the line there (a line that never ends is cut).
     let mark = |kind: &str| format!("\x1b]133;{kind}\x07");
-    let mut term = term(4, 2, &format!("abcdefgh{}ijkl{}\r\nz", mark("C"), mark("D")));
+    let printed = format!("abcdefgh{}ijkl{}\r\nz", mark("C"), mark("D"));
+    let mut term = term(4, 2, &printed);
     let _ = term.take(0);
     assert_eq!((term.marks().as_str(), term.top(), term.wraps().as_str()), ("0 8 output\n0 12 end\n", 0, "0"));
     assert!(term.end_line() && !term.end_line());
@@ -858,12 +859,24 @@ fn a_line_ended_where_history_has_it_is_two_lines_of_the_text_and_its_marks_are_
     // marks are where what they marked is, and the screen's first row is a line's first.
     assert_eq!((term.marks().as_str(), term.top(), term.wraps().as_str()), ("1 0 output\n1 4 end\n", 1, ""));
     assert!(term.peek().history.is_empty() && term.plain() == "ijkl\nz\n");
+    // The marks are on the screen's row and go where it goes: a row put in above it, and they are a line on.
+    let mut moved = crate::tests::term(4, 2, &printed);
+    let _ = moved.take(0);
+    assert!(moved.end_line());
+    moved.feed(b"\x1b[H\x1b[LX");
+    assert_eq!((moved.plain().as_str(), moved.marks().as_str()), ("X\nijkl\n", "2 0 output\n2 4 end\n"));
     // The text goes on as any: the next rows are that second line's, and the marks stay on it.
     term.feed(b"\r\ny\r\nx");
     assert_eq!(
         (term.peek().history.as_str(), term.marks().as_str(), term.top()),
         ("ijkl\nz\n", "1 0 output\n1 4 end\n", 3)
     );
+    // A character that joins the one printed last joins it also when the line was ended in between.
+    let mut joined = crate::tests::term(2, 1, "abe");
+    let _ = joined.take(0);
+    assert!(joined.end_line());
+    joined.feed("\u{301}".as_bytes());
+    assert_eq!(joined.plain(), "e\u{301}\n");
     // While not all of the line's start was taken, nothing is ended.
     let mut waits = crate::tests::term(4, 2, "abcdefghij");
     assert!(!waits.end_line() && waits.top() == 0);

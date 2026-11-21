@@ -798,8 +798,11 @@ impl Term {
         let Some(cut) = self.tail.open.filter(|_| waits == 0 && self.lent.is_none()) else { return false };
         let main = if self.screen.alt { &mut self.other } else { &mut self.screen.grid };
         main.first_mut().and_then(|row| row.first_mut()).into_iter().for_each(|first| first.style.flags &= !CONT);
+        // (The character printed last may be that cell: the next may still join it. A mark there is on the screen.)
+        let last = self.cluster.as_mut().filter(|_| !self.screen.alt).and_then(|last| last.at.as_mut());
+        last.filter(|at| (at.0, at.1) == (0, 0)).into_iter().for_each(|at| at.2.style.flags &= !CONT);
         let here = self.marks.iter_mut().filter(|mark| mark.0 == At::Text(line, cut));
-        here.for_each(|mark| mark.0 = At::Text(line + 1, 0));
+        here.for_each(|mark| mark.0 = At::Screen(0, 0));
         self.tail = Tail { lines: line + 1, ..Tail::default() };
         true
     }
