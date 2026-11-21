@@ -2,14 +2,10 @@
 # find a workspace
 # group: Find
 # A list of the session's workspaces (name, panes) in a pane of its own; the
-# viewer is told to show the one chosen. Not offered: the workspace that holds
-# the pane this viewer itself runs in ($FUXN_SELF): a viewer that shows itself
-# draws itself without end.
+# viewer is told to show the one chosen.
 list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
-own=${FUXN_SELF%/*}
 for w in "$FUXN_DIR"/*/; do
   w=${w%/}
-  [ -n "$own" ] && [ "$w" -ef "$own" ] && continue
   printf '%s\t%s\n' "${w##*/}" "$(ls "$w" | grep -v -x -e layout -e layout.new | tr '\n' ' ')"
 done > "$list"
 # (The pane has no word for the viewer: it is given the viewer's FIFO to write to.)

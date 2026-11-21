@@ -451,8 +451,7 @@ A script gets `FUXN_DIR` (the session), `FUXN_WS` (the workspace shown),
 `FUXN_ROW` and `FUXN_COL` (the size, as `COLSxROWS`, of the tile a split of the
 focused pane would make: `FUXN_ROW` side by side, as `C-b v` splits, `FUXN_COL`
 one above the other, as `C-b s` does; the split keys
-start their pane at that size, so its program is not drawn twice), `FUXN_SELF`
-(the pane this viewer itself runs in, if it runs in one), and this
+start their pane at that size, so its program is not drawn twice), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; a script that
 takes longer puts its work in the background, as the defaults do.
@@ -480,9 +479,7 @@ workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
 TERM to the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
 (`p` a pane, `t` a tab, `w` a workspace: a list in a pane of its own, chosen
-with fzf, sk or fzy if one is installed and by number or name if none is (a number is a line of the list first, and a name only if the list has no such line); the
-workspace that holds the viewer's own pane is not offered, since a viewer
-that shows itself draws itself without end). Whether a pane
+with fzf, sk or fzy if one is installed and by number or name if none is (a number is a line of the list first, and a name only if the list has no such line)). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
 not your shell but `keys/.shell`, a few lines that run it and then remove
 the pane's own folder, however the shell ended. Only when `.shell` itself

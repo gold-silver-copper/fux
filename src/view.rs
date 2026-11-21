@@ -163,8 +163,6 @@ struct View {
     joined: bool,
     /// The pane that was told it has the keys (it asked to be told: mode 1004).
     told_focus: Option<PathBuf>,
-    /// The pane this viewer itself runs in, if it runs in one.
-    own: std::ffi::OsString,
     /// Each pane's `notice` as it was last looked at: the file's stamp, and whether it has one
     /// this viewer has not shown on a focused pane yet. And when all were last looked at.
     notices: HashMap<String, (Stamp, bool)>,
@@ -278,7 +276,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         joins: false,
         joined: false,
         told_focus: None,
-        own: std::env::var_os(name!("PANE")).unwrap_or_default(),
         notices: HashMap::new(),
         looked: None,
         greeted: None,
@@ -791,7 +788,6 @@ impl View {
         let mut script = Command::new(file);
         script.env(name!("DIR"), &self.session).env(name!("WS"), &self.workspace).env(name!("KEYS"), &self.keys);
         script.env(name!("PANE"), pane.unwrap_or_default()).env(name!("VIEW"), &self.ctl_path).env("PATH", path);
-        script.env(name!("SELF"), &self.own);
         // A pane a script starts begins at the size of the whole view, right for a new tab. The
         // size a tile would have if the focused pane were split is given too, side by side
         // (ROW) and one above the other (COL): a script that splits passes it on to `fux start`,
