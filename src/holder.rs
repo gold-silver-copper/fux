@@ -5,7 +5,7 @@
 //! its program.
 
 use crate::sys::{self, Winsize};
-use crate::term::{Out, SIZE_MAX, Term};
+use crate::term::{Out, SIZE_MAX, TERM, Term};
 use crate::{plain, replace};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
@@ -17,8 +17,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The terminal a pane claims to be: see the README for why this is honest.
-pub const TERM: &str = "xterm-256color";
 /// While the program keeps writing (never a millisecond without output), the screen files are
 /// replaced at most once in this long (40 times a second).
 const PUBLISH_EVERY: Duration = Duration::from_millis(25);

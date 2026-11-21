@@ -29,12 +29,13 @@ const DROPPED: &str = "an answer to the program was dropped: 16 KiB of answers w
 /// and how many sets of flags a program can push aside on a screen.
 pub const KEYS: u8 = 31;
 const KEYS_KEPT: usize = 16;
+pub const TERM: &str = "xterm-256color"; // The terminal a pane claims to be (the README says why).
 /// What a program is told when it asks for a capability by its terminfo name (XTGETTCAP): what
 /// this emulator does, and no more. A name that is not here is answered "not valid", each by
 /// itself. (The README has the same table; a test holds the two together.)
 const CAPS: &[(&str, &str)] = &[
-    ("TN", "xterm-256color"),
-    ("name", "xterm-256color"),
+    ("TN", TERM),
+    ("name", TERM),
     ("Co", "256"),
     ("colors", "256"),
     ("RGB", "8/8/8"),
