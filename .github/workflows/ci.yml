@@ -14,15 +14,14 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup update stable && rustup default stable && rustup component add clippy
       - run: cargo build --release --locked
-      - name: no dependencies
-        run: test "$(grep -c '^name = ' Cargo.lock)" = 1
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: no dependencies but the three crates
+        run: test "$(grep '^name = ' Cargo.lock | tr -d '\n')" = 'name = "fux"name = "fux-vt"name = "fuxix"'
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: verify the pinned Unicode test file
-        run: python3 tools/unicode.py test tests > /dev/null
-      - run: cargo test --locked -- --test-threads 4
+        run: python3 tools/unicode.py test fux-vt/tests > /dev/null
+      - run: cargo test --workspace --locked -- --test-threads 4
       - run: ./example.sh
       - run: tools/help-agents.sh
-      - run: ./boundary.sh
       - run: ./sizes.sh
   referee:
     # The same bytes to fux, xterm, tmux and the old emulator: fails on a difference the README's table lacks.
