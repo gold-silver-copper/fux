@@ -1026,6 +1026,49 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     term.resize(20, 3);
     term.resize(20, 4);
     assert_eq!(placed(&term), Some((0, 3, 2, 1)));
+    // Rows of it below a screen made lower are its own still when the screen is made higher; and
+    // one beside no text keeps its column on a screen too narrow to show it, and is there again
+    // on a wider one.
+    let mut term = self::term(20, 6, "\x1b[2;1H\x1bPq\"1;1;10;60~\x1b\\\x1b[H");
+    term.resize(20, 2);
+    assert_eq!(placed(&term), Some((1, 1, 3, 0)));
+    term.resize(20, 6);
+    assert_eq!(placed(&term), Some((1, 1, 3, 0)));
+    let mut term = self::term(20, 4, "\x1b[1;8H\x1bPq\"1;1;20;1!20@\x1b\\");
+    for cols in [5, 20] {
+        term.resize(cols, 4);
+        assert_eq!(term.pictures.first().map(|p| (p.row, p.col, p.cols)), Some((0, 7, 2)), "{cols} columns");
+    }
+}
+
+#[test]
+fn a_picture_is_passed_on_unread_only_if_its_own_pixels_are_square_and_all_in_its_tile() {
+    // A picture's file, and what is drawn of it where its tile has so many pixels for it (rows
+    // of its pixels above the tile, then the tile's width and height from its corner on).
+    let file = std::env::temp_dir().join(format!("fux-part-{}.sixel", std::process::id()));
+    let part = |picture: &str, room: [usize; 3]| {
+        std::fs::write(&file, format!("\x1bP{picture}\x1b\\")).unwrap();
+        crate::view::part(&(file.clone(), None, room))
+    };
+    // 80 pixels wide: its own bytes where the tile has 80 pixels, whatever cells a pane counted
+    // it in; 64 of them, written anew, where the tile has 64. And so with its height.
+    let red = "0;1q\"1;1;80;1#0;2;100;0;0!80@";
+    assert_eq!(part(red, [0, 80, 20]), Ok(Some((red.to_string(), 80, 1))));
+    let cut = part(red, [0, 64, 20]).unwrap().unwrap();
+    assert!(cut.0.starts_with("0;1q\"1;1;64;1#") && (cut.1, cut.2) == (64, 1), "{cut:?}");
+    let high = part("0;1q\"1;1;1;20~-~-~-A", [0, 80, 12]).unwrap().unwrap();
+    assert!(high.0.starts_with("0;1q\"1;1;1;12#") && (high.1, high.2) == (1, 12), "{high:?}");
+    // One that asks for pixels twice as high as wide is written anew with square ones.
+    let tall = part("0;1q\"2;1;10;12!10~-!10~", [0, 80, 20]).unwrap().unwrap();
+    assert!(tall.0.starts_with("0;1q\"1;1;10;12#"), "{tall:?}");
+    // Nothing of it in the tile, or not one whole picture: nothing is drawn, and nothing said.
+    assert_eq!(part(red, [20, 80, 20]), Ok(None));
+    assert_eq!(part("0;1q~\x1b\\\x1bPq~", [0, 80, 20]), Ok(None));
+    // No pixels to count in, or a file over a picture's bound: not drawn, and why is said.
+    assert!(part(red, [0, 0, 0]).is_err_and(|why| why.contains("pixels a cell has")));
+    let long = format!("q~{}", "$".repeat(crate::term::PICTURE_MAX + 5));
+    assert!(part(&long, [0, 80, 20]).is_err_and(|why| why.contains("4 MiB")));
+    std::fs::remove_file(&file).unwrap();
 }
 
 /// A sixel picture written from a rule (the colour of each pixel, or none), plainly: for each
@@ -1116,6 +1159,24 @@ fn a_part_cut_out_of_a_picture_has_exactly_its_pixels_and_too_much_is_refused() 
         compared += usize::from(!cut.is_empty());
     }
     assert!(compared > 100, "{compared}");
+    // What a part is charged for is what is painted inside it. The last row of a picture 1200
+    // pixels high, 100 of the 600 rows of one with six colours in every band, a row under 81
+    // paintings of the rows above it and 300 colours used only above it, and 16 paintings of one
+    // band are all drawn; a part of no pixels is no picture, and not refused.
+    let tall = format!("q#0;2;100;0;0{}", ["!600~"; 200].join("-"));
+    let band: String = (0..6).map(|k| format!("#{k}!600{}$", char::from(b'?' + (1 << k)))).collect();
+    let above: String = (0..300).map(|n| format!("#1;2;{};{};0!10~$", n % 101, n / 101)).collect();
+    let drawn_all = [
+        (tall, [0, 1180, 600, 20], 600 * 20),
+        (format!("q{}", [band.as_str(); 100].join("-")), [0, 500, 600, 100], 600 * 100),
+        (format!("q{above}{}----#2;2;0;0;100!10~", "!10~$".repeat(81)), [0, 20, 10, 20], 60),
+        (format!("q{}", "!10~$".repeat(16)), [0, 0, 10, 6], 60),
+    ];
+    for (picture, part, painted) in drawn_all {
+        let part = read(cut(picture.as_bytes(), part, 1 << 20).expect("a part").as_bytes(), all).expect("a picture");
+        assert_eq!(part.pixels.iter().filter(|pen| **pen != 0).count(), painted);
+    }
+    assert_eq!(cut(b"q~", [0, 0, 0, 6], 100), Ok(String::new()));
     // What is too much is refused in a few words: pixels, colours, a register past the last,
     // painting over and over, and more sixel than a picture may be.
     let colours: String = (0..257).map(|n| format!("#0;2;{};{};0~", n % 101, n / 101)).collect();

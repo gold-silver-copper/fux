@@ -1131,7 +1131,8 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     // the viewer draws is that pane's picture, a file and a line in `pictures`.
     let (outer, inner) = (Session::new("pouter"), Session::new("pinner"));
     let keys = inner.0.join(".keys");
-    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    fs::write(keys.join("C-b/x"), "#!/bin/sh\n").unwrap();
     // 600 by 60 pixels, 60 columns and 3 rows of an 80 column pane: red, the last 205 columns
     // blue, and green for red from the 31st row of pixels on. At a line typed to it the program
     // scrolls its screen by one row.
@@ -1178,6 +1179,11 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     // In a tile wide enough the picture is whole again: the program's own bytes.
     lay(&inner.0, "* col(left right) focus=right\n");
     until("the picture is drawn whole", || drawn() == ("0 0 60 3".to_string(), whole.clone()));
+    // A menu that covers no cell of it leaves it drawn.
+    fs::write(view.join("in"), "\x02").unwrap();
+    until("the menu is open", || read(&view.join("screen")).contains("C-b …"));
+    assert_eq!(drawn(), ("0 0 60 3".to_string(), whole.clone()));
+    fs::write(view.join("in"), "\x1b").unwrap();
     // Scrolled one row off its pane's top, it is drawn from its 21st row of pixels on.
     fs::write(left.join("in"), "\n").unwrap();
     until("the pane has it one row up", || fact(&left, "pictures") == "pic-1.sixel -1 0 60 3");
@@ -1185,4 +1191,16 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     let (w, h, colours) = pixels(&drawn().1, [0, 0, 1000, 100]).expect("the viewer drew a sixel picture");
     assert_eq!((w, h, colours[9 * 600], colours[10 * 600], colours[599]), (600, 40, red, green, blue));
     assert!(Some((w, h, colours)) == pixels(&whole, [0, 20, 600, 40]));
+    // The file written anew under its name is drawn anew: all of it blue.
+    let anew = |picture: String| {
+        fs::write(left.join("anew"), format!("\x1bP{picture}\x1b\\")).unwrap();
+        fs::rename(left.join("anew"), left.join("pic-1.sixel")).unwrap();
+    };
+    anew(format!("q\"1;1;600;60#1;2;0;0;100{}", ["!600~"; 10].join("-")));
+    let all_blue = |(w, h, colours): (usize, usize, Vec<_>)| (w, h) == (600, 40) && colours.iter().all(|c| *c == blue);
+    until("the new picture is drawn", || pixels(&drawn().1, [0, 0, 1000, 100]).is_some_and(all_blue));
+    // One that cannot be cut is not drawn, and the viewer's corner says why.
+    anew(String::from("q\"1;1;600;60#256!600~"));
+    let why = "left: a picture is not drawn: it names a colour register over 255";
+    until("the corner says why", || read(&view.join("screen")).contains(why) && fact(&view, "pictures").is_empty());
 }

@@ -68,7 +68,8 @@ look puts it right; it keeps the cursor inside the rows it read. It sets the
 outer terminal's cursor-key, keypad and mouse modes to the focused program's,
 so key bytes pass through untouched and mouse reports need only their
 coordinates moved. Pictures are files the viewer passes on after
-checking that each is one sixel string; of one that does not fit its tile
+checking that each is one sixel string and that its pixels, measured by
+the viewer in its own terminal's cells, are all in its tile; of any other
 it writes the part inside the tile (`sixel.rs`).
 
 **Keys.** The viewer names each key and looks for a file of that name in the

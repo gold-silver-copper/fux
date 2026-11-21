@@ -1374,7 +1374,9 @@ impl Term {
         let last = self.cluster.and_then(|last| last.at).filter(|_| !self.alt);
         let mut places = vec![if self.alt { saved } else { cursor }, saved, (self.main_row, 0, false)];
         places.push(last.map_or(cursor, |(row, col, ..)| (row, col, false)));
-        places.extend(main_pictures.iter().flat_map(|p| [(p.row, p.col, false), (p.row + p.rows - 1, p.col, false)]));
+        // (A picture's rows below the screen's last are counted on from the last.)
+        let low = |p: &Picture| (p.row + p.rows - 1).min(main.len().saturating_sub(1));
+        places.extend(main_pictures.iter().flat_map(|p| [(p.row, p.col, false), (low(p), p.col, false)]));
         // The rows the last resize sent to history are wrapped along: they come back if there is room.
         let held = self.above.len();
         places.iter_mut().for_each(|place| place.0 += held);
@@ -1406,7 +1408,9 @@ impl Term {
                 cell.style.flags |= CONT;
             }
         }
-        let at = |i: usize| places.get(i).map_or((0, 0), |place| (place.0, place.1));
+        // (A cursor beside its line's text is kept inside the row; a picture keeps its column.)
+        let place = |i: usize| places.get(i).copied().unwrap_or_default();
+        let at = |i: usize| (place(i).0, if place(i).2 { place(i).1.min(cols - 1) } else { place(i).1 });
         // Blank rows below the cursor go first; a row with something on it is never dropped:
         // rows go to history from the top, and the cursor with them if text below it needs the room.
         let lowest = at(0).0.max(if self.alt { at(2).0 } else { 0 });
@@ -1457,7 +1461,8 @@ impl Term {
         // only not shown.
         let mut kept: Vec<Picture> = Vec::new();
         for (i, picture) in main_pictures.iter().enumerate() {
-            let ((row, col), (below, under)) = (at(4 + 2 * i), at(5 + 2 * i));
+            let ((row, col, _), (below, under, _)) = (place(4 + 2 * i), place(5 + 2 * i));
+            let below = below + picture.row + picture.rows - 1 - low(picture);
             let back = picture.off.min(held);
             let (off, gone) = (picture.off - back, up.saturating_sub(row));
             let stacked = under == col && below == row + back + picture.rows - 1;
@@ -2041,7 +2046,7 @@ impl Term {
 
     /// Places a sixel picture at the cursor and moves the cursor below it.
     fn picture(&mut self, data: &[u8]) {
-        let (width, height) = sixel_size(data);
+        let (width, height, _) = sixel_size(data);
         let cols = width.div_ceil(self.cell.0.max(1)).max(1);
         let rows = height.div_ceil(self.cell.1.max(1)).max(1);
         if cols > SIZE_MAX || rows > SIZE_MAX {
@@ -2620,10 +2625,11 @@ fn reflow(
             |strict: bool| starts.iter().rposition(|&(of, start)| of == line && start + usize::from(strict) <= offset);
         let row = last(place.2).or_else(|| last(false));
         let column = row.map_or(0, |row| offset - starts.get(row).map_or(0, |start| start.1));
-        // Past its line's text a place is only kept inside the row; right after the text of a
-        // full row it is the place that waits to wrap (one past the last column).
+        // Past its line's text a place is beside the text, as many columns on as it was (which
+        // is said of it); right after the text of a full row it is the place that waits to wrap
+        // (one past the last column).
         let beside = lines.get(line).is_some_and(|(text, _)| offset > text.len());
-        (place.0, place.1) = (row.unwrap_or(0), if beside { column.min(cols - 1) } else { column });
+        *place = (row.unwrap_or(0), column, beside);
     }
     rows
 }
@@ -2639,12 +2645,13 @@ fn line_drawing(c: char) -> char {
 }
 
 /// The size of a sixel picture in pixels: the larger of what its raster
-/// attributes say and what its data paints.
-fn sixel_size(data: &[u8]) -> (usize, usize) {
+/// attributes say and what its data paints. And whether its pixels are square: whether its
+/// raster attributes, if it has any, give a pixel's height and width as the same number.
+pub fn sixel_size(data: &[u8]) -> (usize, usize, bool) {
     let body = data.iter().copied().skip_while(|&b| b != b'q').skip(1);
     let (mut x, mut band, mut painted, mut declared) = (0usize, 0usize, (0usize, 0usize), (0usize, 0usize));
     // Whose numbers are being read: `!` a repeat count, `#` a colour, `"` the raster attributes.
-    let (mut owner, mut numbers) = (b' ', vec![0usize]);
+    let (mut owner, mut numbers, mut square) = (b' ', vec![0usize], true);
     for byte in body.chain(std::iter::once(b'$')) {
         if byte.is_ascii_digit() {
             if let Some(n) = numbers.last_mut() {
@@ -2658,6 +2665,7 @@ fn sixel_size(data: &[u8]) -> (usize, usize) {
             if owner == b'"' {
                 let size = |i: usize| numbers.get(i).copied().unwrap_or(0);
                 declared = (declared.0.max(size(2)), declared.1.max(size(3)));
+                square &= size(0) == size(1);
             }
             let repeat = if owner == b'!' { numbers.first().copied().unwrap_or(1).max(1) } else { 1 };
             (owner, numbers) = (b' ', vec![0]);
@@ -2675,5 +2683,5 @@ fn sixel_size(data: &[u8]) -> (usize, usize) {
             }
         }
     }
-    (painted.0.max(declared.0), painted.1.max(declared.1))
+    (painted.0.max(declared.0), painted.1.max(declared.1), square)
 }

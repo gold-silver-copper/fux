@@ -615,26 +615,38 @@ gives that tile the keys and is not passed on. The viewer uses the mouse for not
 focused program does not ask, your terminal's own selection works as ever.
 
 Pictures: when the terminal says it draws sixel, a pane's picture is drawn in
-its tile. One that fits is passed on as the program wrote it. Of one that
-does not fit (wider or taller than the tile, or with rows scrolled off the
-pane's top) the part inside the tile is drawn, at its place and never over
-the line between tiles or a neighbour: the viewer reads the picture
-(`src/sixel.rs`: raster attributes, colours in RGB and HLS, repeats), takes
-the pixels the tile's cells cover and writes those as a sixel picture of
-its own. The file stays whole, so the picture is whole again in a wider
-tile. A part is cut once and kept for as long as it is drawn. It has square
-pixels, and a pixel the program never painted stays unpainted in it (the
-part says that such pixels keep what is under them, whatever the picture
-said). No picture is drawn on your terminal's last row: a terminal may put
-the cursor under a picture and scroll everything to do so.
+its tile. The viewer measures every picture itself, in pixels: the picture's
+own size (the larger of what it says and what it paints) against the pixels
+its tile has for it, counted in your terminal's cells (the cells a pane
+counted it in are only where it starts). One whose pixels are square and
+all in the tile is passed on as the program wrote it. Of any other (wider or
+taller than the tile, with rows scrolled off the pane's top, or asking for
+pixels that are not square) the part inside the tile is drawn, at its place
+and never over the line between tiles or a neighbour: the viewer reads the
+picture (`src/sixel.rs`: raster attributes, colours in RGB and HLS,
+repeats), takes the pixels the tile has for it and writes those as a sixel
+picture of its own. The file stays whole, so the picture is whole again in a
+wider tile; a file written anew under its name is drawn anew. What is drawn
+of a picture is made once and kept for as long as it is drawn. A part has
+square pixels, and a pixel the program never painted stays unpainted in it
+(the part says that such pixels keep what is under them, whatever the
+picture said). No picture is drawn on your terminal's last row: a terminal
+may put the cursor under a picture and scroll everything to do so. While a
+menu is open, a picture it covers a cell of is not drawn. A cell counts as
+100 pixels wide and high at most, in a pane and in the viewer alike.
 
-A picture is cut within bounds: the 4 MiB a picture may have are read; the
-part is at most its cells times the size of a cell, and at most 8,388,608
-pixels (a screen of 3840 by 2160 has fewer); colour registers 0 to 255 and
-256 different colours; each column of six pixels painted four times over on
-average; 4 MiB of sixel written. A picture past one of these is not drawn
-(no stand-in is), and the viewer's corner says which, once for each part;
-so is one in a terminal that does not say how many pixels a cell has.
+A picture is cut within bounds, and the bounds are on the part in the tile:
+what a picture paints outside it is read (the 4 MiB a picture's file may
+have, a step for each byte) and counts for nothing else. The part is at most
+8,388,608 pixels (a screen of 3840 by 2160 has fewer); what is painted in it
+may name colour registers 0 to 255 and 256 different colours, and may paint
+each of its pixels 16 times over on average; 4 MiB of sixel are written for
+it. All the pictures on the terminal are 16 MiB together at most. A picture
+past one of these is not drawn (no stand-in is), and the viewer's corner
+says which, until the next key: once for each part, and every one of a
+frame. So is every picture in a terminal that does not say how many pixels a
+cell has: nothing then tells whether one stays in its tile. One that was
+refused is looked at again when its file or its tile changes.
 Another protocol later is another file extension beside `.sixel` and a few
 lines in the viewer.
 
@@ -879,8 +891,17 @@ editor on the pane's text, `C-b M-c` is `less` on it in colour); Windows. `clear
 
 Pictures: a pixel shape other than square (sixel can ask for pixels twice
 as high as wide) is not kept: cells are counted as if pixels were square,
-and a part is written so. A picture that does not fit its tile and is past
-a bound above is not drawn at all. After a picture
+and such a picture is always written anew, with square ones. A picture that
+does not fit its tile and is past a bound above is not drawn at all. Text
+written over any cell of a picture takes the whole picture away, in the pane
+and in the viewer (a sixel terminal keeps the pixels the text did not
+cover): a pane's picture is one rectangle of cells, not pixels. A picture
+keeps its place through a resize where the text beside it does: one on rows
+that wrap anew at the new width goes; one past the right edge or the last
+row of a smaller screen is kept, and shown again on a larger one. A part
+never fills the pixels a picture left unpainted, even if the picture asked
+for them to be filled: which colour a terminal fills them with is its own.
+After a picture
 the cursor goes to the start of the line below it (a VT340 and xterm leave it on the
 picture's last row), so that a prompt does not write over it; a picture
 therefore needs a free row under it, and one as tall as the pane loses its

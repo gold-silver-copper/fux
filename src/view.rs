@@ -7,7 +7,7 @@
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
 use crate::term::{
-    BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode,
+    BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode, sixel_size,
 };
 use crate::width::Joiner;
 use crate::{is_name, keys, sixel};
@@ -44,20 +44,58 @@ type Entry = (String, String, String);
 /// What tells one writing of a file from the next: its inode and its time.
 type Stamp = Option<(u64, i64, i64)>;
 
-/// Which part of which picture: the file, as it was written, and the rectangle of its pixels.
-type Part = (PathBuf, Stamp, [usize; 4]);
+/// The most bytes of pictures in one frame, and so in a viewer's memory.
+const FRAME_PICTURES_MAX: usize = 4 * PICTURE_MAX;
 
-/// A picture on the terminal: its file, the column, row, columns and rows of what is drawn of
-/// it, whose holder's it is, and if it is not drawn whole, the rectangle of its pixels that is
-/// (left, top, width, height).
-type Drawn = (PathBuf, usize, usize, usize, usize, u32, Option<[usize; 4]>);
+/// Which part of which picture: the file, as it was written, and the pixels its tile has for
+/// it, counted in this terminal's cells: how many rows of its pixels are above the tile, and
+/// how many pixels wide and high the tile is from the picture's corner on.
+type Part = (PathBuf, Stamp, [usize; 3]);
+
+/// What is drawn of a picture: the sixel, and how many pixels wide and high it is; or nothing.
+type Sixel = Option<(String, usize, usize)>;
+
+/// A picture on the terminal: its part, and the column, row, columns and rows of what is drawn
+/// of it.
+type Drawn = (Part, usize, usize, usize, usize);
+
+/// What is drawn of a picture in the pixels its tile has for it, and how many pixels wide and
+/// high that is: the picture as it is, unread, if its pixels are square and all of them are in
+/// the tile, and else the part of it that is, cut out of it. Nothing, if the file is not one
+/// whole sixel picture or none of it is in the tile; or why it is not drawn, in a few words.
+pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> {
+    if *wide == 0 || *high == 0 {
+        return Err("the terminal does not say how many pixels a cell has");
+    }
+    // Opened without waiting (should the name be a FIFO), and read up to a picture's bound.
+    let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path);
+    let mut bytes = Vec::new();
+    if file.and_then(|file| file.take(PICTURE_MAX as u64 + 9).read_to_end(&mut bytes)).is_err() {
+        return Ok(None);
+    } else if bytes.len() > PICTURE_MAX + 8 {
+        return Err("its file is over 4 MiB");
+    }
+    // Only one whole sixel picture is passed on: nothing else in the file can reach the terminal.
+    let inside = bytes.strip_prefix(b"\x1bP").and_then(|rest| rest.strip_suffix(b"\x1b\\"));
+    let sixel = |inside: &&[u8]| inside.iter().find(|b| !(b.is_ascii_digit() || **b == b';')) == Some(&b'q');
+    let inside = inside.filter(|inside| inside.iter().all(|b| (0x20..=0x7e).contains(b))).filter(sixel);
+    let Some(inside) = inside else { return Ok(None) };
+    let (w, h, square) = sixel_size(inside);
+    let (wide, high) = (w.min(*wide), h.saturating_sub(*top).min(*high));
+    let sixel = match square && (*top, wide, high) == (0, w, h) {
+        true => String::from_utf8_lossy(inside).into_owned(),
+        false => sixel::cut(inside, [0, *top, wide, high], PICTURE_MAX)?,
+    };
+    Ok((wide > 0 && high > 0 && !sixel.is_empty()).then_some((sixel, wide, high)))
+}
 
 /// What a frame is drawn from, other than the terminal's size: the workspace's folder, its
 /// layout and what is wrong with it, the message, what the terminal is like and whether its
 /// window has the keys, each tile's screen file (as `Pane::seen`: a holder writes it anew after
 /// any fact of its pane, the cursor's colour among them) and whether its holder lives,
-/// and the focused pane's `clipboard` file.
-type From = (PathBuf, String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Seen, bool)>, Stamp);
+/// the focused pane's `clipboard` file, and each picture's file.
+type From =
+    (PathBuf, String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Seen, bool)>, Stamp, Vec<Stamp>);
 /// A screen file's inode, time and length.
 type Seen = Option<(u64, i64, i64, u64)>;
 
@@ -149,11 +187,12 @@ struct View {
     colours: Option<(Instant, String)>,
     /// What this viewer wrote into the session's `colours` and `keyboard` files last.
     written: Vec<(&'static str, String)>,
-    /// The pictures on the terminal now: file, column, row, columns, rows, and whose holder's.
+    /// The pictures on the terminal now.
     drawn: Vec<Drawn>,
-    /// The parts cut out of the pictures that are not drawn whole, each by its file (as it was
-    /// then) and its rectangle: the sixel written for it, or none if it was refused.
-    parts: Vec<(Part, Option<String>)>,
+    /// What the last frame had of each picture of its tiles, by its part: the sixel to draw (the
+    /// picture's own if all of it is in the tile, else what was cut out of it) and how many
+    /// pixels wide and high that is; or nothing, if nothing of it is drawn.
+    parts: Vec<(Part, Sixel)>,
     cursor: String,
     /// The colour this viewer gave its terminal's cursor, if any: the focused pane's own.
     cursor_colour: Option<[u8; 3]>,
@@ -882,7 +921,8 @@ impl View {
             return Ok(false);
         }
         let mut size = sys::winsize(&self.tty)?;
-        let cell_size = (size.xpixel / size.cols.max(1), size.ypixel / size.rows.max(1));
+        // (A cell is 100 pixels at most, here as in a holder: its pictures are laid out in such cells.)
+        let cell_size = ((size.xpixel / size.cols.max(1)).min(100), (size.ypixel / size.rows.max(1)).min(100));
         // A terminal larger than the largest pane is drawn in its top left corner.
         (size.cols, size.rows) = (size.cols.min(SIZE_MAX as u16), size.rows.min(SIZE_MAX as u16));
         let (w, h) = (usize::from(size.cols), usize::from(size.rows));
@@ -936,7 +976,12 @@ impl View {
         // (By when the file last changed in any way: one that could not be read may be readable now.)
         let clipboard = clipboard.map(|m| (m.ino(), m.ctime(), m.ctime_nsec()));
         let terminal = (self.sixel, self.joins, self.keyboard, self.window, cell_size);
-        let from = (directory.clone(), layout.print(), wrong.clone(), self.message.clone(), terminal, panes, clipboard);
+        let picture = |file: PathBuf| stamp(file).map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
+        let known = tiles.iter().filter_map(|(name, _)| Some((name, self.panes.get(name)?)));
+        let known = known.flat_map(|(name, pane)| pane.pictures.iter().map(move |(file, _)| (name, file)));
+        let known: Vec<Stamp> = known.map(|(name, file)| picture(directory.join(name).join(file))).collect();
+        let message = self.message.clone();
+        let from = (directory.clone(), layout.print(), wrong.clone(), message, terminal, panes, clipboard, known);
         let from = self.menu.is_none().then_some(from);
         if out.is_empty() && from.is_some() && from == self.from {
             return Ok(false);
@@ -977,6 +1022,7 @@ impl View {
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
+        let (mut parts, mut refused, mut bytes) = (Vec::new(), Vec::<String>::new(), 0);
         let mut cursor_colour = None;
         let mut live = 0;
         let mut title = None;
@@ -996,11 +1042,8 @@ impl View {
             if pane.asked != asked {
                 pane.asked = asked;
                 let ctl = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(pane_directory.join("ctl"));
-                let cell = if cell_size.0 > 0 {
-                    format!(" {} {}", cell_size.0.min(100), cell_size.1.clamp(1, 100))
-                } else {
-                    String::new()
-                };
+                let cell =
+                    if cell_size.0 > 0 { format!(" {} {}", cell_size.0, cell_size.1.max(1)) } else { String::new() };
                 if pane.size != (body.w, body.h) || !cell.is_empty() {
                     let _ = ctl
                         .and_then(|mut ctl| ctl.write_all(format!("resize {} {}{cell}\n", body.w, body.h).as_bytes()));
@@ -1114,19 +1157,42 @@ impl View {
                     keys = pane.term.keys() & self.keyboard;
                 }
             }
-            for (file, [row, col, cols, rows, off]) in &pane.pictures {
-                // What of it is inside the tile, in cells, and in the picture's pixels if that is
-                // not all of it. None is drawn on the terminal's last row: a terminal may put the
-                // cursor under a picture, and scroll everything to do so.
+            for (file, [row, col, _, _, off]) in &pane.pictures {
+                // The cells the tile has for it, from its corner on, and what they are in pixels
+                // of this terminal's cells: what the pane counted its cells from is not asked.
+                // None is drawn on the terminal's last row: a terminal may put the cursor under a
+                // picture, and scroll everything to do so.
                 let below = body.h.min(h.saturating_sub(body.y + 1)).saturating_sub(*row);
-                let (wide, high) = ((*cols).min(body.w.saturating_sub(*col)), (*rows).min(below));
-                if self.sixel && file.ends_with(".sixel") && wide > 0 && high > 0 {
-                    let (cell_w, cell_h) = (usize::from(cell_size.0), usize::from(cell_size.1));
-                    let part = [0, off * cell_h, wide * cell_w, high * cell_h];
-                    let part = ((wide, high, *off) != (*cols, *rows, 0)).then_some(part);
-                    pictures.push((pane_directory.join(file), body.x + col, body.y + row, wide, high, pane.pid, part));
+                let (beside, cell) =
+                    (body.w.saturating_sub(*col), (usize::from(cell_size.0), usize::from(cell_size.1)));
+                if !self.sixel || !file.ends_with(".sixel") || beside == 0 || below == 0 {
+                    continue;
                 }
+                let path = pane_directory.join(file);
+                let key: Part = (path.clone(), picture(path), [off * cell.1, beside * cell.0, below * cell.1]);
+                // A part of this file made before is drawn again as it was made then, and one
+                // refused is not looked at again. What is refused is said in the corner, each once.
+                let known = self.parts.iter().position(|(known, _)| *known == key);
+                let mut part = known.map_or_else(|| part(&key), |known| Ok(self.parts.swap_remove(known).1));
+                bytes += part.as_ref().ok().and_then(Option::as_ref).map_or(0, |(sixel, ..)| sixel.len());
+                if bytes > FRAME_PICTURES_MAX && part.as_ref().is_ok_and(Option::is_some) {
+                    part = Err("the pictures on the terminal are over 16 MiB together");
+                }
+                if let Err(why) = part {
+                    refused.push(format!("{name}: a picture is not drawn: {why}"));
+                }
+                let part = part.ok().flatten();
+                if let Some((_, wide, high)) = &part {
+                    let cells = (wide.div_ceil(cell.0.max(1)), high.div_ceil(cell.1.max(1)));
+                    pictures.push((key.clone(), body.x + col, body.y + row, cells.0, cells.1));
+                }
+                parts.push((key, part));
             }
+        }
+        self.parts = parts;
+        if !refused.is_empty() {
+            refused.dedup();
+            self.message = refused.join("; ");
         }
         self.live = live;
         // The lines between panes: `│` and `─`, a tee or a cross where they
@@ -1182,7 +1248,7 @@ impl View {
             None if layout.tabs.is_empty() && self.message.is_empty() => (&hint, colour(11, Some(236), 0)),
             None => (&self.message, colour(11, Some(236), 0)),
         };
-        let last = h.saturating_sub(1);
+        let (last, mut covered) = (h.saturating_sub(1), None);
         if !note.is_empty() && self.menu.is_none() {
             let note = cells(&format!(" {note} "), style);
             let room = note.len().min(w.saturating_sub(1));
@@ -1272,7 +1338,7 @@ impl View {
                     put(&mut back, w, right, y, width, line.map_or(&[], |line| line));
                 }
             }
-            (cursor, cursor_colour) = (String::new(), None);
+            (cursor, cursor_colour, covered) = (String::new(), None, Some((right, last.saturating_sub(height))));
         }
         if cursor.is_empty() {
             cursor.push_str("\x1b[?25l");
@@ -1283,16 +1349,14 @@ impl View {
         if self.keyboard != 0 {
             cursor.push_str(&format!("\x1b[={keys}u"));
         }
-        // A menu is drawn over the panes, pictures and all: none is drawn while one is open.
-        if self.menu.is_some() {
-            pictures.clear();
-        }
+        // A menu is drawn over the panes: a picture it covers a cell of is not drawn while it is open.
+        pictures.retain(|p| !covered.is_some_and(|(left, top)| p.1 + p.3 > left && p.2 + p.4 > top));
 
         // Pictures are pixels over cells: when one comes, goes or is written
         // over, the cells under the old ones are sent again and all are redrawn.
         let mut redraw = pictures != self.drawn;
         if redraw {
-            for (_, x, y, cols, rows, ..) in &self.drawn {
+            for (_, x, y, cols, rows) in &self.drawn {
                 for cell in (0..*rows).flat_map(|r| (0..*cols).map(move |c| (y + r) * w + x + c)) {
                     self.front.get_mut(cell).into_iter().for_each(|cell| cell.ch = '\u{1}');
                 }
@@ -1378,50 +1442,10 @@ impl View {
             out.push_str("\x1b]8;;\x1b\\");
         }
         if redraw {
-            let mut parts = Vec::new();
-            for (path, x, y, _, _, _, part) in &pictures {
-                // Opened without waiting (should the name be a FIFO), and read up to a picture's bound.
-                let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path);
-                let stamp: Stamp = file
-                    .as_ref()
-                    .ok()
-                    .and_then(|file| file.metadata().ok())
-                    .map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
-                // A part cut out of this file before is written again as it was cut then.
-                let key = part.map(|part| (path.clone(), stamp, part));
-                let known = self.parts.iter().position(|(known, _)| Some(known) == key.as_ref());
-                let sixel = if let Some(known) = known {
-                    self.parts.swap_remove(known).1
-                } else {
-                    let mut bytes = Vec::new();
-                    let _ = file.map(|file| file.take(PICTURE_MAX as u64 + 8).read_to_end(&mut bytes));
-                    let inside = bytes.strip_prefix(b"\x1bP").and_then(|rest| rest.strip_suffix(b"\x1b\\"));
-                    // Only one whole sixel picture is passed on: nothing else in the file can reach the terminal.
-                    let sixel =
-                        |inside: &&[u8]| inside.iter().find(|b| !(b.is_ascii_digit() || **b == b';')) == Some(&b'q');
-                    let inside = inside.filter(|inside| inside.iter().all(|b| (0x20..=0x7e).contains(b))).filter(sixel);
-                    // One that does not fit its tile is read, and what is inside the tile is written
-                    // as a picture of its own; a picture that is too much for that is not drawn,
-                    // which the corner says once.
-                    let cut = inside.map(|inside| match part {
-                        None => Ok(String::from_utf8_lossy(inside).into_owned()),
-                        Some([.., 0, _] | [.., 0]) => Err("the terminal does not say how many pixels a cell has"),
-                        Some(part) => sixel::cut(inside, *part, PICTURE_MAX),
-                    });
-                    if let Some(Err(why)) = cut {
-                        let pane = path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy();
-                        self.message = format!("{pane}: a picture is not drawn: {why}");
-                    }
-                    cut.and_then(Result::ok)
-                };
-                if let Some(sixel) = sixel.as_ref().filter(|sixel| !sixel.is_empty()) {
+            for (key, x, y, ..) in &pictures {
+                if let Some((_, Some((sixel, ..)))) = self.parts.iter().find(|(known, _)| known == key) {
                     out.push_str(&format!("\x1b[{};{}H\x1bP{sixel}\x1b\\", y + 1, x + 1));
                 }
-                parts.extend(key.map(|key| (key, sixel)));
-            }
-            // (While a menu is open no picture is drawn: the parts are kept for when it closes.)
-            if self.menu.is_none() {
-                self.parts = parts;
             }
             self.drawn = pictures;
         }

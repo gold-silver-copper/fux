@@ -8,8 +8,8 @@ use std::fmt::Write as _;
 pub const PIXELS_MAX: usize = 1 << 23;
 /// The most colours a part may have, and the highest colour register but one.
 pub const COLOURS_MAX: usize = 256;
-/// How many times over a part may be painted, counted in columns of six pixels.
-const PAINTED_MAX: usize = 4;
+/// How many times over a part's pixels may be painted, on average.
+const PAINTED_MAX: usize = 16;
 
 /// What a pixel was painted with: red, green and blue in hundredths, as sixel says them, or a
 /// register the picture never gave a colour (the terminal's own colour for it).
@@ -36,9 +36,11 @@ pub fn cut(data: &[u8], rectangle: [usize; 4], max: usize) -> Result<String, &'s
     read(data, rectangle)?.write(max)
 }
 
-/// Reads the pixels of one rectangle of a picture; the rest of the picture is only counted.
+/// Reads the pixels of one rectangle of a picture. The rest of the picture is only measured:
+/// what it paints and the colours it paints with are no part of the rectangle's bounds, and
+/// reading it is one step for each byte.
 pub fn read(data: &[u8], [left, top, width, height]: [usize; 4]) -> Result<Part, &'static str> {
-    let area = width.checked_mul(height).filter(|area| (1..=PIXELS_MAX).contains(area));
+    let area = width.checked_mul(height).filter(|area| *area <= PIXELS_MAX);
     let area = area.ok_or("its part in the tile is over 8 million pixels")?;
     let (right, bottom) = (left.saturating_add(width), top.saturating_add(height));
     let mut pixels = vec![0u16; area];
@@ -56,7 +58,8 @@ pub fn read(data: &[u8], [left, top, width, height]: [usize; 4]) -> Result<Part,
                 *n = n.saturating_mul(10).saturating_add(usize::from(byte - b'0')).min(1 << 20);
             }
             continue;
-        } else if byte == b';' {
+        }
+        if byte == b';' {
             if numbers.len() < 8 {
                 numbers.push(0);
             }
@@ -76,7 +79,9 @@ pub fn read(data: &[u8], [left, top, width, height]: [usize; 4]) -> Result<Part,
                 pens.get_mut(register).into_iter().for_each(|pen| *pen = 0);
             }
         }
-        (owner, numbers) = (b' ', vec![0]);
+        owner = b' ';
+        numbers.clear();
+        numbers.push(0);
         match byte {
             b'!' | b'#' | b'"' => owner = byte,
             b'?'..=b'~' => {
@@ -85,10 +90,13 @@ pub fn read(data: &[u8], [left, top, width, height]: [usize; 4]) -> Result<Part,
                 // (As wide as its rows are long, and as high as its lowest painted pixel.)
                 let low = band.saturating_mul(6).saturating_add(8 - bits.leading_zeros() as usize);
                 size = (size.0.max(x), if bits == 0 { size.1 } else { size.1.max(low) });
-                if bits == 0 || from >= to {
+                let rows = (0..6).filter(|k| bits >> k & 1 == 1).map(|k| band.saturating_mul(6).saturating_add(k));
+                let rows = rows.filter(|row| (top..bottom).contains(row));
+                let painted = (to.saturating_sub(from)).saturating_mul(rows.clone().count());
+                if painted == 0 {
                     continue;
                 }
-                paints = paints.checked_sub(to - from).ok_or("it paints over itself too many times")?;
+                paints = paints.checked_sub(painted).ok_or("it paints its part in the tile over too many times")?;
                 let mut pen = pens.get(register).copied().unwrap_or(0);
                 if pen == 0 {
                     let colour = registers.get(register).copied().flatten();
@@ -99,14 +107,13 @@ pub fn read(data: &[u8], [left, top, width, height]: [usize; 4]) -> Result<Part,
                         colours.len() - 1
                     });
                     if place >= COLOURS_MAX {
-                        return Err("it has more than 256 colours");
+                        return Err("its part in the tile has more than 256 colours");
                     }
                     pen = place as u16 + 1;
                     pens.get_mut(register).into_iter().for_each(|slot| *slot = pen);
                 }
-                for row in (0..6).filter(|k| bits >> k & 1 == 1).map(|k| band.saturating_mul(6).saturating_add(k)) {
-                    let start = row.checked_sub(top).filter(|_| row < bottom).map(|row| row * width);
-                    let cells = start.and_then(|start| pixels.get_mut(start + from - left..start + to - left));
+                for start in rows.map(|row| (row - top) * width) {
+                    let cells = pixels.get_mut(start + (from - left)..start + (to - left));
                     cells.into_iter().for_each(|cells| cells.fill(pen));
                 }
             }
@@ -181,7 +188,7 @@ impl Part {
             names.push(match colour {
                 Colour::Register(n) => *n,
                 Colour::Rgb([r, g, b]) => {
-                    let n = free.next().ok_or("it has more than 256 colours")?;
+                    let n = free.next().ok_or("its part in the tile has more than 256 colours")?;
                     let _ = write!(out, "#{n};2;{r};{g};{b}");
                     n
                 }
