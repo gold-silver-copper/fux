@@ -1,5 +1,5 @@
-//! The viewer: one more client. It draws a workspace's panes from their
-//! `screen.styled` files as the `layout` file places them, sends what is
+//! The viewer: one more client. It draws a workspace's panes from the files of
+//! the screen each shows (`shown/screen.styled`) as the `layout` file places them, sends what is
 //! typed to the focused pane's `in`, and runs a script for a key that has
 //! one. It keeps nothing the files do not say, except which workspace it
 //! shows.
@@ -82,16 +82,18 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
 
 /// What a frame is drawn from, other than the terminal's size and the workspace (another one
 /// forgets it): the layout and what is wrong with it, the message, what the terminal is like and
-/// whether its window has the keys, each tile's screen file (as `Pane::seen`: a holder writes it
-/// anew after any fact of its pane, the cursor's colour among them) and whether its holder lives,
+/// whether its window has the keys, each tile's `generation` file (as `Pane::seen`: a holder writes
+/// it anew last in each round of writing, after every file it changed) and whether its holder lives,
 /// the focused pane's `clipboard` file, and each picture's file.
 type From = (String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Stamp, bool)>, Stamp, Vec<Stamp>);
 
 /// What the viewer knows of a pane: its last screen, read from the file.
 #[derive(Default)]
 struct Pane {
-    /// The screen's file when it was last read.
-    seen: Stamp,
+    /// The pane's `generation` file when its files were last read (none: they never were).
+    seen: Option<Stamp>,
+    /// That file as the last look found it, and whether its number was odd: read again when it is another.
+    looked: (Stamp, bool),
     screen: Screen,
     /// The size the pane says it has (`size`), if it says one.
     size: (usize, usize),
@@ -99,8 +101,7 @@ struct Pane {
     state: String,
     /// The addresses of the links on the screen: a cell's `link` less one is its place here.
     addresses: Vec<String>,
-    /// Pictures on the screen: file, row, column, and how many more rows it has above the
-    /// screen's first.
+    /// Pictures on the screen: file, row, column, and how many rows of its pixels are above the screen.
     pictures: Vec<(String, [usize; 3])>,
     /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
     asked: (u32, usize, usize, (u16, u16)),
@@ -845,16 +846,21 @@ impl View {
         // (With no pane to look at, none was looked at last: what it copies meanwhile is old when it is come back to.)
         self.copied = self.copied.take().filter(|_| self.focus.is_some());
         let first_look = self.looked.is_none();
+        // (Before its first screen is read, a pane is one blank cell with the cursor shown on it.)
+        let unread = || Pane { screen: Screen::read("", 0), ..Pane::default() };
         self.notices(&layout, &directory);
         // A frame drawn from what the last one was drawn from is the last one: nothing is put
         // together and nothing compared. (A menu is drawn from more than this: with one open,
         // every frame is.)
         let panes: Vec<(Stamp, bool)> = tiles
             .iter()
-            .map(|(name, _)| directory.join(name))
-            // (Whether its holder lives is whether anything reads its `in`.)
-            .map(|pane| {
-                (fs::metadata(pane.join("screen.styled")).ok().map(stamp), sys::open(pane.join("in"), true).is_ok())
+            .map(|(name, _)| {
+                // (Whether its holder lives is whether anything reads its `in`. While it is in the
+                // middle of writing, a pane is as it was last read.)
+                let held = sys::open(directory.join(name).join("in"), true).is_ok();
+                let pane = self.panes.entry(name.clone()).or_insert_with(unread);
+                pane.looked = generation(&directory.join(name), pane.looked);
+                (pane.seen.filter(|_| pane.looked.1 && held).unwrap_or(pane.looked.0), held)
             })
             .collect();
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
@@ -888,11 +894,9 @@ impl View {
         let mut wants_focus = None;
         let mut keys = 0;
         for ((name, body), &(seen, held)) in tiles.iter().zip(&from.4) {
-            // (Before its first screen is read, a pane is one blank cell with the cursor shown on it.)
-            let unread = || Pane { screen: Screen::read("", 0), ..Pane::default() };
             let pane = self.panes.entry(name.clone()).or_insert_with(unread);
             let pane_directory = directory.join(name);
-            pane.read(&pane_directory, seen);
+            pane.read(&pane_directory, seen, held);
             let focused = self.focus.as_ref() == Some(name);
             // Each holder is asked once to take the tile's size, and told the size of a cell in pixels.
             let asked = (pane.pid, body.w, body.h, cell_size);
@@ -990,7 +994,7 @@ impl View {
                     keys = pane.screen.keys() & self.keyboard;
                 }
             }
-            for (file, [row, col, off]) in &pane.pictures {
+            for (file, [row, col, above]) in &pane.pictures {
                 // The cells the tile has for it, from its corner on, and what they are in pixels
                 // of this terminal's cells: what the pane counted its cells from is not asked.
                 // None is drawn on the terminal's last row: a terminal may put the cursor under a
@@ -1002,7 +1006,7 @@ impl View {
                     continue;
                 }
                 let path = pane_directory.join(file);
-                let key: Part = (path.clone(), picture(path), [off * cell.1, beside * cell.0, below * cell.1]);
+                let key: Part = (path.clone(), picture(path), [*above, beside * cell.0, below * cell.1]);
                 // A part of this file made before is drawn again as it was made then, and one
                 // refused is not looked at again. What is refused is said in the corner, each once.
                 let known = self.parts.iter().position(|(known, _)| *known == key);
@@ -1347,21 +1351,28 @@ fn program(directory: &Path) -> Option<NonZeroU32> {
     NonZeroU32::new(pid(directory)).filter(|_| asks(directory).keys() & 2 != 0)
 }
 
+/// A pane's `generation` as a look finds it: which file, and whether its number is odd (its holder is
+/// writing), which is read when the file is another than the one `known`.
+fn generation(directory: &Path, known: (Stamp, bool)) -> (Stamp, bool) {
+    let stamp = fs::metadata(directory.join("generation")).ok().filter(fs::Metadata::is_file).map(stamp);
+    let odd = || text(&directory.join("generation"), 32).trim().parse::<u64>().is_ok_and(|number| number % 2 == 1);
+    (stamp, if stamp == known.0 { known.1 } else { odd() })
+}
+
 impl Pane {
-    /// Reads the pane if its screen's file changed (`seen`: the file as the frame found it): the
-    /// holder writes that file last, so every fact it wrote before is there by then. A fact may
-    /// still be a moment ahead of the text (or far off, in a folder someone copied): the rows are
-    /// the lines that are there, and the cursor is kept inside them.
-    fn read(&mut self, directory: &Path, seen: Stamp) {
-        if seen == self.seen {
+    /// Reads the pane if its `generation` file changed (`seen`: the file as the frame found it; a holder
+    /// writes it last). What was read is kept only if it is the same file afterwards: then every file is of
+    /// one round. (In a folder made by hand they may disagree: the rows are the lines there are, the cursor inside.)
+    fn read(&mut self, directory: &Path, seen: Stamp, held: bool) {
+        if self.seen == Some(seen) {
             return;
         }
-        self.seen = seen;
+        let last = std::mem::replace(self, Pane { seen: Some(seen), asked: self.asked, ..Pane::default() });
         let fact = |name: &str, most: u64| text(&directory.join(name), most);
         let numbers = |text: &str| {
             text.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(SIZE_MAX + 1)).collect::<Vec<_>>()
         };
-        let styled = fact("screen.styled", STYLED_MAX);
+        let styled = fact("shown/screen.styled", STYLED_MAX);
         self.size = match numbers(&fact("size", 64)).as_slice() {
             [cols @ 1..=SIZE_MAX, rows @ 1..=SIZE_MAX] => (*cols, *rows),
             _ => (0, 0),
@@ -1382,20 +1393,23 @@ impl Pane {
         self.state = fact("state", 64).trim_end().to_string();
         self.pid = pid(directory);
         // A picture is kept only if it lies on a screen of the largest size there is. A first row
-        // below 0 says how many of its rows are above the screen: the others start at row 0.
-        self.pictures.clear();
-        for line in fact("pictures", 4096).lines() {
+        // below 0 says how many of its rows are above the screen, each as high as the line's last
+        // number says (the cells it was laid out in, not this terminal's: a line that does not say is none).
+        for line in fact("shown/pictures", 4096).lines() {
             let mut words = line.split_whitespace();
             let Some(name) = words.next().filter(|name| is_name(name)) else { continue };
             let mut cell = || words.next()?.parse::<i16>().ok().filter(|n| usize::from(n.unsigned_abs()) <= SIZE_MAX);
             let (Some(row), Some(col @ 0..)) = (cell(), cell()) else { continue };
-            self.pictures.push((name.into(), [row.max(0) as usize, col as usize, row.min(0).unsigned_abs().into()]));
+            let high = words.nth(3).and_then(|high| high.parse().ok()).filter(|high| (1..=100).contains(high));
+            let Some(high) = high.or((row >= 0).then_some(0)) else { continue };
+            let above = usize::from(row.min(0).unsigned_abs()) * high;
+            self.pictures.push((name.into(), [row.max(0) as usize, col as usize, above]));
         }
         // The links (`links`: line, cells into it, how many cells, address) are put on the cells.
         // `lines` says which line each row is of (the first row's, then the rows that go on); a
         // row starts as many cells into its line as the rows of that line above it hold. An
         // address is plain printable text.
-        let lines = fact("lines", 4096);
+        let lines = fact("shown/lines", 4096);
         let mut lines = lines.lines().map(&numbers);
         let (top, rows) = (lines.next().unwrap_or_default(), lines.next().unwrap_or_default());
         let (mut line, mut base, mut starts) = (top.first().copied().unwrap_or(0), 0, Vec::new());
@@ -1404,10 +1418,9 @@ impl Pane {
             starts.push((line, base));
             base += cols;
         }
-        self.addresses.clear();
         // (Whole records only: a list cut by the bound ends before its last line's end. A thousand
         // addresses, as a holder keeps, and no more cells than the screen has.)
-        let list = fact("links", LINKS_LIST_MAX as u64);
+        let list = fact("shown/links", LINKS_LIST_MAX as u64);
         let whole = list.rfind('\n').and_then(|end| list.get(..end)).unwrap_or_default();
         let (mut known, mut cells): (HashMap<&str, u16>, usize) = (HashMap::new(), self.screen.rows * cols);
         for run in whole.lines() {
@@ -1436,6 +1449,11 @@ impl Pane {
         }
         let title = fact("title", 1024);
         self.title = title.lines().next().unwrap_or_default().chars().filter(|c| !c.is_control()).take(256).collect();
+        // (Nor is a first read kept that was taken while a living holder was writing.)
+        let now = generation(directory, last.looked);
+        if now.0 != seen || now.1 && held {
+            *self = last;
+        }
     }
 }
 

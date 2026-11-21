@@ -22,12 +22,13 @@ A second start of a live pane's name fails ("a holder already keeps this pane");
 name of a pane whose program has ended is started again in place, its files replaced.
 
 WAIT FOR WHAT YOU EXPECT
-`screen` is the screen now, as plain text: a frame, not a log, replaced many times a
+`shown/screen` is what the pane shows now, as plain text (`shown` is a link to the folder of
+the screen that is drawn: under READ IT): a frame, not a log, replaced many times a
 second, a few milliseconds after the program prints. So never read once and conclude, and
 never sleep and hope: wait for a text, or for the frame to change, always with a limit.
     seen() { n=0; until grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
     unseen() { n=0; while grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
-    frame() { cksum < "$1/screen.styled"; }
+    frame() { cksum < "$1/shown/screen.styled"; }
     changed() { n=0; while [ "$(frame "$1")" = "$2" ]; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
     settled() { a=; b=x; n=0; until [ "$a" = "$b" ]; do n=$((n+1)); [ $n -lt "${2:-100}" ] || return 1; a=$b; sleep 0.3; b=$(frame "$1"); done; }
 seen REGEX FILE [LIMIT] waits until the file has a matching line, unseen until it has
@@ -42,15 +43,15 @@ contain (below). `changed` says only that something on the screen changed: an ol
 still be there. Settled alone can be the old frame twice. A row's blanks at its end are not
 in `screen` (but for a row that wraps into the next): a prompt "$ " is the line "$", and
 where the cursor stands is in `cursor`. Waiting for a first prompt, for 50 tries at most:
-    seen '[$#>]$' "$P/screen" 50
+    seen '[$#>]$' "$P/shown/screen" 50
 Tries are not seconds: each also takes what it takes (more on a busy machine). For a limit
 in time, compare `date +%s` in the loop, or on Linux run the wait under timeout(1).
 
 TYPE INTO IT
 `in` is a FIFO: bytes written to it are typed to the program. Enter is \r.
-    f=$(frame "$P"); printf 'echo hello\r' > "$P/in"; changed "$P" "$f"; seen '^hello$' "$P/screen"
-    printf 'echo $((6*7))\r' > "$P/in"; seen '^42$' "$P/screen"
-What you typed is in `screen` too (the terminal echoes it, as a rule), so the words you typed
+    f=$(frame "$P"); printf 'echo hello\r' > "$P/in"; changed "$P" "$f"; seen '^hello$' "$P/shown/screen"
+    printf 'echo $((6*7))\r' > "$P/in"; seen '^42$' "$P/shown/screen"
+What you typed is on the screen too (the terminal echoes it, as a rule), so the words you typed
 are no evidence that a command ran. Wait for what only the program can produce: a value it
 computed (42 above, which you never typed), or a whole row of its own, anchored ^ and $.
     text='any text, with % and \ in it'; printf '%s' "$text" > "$P/in"; printf '\025' > "$P/in"
@@ -68,7 +69,7 @@ A WRITE THAT WAITS FOR NO READER, AND WHETHER A PANE IS ALIVE
 A plain write (`> "$P/in"`) waits for ever if the pane's holder was killed outright
 (kill -9, a crash): the FIFOs stay with no reader, and `state` stays as it was (running). Opened
 for reading and writing at once (`1<>`), a FIFO never makes the opener wait:
-    [ -p "$P/in" ] && printf 'echo sent\r' 1<>"$P/in"; seen '^sent$' "$P/screen"
+    [ -p "$P/in" ] && printf 'echo sent\r' 1<>"$P/in"; seen '^sent$' "$P/shown/screen"
 What that gives and does not: a short write (one the FIFO has room for) cannot hang on a dead
 pane, but there the bytes are lost without a word. (The `-p` test is because on a pane that ended
 normally `in` is gone, and `1<>` would make a plain file of that name.) Under a program that has
@@ -84,27 +85,33 @@ lives, so `flock -sn "$X" true` FAILS for a live pane and succeeds for a dead on
 -s it also fails in the instant a `fux wait` reads a dead one).
 
 READ IT
-    cat "$P/screen"                           # the screen now, one line a row
-    cat "$P/screen.styled"                    # the same with colour codes, safe to cat
+    cat "$P/shown/screen"                     # the screen that is drawn, one line a row
+    cat "$P/shown/screen.styled"              # the same with colour codes, safe to cat
+    cat "$P/main/screen"                      # the main screen (a shell's), also while vim or less covers it
     cat "$P/history"                          # lines that scrolled off the top (history.1: older)
     cat "$P/history.styled"                   # the same lines with colour codes (history.styled.1: older)
     cat "$P/size" "$P/cursor" "$P/modes" "$P/state" "$P/status"
 One fact, one small file (absent until there is something to say, where noted):
 size    COLS ROWS, e.g. `80 24`
-cursor  ROW COL shown|hidden SHAPE, from 0, e.g. `2 8 shown 0`: row 2 is line 3 of screen
+cursor  ROW COL shown|hidden SHAPE, from 0, of the screen that is drawn: `2 8 shown 0` is
+        row 2, line 3 of `shown/screen`
         (a fifth word, `#rrggbb`, if the program gave the cursor a colour; a colour a program
-        sets for its pane is in `screen.styled` as direct colour: `38;2;R;G;B`, `48;2;R;G;B`
+        sets for its pane is in `shown/screen.styled` as direct colour: `38;2;R;G;B`, `48;2;R;G;B`
         on every cell of the default background, `58:2::R:G:B` for an underline)
 modes   words, or an empty line: appcursor, keypad, paste, focus, mousesgr, mouseN, keysN
 state   running | hungup | exited CODE | killed SIGNAL (lost ERROR: the holder could not wait)
 status  three lines: holder N / pid N (the program's) / command ...
-screen.main, screen.main.styled   while a full-screen program has the alternate screen
-        (kept if the pane ends under it): the main screen it covers, as screen and screen.styled would have it
-lines   two lines: the number, from 0, of the screen's first row among all lines the pane
-        printed; then the screen rows (from 0) that continue the row above, `1 2` being one
-        line in 3 rows (empty if none; 0: row 0 continues history's last line). `{ read -r top; read -r wraps; } < lines`. While
-        screen.main is there a third: its rows that continue (the first line counts its
-        lines, the second is of `screen`)
+main/, alt/, shown   a folder for each screen, the same five names in each (screen,
+        screen.styled, lines, links, pictures): main always, the screen a shell prints on; alt
+        while a full-screen program has the alternate screen (kept if the pane ends under it);
+        shown, a link to the one that is drawn. A name never changes which screen it means
+lines   (in a screen's folder) two lines: how many lines are before the screen's first row
+        (in main: of all the lines the pane printed, so the number, from 0, of that row's line;
+        in alt: 0, as that screen is in no text); then the screen rows (from 0) that continue
+        the row above, `1 2` being one line in 3 rows (empty if none; 0 in main: row 0
+        continues history's last line). `{ read -r top; read -r wraps; } < main/lines`
+generation   a number: odd while the holder is writing the pane's files, even when they
+        agree (below)
 title   the window title the program set (absent until it does)
 cwd     the program's directory, if it announces it (absent else): a shell must, at each
         prompt, a % in the path as %25. For bash: PROMPT_COMMAND='printf "\033]7;file://%s\007" "${PWD//%/%25}"'
@@ -112,17 +119,36 @@ notice  `N WORDS`: N grows with each writing of the files that had a notice, WOR
         none (a bell). E.g.
         `1 the build is done`. Absent until the first.
 marks   `LINE AT KIND`, a line for each prompt mark of a shell that makes them (below)
-links   `LINE COL LEN ADDRESS` for each link (OSC 8) on the screen, e.g. `24 0 4 https://x.y`:
-        LINE counts as the first line of `lines` does (screen row = LINE - that number, if
-        no row above wraps), COL is the first cell from 0, LEN the number of cells
-log     what the holder refused or lost. (Also: clipboard, pictures and pic-N.sixel.)
-A fact can be one frame (the next writing of the files) ahead of a screen read just before it. The text a
-pane keeps, oldest first, wrapped rows joined into lines:
-    whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(sed -n 2p "$1/lines")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/screen"; }
+links   (in a screen's folder) `LINE COL LEN ADDRESS` for each link (OSC 8) on that screen,
+        e.g. `24 0 4 https://x.y`: LINE counts as the first line of that folder's `lines`
+        does (screen row = LINE - that number, if no row above wraps), COL is the first cell
+        from 0, LEN the number of cells
+log     what the holder refused or lost. (Also: clipboard; and in a screen's folder `pictures`,
+        a line `pic-N.sixel ROW COL COLS ROWS CELL-WIDTH CELL-HEIGHT` for each picture on that
+        screen, the file being in the pane's folder.)
+One file read by itself is always whole. Two files read one after the other may be of two
+writings of the files (a `lines` one scroll behind its `screen`). Where they must agree,
+read `generation`, the files, and `generation` again, and keep what you read only if both
+times it was the same even number; else read again, with a limit:
+    together() { d=$1; shift; tries=0; until g=$(cat "$d/generation") && [ $((g % 2)) -eq 0 ] && "$@" && [ "$g" = "$(cat "$d/generation")" ]; do tries=$((tries+1)); [ $tries -lt 100 ] || return 1; sleep 0.05; done; }
+    first() { top=$(sed -n 1p "$P/main/lines") && row=$(sed -n 1p "$P/main/screen"); }
+    together "$P" first && echo "the main screen's first row is line $top of the pane's text: $row"
+(It runs the command after DIR until the read is one to keep, so the command starts anew
+each time: one that writes a file writes it anew, `> file` inside it and not after `together`.
+It keeps what it knows in `d`, `g` and `tries`: the command must leave those names alone, and
+not call `together` itself. DIR must name the same pane throughout. The number speaks for what
+the holder alone writes: not for `cwd` (the program's to write too, and removed when a pane is
+started again in place), `log`, the FIFOs or files of your own. A pane whose holder was killed
+while it wrote stays odd: the limit runs out, and you take the files as they are.)
+The text a pane keeps, oldest first, wrapped rows joined into lines:
+    whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(sed -n 2p "$1/main/lines")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/main/screen"; }
     whole "$P" | tail -n 5
-It is exact for a pane that is still or ended and shows no full-screen program (under one,
-`screen` is that program's), but for: colours, blanks at a line's end, empty lines at the very end,
-what was erased or written over, and text older than the two history files keep (4 MiB or more).
+    f=$(mktemp); snap() { whole "$P" > "$f"; }; together "$P" snap && tail -n 1 "$f"; rm -f "$f"
+It is exact for a pane that is still or ended, whichever screen it shows, and under `together`
+(the line above) for one that prints meanwhile, but for: colours, blanks at a line's end,
+empty lines at the very end, what was erased or written over, and text older than the two
+history files keep (4 MiB or more; a line of over 8 MiB that never ends is ended there: the
+text has a line end the program did not print, and `log` says so).
 
 RUN A COMMAND, GET ITS OUTPUT AND EXIT CODE
 Surest: make the command the pane's program. `fux wait DIR` returns when the pane's holder
@@ -138,8 +164,8 @@ holder to go, with a limit, and then ask:
     ended "$J" 50 && fux wait "$J" | tail -n 1
 In a shell you keep typing into, print a tag after the command that the typed line itself
 does not contain (here the typed line has $? where the output has a number):
-    printf 'ls /nonexistent; echo "<<t1:$?>>"\r' > "$P/in"; seen '<<t1:[0-9]*>>' "$P/screen"
-    grep -o '<<t1:[0-9]*>>' "$P/screen"       # <<t1:2>> : the exit code (use a new tag each time)
+    printf 'ls /nonexistent; echo "<<t1:$?>>"\r' > "$P/in"; seen '<<t1:[0-9]*>>' "$P/shown/screen"
+    grep -o '<<t1:[0-9]*>>' "$P/shown/screen"       # <<t1:2>> : the exit code (use a new tag each time)
 A shell that marks its prompts (OSC 133) needs no tag: each mark is a line `LINE AT KIND`
 in `marks`. This bash makes three kinds: `prompt`, `command` (where typing starts) and
 `end CODE` (written before each prompt, the first one too: `end 0` is there from the
@@ -154,13 +180,16 @@ the last thousand: in a pane with more, the count stands still, and a tag is the
     grep ' end' "$S/marks" | tail -n 1; cat "$S/cwd"       # LINE AT end 1, and /
 
 FULL-SCREEN PROGRAMS (vim, less, htop)
-While one has the alternate screen, `screen` is the program's own and `screen.main` (under
-READ IT) what the shell showed before it opened, read without leaving it. Send keys as
-bytes; after each, wait for a changed frame or for the text you expect.
-    printf 'less "%s/status"\r' "$P" > "$P/in"; seen '^' "$P/screen.main"
-    grep '<<t1' "$P/screen.main"              # under less: the shell's screen, with the tag printed above
+While one has the alternate screen, there is `alt/` with the program's own screen, `shown`
+leads there, and `main/screen` is still what the shell showed before it opened, read without
+leaving it. `alt/` is filled before `shown` is turned to it, and removed after it is turned
+back: wait for the link, not for a file. Send keys as bytes; after each, wait for a changed
+frame or for the text you expect.
+    shows() { n=0; until [ "$(readlink "$1/shown")" = "$2" ]; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
+    printf 'less "%s/status"\r' "$P" > "$P/in"; shows "$P" alt; readlink "$P/shown"; ls "$P/alt"     # alt, and its five files
+    grep '<<t1' "$P/main/screen"              # under less: the shell's screen, with the tag printed above
     f=$(frame "$P"); printf '/pid\r' > "$P/in"; changed "$P" "$f"      # search; vim: printf '\033:wq\r'
-    printf 'q' > "$P/in"; unseen '^' "$P/screen.main"
+    printf 'q' > "$P/in"; shows "$P" main; readlink "$P/shown"                                    # main
 A program that asks what its terminal is gets fux's own answers: XTVERSION `fux-next N`;
 COLORTERM=truecolor in its environment; and by name (XTGETTCAP) these, any other being "not
 valid": TN name Co colors RGB Tc setrgbf setrgbb Smulx Setulc Ss Se. So Neovim uses true
@@ -179,7 +208,7 @@ still says the old name. Move only within one filesystem.
 directory stays, with the last screen and state. It does not force: a program that
 ignores it lives on, with `state` hungup, and is typed to no more; then signal the program (never the holder):
     T=$(fux start agent-demo/stubborn -- sh -c 'trap "" HUP; echo ready; sleep 600; echo over')
-    seen ready "$T/screen"; echo kill > "$T/ctl"; seen hungup "$T/state"
+    seen ready "$T/shown/screen"; echo kill > "$T/ctl"; seen hungup "$T/state"
     p=$(sed -n 's/^pid //p' "$T/status"); kill -TERM "$p"; fux wait "$T"    # state killed 15
 `state` and `fux wait` are about the pane's program alone, not about what it started:
 here the shell is gone and its `sleep` runs on. The program leads a process group of its
@@ -208,11 +237,11 @@ FUXN_WS (in a pane: that pane's own). Two panes above and one below, across:
 Edits: split row|col PANE [beside PANE] · pane PANE · focus left|right|up|down|next|prev ·
 tab next|prev|- (and break, swap, size, rotate, arrange).
 To see what a person would, run the viewer in a pane of ANOTHER workspace and read it:
-    V=$(COLUMNS=100 LINES=30 fux start agent-view/v -- fux view agent-demo); seen '│' "$V/screen"
+    V=$(COLUMNS=100 LINES=30 fux start agent-view/v -- fux view agent-demo); seen '│' "$V/shown/screen"
     printf 'notify %s\n' 'look here' > "$W/ctl"; seen ' broad: look here$' "$V/notice"
-    printf '\002' > "$V/in"; seen ' agent-demo .* broad' "$V/screen"       # the bar: workspace, tabs
-    printf '\033' > "$V/in"; unseen ' agent-demo ' "$V/screen"            # (a key right after Escape would join it)
-    cat "$V/screen"; printf '\002d' > "$V/in"; fux wait "$V"       # C-b d: the viewer leaves
+    printf '\002' > "$V/in"; seen ' agent-demo .* broad' "$V/shown/screen"       # the bar: workspace, tabs
+    printf '\033' > "$V/in"; unseen ' agent-demo ' "$V/shown/screen"            # (a key right after Escape would join it)
+    cat "$V/shown/screen"; printf '\002d' > "$V/in"; fux wait "$V"       # C-b d: the viewer leaves
 A viewer sets the size of the panes it shows to their tiles. A notice (`notify`, a bell)
 of a pane in the workspace shown, made after it first looked, goes to the viewer's terminal as `PANE: WORDS`,
 and its tab is marked; a viewer in a pane has that in its own pane's `notice`, as above

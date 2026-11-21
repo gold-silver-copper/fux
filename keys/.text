@@ -1,29 +1,31 @@
 #!/bin/sh
-# .text FILE [styled]: writes the focused pane's whole text into FILE (older
-# history, history, then the screen), and prints the number to add to a line
-# number of `marks` to have that line's number in FILE (sed's kind, from 1).
-# With `styled` it is the same lines with their colours (`history.styled.1`,
-# `history.styled`, `screen.styled`).
-# The screen is taken without the blank rows at its end (the rows that are blank
-# in `screen`: one that is only a colour is blank), and its rows that go on
-# from the row above (the second line of `lines` numbers them from 0) joined to it, as history has
-# them (without the cell a wide character left empty at a row's end, which
-# `screen.styled` tells as U+200B and a blank where it has a colour). It is
-# read first and each file once: of a pane that prints meanwhile a line may be
-# there twice, and a mark's line off by as many lines as scrolled in that moment.
-umask 077
-s=${2:+.$2}
-{ read -r top; read -r wraps; } 2>/dev/null < "$FUXN_PANE/lines"
+# .text FILE [styled]: writes the focused pane's whole text into FILE (older history, history, then
+# the main screen, whichever screen is shown), and prints the number to add to a line number of
+# `marks` to have that line's number in FILE (sed's kind, from 1). With `styled` it is the same lines
+# with their colours (`history.styled.1`, `history.styled`, `main/screen.styled`).
+# The screen is taken without the blank rows at its end (the rows that are blank in `main/screen`: one
+# that is only a colour is blank), and its rows that go on from the row above (the second line of
+# `main/lines` numbers them from 0) joined to it, as history has them (without the cell a wide character
+# left empty at a row's end, which `screen.styled` tells as U+200B and a blank where it has a colour).
+# The files are of one round of the holder's writing (`generation` the same even number before and after),
+# or read again, ten times: a pane that never stops printing, or whose holder was killed as it wrote, is taken as it is.
+# A third word names a file for the pane's `marks` of that same round (`.text FILE '' MARKS`).
+umask 077; s=${2:+.$2} m=$FUXN_PANE/main n=0
+generation() { cat "$FUXN_PANE/generation" 2>/dev/null; }
+while g=$(generation); :; do
+{ read -r top; read -r wraps; } 2>/dev/null < "$m/lines"; [ -z "$3" ] || cat "$FUXN_PANE/marks" > "$3"
 screen=$(awk -v wraps="$wraps" -v gap="$(printf '\342\200\213 \033[m')" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
   NR == FNR && $0 != "" { last = NR } { row[FNR] = $0 }
   END { for (i = 1; i <= last; i++) { r = row[i]; n = length(r) - length(gap)
       if (joined[i + 1] && n >= 0 && substr(r, n + 1) == gap) r = substr(r, 1, n) "\033[m"
-      printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), r } }' "$FUXN_PANE/screen" ${2:+"$FUXN_PANE/screen$s"})
+      printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), r } }' "$m/screen" ${2:+"$m/screen$s"})
 # History's last line may be unfinished: the screen's first row goes on from it if
 # `lines` lists row 0, and is a line of its own if not.
 open=$(tail -c 1 "$FUXN_PANE/history$s" 2>/dev/null)
 case " $wraps " in *" 0 "*) open= ;; esac
 { cat "$FUXN_PANE/history$s.1" "$FUXN_PANE/history$s" 2>/dev/null; [ -z "$open" ] || echo; } > "$1"
+n=$((n + 1)); [ "$g" != "$(generation)" ] || [ $((${g:-0} % 2)) = 1 ] && [ $n -lt 10 ] || break; sleep 0.02
+done
 before=$(($(wc -l < "$1")))
 printf '%s\n' "$screen" >> "$1" || exit
 echo "$((before - ${top:-0} + 1))"

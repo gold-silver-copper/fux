@@ -2114,6 +2114,112 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   leftovers of D112's review that the base shared: five fixed, the
   rest each given its line in the README.
 
+- **D114. A folder for each screen, and reads that agree** (the owner,
+  2026-11-21: "have a panel do a full audit of our file format and see
+  if they can come up with a better architecture that is more
+  ontologically correct"; a panel of eight, 2 Fable, 2 Opus, 2
+  gpt-6.2-sol, 2 gpt-6.2-astra, two rounds; its result and ballots are
+  in the notes, `panel-files-2026-11-21`). Decided by the panel and
+  approved by the owner:
+  - a folder for each screen, `main/` always and `alt/` while a program
+    has the alternate screen, the same five names in each, and `shown`,
+    a link to the one drawn (8/8 in round two, the four Codex seats
+    having changed on a measurement: a script that read the plain names
+    under vim got vim's rows as the shell's text and exit 0);
+  - flat everywhere else; a dot suffix says how a file is told or how
+    old it is, never which thing it is of (8/8);
+  - `generation`, odd while the holder writes and even when the files
+    agree (7/8 in round one; a reader of two files got them from two
+    rounds 77 times in 1,000 on the base);
+  - each screen's facts in that screen's own numbering (6/8), a line
+    that history cut keeps its marks on text that exists (1/8, with a
+    script), a picture says the cells it was laid out in (1/8, with a
+    script).
+  Decided here, where the panel left a choice or this run found better:
+  - **`alt/lines` begins with `0`, not `-`.** The panel offered both.
+    With a number one rule reads both folders (a row's line is that
+    number plus how many of the rows from 1 to it do not go on; a link's LINE
+    counts the same way), and the viewer reads `shown/lines` with no
+    branch. What says "this is not the pane's text" is the folder's
+    name. Against: `-` would fail a script that did arithmetic on it;
+    that script has to name `alt/` to get there.
+  - **A line that never ends is ended, not given an origin.** The seat
+    that found the bug proposed a file `history.origin` (the line and
+    byte of the first byte kept). Instead the holder ends the line
+    where it cuts it: a line's end in both history files, the
+    emulator's numbering moved on (`Term::end_line`), the marks after
+    it in the next line, a line in `log`. History then holds whole
+    lines always, no reader's arithmetic changes, and there is no new
+    file. The cost: the text has a line break the program did not
+    print, once in 8 MiB of a line with none.
+  - **The cell size is two more words on each `pictures` line**, not a
+    file at the root: the picture carries it in the emulator (it is of
+    the picture's layout, and the holder drops pictures when cells
+    change), a reader of one file needs no `generation`, and a line
+    copied with its picture stays whole.
+  - **`pictures` keeps ROW as a row of its screen** in both folders (the
+    prompt had "in the text's numbering" for `main/pictures`): a
+    picture lies on cells, not in the text, and a row becomes a line
+    through `lines` like any other.
+  - **Every file is written only when it changes, the screens too**, and
+    `generation` is what a watcher watches (it was `screen.styled`,
+    written every round). One rule for every name, a covered main
+    screen costs nothing, and a cursor that moves rewrites two small
+    files and no screen.
+  - **`alt/` is removed with all that is in it** (the one recursive
+    removal the holder does, of a folder that is its own): a file a
+    killed holder left half written there cannot keep a pane from ever
+    agreeing again.
+  - **The viewer keeps a read only when `generation` brackets it**, and
+    does not read while it is odd and the holder lives. A folder with
+    no `generation` (made by hand) is read once, and again when one is
+    written.
+  - **`keys/.text` reads under `generation`, ten tries**, then takes the
+    files as they are (a flood, a killed holder): a key must not hang.
+  - **The review, round one** (six readers, one area each: the
+    holder's order of writing, the emulator's numbering, the viewer,
+    the key scripts, the docs as a user, and the model). Fixed, each
+    from a traced sequence: an odd number that could not be written no
+    longer lets anything change under the even one (history is not
+    added to, no picture's file goes: the round does not begin); the odd
+    number is written once a round, not again when the round adds to
+    history; what was in `alt/` is forgotten before the folder is
+    removed, so a removal that fails half way cannot leave `shown` at
+    files that are gone; a mark where a line was ended is on the
+    screen's row and moves with it; a character that joins the one
+    printed last still does when the line was ended in between; the
+    viewer keeps no first read taken while a living holder wrote; the
+    flood test counts rounds from the numbers, exactly; the help
+    page waits for the link `shown` and not for a file of `alt/`, its
+    recipe counts in a name of its own and says a command that writes
+    a file must write it anew each try; the rule from a row to its
+    line counts the rows from 1 to it. Left, with the reason: a
+    history file that cannot be put aside loses its lines for good and
+    the round still ends even (`log` says so: an odd number that never
+    turns would say less); `cwd` is outside what the number speaks for
+    (the program writes it too).
+  - **The review, round two, the last** (the same six, on round one's
+    must-fixes and what the fixes touched; the viewer's and the
+    model's readers found nothing more). Fixed: history that cannot be
+    written under an odd number is no longer dropped but waits in the
+    emulator, bounded as it always was (dropping it kept the files
+    from changing under an even number, and put every later mark a
+    few lines off for good); the keys of the last output and the
+    previous prompt take `marks` in the same read as the text
+    (`.text FILE '' MARKS`): since a line can be ended where history
+    cuts it, a mark's line may change between two reads, which it
+    could not on the base; a test that waited for `$` in the shell's
+    prompt names its own prompt, and one that read a screen a moment
+    after its first half waits for both halves (each failed once in
+    CI, on a slower machine, as they could on the base); the recipe
+    says what its command must leave alone, the page's snapshot goes
+    to a file of its own, the README's recipe sets `P`, and a round
+    that cannot begin is told apart from one that failed once begun.
+  - The emulator tells each screen through one function, `files(alt)`;
+    `plain`, `styled`, `covered`, `wraps`, `links` and `top` are gone
+    from its interface (its tests keep the first two and the last
+    three as helpers of their own, for the screen shown).
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.
