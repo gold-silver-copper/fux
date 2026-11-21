@@ -6,7 +6,6 @@
 # the pane's first line and how many bytes into the line's text it is. The text
 # from the last `output` mark to the `end` after it (or to the end of the text,
 # if the command still runs) is opened in the editor.
-[ -n "$FUXN_PANE" ] || exit 0
 [ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
 [ ! -e "$FUXN_PANE/screen.main" ] || { echo "this pane shows a program's own screen: the marks are of the shell's"; exit; }
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit

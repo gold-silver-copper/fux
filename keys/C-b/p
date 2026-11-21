@@ -4,7 +4,6 @@
 # A shell that marks its prompts (OSC 133) says where each one is: the pane's
 # `marks` has the line numbers. The pane's whole text is opened in the editor
 # at the prompt before the one being typed at.
-[ -n "$FUXN_PANE" ] || exit 0
 [ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
 [ ! -e "$FUXN_PANE/screen.main" ] || { echo "this pane shows a program's own screen: the marks are of the shell's"; exit; }
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit

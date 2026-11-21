@@ -4,7 +4,7 @@ new_shell() {
   p=$(
     # A split starts at the size predicted by the viewer. A new tab inherits its size.
     if [ "$#" -eq 2 ]; then export COLUMNS="${2%x*}" LINES="${2#*x}"; fi
-    fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell"
+    fux start -- "$FUXN_KEYS/.shell"
   ) || return
   if [ "$#" -eq 2 ] && [ -n "$FUXN_PANE" ]; then
     # Anchor to the pane on which the key was pressed, even if focus has moved.

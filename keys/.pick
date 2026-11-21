@@ -8,7 +8,7 @@ if [ "$1" = --tab ]; then
   # own first, so that `fux layout tab -` goes back to that one.)
   [ $# -gt 2 ] || set -- "$@" sh -c 'fux layout tab - 2>/dev/null; fux layout pane "$1"' sh
   shift
-  p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$@") || { rm -f "$1"; exit; }
+  p=$(fux start -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$@") || { rm -f "$1"; exit; }
   fux layout pane "${p##*/}" 2> /dev/null; exit 0
 fi
 list=$1; shift
