@@ -9,7 +9,7 @@
 # begins the pane's files anew, also one that then fails; a start that was refused, as that of a pane that
 # is alive, made no new `log` and changed nothing; one whose text cannot be copied is not started). Which panes that starts wrongly, and how a session
 # outlasts a reboot: the README, "Search every pane, and after a reboot".
-D=$(fux dir) && export FUXN_DIR="$D" FUXN_KEYS="${FUXN_KEYS:-$(cd "$(dirname "$0")" && pwd)}" || exit
+D=$(fux dir) && export FUXN_DIR="$D" FUXN_KEYS="${FUXN_KEYS:-$(CDPATH= cd "$(dirname "$0")" && pwd)}" || exit
 for p in "$D"/*/*/; do
   p=${p%/}
   command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)

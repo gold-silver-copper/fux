@@ -2104,14 +2104,18 @@ fn a_restore_that_failed_keeps_the_text_and_a_pane_started_again_is_told_the_key
     assert!(read(&lost.join("history")).contains("\n17\n") && read(&told.join("screen")).trim().is_empty());
     fs::create_dir(lost.join("marks.new")).unwrap();
     // (Run as a login runs it: by the script's path, with no FUXN_KEYS.)
+    // (A CDPATH that leads to the script's folder makes `cd` print where it went: the keys are still one path.)
     let mut restore = Command::new("sh");
-    restore.arg(keys.join(".restore")).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+    restore.arg("keys/.restore").env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+    restore.current_dir(env!("CARGO_MANIFEST_DIR")).env("CDPATH", env!("CARGO_MANIFEST_DIR"));
     restore.env("FUXN_DIR", &session.0).env_remove("FUXN_KEYS").env_remove("FUXN_PANE").env_remove("FUXN_WS");
     let restored = restore.output().unwrap();
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started w/told again\n");
-    until("the pane started again says where the keys are", || {
-        read(&told.join("screen")).replace('\n', "").contains(&keys.display().to_string())
-    });
+    until_or(
+        "the pane started again says where the keys are",
+        || read(&told.join("screen")),
+        || read(&told.join("screen")).replace('\n', "") == keys.display().to_string(),
+    );
     // The start that failed had begun the pane's files anew: what it had printed is in `before`.
     assert!(!read(&lost.join("history")).contains("\n17\n"), "the start did not get as far as the test means");
     assert!(read(&lost.join("before")).contains("\n17\n"), "before: {:?}", read(&lost.join("before")));
