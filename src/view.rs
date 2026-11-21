@@ -571,9 +571,9 @@ impl View {
             if self.notices.get(&key(name)).is_some_and(|(was, _)| *was == named) {
                 continue;
             }
-            // (Which notice it is is asked of the open file its words are read from, as for a copy.)
+            // (Which notice it is is asked of the open file its words are read from; of its name where none opens.)
             let file = sys::open(&file, false);
-            let stamp = file.as_ref().ok().and_then(|f| f.metadata().ok()).filter(|m| m.is_file()).map(stamp);
+            let stamp = file.as_ref().map_or(named, |f| f.metadata().ok().filter(|m| m.is_file()).map(stamp));
             self.notices.insert(key(name), (stamp, stamp.is_some() && self.focus.as_deref() != Some(name)));
             if stamp.is_some() && !first {
                 let text = String::from_utf8_lossy(&crate::read(file, 1200).0).into_owned();

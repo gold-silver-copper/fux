@@ -2323,6 +2323,36 @@ fn the_blank_lines_a_command_ended_with_are_in_its_output() {
 }
 
 #[test]
+fn a_notice_that_cannot_be_opened_is_old_when_it_can_be() {
+    // What is there at the first look only marks its tab, also when it cannot be opened then: made
+    // readable later (a `chmod` alone), it is the same old notice and is not rung.
+    let (outer, inner) = (Session::new("shutout"), Session::new("shutin"));
+    let keys = concat!(env!("CARGO_MANIFEST_DIR"), "/keys");
+    let (_p1, p2) = (inner.start("p1", &["sh", "-c", "echo SHOWN; sleep 600"]), inner.start("p2", &["sleep", "600"]));
+    lay(&inner.0, "* p1 focus=p1\n  p2 focus=p2\n");
+    fs::write(p2.join("ctl"), "notify old\n").unwrap();
+    until("the notice is written", || read(&p2.join("notice")) == "1 old\n");
+    let mode = |mode: &str| assert!(Command::new("chmod").arg(mode).arg(p2.join("notice")).status().unwrap().success());
+    mode("000");
+    if fs::read(p2.join("notice")).is_ok() {
+        return; // (Whoever may read every file, root, has no notice that cannot be opened.)
+    }
+    let path = format!("PATH={}", std::env::var("PATH").unwrap());
+    let command = ["env", &path, &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={keys}")];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer shows the first pane", || read(&view.join("screen")).contains("SHOWN"));
+    std::thread::sleep(Duration::from_millis(600));
+    fs::write(view.join("in"), "\x02").unwrap();
+    until("the tabs are shown", || read(&view.join("screen")).contains(" p2"));
+    let marked = read(&view.join("screen")).contains(" p2! ");
+    mode("600");
+    std::thread::sleep(Duration::from_millis(600));
+    fs::write(p2.join("ctl"), "notify new\n").unwrap();
+    until("the viewer passed the new one on", || read(&view.join("notice")).ends_with(" p2: new\n"));
+    assert_eq!((marked, read(&view.join("notice")).as_str()), (true, "1 p2: new\n"), "the old notice was rung");
+}
+
+#[test]
 fn a_text_or_a_list_that_cannot_be_moved_into_its_pane_is_removed() {
     // The editor's text and the picker's list are moved into their pane's folder and go with it. A
     // pane that is gone by then (closed under them) takes nothing: the file is removed, not left in the session.
