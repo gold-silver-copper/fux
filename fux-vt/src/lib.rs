@@ -299,6 +299,7 @@ pub struct Out {
 struct Last {
     at: Option<(usize, usize, Cell, Cell)>,
     cursor: (usize, usize, bool),
+    joiner: Joiner,
 }
 
 /// The cursor: where it is, and what a program saves and brings back with it (DECSC, DECRC).
@@ -421,7 +422,6 @@ pub struct Term {
     lent: Option<Lent>,
     /// A line feed is the text wrapping into the next row.
     wrapping: bool,
-    joiner: Joiner,
     state: State,
     csi: Csi,
     utf8: u32,
@@ -549,7 +549,6 @@ impl Term {
             tail: Tail::default(),
             lent: None,
             wrapping: false,
-            joiner: Joiner::default(),
             state: State::Ground,
             csi: Csi::default(),
             utf8: 0,
@@ -1168,24 +1167,22 @@ impl Term {
             last.cursor == here
                 && last.at.is_none_or(|(row, col, cell, _)| self.screen.cell_at(row, col) == Some(&cell))
         });
-        if !goes_on {
-            (self.joiner, self.cluster) = (Joiner::default(), None);
-        }
-        if self.joiner.joins(c) {
+        let mut joiner = self.cluster.filter(|_| goes_on).map_or(Joiner::default(), |last| last.joiner);
+        if joiner.joins(c) {
             self.join(c);
         } else if width(c, &[]) == 0 {
             // A mark or a joiner with nothing to go on: it has no place on a screen.
             self.cluster = None;
         } else {
             // Until it is placed it has no cell: what joins a character that found no room goes with it.
-            (self.last, self.cluster) = (c, Some(Last { at: None, cursor: here }));
+            (self.last, self.cluster) = (c, Some(Last { at: None, cursor: here, joiner }));
             let new = Cell { ch: c, more: ['\0'; MORE], style: self.screen.cursor.style, link: self.link };
             self.place(new, width(c, &[]) == 2, self.insert);
         }
         // What the next character must find to go on from this one.
         let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
         if let Some(last) = &mut self.cluster {
-            last.cursor = here;
+            (last.cursor, last.joiner) = (here, joiner);
             last.at =
                 last.at.and_then(|(row, col, _, under)| Some((row, col, *self.screen.grid.get(row)?.get(col)?, under)));
         }
@@ -1484,7 +1481,8 @@ impl Term {
             // The character printed last is where it was in the text: what comes next may join it.
             let (at_row, at_col) = fit(at(2));
             self.cluster = last.filter(|_| at(2).0 >= up).and_then(|(.., under)| {
-                Some(Last { at: Some((at_row, at_col, *self.screen.cell_at(at_row, at_col)?, under)), cursor: here })
+                let at = Some((at_row, at_col, *self.screen.cell_at(at_row, at_col)?, under));
+                Some(Last { at, cursor: here, ..self.cluster? })
             });
         }
         // (What history was given of the rows above, and has not yet taken, is taken back here.)
