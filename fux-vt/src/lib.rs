@@ -1381,16 +1381,8 @@ impl Term {
             let here = self.screen.cursor.place();
             (ours && here >= command && here.0 < end).then_some(first + held..end + held)
         });
-        let keep = typed.unwrap_or(0..0);
-        // (Its rows are noted, to be one line still when each has been cut.)
-        let kept = places.len();
-        places.extend(keep.clone().map(|y| (y, 0, false)));
-        let mut wrapped = reflow(&old, cols, &mut places, keep);
-        for place in places.split_off(kept).iter().skip(1) {
-            if let Some(cell) = wrapped.get_mut(place.0).and_then(|row| row.first_mut()) {
-                cell.style.flags |= CONT;
-            }
-        }
+        // (Its rows are one line still when each has been cut.)
+        let mut wrapped = reflow(&old, cols, &mut places, typed.unwrap_or(0..0));
         // (A cursor beside its line's text is kept inside the row; a picture keeps its column.)
         let place = |i: usize| places.get(i).copied().unwrap_or_default();
         let at = |i: usize| (place(i).0, if place(i).2 { place(i).1.min(cols - 1) } else { place(i).1 });
@@ -2453,12 +2445,13 @@ fn reflow(
         cell.ch != ' ' || cell.more.first() != Some(&'\0') || cell.style.flags & !MARKS != 0 || cell.link != 0
     };
     // The lines, what fills the rest of each one's last row (the colour of the blanks it ended
-    // in), and for each old row the line it is part of and where in it the row starts.
-    let mut lines: Vec<(Vec<Cell>, Cell)> = Vec::new();
+    // in), and whether its first row goes on from the row before still (history's last, or a row
+    // that is kept as it is); and for each old row the line it is part of and where in it the row starts.
+    let mut lines: Vec<(Vec<Cell>, Cell, bool)> = Vec::new();
     let mut origin: Vec<(usize, usize)> = Vec::new();
     for (y, row) in old.iter().enumerate() {
         if lines.is_empty() || !continues(row) || keep.contains(&y) {
-            lines.push((Vec::new(), blank));
+            lines.push((Vec::new(), blank, continues(row)));
         }
         let goes_on = old.get(y + 1).is_some_and(|next| continues(next)) && !keep.contains(&y);
         let mut used = match goes_on {
@@ -2473,7 +2466,7 @@ fn reflow(
             used = used.min(cols - usize::from(row.get(cols).is_some_and(|half| half.ch == '\0')));
         }
         let number = lines.len().saturating_sub(1);
-        let Some((line, fill)) = lines.last_mut() else { continue };
+        let Some((line, fill, _)) = lines.last_mut() else { continue };
         origin.push((number, line.len()));
         let plain = |cell: &Cell| Cell { style: Style { flags: cell.style.flags & !MARKS, ..cell.style }, ..*cell };
         line.extend(row.iter().take(used).map(plain));
@@ -2481,8 +2474,8 @@ fn reflow(
     }
     // The new rows, and for each the line it is part of and where in it the row starts.
     let (mut rows, mut starts): (Vec<Vec<Cell>>, Vec<(usize, usize)>) = (Vec::new(), Vec::new());
-    for (number, (line, fill)) in lines.iter().enumerate() {
-        let mut row: Vec<Cell> = Vec::with_capacity(cols);
+    for (number, (line, fill, on)) in lines.iter().enumerate() {
+        let (mut row, first): (Vec<Cell>, usize) = (Vec::with_capacity(cols), rows.len());
         starts.push((number, 0));
         let mut i = 0;
         while let Some(cell) = line.get(i) {
@@ -2507,12 +2500,9 @@ fn reflow(
         }
         row.resize(cols, *fill);
         rows.push(row);
-    }
-    // The first row may itself go on from a line that history has the start of.
-    if let Some(first) =
-        rows.first_mut().and_then(|row| row.first_mut()).filter(|_| old.first().is_some_and(|row| continues(row)))
-    {
-        first.style.flags |= CONT;
+        if let Some(cell) = rows.get_mut(first).and_then(|row| row.first_mut()).filter(|_| *on) {
+            cell.style.flags |= CONT;
+        }
     }
     for place in places.iter_mut() {
         let (line, offset) = origin.get(place.0).map_or((usize::MAX, 0), |&(line, start)| (line, start + place.1));
@@ -2525,7 +2515,7 @@ fn reflow(
         // Past its line's text a place is beside the text, as many columns on as it was (which
         // is said of it); right after the text of a full row it is the place that waits to wrap
         // (one past the last column).
-        let beside = lines.get(line).is_some_and(|(text, _)| offset > text.len());
+        let beside = lines.get(line).is_some_and(|(text, ..)| offset > text.len());
         *place = (row.unwrap_or(0), column, beside);
     }
     rows
