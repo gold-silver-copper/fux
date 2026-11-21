@@ -119,9 +119,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     let (cols, rows) = (number("COLUMNS", 80), number("LINES", 24));
     let size = Winsize { cols, rows, xpixel: cols * 10, ypixel: rows * 20 };
     let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
-    let Some((program, args)) = command.split_first() else {
-        return Err("no program to run".into());
-    };
+    let (program, args) = command.split_first().ok_or("no program to run")?;
     // `fux start` says under what name the pane's directory was started.
     let pane = std::env::var_os(name!("PANE")).ok_or("hold is started by `fux start`")?;
     // (The session is two folders up from the pane, by the name the pane was started under.)
