@@ -3,7 +3,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
-use crate::{PICTURES_MAX, Term};
+use crate::{PICTURES_MAX, Screen, Term};
 
 fn term(cols: usize, rows: usize, bytes: &str) -> Term {
     let mut term = Term::new(cols, rows);
@@ -88,10 +88,7 @@ fn the_styled_screen_read_back_is_the_same_screen() {
     first.feed(
         "wide 日本語 e\u{301} \x1b[4:3mcurly\x1b[m \x1b[7mrev\x1b[27m\x1b[44m\x1b[K\r\n\x1b(0lqk\x1b(B".as_bytes(),
     );
-    let mut second = Term::new(30, 6);
-    for (row, line) in first.styled().lines().enumerate() {
-        second.feed(format!("\x1b[{};1H{line}", row + 1).as_bytes());
-    }
+    let second = Term { screen: Screen::read(&first.styled(), 30), ..Term::new(30, 6) };
     assert_eq!(first.styled(), second.styled());
     assert_eq!(first.plain(), second.plain());
     assert!(first.plain().contains("wide 日本語 e\u{301} curly rev") && first.plain().contains("┌─┐"));

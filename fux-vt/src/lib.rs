@@ -451,6 +451,37 @@ impl Screen {
         self.grid.get(row)?.get(col)
     }
 
+    /// The screen a `styled` text says, `cols` wide and of as many rows as it has lines (a reader's
+    /// side of `Term::styled`): cells and looks, and none of what `set_words` and `set_link` say.
+    pub fn read(styled: &str, cols: usize) -> Screen {
+        // (One column more than the pane is said to have, where there is room for one: there a
+        // line that is longer ends, and is cut off.)
+        let mut term = Term::new((cols + 1).min(SIZE_MAX), styled.lines().count());
+        term.feed(b"\x1b[?7l");
+        for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
+            // The rows are text and colours, as the holder writes them: anything else in a
+            // file of someone's own making is shown as `?`.
+            let mut text = String::with_capacity(line.len());
+            let mut rest = line;
+            while let Some(at) = rest.find(|c: char| c.is_control()) {
+                let (before, after) = rest.split_at(at);
+                let colour = after.strip_prefix("\x1b[").and_then(|sgr| {
+                    let end = sgr.find(|c: char| !(c.is_ascii_digit() || c == ';' || c == ':'))?;
+                    sgr.get(end..)?.starts_with('m').then_some(2 + end + 1)
+                });
+                text.push_str(before);
+                text.push_str(colour.and_then(|length| after.get(..length)).unwrap_or("?"));
+                rest = after.get(colour.unwrap_or(1)..).unwrap_or_default();
+            }
+            text.push_str(rest);
+            term.feed(format!("\x1b[{};1H\x1b[m{text}", row + 1).as_bytes());
+            if cols < term.screen.cols {
+                term.feed(format!("\x1b[{};{}H\x1b[m\x1b[K", row + 1, cols + 1).as_bytes());
+            }
+        }
+        term.screen
+    }
+
     /// Says of a cell which link it is part of (for a reader that has the links from a file).
     pub fn set_link(&mut self, row: usize, col: usize, link: u16) {
         if let Some(cell) = self.grid.get_mut(row).and_then(|cells| cells.get_mut(col)) {
@@ -552,11 +583,6 @@ impl Term {
     /// How input is to be sent to the program, as words: what the `modes` file says.
     pub fn words(&mut self) -> String {
         self.screen.words()
-    }
-
-    /// What is shown and nothing else of the terminal, for a reader that made it of a pane's files.
-    pub fn into_screen(self) -> Screen {
-        self.screen
     }
 
     /// What the terminal is told of the world outside it: to be read, and to be said anew.

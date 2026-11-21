@@ -1504,32 +1504,7 @@ impl Pane {
             _ => (0, 0),
         };
         let cols = if self.size.0 == 0 { SIZE_MAX } else { self.size.0 };
-        // (One column more than the pane is said to have, where there is room for one: there a
-        // line that is longer ends, and is cut off.)
-        let mut term = Term::new((cols + 1).min(SIZE_MAX), styled.lines().count().clamp(1, SIZE_MAX));
-        term.feed(b"\x1b[?7l");
-        for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
-            // The rows are text and colours, as the holder writes them: anything else in a
-            // file of someone's own making is shown as `?`.
-            let mut text = String::with_capacity(line.len());
-            let mut rest = line;
-            while let Some(at) = rest.find(|c: char| c.is_control()) {
-                let (before, after) = rest.split_at(at);
-                let colour = after.strip_prefix("\x1b[").and_then(|sgr| {
-                    let end = sgr.find(|c: char| !(c.is_ascii_digit() || c == ';' || c == ':'))?;
-                    sgr.get(end..)?.starts_with('m').then_some(2 + end + 1)
-                });
-                text.push_str(before);
-                text.push_str(colour.and_then(|length| after.get(..length)).unwrap_or("?"));
-                rest = after.get(colour.unwrap_or(1)..).unwrap_or_default();
-            }
-            text.push_str(rest);
-            term.feed(format!("\x1b[{};1H\x1b[m{text}", row + 1).as_bytes());
-            if cols < term.screen().cols {
-                term.feed(format!("\x1b[{};{}H\x1b[m\x1b[K", row + 1, cols + 1).as_bytes());
-            }
-        }
-        self.screen = term.into_screen();
+        self.screen = Screen::read(&styled, cols);
         self.screen.set_words(&fact("modes", 256));
         let cursor = fact("cursor", 64);
         let mut cursor = cursor.split_whitespace();
