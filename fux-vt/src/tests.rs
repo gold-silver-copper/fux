@@ -460,7 +460,12 @@ fn what_fux_is_and_can_do_is_answered_under_its_own_name_and_no_more() {
         said("\x1b[2;4r\x1b[5 q\x1bP$qr\x1b\\\x1bP$q q\x1b\\\x1bP$qs\x1b\\"),
         "\x1bP1$r2;4r\x1b\\\x1bP1$r5 q\x1b\\\x1bP0$r\x1b\\"
     );
-    assert_eq!(said(&format!("\x1bP+q{}\x1b\\", "41;".repeat(40))), "\x1bP0+r\x1b\\");
+    // However many names are asked for, each is answered by itself (the last here is no name),
+    // until 16 KiB of answers wait, as for every answer: the rest are dropped, and that is said.
+    let each = format!("{}\x1bP0+r\x1b\\", "\x1bP0+r41\x1b\\".repeat(40));
+    assert_eq!(said(&format!("\x1bP+q{}\x1b\\", "41;".repeat(40))), each);
+    let out = term(20, 5, &format!("\x1bP+q{}\x1b\\", "41;".repeat(3000))).take();
+    assert!(out.reply.len() > 16000 && out.reply.len() <= 16 << 10 && out.refused == [crate::DROPPED]);
     // What DECRQSS says of the looks in force, fed back, gives the same looks; and the table's
     // own sequences are ones the emulator takes (the curly underline, its colour, the shape).
     for looks in ["1;2;3", "4:2;58:5:9", "4:5;58:2::1:2:3;7", "31;42", "95;107;9", "38;5;200;48;2;9;8;7;5;8", "21"] {

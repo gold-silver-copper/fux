@@ -1798,12 +1798,6 @@ impl Term {
 
     /// One reply per name, including an unknown name in the middle of a list.
     fn report_caps(&mut self, request: &[u8]) {
-        if request.len() > 2048 || request.iter().filter(|&&c| c == b';').count() >= 32 {
-            // (Too much for one question: it is said to be not valid, so nobody waits for more.)
-            self.refuse("a capability query over 2048 bytes or 32 names was not answered name by name");
-            self.respond("\x1bP0+r\x1b\\");
-            return;
-        }
         for name in request.split(|&b| b == b';') {
             let hex = (1..=64).contains(&name.len()) && name.len().is_multiple_of(2);
             let name = std::str::from_utf8(name).ok().filter(|name| hex && name.bytes().all(|b| b.is_ascii_hexdigit()));
