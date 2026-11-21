@@ -13,5 +13,4 @@ for w in "$FUXN_DIR"/*/; do
   printf '%s\t%s\n' "${w##*/}" "$(ls "$w" | grep -v -x -e layout -e layout.new | tr '\n' ' ')"
 done > "$list"
 # (The pane has no word for the viewer: it is given the viewer's FIFO to write to.)
-p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" sh -c 'echo "workspace $1" > "$0"' "$FUXN_VIEW") || { rm -f "$list"; exit; }
-fux layout pane "${p##*/}" 2> /dev/null || :
+exec "$FUXN_KEYS/.pick" --tab "$list" sh -c 'echo "workspace $1" > "$0"' "$FUXN_VIEW"

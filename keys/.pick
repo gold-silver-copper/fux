@@ -1,8 +1,16 @@
 #!/bin/sh
-# What the find keys run in a pane of their own: .pick LIST COMMAND…
+# What a find key runs is `.pick --tab LIST [COMMAND…]`: that starts `.pick LIST COMMAND…` in a pane of its own.
 # LIST is a file of lines `KEY<tab>WORDS`. One is chosen, with fzf, sk or fzy if
 # one is installed and from a numbered list if none is, and COMMAND is run
 # with its KEY as the last argument. The file is removed.
+if [ "$1" = --tab ]; then
+  # (With no COMMAND the pane chosen is shown, and the tab shown before the list's
+  # own first, so that `fux layout tab -` goes back to that one.)
+  [ $# -gt 2 ] || set -- "$@" sh -c 'fux layout tab - 2>/dev/null; fux layout pane "$1"' sh
+  shift
+  p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$@") || { rm -f "$1"; exit; }
+  fux layout pane "${p##*/}" 2> /dev/null; exit 0
+fi
 list=$1; shift
 # (The list is in this pane's own folder from here on: it goes with the pane however that is closed.)
 # (One that could not be moved there is removed by its name at the end.)
