@@ -26,10 +26,13 @@ fux is a view over the filesystem and pane daemons. Everything else follows.
 
 ## The parts
 
-- `term.rs` and `width.rs` emulate the terminal. `sys.rs` owns the Unix FFI.
-- `holder.rs` owns the pty, emulator and pane files. `layout.rs` places the panes.
-- `view.rs` draws them, `sixel.rs` cuts pictures to a tile, and `keys.rs` names keys for the scripts in `keys/`.
-- `main.rs` dispatches commands. Run `./sizes.sh` for the current line counts.
+Three crates in one workspace; the two beside the program name nothing of it, and only fuxix may write `unsafe`.
+
+- `fux-vt/` emulates the terminal (`lib.rs`, `width.rs`) and sizes and cuts sixel pictures (`sixel.rs`).
+- `fuxix/` owns the Unix FFI: the pty, `poll`, opens that do not wait, raw mode that is put back when dropped.
+- `src/` is fux, the program. `holder.rs` owns the pty, emulator and pane files. `layout.rs` places the panes.
+- `view.rs` draws them and `keys.rs` names keys for the scripts in `keys/`.
+- `main.rs` dispatches commands. Run `./sizes.sh` for the current line counts, crate by crate.
 
 ## How it works
 
@@ -64,7 +67,7 @@ so key bytes pass through untouched and mouse reports need only their
 coordinates moved. Pictures are files the viewer passes on after
 checking that each is one sixel string and that its pixels, measured by
 the viewer in its own terminal's cells, are all in its tile; of any other
-it writes the part inside the tile (`sixel.rs`).
+it writes the part inside the tile (`fux-vt/src/sixel.rs`).
 
 **Keys.** The viewer names each key and looks for a file of that name in the
 keys directory (or the open menu's directory). The layout is changed by the

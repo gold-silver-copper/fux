@@ -1453,6 +1453,42 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     names (no shim: pre-release), and `cat top` as one bare number
     (`read` and `sed -n 1p` take the first line).
   - Not added: a pane's `colours` file and `foreground` (message 26).
+- **D97. Three crates: fux-vt, fuxix and fux** (the owner's word; the form
+  by a panel of eight, agreed in one round). D42 kept one crate and a
+  script. The owner asked for the split; the panel settled what goes
+  where.
+  - **fux-vt** 0.18.0: the emulator (`term.rs` is its `lib.rs`), the
+    widths, cells and styles, the row writers, and the sixel scanner and
+    cutter (8 of 8 for sixel there), with their unit tests. **fuxix**
+    0.11.0: every `unsafe`. **fux** 0.40.0, the root package: holder,
+    viewer, layout, the command line, the key scripts and `keys.rs` (5
+    seats of 8: its names are the scripts' file names, and it reads the
+    outer terminal). The versions are above what was published under
+    those names (0.17 and 0.10); all three are `publish = false` until
+    the owner says otherwise.
+  - The move changed no code: the program still says `term`, `sixel`,
+    `width` and `sys`, now names for the two crates (`main.rs`). The unit
+    tests went with the code they call (27 and 8, the same 35); the tests
+    of what the emulator and the key names agree on stay with the keys.
+  - **`boundary.sh` is gone.** It compiled the emulator, the system
+    calls, the key names and the sixel cutter each alone, so that none
+    could name the rest of the one crate (D42: "what keeps a later split
+    cheap"). The split is made: the crate graph says who may name whom,
+    and `#![forbid(unsafe_code)]` in fux and fux-vt says where `unsafe`
+    may be, which no module can allow away as it could the manifest's
+    `deny`. CI holds `Cargo.lock` to exactly the three names.
+    `sizes.sh` counts each crate and their sum.
+  - **fuxix's public surface is safe to call and owns what could be
+    forgotten**: one open that does not wait (no caller writes
+    `O_NONBLOCK`), a wait on borrowed descriptors with one answer for
+    each, `openpty` declared with the types it takes, the number of "no
+    reader on a FIFO", and raw mode as a value that writes the terminal
+    its leave-taking and puts the mode back when dropped.
+  - Given up: a negative count from the split itself. It cost 6 lines
+    (two crate roots' headers); the safe owners took 1 back. The panel
+    said so before the work: the lines come from the simplifications.
+  - Not done here: `Term`'s fields private behind a `Screen` and one
+    `Out` (8 of 8, a change of its own).
 
 ## The old fux3's bugs: which classes are gone
 

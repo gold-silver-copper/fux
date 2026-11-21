@@ -15,7 +15,7 @@ A terminal multiplexer that is a view over directories.
 fux runs on Linux and macOS with no external dependencies. Run `./sizes.sh` for the current line counts.
 
 ```sh
-cargo build --release                       # fux builds entirely from this tree
+cargo build --release                       # fux builds entirely from this tree (three crates, no others)
 export PATH="$PWD/target/release:$PATH"     # so that `fux` below is this one
 D=$(fux dir); fux start build -- sh       # a pane is a directory kept by one small process
 printf 'echo hi\n' > "$D/main/build/in"; cat "$D/main/build/screen"     # plain tools are the clients
@@ -620,7 +620,7 @@ all in the tile is passed on as the program wrote it. Of any other (wider or
 taller than the tile, with rows scrolled off the pane's top, or asking for
 pixels that are not square) the part inside the tile is drawn, at its place
 and never over the line between tiles or a neighbour: the viewer reads the
-picture (`src/sixel.rs`: raster attributes, colours in RGB and HLS,
+picture (`fux-vt/src/sixel.rs`: raster attributes, colours in RGB and HLS,
 repeats), takes the pixels the tile has for it and writes those as a sixel
 picture of its own. The file stays whole, so the picture is whole again in a
 wider tile; a file written anew under its name is drawn anew. What is drawn
