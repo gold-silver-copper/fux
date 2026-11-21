@@ -1,8 +1,8 @@
 #!/bin/sh
 # history in the editor
 # group: Panes
-# The pane's text (older history, history, then the screen) as one private file,
-# opened in the editor at its end: `.text` makes the file, `.edit` opens it.
+# `.text` makes the file (the pane's text), `.edit` opens it, at its last line
+# (in an editor whose way to a line it knows, or that `FUXN_EDIT` tells it).
 [ -n "$FUXN_PANE" ] || exit 0
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
 "$FUXN_KEYS/.text" "$f" > /dev/null

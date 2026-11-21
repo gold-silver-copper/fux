@@ -9,29 +9,21 @@
 # from the row above (the second line of `lines` numbers them from 0) joined to it, as history has
 # them (without the cell a wide character left empty at a row's end, which
 # `screen.styled` tells as U+200B and a blank where it has a colour). It is
-# read first: a line that scrolls off meanwhile is then there twice, never missing. A pane that printed while it was read (the first line of `lines`, the number of the screen's first line, moved) is read
-# again, and so is one whose older history became another file meanwhile, five
-# times at most: of a pane that never rests, a mark's line is off by as many
-# lines as scrolled in that moment.
+# read first and each file once: of a pane that prints meanwhile a line may be
+# there twice, and a mark's line off by as many lines as scrolled in that moment.
 umask 077
 s=${2:+.$2}
-for try in 1 2 3 4 5; do
-  { read -r top; read -r wraps; } 2>/dev/null < "$FUXN_PANE/lines"
-  aside=$(ls -i "$FUXN_PANE/history$s.1" 2>/dev/null)
-  screen=$(awk -v wraps="$wraps" -v gap="$(printf '\342\200\213 \033[m')" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
-    NR == FNR { if ($0 != "") last = NR; next } { row[FNR] = $0 }
-    END { for (i = 1; i <= last; i++) { r = row[i]; n = length(r) - length(gap)
-        if (joined[i + 1] && n >= 0 && substr(r, n + 1) == gap) r = substr(r, 1, n) "\033[m"
-        printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), r }; if (last) print "" }' "$FUXN_PANE/screen" "$FUXN_PANE/screen$s")
-  # History's last line may be unfinished: the screen's first row goes on from it if
-  # `lines` lists row 0, and is a line of its own if not.
-  open=$(tail -c 1 "$FUXN_PANE/history$s" 2>/dev/null)
-  case " $wraps " in *" 0 "*) open= ;; esac
-  { cat "$FUXN_PANE/history$s.1" "$FUXN_PANE/history$s" 2>/dev/null; [ -z "$open" ] || echo; } > "$1"
-  before=$(($(wc -l < "$1")))
-  printf '%s\n' "$screen" >> "$1" || exit
-  read -r after 2>/dev/null < "$FUXN_PANE/lines"
-  [ "$after" != "$top" ] || [ "$aside" != "$(ls -i "$FUXN_PANE/history$s.1" 2>/dev/null)" ] || break
-done
-case $top in '' | *[!0-9]*) top=0 ;; esac
-echo "$((before - top + 1))"
+{ read -r top; read -r wraps; } 2>/dev/null < "$FUXN_PANE/lines"
+screen=$(awk -v wraps="$wraps" -v gap="$(printf '\342\200\213 \033[m')" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
+  NR == FNR && $0 != "" { last = NR } { row[FNR] = $0 }
+  END { for (i = 1; i <= last; i++) { r = row[i]; n = length(r) - length(gap)
+      if (joined[i + 1] && n >= 0 && substr(r, n + 1) == gap) r = substr(r, 1, n) "\033[m"
+      printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), r } }' "$FUXN_PANE/screen" ${2:+"$FUXN_PANE/screen$s"})
+# History's last line may be unfinished: the screen's first row goes on from it if
+# `lines` lists row 0, and is a line of its own if not.
+open=$(tail -c 1 "$FUXN_PANE/history$s" 2>/dev/null)
+case " $wraps " in *" 0 "*) open= ;; esac
+{ cat "$FUXN_PANE/history$s.1" "$FUXN_PANE/history$s" 2>/dev/null; [ -z "$open" ] || echo; } > "$1"
+before=$(($(wc -l < "$1")))
+printf '%s\n' "$screen" >> "$1" || exit
+echo "$((before - ${top:-0} + 1))"

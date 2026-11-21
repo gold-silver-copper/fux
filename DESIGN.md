@@ -12,7 +12,10 @@ fux is a view over the filesystem and pane daemons. Everything else follows.
   emulator, published as `screen` and `screen.styled`. Whether a pane lives:
   the kernel's lock on its directory, held by its holder. Which panes exist:
   the folders. Where they are drawn and which has the keys: the `layout`
-  file. What a key does: the file of its name.
+  file. What a key does: the file of its name. Whether a program has the
+  alternate screen: that `screen.main` is there. In the code as in the
+  files: no field mirrors another, and what is kept of a file is kept under
+  that file's stamp and read again when the stamp changes.
 - **What is derived.** The viewer's picture, from the screens and the layout.
   The layout's panes, from the folders (a folder it does not place gets a
   tab; a name with no folder is dropped). The menu, from the keys directory.
@@ -22,7 +25,8 @@ fux is a view over the filesystem and pane daemons. Everything else follows.
 - **What makes a change correct.** A screen file is replaced in one rename,
   so it is always whole. History is appended before the screens that no
   longer show those lines. A layout edit is read, change, rename, under a
-  lock on the workspace folder. A pane's name is claimed by `mkdir`.
+  lock on the workspace folder. A pane's name is claimed by `mkdir`, and
+  the pane by the lock on its folder.
 
 ## The parts
 
@@ -36,35 +40,35 @@ Three crates in one workspace; the two beside the program name nothing of it, an
 
 ## How it works
 
-**Starting.** `fux start` makes the pane's folder and locks it (both under
-a lock on the workspace, so that two starts never mix), and starts
-`fux hold` in a new session with the pane's lock as its standard input: the
-lock lives exactly as long as the holder. The start is done when `status`
-names that holder. The holder
+**Starting.** `fux start` makes the pane's folder (`mkdir` is the claim of
+a new name), locks it, and starts `fux hold` in a new session with the
+pane's lock as its standard input: the lock lives exactly as long as the
+holder, and of two starts of one name the one that locks it runs. The start
+is done when the holder says, on a pipe, that its first screen is written.
+The holder
 works inside the folder with relative names, so it does not care what the
 folder is called.
 
 **Holding.** One loop waits on the pty, `in`, `ctl` and a pipe on which a
 waiting thread reports the program's end. No signal is handled anywhere.
-Output goes through the emulator; when the program has written nothing for a millisecond (but
-not within 8 ms of the last time), and every 25 ms while it keeps writing, the screens are
+Output goes through the emulator; when the program has gone quiet for a moment, and at a
+steady pace while it keeps writing (the README's "Bounds" has the numbers), the screens are
 written: first each fact that changed, in a small file of its own, then the two screens, which
-are text and nothing else. When the program ends the holder writes `state` and its last screen,
-removes its FIFOs and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
+are text and nothing else. When the program ends the holder writes `state` and its last screen
+(once: a failure is a line in `log`), removes its FIFOs and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
 is a hangup, and the rest is the kernel's and the program's business. If the
 folder is gone, the pane is gone: the holder leaves, which hangs up too.
 
-**Viewing.** The viewer has no channel to holders. It looks at files (every
-4 ms just after something happened, every 50 ms at rest), reads a pane's
+**Viewing.** The viewer has no channel to holders but each pane's `in` and `ctl`. It looks at files (often just after something happened, seldom at rest), reads a pane's
 facts and its `screen.styled` when that file changed (it is written last), and
 parses it with the same emulator that wrote it. It sends keys with a write to `in` that never waits, opening it by
 its path each time, so that the pane typed into is the pane of that name
 now. There is no header and no version: a reader that
 takes a fact and a text one write apart is wrong for one frame, and the next
 look puts it right; it keeps the cursor inside the rows it read. It sets the
-outer terminal's cursor-key, keypad and mouse modes to the focused program's,
-so key bytes pass through untouched and mouse reports need only their
-coordinates moved. Pictures are files the viewer passes on after
+outer terminal's cursor-key and keypad modes to the focused program's, so key
+bytes pass through untouched; mouse reports it asks for in the SGR form, and
+gives the program in its own, counted from the tile's corner. Pictures are files the viewer passes on after
 checking that each is one sixel string and that its pixels, measured by
 the viewer in its own terminal's cells, are all in its tile; of any other
 it writes the part inside the tile (`fux-vt/src/sixel.rs`).
@@ -76,7 +80,7 @@ change like anyone else.
 
 ## What it deliberately has not
 
-No guard against `mv`, `rm` or `kill -9`; no staging names, markers or sweeps;
+No guard against `mv`, `rm` or `kill -9`; no staging folders, markers or sweeps;
 no pane ids; no recipes or restart; no kill of process trees; no embedded
 language; no socket. See `DECISIONS.md` for why, and for which of the old
 fux's bugs this removes.

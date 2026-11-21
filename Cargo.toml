@@ -11,6 +11,8 @@ exclude = ["/tools/referee"]
 [profile.release]
 panic = "abort"
 opt-level = 2
+# (Calls from the program into the emulator are inlined again, as they were when the two were one crate.)
+lto = "thin"
 
 [dependencies]
 fux-vt = { path = "fux-vt" }

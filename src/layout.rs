@@ -99,13 +99,6 @@ impl Node {
         }
     }
 
-    fn contains(&self, name: &str) -> bool {
-        match self {
-            Node::Pane(pane) => pane == name,
-            Node::Split(_, parts) => parts.iter().any(|(part, _)| part.contains(name)),
-        }
-    }
-
     /// Gives every pane its rectangle. Between two parts there is one column
     /// or one row that is neither's (the viewer draws a line there).
     fn place(&self, area: Rect, focus: &str, into: &mut Vec<(String, Rect)>) {
@@ -118,26 +111,19 @@ impl Node {
         let length = if row { area.w } else { area.h };
         let shown = parts.len().min(length.div_ceil(2));
         let room = length.saturating_sub(shown.saturating_sub(1));
-        let focused = parts.iter().skip(shown).find(|(part, _)| part.contains(focus));
+        let focused = parts.iter().skip(shown).find(|(part, _)| part.panes().contains(&focus));
         let parts = parts.iter().take(shown - usize::from(focused.is_some())).chain(focused);
         let total: usize = parts.clone().map(|p| p.1.max(1) as usize).sum();
-        let mut sizes: Vec<usize> = parts.clone().map(|p| (room * p.1.max(1) as usize / total.max(1)).max(1)).collect();
-        while sizes.iter().sum::<usize>() > room {
-            match sizes.iter_mut().max() {
-                Some(largest) if *largest > 1 => *largest -= 1,
-                _ => break,
-            }
-        }
-        let mut spare = room.saturating_sub(sizes.iter().sum());
-        for size in &mut sizes {
-            *size += usize::from(spare > 0);
-            spare = spare.saturating_sub(1);
-        }
-        let mut at = if row { area.x } else { area.y };
-        for ((part, _), size) in parts.zip(sizes) {
+        // A part ends at its share of the room, counted from the start, leaving a cell
+        // for itself and for each part after it; the last ends where the room does.
+        let (start, mut used, mut weight) = (if row { area.x } else { area.y }, 0, 0);
+        for (i, (part, share)) in parts.enumerate() {
+            weight += (*share).max(1) as usize;
+            let end = (room * weight).div_ceil(total.max(1)).min(room.saturating_sub(shown - 1 - i)).max(used + 1);
+            let (at, size) = (start + used + i, end - used);
             let rect = if row { Rect { x: at, w: size, ..area } } else { Rect { y: at, h: size, ..area } };
             part.place(rect, focus, into);
-            at += size + 1;
+            used = end;
         }
     }
 
@@ -155,7 +141,7 @@ impl Node {
     /// Changes the share of the part in the nearest row (or column) that holds the pane.
     fn change_share(&mut self, name: &str, of_row: bool, change: i64) -> bool {
         let Node::Split(row, parts) = self else { return false };
-        let Some(at) = parts.iter().position(|(part, _)| part.contains(name)) else { return false };
+        let Some(at) = parts.iter().position(|(part, _)| part.panes().contains(&name)) else { return false };
         if parts.get_mut(at).is_some_and(|(part, _)| part.change_share(name, of_row, change)) {
             return true;
         }
@@ -184,6 +170,25 @@ impl Tab {
             self.root.place(area, &self.focus, &mut tiles);
         }
         tiles
+    }
+
+    /// Puts a pane beside (in a row) or below (in a column) one of the tab's panes, and gives
+    /// it the keys.
+    pub fn beside(&mut self, anchor: &str, name: &str, row: bool) {
+        self.focus = name.to_string();
+        let found = self.root.with_parent(anchor, &mut |parent_row, parts, at| {
+            if *parent_row == row {
+                // The new part is as large as the one it is put beside (parts that were
+                // given shares since would leave one of share 1 a sliver).
+                let share = parts.get(at).map_or(1, |part| part.1);
+                parts.insert(at + 1, (Node::Pane(name.to_string()), share));
+            } else if let Some(part) = parts.get_mut(at) {
+                part.0 = Node::Split(row, vec![(part.0.clone(), 1), (Node::Pane(name.to_string()), 1)]);
+            }
+        });
+        if !found {
+            self.root = Node::Split(row, vec![(self.root.clone(), 1), (Node::Pane(name.to_string()), 1)]);
+        }
     }
 }
 
@@ -262,47 +267,23 @@ impl Layout {
     /// leaves it, a pane it does not place gets a tab of its own, and every
     /// tab's focus is one of its panes.
     pub fn settle(&mut self, existing: Vec<String>) {
-        let (shown, marked) = (self.names(Some(self.current)), self.names(self.before));
         let mut unplaced: std::collections::HashSet<_> = existing.into_iter().collect();
-        self.retain_panes(|name| unplaced.remove(name));
+        let [same, back] = self.retain_panes(|name| unplaced.remove(name));
         let mut unplaced: Vec<_> = unplaced.into_iter().collect();
         unplaced.sort_by(|a, b| (a.len(), a).cmp(&(b.len(), b)));
         self.tabs.extend(unplaced.iter().map(|name| tab_of(name)));
         // The tab shown stays the one that was shown, wherever it is now. If
         // it is gone, the tab shown before it is shown; if that is gone too,
         // the tab now in its place.
-        let find = |tabs: &[Tab], names: &[String]| {
-            tabs.iter().position(|tab| tab.panes().iter().any(|p| names.iter().any(|n| n == p)))
-        };
-        let (same, back) = (find(&self.tabs, &shown), find(&self.tabs, &marked));
         self.current = same.or(back).unwrap_or(self.current).min(self.tabs.len().saturating_sub(1));
         self.before = back.filter(|back| *back != self.current);
-    }
-
-    /// The names of the panes of a tab, to find it again after tabs came and went.
-    fn names(&self, tab: Option<usize>) -> Vec<String> {
-        let tab = tab.and_then(|at| self.tabs.get(at));
-        tab.map(|tab| tab.panes().iter().map(|name| name.to_string()).collect()).unwrap_or_default()
-    }
-
-    /// One edit, as `fux layout WORDS…` gives it. An edit that ends on another
-    /// tab marks the one it left as the tab shown before.
-    pub fn edit(&mut self, words: &[&str]) -> Result<(), String> {
-        let (shown, marked) = (self.names(Some(self.current)), self.names(self.before));
-        self.apply(words)?;
-        let other = |names: &[String]| {
-            let has = |tab: &Tab| tab.panes().iter().any(|p| names.iter().any(|n| n == p));
-            self.tabs.iter().enumerate().position(|(at, tab)| at != self.current && has(tab))
-        };
-        self.before = other(&shown).or_else(|| other(&marked));
-        Ok(())
     }
 
     /// The workspace's layout as it stands: its file's text, the layout
     /// settled against the folders, and what is wrong with the file if it
     /// cannot be read as a layout (it then counts as empty, and is left alone).
     pub fn load(workspace: &Path) -> (String, Layout, Option<String>) {
-        let (bytes, read) = crate::read(fs::File::open(workspace.join("layout")), FILE_MAX + 1);
+        let (bytes, read) = crate::read(crate::sys::open(workspace.join("layout"), false), FILE_MAX + 1);
         let read = read.or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(0) } else { Err(e) });
         let text = read.map_err(|e| format!("the layout file cannot be read: {e}")).and_then(|n| {
             check_file_size(n)?;
@@ -342,21 +323,29 @@ impl Layout {
     }
 
     /// Prune the trees, dropping empty tabs and giving a surviving pane the focus.
-    fn retain_panes(&mut self, mut keep: impl FnMut(&str) -> bool) {
+    /// Says where the tab shown and the tab shown before it are now, if they are still there.
+    fn retain_panes(&mut self, mut keep: impl FnMut(&str) -> bool) -> [Option<usize>; 2] {
+        let mut kept = Vec::new();
         self.tabs = std::mem::take(&mut self.tabs)
             .into_iter()
-            .filter_map(|mut tab| {
+            .enumerate()
+            .filter_map(|(at, mut tab)| {
                 tab.root = tab.root.filter(&mut keep)?;
-                if !tab.root.contains(&tab.focus) {
+                if !tab.panes().contains(&tab.focus.as_str()) {
                     tab.focus = tab.panes().first()?.to_string();
                 }
+                kept.push(at);
                 Some(tab)
             })
             .collect();
+        [Some(self.current), self.before].map(|old| kept.iter().position(|at| Some(*at) == old))
     }
 
-    fn apply(&mut self, words: &[&str]) -> Result<(), String> {
-        let count = self.tabs.len();
+    /// One edit, as `fux layout WORDS…` gives it. An edit that ends on another
+    /// tab marks the one it left as the tab shown before.
+    pub fn edit(&mut self, words: &[&str]) -> Result<(), String> {
+        // Where the tab shown and the tab shown before it are, as the edit moves tabs.
+        let (count, mut marks) = (self.tabs.len(), [Some(self.current), self.before]);
         let step = |at: usize, count: usize, previous: bool| {
             let count = count.max(1);
             (at + if previous { count - 1 } else { 1 }) % count
@@ -371,28 +360,14 @@ impl Layout {
                     ["beside", pane] => return Err(format!("cannot split pane {name} beside {pane}")),
                     _ => return Err("split takes row|col PANE [beside ANCHOR]".into()),
                 };
-                self.retain_panes(|pane| pane != *name);
+                marks = self.retain_panes(|pane| pane != *name);
+                // With no pane to go beside, it gets a tab of its own, the last.
                 let at = beside.as_deref().and_then(|pane| self.tab_with(pane).ok());
-                let Some((tab, beside)) = at.and_then(|at| self.tabs.get_mut(at)).zip(beside) else {
-                    self.tabs.push(tab_of(name));
-                    self.current = self.tabs.len() - 1;
-                    return Ok(());
-                };
-                tab.focus = name.to_string();
-                let found = tab.root.with_parent(&beside, &mut |parent_row, parts, at| {
-                    if *parent_row == row {
-                        // The new part is as large as the one it is put beside (parts that were
-                        // given shares since would leave one of share 1 a sliver).
-                        let share = parts.get(at).map_or(1, |part| part.1);
-                        parts.insert(at + 1, (Node::Pane(name.to_string()), share));
-                    } else if let Some(part) = parts.get_mut(at) {
-                        part.0 = Node::Split(row, vec![(part.0.clone(), 1), (Node::Pane(name.to_string()), 1)]);
-                    }
-                });
-                if !found {
-                    tab.root = Node::Split(row, vec![(tab.root.clone(), 1), (Node::Pane(name.to_string()), 1)]);
+                self.current = at.unwrap_or(self.tabs.len());
+                match self.tabs.get_mut(self.current).zip(beside) {
+                    Some((tab, beside)) => tab.beside(&beside, name, row),
+                    None => self.tabs.push(tab_of(name)),
                 }
-                self.current = at.unwrap_or(0);
             }
             ["focus", way @ ("left" | "right" | "up" | "down")] => {
                 let tab = self.tab_mut()?;
@@ -427,8 +402,7 @@ impl Layout {
                     std::mem::swap(*a, *b);
                 }
             }
-            // `pane NAME` is `focus NAME` for a pane whose name is a direction's word.
-            ["focus" | "pane", name] => {
+            ["pane", name] => {
                 self.current = self.tab_with(name)?;
                 self.tab_mut()?.focus = name.to_string();
             }
@@ -441,7 +415,7 @@ impl Layout {
             ["break"] if self.tab().is_some_and(|tab| tab.panes().len() < 2) => {}
             ["break"] => {
                 let name = self.tab_mut()?.focus.clone();
-                self.retain_panes(|pane| pane != name);
+                marks = self.retain_panes(|pane| pane != name);
                 self.current = (self.current + 1).min(self.tabs.len());
                 self.tabs.insert(self.current, tab_of(&name));
             }
@@ -460,21 +434,17 @@ impl Layout {
             }
             ["arrange", way @ ("row" | "col" | "grid" | "main")] => {
                 let tab = self.tab_mut()?;
-                let mut panes = tab.panes().into_iter().map(|p| (Node::Pane(p.to_string()), 1));
+                let panes = tab.panes();
+                let parts = |names: &[&str]| names.iter().map(|&name| (Node::Pane(name.into()), 1)).collect();
                 tab.root = match *way {
-                    "row" | "col" => Node::Split(*way == "row", panes.collect()),
+                    "row" | "col" => Node::Split(*way == "row", parts(&panes)),
                     "main" => {
-                        let first = panes.next();
-                        let rest = (Node::Split(false, panes.collect()), 1);
-                        Node::Split(true, first.map(|first| (first.0, 2)).into_iter().chain([rest]).collect())
+                        let (&first, rest) = panes.split_first().ok_or("there are no panes here")?;
+                        Node::Split(true, vec![(Node::Pane(first.into()), 2), (Node::Split(false, parts(rest)), 1)])
                     }
                     _ => {
-                        let panes: Vec<(Node, u32)> = panes.collect();
-                        let across = (1..).find(|n| n * n >= panes.len()).unwrap_or(1);
-                        Node::Split(
-                            false,
-                            panes.chunks(across).map(|row| (Node::Split(true, row.to_vec()), 1)).collect(),
-                        )
+                        let across = panes.len().saturating_sub(1).isqrt() + 1;
+                        Node::Split(false, panes.chunks(across).map(|row| (Node::Split(true, parts(row)), 1)).collect())
                     }
                 }
                 .filter(&mut |_| true)
@@ -482,6 +452,7 @@ impl Layout {
             }
             _ => return Err(format!("'{}' is not a layout edit: see the README", words.join(" "))),
         }
+        self.before = marks.into_iter().flatten().find(|at| *at != self.current);
         Ok(())
     }
 }
@@ -489,7 +460,7 @@ impl Layout {
 /// `fux layout [WORDS…]`: edits the workspace's layout file, or with no
 /// words only settles it against the panes there; says how it reads then.
 /// The workspace's folder is locked meanwhile, so two edits never mix.
-pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {
+pub fn command(workspace: &Path, words: &[&str]) -> Result<Layout, String> {
     let lock = fs::File::open(workspace).map_err(|e| format!("{}: {e}", workspace.display()))?;
     lock.lock().map_err(|e| format!("{}: {e}", workspace.display()))?;
     let (old, mut layout, wrong) = Layout::load(workspace);
@@ -504,5 +475,5 @@ pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {
         parse(&text)?;
         replace(&file, text.as_bytes()).map_err(|e| format!("{}: {e}", file.display()))?;
     }
-    Ok(text)
+    Ok(layout)
 }

@@ -1,10 +1,9 @@
 #!/bin/sh
 # What the search key runs in a pane of its own: asks for words, lists every line
-# of every pane of the session that has them (history and screen, wrapped lines
-# whole, letters of either case), and opens the one chosen in the editor: that
-# pane's whole text, at that line. `.text` makes the text, `.pick` does the
+# of every other pane of the session that has them as they are (history and screen,
+# wrapped lines whole, ASCII letters of either case), and opens the one chosen in the
+# editor: that pane's text, made anew, at that line's number. `.text` makes the text, `.pick` does the
 # choosing, `.edit` the opening.
-ws=${FUXN_PANE%/*}; FUXN_WS=${ws##*/}; export FUXN_WS
 if [ "$1" = --open ]; then
   # KEY is WORKSPACE/PANE:LINE.
   f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
@@ -14,14 +13,12 @@ fi
 printf 'search every pane for: '
 IFS= read -r words
 [ -n "$words" ] || exit
-list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") && text=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
+list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") && text=$FUXN_PANE/text || exit
 for p in "$FUXN_DIR"/*/*/; do
   p=${p%/}
   [ -f "$p/lines" ] && [ ! "$p" -ef "$FUXN_PANE" ] || continue
   FUXN_PANE=$p "$FUXN_KEYS/.text" "$text" > /dev/null
-  LC_ALL=C grep -n -i -F -e "$words" "$text" | awk -v pane="${p#"$FUXN_DIR"/}" '{
-    at = index($0, ":"); printf "%s:%s\t%s %s\n", pane, substr($0, 1, at - 1), pane, $0 }'
+  LC_ALL=C grep -n -i -F -e "$words" "$text" | LC_ALL=C sed "s|^[0-9]*|${p#"$FUXN_DIR"/}:&	${p#"$FUXN_DIR"/} &|"
 done > "$list"
-rm -f "$text"
 [ -s "$list" ] || { rm -f "$list"; echo "no pane has that: Enter closes this"; read -r _; exit; }
 exec "$FUXN_KEYS/.pick" "$list" "$FUXN_KEYS/.search" --open

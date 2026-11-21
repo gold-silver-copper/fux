@@ -40,69 +40,51 @@ pub fn cut(data: &[u8], rectangle: [usize; 4], max: usize) -> Result<String, &'s
 /// what it paints and the colours it paints with are no part of the rectangle's bounds, and
 /// reading it is one step for each byte.
 pub fn read(data: &[u8], rectangle: [usize; 4]) -> Result<Part, &'static str> {
-    scan(data, rectangle).1
+    scan(data, rectangle).map(|(part, _)| part)
 }
 
 /// The size of a picture in pixels: the larger of what its raster attributes say and what its
 /// data paints. And whether its pixels are square: whether its raster attributes, if it has
 /// any, give a pixel's height and width as the same number.
 pub fn size(data: &[u8]) -> (usize, usize, bool) {
-    scan(data, [0; 4]).0
+    // (A part of no pixels is refused nothing.)
+    scan(data, [0; 4]).map_or((0, 0, true), |(_, size)| size)
 }
 
-/// One pass over a picture: its size and squareness, and the pixels of one rectangle of it (or
-/// why they are not read: from there on the picture is only measured).
-fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, bool), Result<Part, &'static str>) {
+/// One pass over a picture: the pixels of one rectangle of it, and its size and squareness. Or
+/// why the pixels are not read: the pass ends there, and nobody asks how large the picture is.
+fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> Result<(Part, (usize, usize, bool)), &'static str> {
     let area = width.checked_mul(height).filter(|area| *area <= PIXELS_MAX);
-    let mut wrong = area.is_none().then_some("its part in the tile is over 8 million pixels");
-    let area = area.unwrap_or(0);
+    let area = area.ok_or("its part in the tile is over 8 million pixels")?;
     let (right, bottom) = (left.saturating_add(width), top.saturating_add(height));
     let mut pixels = vec![0u16; area];
     let mut paints = area.saturating_mul(PAINTED_MAX);
     // The colour each register has now, and the pen it paints with (0: not looked up since).
-    let (mut registers, mut pens) = ([None::<[u8; 3]>; COLOURS_MAX], [0u16; COLOURS_MAX]);
+    let mut registers = [(None::<[u8; 3]>, 0u16); COLOURS_MAX];
     let mut colours: Vec<Colour> = Vec::new();
     let (mut register, mut x, mut band, mut size) = (0usize, 0usize, 0usize, (0usize, 0usize));
-    // Whose numbers are being read: `!` a repeat count, `#` a colour, `"` the raster attributes.
-    let (mut owner, mut numbers, mut square) = (b' ', vec![0usize], true);
-    let body = data.iter().copied().skip_while(|&b| b != b'q').skip(1);
-    for byte in body.chain(std::iter::once(b'$')) {
-        if byte.is_ascii_digit() {
-            if let Some(n) = numbers.last_mut() {
-                *n = n.saturating_mul(10).saturating_add(usize::from(byte - b'0')).min(1 << 20);
-            }
-            continue;
-        }
-        if byte == b';' {
-            if numbers.len() < 8 {
-                numbers.push(0);
-            }
-            continue;
-        }
-        let number = |i: usize| numbers.get(i).copied().unwrap_or(0);
-        let repeat = if owner == b'!' { number(0).max(1) } else { 1 };
-        if owner == b'"' {
-            size = (size.0.max(number(2)), size.1.max(number(3)));
-            square &= number(0) == number(1);
-        } else if owner == b'#' {
-            register = number(0);
-            // A colour given in hue, lightness and saturation (1) or in red, green and blue (2).
-            if let Some(slot) = registers.get_mut(register)
-                && numbers.len() == 5
-                && (1..=2).contains(&number(1))
-            {
-                let given = [number(2), number(3), number(4)];
-                *slot = Some(if number(1) == 1 { hls(given) } else { given.map(|n| n.min(100) as u8) });
-                pens.get_mut(register).into_iter().for_each(|pen| *pen = 0);
-            } else if register >= COLOURS_MAX {
-                wrong = wrong.or(Some("it names a colour register over 255"));
-            }
-        }
-        owner = b' ';
-        numbers.clear();
-        numbers.push(0);
+    // (A repeat count is the next command's, whatever that is.)
+    let (mut repeat, mut square) = (1, true);
+    let body = data.iter().position(|&b| b == b'q').and_then(|q| data.get(q + 1..)).unwrap_or_default();
+    // Each command with the numbers after it: `!` a repeat count, `#` a colour, `"` the raster attributes.
+    for command in body.chunk_by(|_, next| next.is_ascii_digit() || *next == b';') {
+        let Some((&byte, numbers)) = command.split_first() else { continue };
+        let digit = |n: usize, digit: &u8| n.saturating_mul(10).saturating_add(usize::from(digit - b'0')).min(1 << 20);
+        let mut each = numbers.split(|&b| b == b';').map(|number| number.iter().fold(0, digit));
+        let [n0, n1, n2, n3, n4] = std::array::from_fn(|_| each.next().unwrap_or(0));
+        let repeat = std::mem::replace(&mut repeat, if byte == b'!' { n0.max(1) } else { 1 });
         match byte {
-            b'!' | b'#' | b'"' => owner = byte,
+            b'"' => (size, square) = ((size.0.max(n2), size.1.max(n3)), square && n0 == n1),
+            b'#' => {
+                register = n0;
+                // A colour given in hue, lightness and saturation (1) or in red, green and blue (2).
+                if let Some(slot) = registers.get_mut(register)
+                    && numbers.split(|&b| b == b';').count() == 5
+                    && (1..=2).contains(&n1)
+                {
+                    *slot = (Some(if n1 == 1 { hls([n2, n3, n4]) } else { [n2, n3, n4].map(|n| n.min(100) as u8) }), 0);
+                }
+            }
             b'?'..=b'~' => {
                 let (bits, from, to) = (byte - b'?', x.max(left), x.saturating_add(repeat).min(right));
                 x = x.saturating_add(repeat);
@@ -112,17 +94,12 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
                 let rows = (0..6).filter(|k| bits >> k & 1 == 1).map(|k| band.saturating_mul(6).saturating_add(k));
                 let rows = rows.filter(|row| (top..bottom).contains(row));
                 let painted = (to.saturating_sub(from)).saturating_mul(rows.clone().count());
-                if painted == 0 || wrong.is_some() {
+                if painted == 0 {
                     continue;
                 }
-                let Some(left_to_paint) = paints.checked_sub(painted) else {
-                    wrong = Some("it paints its part in the tile over too many times");
-                    continue;
-                };
-                paints = left_to_paint;
-                let mut pen = pens.get(register).copied().unwrap_or(0);
-                if pen == 0 {
-                    let colour = registers.get(register).copied().flatten();
+                let (colour, pen) = registers.get_mut(register).ok_or("it names a colour register over 255")?;
+                paints = paints.checked_sub(painted).ok_or("it paints its part in the tile over too many times")?;
+                if *pen == 0 {
                     let colour = colour.map_or(Colour::Register(register as u8), Colour::Rgb);
                     let known = colours.iter().position(|c| *c == colour);
                     let place = known.unwrap_or_else(|| {
@@ -130,15 +107,13 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
                         colours.len() - 1
                     });
                     if place >= COLOURS_MAX {
-                        wrong = Some("its part in the tile has more than 256 colours");
-                        continue;
+                        return Err("its part in the tile has more than 256 colours");
                     }
-                    pen = place as u16 + 1;
-                    pens.get_mut(register).into_iter().for_each(|slot| *slot = pen);
+                    *pen = place as u16 + 1;
                 }
                 for start in rows.map(|row| (row - top) * width) {
                     let cells = pixels.get_mut(start + (from - left)..start + (to - left));
-                    cells.into_iter().for_each(|cells| cells.fill(pen));
+                    cells.into_iter().for_each(|cells| cells.fill(*pen));
                 }
             }
             b'$' => x = 0,
@@ -148,7 +123,7 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
     }
     // The picture is as large as the larger of what it says and what it paints.
     let (w, h) = (size.0.min(right).saturating_sub(left), size.1.min(bottom).saturating_sub(top));
-    ((size.0, size.1, square), wrong.map_or(Ok(Part { w, h, stride: width, colours, pixels }), Err))
+    Ok((Part { w, h, stride: width, colours, pixels }, (size.0, size.1, square)))
 }
 
 /// Sixel's hue, lightness and saturation as red, green and blue: its hue starts at blue, and red
@@ -191,12 +166,6 @@ impl Row {
 }
 
 impl Part {
-    /// The colour of a pixel as its number: 0 if it was never painted or is not in the part.
-    fn pen(&self, x: usize, y: usize) -> u16 {
-        let at = y.checked_mul(self.stride).filter(|_| x < self.w && y < self.h).and_then(|at| at.checked_add(x));
-        at.and_then(|at| self.pixels.get(at)).copied().unwrap_or(0)
-    }
-
     /// The part as a sixel picture of exactly its size, with square pixels. A pixel never
     /// painted is left unpainted, and the picture says that such a pixel keeps what is under it.
     pub fn write(&self, max: usize) -> Result<String, &'static str> {
@@ -218,9 +187,12 @@ impl Part {
             });
         }
         let mut rows: Vec<Row> = self.colours.iter().map(|_| Row::default()).collect();
+        // The rows, each from its first pixel on (nothing, if it is not there): a band takes the next six.
+        let mut line = (0..self.h).map(|y| self.pixels.get(y.saturating_mul(self.stride)..).unwrap_or_default());
         for band in 0..self.h.div_ceil(6) {
+            let lines: [&[u16]; 6] = std::array::from_fn(|_| line.next().unwrap_or_default());
             for x in 0..self.w {
-                let column: [u16; 6] = std::array::from_fn(|k| self.pen(x, band * 6 + k));
+                let column = lines.map(|line| line.get(x).copied().unwrap_or(0));
                 for (k, pen) in column.iter().enumerate() {
                     // Each colour of the column once, with all its pixels there.
                     if *pen == 0 || column.iter().take(k).any(|above| above == pen) {

@@ -1,9 +1,5 @@
 #!/bin/sh
 # next workspace
 # group: Workspaces
-found=
-for d in "$FUXN_DIR"/*/; do
-  n=${d%/}; n=${n##*/}
-  [ -n "$found" ] && { echo "workspace $n"; exit; }
-  [ "$n" = "$FUXN_WS" ] && found=1
-done
+cd "$FUXN_DIR" && set -- */ || exit
+while [ $# -gt 1 ]; do [ "$1" != "$FUXN_WS/" ] || echo "workspace ${2%/}"; shift; done

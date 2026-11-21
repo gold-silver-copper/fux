@@ -1,15 +1,9 @@
-# Start the default shell in the focused pane's directory if its program reported one.
-new_shell() {
-  IFS= read -r d 2>/dev/null < "$FUXN_PANE/cwd" && [ -d "$d" ] && cd "$d"
-  p=$(
-    # A split starts at the size predicted by the viewer. A new tab inherits its size.
-    if [ "$#" -eq 2 ]; then export COLUMNS="${2%x*}" LINES="${2#*x}"; fi
-    fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell"
-  ) || return
-  if [ "$#" -eq 2 ] && [ -n "$FUXN_PANE" ]; then
-    # Anchor to the pane on which the key was pressed, even if focus has moved.
-    fux layout split "$1" "${p##*/}" beside "${FUXN_PANE##*/}"
-  else
-    fux layout pane "${p##*/}"
-  fi
-}
+#!/bin/sh
+# .new-shell [row|col SIZE]: your shell in a new pane, in the focused pane's directory if its
+# program said one: in a tab of its own, or split from the pane the key was pressed on (also
+# when another has the keys by now), started at SIZE, which the viewer foretold (COLSxROWS).
+IFS= read -r d 2>/dev/null < "$FUXN_PANE/cwd" && cd "$d" 2>/dev/null
+[ $# -lt 2 ] || export COLUMNS="${2%x*}" LINES="${2#*x}"
+p=$(fux start -- "$FUXN_KEYS/.shell") || exit
+if [ $# -eq 2 ] && [ -n "$FUXN_PANE" ]; then fux layout split "$1" "${p##*/}" beside "${FUXN_PANE##*/}"
+else fux layout pane "${p##*/}"; fi

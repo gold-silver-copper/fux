@@ -10,16 +10,16 @@ use crate::term::{
     BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Screen, Style, Term, base64_encode,
 };
 use crate::width::Joiner;
-use crate::{is_name, keys, sixel, text};
+use crate::{Stamp, is_name, keys, sixel, stamp, text};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::num::NonZeroU32;
 use std::os::fd::AsFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -40,9 +40,6 @@ const ECHO_WAIT: Duration = Duration::from_millis(40);
 
 /// A key of a menu: its name, what it does, and the heading it is listed under (or none).
 type Entry = (String, String, String);
-
-/// What tells one writing of a file from the next: its inode, its time and, of a screen, its length.
-type Stamp = Option<(u64, i64, i64, u64)>;
 
 /// The most bytes of pictures in one frame, and so in a viewer's memory.
 const FRAME_PICTURES_MAX: usize = 4 * PICTURE_MAX;
@@ -104,9 +101,9 @@ struct Pane {
     state: String,
     /// The addresses of the links on the screen: a cell's `link` less one is its place here.
     addresses: Vec<String>,
-    /// Pictures on the screen: file, row, column, columns, rows, and how many more rows it has
-    /// above the screen's first.
-    pictures: Vec<(String, [usize; 5])>,
+    /// Pictures on the screen: file, row, column, and how many more rows it has above the
+    /// screen's first.
+    pictures: Vec<(String, [usize; 3])>,
     /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
     asked: (u32, usize, usize, (u16, u16)),
     /// The title its program set (the `title` file), without control characters.
@@ -115,26 +112,24 @@ struct Pane {
     cursor_colour: Option<[u8; 3]>,
 }
 
-/// Where the press of a key went: to the viewer itself (and the script it ran, if it ran one),
-/// or to a pane (its directory and its program).
+/// Where the press of a key went, if its repeats or its release have somewhere to go: to a
+/// script the viewer ran for it, or to a pane (its directory and its program).
 #[derive(Clone)]
 enum Went {
-    Viewer(Option<PathBuf>),
-    Pane(PathBuf, u32),
+    Script(PathBuf),
+    Pane(PathBuf, NonZeroU32),
 }
 
 struct View {
     session: PathBuf,
     workspace: String,
-    /// The workspace shown before this one: this viewer's own memory, in no file.
-    before: Option<String>,
     keys: PathBuf,
     tty: File,
     /// What goes to the terminal is written by a thread of its own, so that a terminal that
-    /// reads slowly holds up the frames and not the keys: the way to it (until the viewer
-    /// leaves), and how much of what was sent there it has not written yet.
-    out: Option<mpsc::Sender<String>>,
-    unwritten: Arc<AtomicUsize>,
+    /// reads slowly holds up the frames and not the keys: the way to it, and how much of what
+    /// was sent there it has not said it has written yet.
+    out: mpsc::Sender<String>,
+    unwritten: usize,
     size: Winsize,
     /// What the terminal shows now, to send only what changes.
     front: Vec<Cell>,
@@ -158,27 +153,21 @@ struct View {
     /// The addresses of the links of the last frame: a cell's `link` in `front` less one is its
     /// place here. Each frame makes its own, of its tiles' panes' addresses in turn.
     links: Vec<String>,
-    /// The keys that are down, as far as the terminal tells, and where the press of each went.
+    /// The keys that are down, as far as the terminal tells, and where the press of each went:
+    /// those whose press went to a script or a pane. Any other is the viewer's own to its end.
     down: Vec<((u32, u8), Went)>,
-    /// The terminal joins characters into clusters as fux does (its mode 2027), and whether
+    /// If the terminal joins characters into clusters as fux does (its mode 2027): whether
     /// this viewer was the one to turn that on.
-    joins: bool,
-    joined: bool,
+    joins: Option<bool>,
     /// The pane that was told it has the keys (it asked to be told: mode 1004).
     told_focus: Option<PathBuf>,
-    /// The pane this viewer itself runs in, if it runs in one.
-    own: std::ffi::OsString,
     /// Each pane's `notice` as it was last looked at: the file's stamp, and whether it has one
     /// this viewer has not shown on a focused pane yet. And when all were last looked at.
     notices: HashMap<String, (Stamp, bool)>,
     looked: Option<Instant>,
-    /// The workspace that was looked at for panes when it was first shown.
-    greeted: Option<String>,
     /// While the terminal is still being asked what it is like: since when, and the colours it
     /// has told of.
     colours: Option<(Instant, String)>,
-    /// What this viewer wrote into the session's `colours` and `keyboard` files last.
-    written: Vec<(&'static str, String)>,
     /// The pictures on the terminal now.
     drawn: Vec<Drawn>,
     /// What the last frame had of each picture of its tiles, by its part: the sixel to draw (the
@@ -205,8 +194,6 @@ struct View {
     /// The script the keys wait for: its pid and when it started.
     waiting: Option<(u32, Instant)>,
     ctl_path: PathBuf,
-    /// A writer of our own on the viewer's FIFO, so that a script leaving is never its end.
-    _ctl_writer: File,
     ctl_line: Vec<u8>,
     quit: bool,
 }
@@ -218,7 +205,7 @@ const LEAVING: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l
 
 pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), String> {
     let tty = io::stdin().as_fd().try_clone_to_owned().map(File::from).map_err(|e| format!("standard input: {e}"))?;
-    let mut size = sys::winsize(&tty).map_err(|_| "the viewer needs a terminal on its standard input")?;
+    sys::winsize(&tty).map_err(|_| "the viewer needs a terminal on its standard input")?;
     // What is made is the owner's alone; what is there already is left as it is.
     let made = fs::DirBuilder::new().mode(0o700).recursive(true).create(session.join(&workspace));
     made.map_err(|e| format!("{}: {e}", session.display()))?;
@@ -233,25 +220,19 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         }
     }
     let ctl_path = session.join(format!(".view.{}", std::process::id()));
-    // (One of that name is a dead viewer's, whose number this process has now.)
-    let _ = fs::remove_file(&ctl_path);
-    sys::make_fifo(&ctl_path).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
-    let ctl = sys::open(&ctl_path, false).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
-    let ctl_writer = sys::open(&ctl_path, true).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
+    // (One of that name is a dead viewer's, whose number this process has now: it goes.)
+    let ctl = sys::fifo(&ctl_path).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
     let restore = sys::raw_mode(tty.try_clone().map_err(|e| e.to_string())?, LEAVING);
     let restore = restore.map_err(|e| format!("cannot set the terminal: {e}"))?;
-    size.rows = 0; // the first frame sees a new size and draws everything
     let (out, queue) = mpsc::channel::<String>();
-    let unwritten = Arc::new(AtomicUsize::new(0));
     // (The writer says so on a pipe when it has written, or cannot: the loop waits on that as on
     // the keys, and looks no more often for a terminal that reads slowly.)
     let (wrote, mut done) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
     let writer = {
-        let (mut tty, unwritten) = (tty.try_clone().map_err(|e| e.to_string())?, unwritten.clone());
+        let mut tty = tty.try_clone().map_err(|e| e.to_string())?;
         std::thread::Builder::new().spawn(move || {
             let written = queue.into_iter().try_for_each(|text| {
                 tty.write_all(text.as_bytes())?;
-                unwritten.fetch_sub(1, Ordering::Release);
                 done.write_all(b"w")
             });
             let _ = done.write_all(b"w");
@@ -262,12 +243,11 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     let mut view = View {
         session,
         workspace,
-        before: None,
         keys,
         tty,
-        out: Some(out),
-        unwritten,
-        size,
+        out,
+        unwritten: 0,
+        size: Winsize::default(), // the first frame sees a new size and draws everything
         front: Vec::new(),
         from: None,
         panes: HashMap::new(),
@@ -282,15 +262,11 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         keyboard: 0,
         links: Vec::new(),
         down: Vec::new(),
-        joins: false,
-        joined: false,
+        joins: None,
         told_focus: None,
-        own: std::env::var_os(name!("PANE")).unwrap_or_default(),
         notices: HashMap::new(),
         looked: None,
-        greeted: None,
         colours: Some((Instant::now(), String::new())),
-        written: Vec::new(),
         drawn: Vec::new(),
         cursor: String::new(),
         cursor_colour: None,
@@ -305,7 +281,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         scripts: Vec::new(),
         waiting: None,
         ctl_path,
-        _ctl_writer: ctl_writer,
         ctl_line: Vec::new(),
         quit: false,
     };
@@ -323,11 +298,11 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     view.leave(None);
     // The pane that was told it has the keys is told that it has them no more.
     view.tell(None);
-    if view.joined {
+    if view.joins == Some(true) {
         view.write("\x1b[?2027l".into());
     }
     // All of it is written before the terminal is put back; what could not be is why the viewer stopped.
-    view.out = None;
+    drop(view.out);
     let result = result.and(writer.join().unwrap_or(Ok(())));
     drop(restore);
     let _ = fs::remove_file(&view.ctl_path);
@@ -337,10 +312,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
 impl View {
     /// Hands the terminal's writer something to write.
     fn write(&mut self, text: String) {
-        if let Some(out) = &self.out {
-            self.unwritten.fetch_add(1, Ordering::Release);
-            let _ = out.send(text);
-        }
+        self.unwritten += 1;
+        let _ = self.out.send(text);
     }
 
     fn run(&mut self, ctl: &File, wrote: &io::PipeReader, writer: &JoinHandle<io::Result<()>>) -> io::Result<()> {
@@ -364,18 +337,10 @@ impl View {
                 }
             }
             let n = (&*ctl).read(&mut buffer).unwrap_or(0);
-            for &byte in buffer.get(..n).unwrap_or(&[]) {
-                if byte != b'\n' {
-                    // One byte past the bound marks the line as too long; the rest of it is not kept.
-                    if self.ctl_line.len() <= LINE_MAX {
-                        self.ctl_line.push(byte);
-                    }
-                } else if self.ctl_line.len() > LINE_MAX {
-                    self.ctl_line.clear();
-                    self.message = "a line over 4096 bytes from a key script was dropped".into();
-                } else {
-                    let line = String::from_utf8_lossy(&std::mem::take(&mut self.ctl_line)).into_owned();
-                    self.command(line.trim());
+            for line in crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), LINE_MAX) {
+                match line {
+                    None => self.message = format!("a line over {LINE_MAX} bytes from a key script was dropped"),
+                    Some(line) => self.command(line.trim()),
                 }
             }
             if self.frame()? || n > 0 {
@@ -407,14 +372,13 @@ impl View {
             }
             // (What the writer said is taken: the frame that waited for it is next.)
             if written != 0 {
-                let _ = (&*wrote).read(&mut buffer)?;
+                self.unwritten = self.unwritten.saturating_sub((&*wrote).read(&mut buffer)?);
                 active = Instant::now();
             }
-            // The terminal is given a second to say what it is like before that is written down
-            // for the session, and ten (a slow line) before a string from it is no answer any more.
-            let asked = self.colours.as_ref().map_or(Duration::ZERO, |(since, _)| since.elapsed());
-            if asked > Duration::from_secs(1) {
-                self.told(asked > Duration::from_secs(10));
+            // The terminal is given ten seconds (a slow line) to say what it is like: after
+            // that a string from it is no answer any more, and what it said is written down.
+            if self.colours.as_ref().is_some_and(|(since, _)| since.elapsed() > Duration::from_secs(10)) {
+                self.told();
             }
             if self.waiting.is_none() && !self.carry.is_empty() {
                 // When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
@@ -425,28 +389,24 @@ impl View {
     }
 
     /// Another workspace is shown: what was read of the panes is forgotten, and with it what the
-    /// last frame was drawn from, so the next one is drawn (and the panes read) whatever it finds.
+    /// last frame was drawn from, so the next one is drawn (and the panes read) whatever it finds,
+    /// and where its tiles were, so a click before that frame is not one on a pane of this name there.
     fn forget(&mut self) {
         self.panes.clear();
-        self.from = None;
+        (self.from, self.looked, self.tiles) = (None, None, Vec::new());
     }
 
     /// A line a script printed: a command of the viewer's, or else a message to show.
     fn command(&mut self, line: &str) {
         match line.split_once(' ').unwrap_or((line, "")) {
             ("quit", "") => self.quit = true,
-            // `workspace -` is the workspace shown before this one.
-            ("workspace", name) if is_name(self.before.as_deref().filter(|_| name == "-").unwrap_or(name)) => {
-                let name = self.before.clone().filter(|_| name == "-").unwrap_or(name.into());
-                if !self.session.join(&name).is_dir() {
-                    self.message = format!("no workspace {name}");
-                } else if name != self.workspace {
-                    self.before = Some(std::mem::replace(&mut self.workspace, name));
-                    self.forget();
-                    self.looked = None;
-                }
+            // (A name that has no folder is shown too: its layout's reading says that there is none.)
+            ("workspace", name) if !is_name(name) => self.message = format!("no workspace {name}"),
+            ("workspace", name) if name == self.workspace => {}
+            ("workspace", name) => {
+                self.workspace = name.into();
+                self.forget();
             }
-            ("workspace", name) => self.message = format!("no workspace {name}"),
             _ => self.message = line.chars().filter(|c| !c.is_control()).take(200).collect(),
         }
     }
@@ -459,7 +419,8 @@ impl View {
         let bytes = std::mem::take(&mut self.carry);
         // The keys are for the pane the layout says has them now, which a command may have
         // changed since it was last drawn.
-        self.focus = Layout::load(&self.session.join(&self.workspace)).1.tab().map(|tab| tab.focus.clone());
+        let layout = Layout::load(&self.session.join(&self.workspace)).1;
+        self.focus = layout.tab().map(|tab| tab.focus.clone());
         // (And a key still down in the pane that had them is let go there, before what comes
         // of it now is looked at.)
         let has = self.focus.as_ref().map(|name| self.session.join(&self.workspace).join(name));
@@ -489,31 +450,29 @@ impl View {
             // While the terminal is being asked what it is like, its answers may come in pieces:
             // nothing is taken for a key until it is whole, and a string is an answer.
             let asking = self.colours.is_some();
-            let Some((length, name)) = keys::next(rest, whole && !asking, asking) else { break };
+            let Some((length, name, event)) = keys::next(rest, whole && !asking, asking) else { break };
             let raw = rest.get(..length).unwrap_or(&[]);
             at += length;
-            match name.as_str() {
-                "paste-start" => {
+            match name.split_once(':').unwrap_or((&name, "")) {
+                ("paste-start", _) => {
                     self.pasting = true;
                     self.typed.extend_from_slice(if wants_paste { raw } else { &[] });
                 }
-                name if name.starts_with("mouse:") => self.mouse(name.trim_start_matches("mouse:")),
-                name if name.starts_with("terminal:") => {
-                    self.sixel = name.split([':', '?', ';']).any(|n| n == "4");
+                ("mouse", report) => self.mouse(report),
+                ("terminal", told) => {
+                    self.sixel = told.split([':', '?', ';']).any(|n| n == "4");
                     // It was asked last: the colours the terminal told of before it are all it
                     // will tell. They go into the session's `colours` file, from which every
                     // pane's program is answered; the viewer that wrote last is believed.
-                    self.told(true);
+                    self.told();
                 }
-                name if name.starts_with("answer:") => self.colour(name.trim_start_matches("answer:")),
+                ("answer", answer) => self.colour(answer),
                 // The terminal takes the kitty keyboard protocol, and these of the flags it was asked for.
-                name if name.starts_with("keyboard:") => {
-                    self.keyboard = name.trim_start_matches("keyboard:").parse::<u8>().unwrap_or(0) & KEYS;
-                }
+                ("keyboard", flags) => self.keyboard = flags.parse::<u8>().unwrap_or(0) & KEYS,
                 // The window's own focus: for the pane that has the keys, if it asked to be told.
-                name if name.starts_with("focus:") => {
+                ("focus", way) => {
                     // (To the pane that was told it has the keys, whichever the layout names by now.)
-                    self.window = name == "focus:I";
+                    self.window = way == "I";
                     if let Some(pane) = self.told_focus.clone() {
                         self.send();
                         let _ = send_to(&pane.join("in"), raw);
@@ -521,15 +480,15 @@ impl View {
                 }
                 // The terminal's answer about joining characters into clusters (mode 2027): set (1,
                 // or 3 for good) or not set but known (2), which is then turned on.
-                name if name.starts_with("mode:2027;") && !self.joins => {
-                    let state = name.trim_start_matches("mode:2027;").parse::<u8>().unwrap_or(0);
-                    (self.joins, self.joined) = (matches!(state, 1..=3), state == 2);
-                    if self.joined {
+                ("mode", state) if self.joins.is_none() => {
+                    let state = state.strip_prefix("2027;").and_then(|state| state.parse::<u8>().ok()).unwrap_or(0);
+                    self.joins = matches!(state, 1..=3).then_some(state == 2);
+                    if self.joins == Some(true) {
                         self.write("\x1b[?2027h".into());
                     }
                 }
-                name if name.starts_with("mode:") => {}
-                name => self.key(name, raw),
+                ("mode", _) => {}
+                _ => self.key(&name, raw, event, &layout),
             }
             if self.waiting.is_some() || std::mem::take(&mut self.pause) {
                 break;
@@ -560,31 +519,21 @@ impl View {
     }
 
     /// The terminal has said all it will of what it is like (it answered the last question, or
-    /// a second went by): the colours it told of go into the session's `colours` file, from
-    /// which every pane's program is answered. If it told of none, the file is left as it is.
-    /// The file is written whole under a name of this viewer's own and then given its name, so
-    /// of two viewers the last to write is believed.
-    fn told(&mut self, last: bool) {
-        let Some((since, told)) = self.colours.take() else { return };
-        // And which keyboard flags it takes (none, if it did not say): a program in a pane that
-        // asks is told no more than that.
-        let files = [("colours", told.clone()), ("keyboard", format!("{}\n", self.keyboard))];
+    /// ten seconds went by): the colours it told of go into the session's `colours` file, from
+    /// which every pane's program is answered (if it told of none, the file is left as it is),
+    /// and the keyboard flags it takes (none, if it did not say) into `keyboard`: a program in
+    /// a pane that asks is told no more than that. Each is written whole under a name of this
+    /// viewer's own and then given its name, so of two viewers the last to write is believed.
+    fn told(&mut self) {
+        let Some((_, told)) = self.colours.take() else { return };
+        let files = [("colours", told), ("keyboard", format!("{}\n", self.keyboard))];
         for (name, text) in files.into_iter().filter(|(name, text)| *name == "keyboard" || !text.is_empty()) {
-            // (Only what is new since it was written last.)
-            if self.written.iter().any(|(file, was)| *file == name && *was == text) {
-                continue;
-            }
             let own = self.session.join(format!(".{name}.{}", std::process::id()));
-            let written = fs::write(&own, &text).and_then(|()| fs::rename(&own, self.session.join(name)));
-            if let Err(e) = written {
+            if let Err(e) = fs::write(&own, &text).and_then(|()| fs::rename(&own, self.session.join(name))) {
                 let _ = fs::remove_file(&own);
                 self.message = format!("cannot write {}: {e}", self.session.join(name).display());
             }
-            self.written.retain(|(file, _)| *file != name);
-            self.written.push((name, text));
         }
-        // Until its last answer has come, the terminal is still being listened to.
-        self.colours = (!last).then_some((since, told));
     }
 
     /// Tells the pane that has the keys so, if it asked to be told (mode 1004), and the one
@@ -619,27 +568,17 @@ impl View {
         if self.notices.len() > 4000 {
             self.notices.clear();
         }
-        // (A workspace looked at for the first time: what is there is old, and is not rung. When
-        // that was is kept, as a file's time is.)
-        // (A file's time may be some milliseconds behind the clock's.)
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-        let now = now.saturating_sub(Duration::from_millis(20));
-        let started = (0, now.as_secs() as i64, i64::from(now.subsec_nanos()), 0);
-        let first = !self.notices.contains_key(&key(""));
-        let since = self.notices.entry(key("")).or_insert((Some(started), false)).0;
+        // (A workspace looked at for the first time: what is there is old, and is not rung. One
+        // that appears or changes after that is new, whoever brought it.)
+        let first = self.notices.insert(key(""), (None, false)).is_none();
         for name in layout.tabs.iter().flat_map(|tab| tab.panes()) {
             let file = directory.join(name).join("notice");
             let stamp: Stamp = fs::metadata(&file).ok().filter(|m| m.is_file()).map(stamp);
-            let known = self.notices.get(&key(name)).copied();
-            if known.is_some_and(|(was, _)| was == stamp) {
+            if self.notices.get(&key(name)).is_some_and(|(was, _)| *was == stamp) {
                 continue;
             }
-            // (One that came with its pane is old too, if it was written before the workspace
-            // was first looked at: a pane moved here. A new pane's first is new.)
-            let after = stamp.zip(since).is_some_and(|(stamp, since)| (stamp.1, stamp.2) > (since.1, since.2));
-            let new = stamp.is_some() && !first && (known.is_some() || after);
             self.notices.insert(key(name), (stamp, stamp.is_some() && self.focus.as_deref() != Some(name)));
-            if new {
+            if stamp.is_some() && !first {
                 let text = text(&file, 1200);
                 let words = text.lines().next().unwrap_or_default().split_once(' ').map_or("", |(_, words)| words);
                 let words: String = words.chars().filter(|c| !c.is_control()).take(200).collect();
@@ -654,7 +593,7 @@ impl View {
 
     /// One key: a script if the key's file is one, a menu if it is a
     /// directory, and otherwise the key goes to the pane.
-    fn key(&mut self, name: &str, raw: &[u8]) {
+    fn key(&mut self, name: &str, raw: &[u8], event: Option<keys::Event>, layout: &Layout) {
         // (A key comes from a window that has the keys, whatever it last told of its focus.)
         self.window = true;
         // A program may have asked to be told when keys are let go and held (the kitty
@@ -663,7 +602,6 @@ impl View {
         // release with no press goes nowhere. The viewer's own (the prefix, a key of a menu): its
         // repeats and its release go nowhere. A pane's: they go to that pane, whether a menu is
         // open or not. While a menu is open, a modifier key by itself is nothing.
-        let event = keys::event(raw);
         // (A sign may be told by its own number when pressed and by its key's when let go.)
         let same = |key: &(u32, u8)| event.is_some_and(|(id, sign, ..)| *key == id || Some(*key) == sign);
         if let Some((_, _, kind, modifier)) = event {
@@ -676,11 +614,11 @@ impl View {
                 (2 | 3, Some(Went::Pane(directory, pid))) => return self.pass(&directory, pid, raw),
                 // Held, a key does again what its press did, there and only there: the script it
                 // ran in a menu that stays open (to resize, say), while that menu is the one open.
-                (2, Some(Went::Viewer(Some(script)))) => {
+                (2, Some(Went::Script(script))) => {
                     let menu = self.menu.as_ref().map(|(directory, _)| directory.as_path());
                     if menu.is_some() && menu == script.parent() && script.with_file_name(".repeat").exists() {
                         self.send();
-                        self.script(&script);
+                        self.script(&script, layout);
                     }
                     return;
                 }
@@ -697,25 +635,22 @@ impl View {
         let went = match fs::metadata(&file) {
             Ok(kind) if !name.is_empty() && kind.is_dir() => {
                 self.menu = Some((file.clone(), menu_entries(&file)));
-                Went::Viewer(None)
+                None
             }
             Ok(kind) if !name.is_empty() && kind.is_file() => {
                 self.send();
-                self.script(&file);
+                self.script(&file, layout);
                 // A menu with a file `.repeat` in it stays for the next key (to resize, say), until a key it has not.
                 self.menu = menu.filter(|(directory, _)| directory.join(".repeat").exists());
-                Went::Viewer(Some(file))
+                Some(Went::Script(file))
             }
             _ if menu.is_none() => {
                 self.typed.extend_from_slice(raw);
                 self.keyed = Some(Instant::now());
-                // (Its release is the pane's only if the program there asks to be told of
-                // releases now: a key typed to one that does not is typed, and no more.)
+                // (Its release is the pane's only if it can have one and the program there asks to be
+                // told of releases now: a key typed to one that does not is typed, and no more.)
                 let directory = self.session.join(&self.workspace).join(self.focus.as_deref().unwrap_or_default());
-                match program(&directory) {
-                    (pid, true) if pid != 0 => Went::Pane(directory, pid),
-                    _ => Went::Viewer(None),
-                }
+                event.and_then(|_| program(&directory)).map(|pid| Went::Pane(directory, pid))
             }
             // A key that a menu which stays open does not have ends it; if it is the key that
             // led there (the prefix), its own menu is open again, as when it is pressed anew.
@@ -726,12 +661,11 @@ impl View {
                 {
                     self.menu = Some((top.clone(), menu_entries(&top)));
                 }
-                Went::Viewer(None)
+                None
             }
         };
-        // Which keys are down is remembered for their releases: the last 64.
-        if let Some((id, ..)) = event {
-            self.down.retain(|(key, _)| !same(key));
+        // Which keys are down is remembered for their repeats and releases: the last 64.
+        if let Some(((id, ..), went)) = event.zip(went) {
             let extra = (self.down.len() + 1).saturating_sub(64);
             self.down.drain(..extra);
             self.down.push((id, went));
@@ -741,8 +675,8 @@ impl View {
     /// A key's repeat or release goes to the pane that got its press, after what was typed before
     /// it, if that pane's program is still the one that got it and still asks to be told of keys
     /// let go. Who a pane is, is read when it matters: nothing the viewer remembers of it is asked.
-    fn pass(&mut self, directory: &Path, pid: u32, raw: &[u8]) {
-        if pid != 0 && program(directory) == (pid, true) {
+    fn pass(&mut self, directory: &Path, pid: NonZeroU32, raw: &[u8]) {
+        if program(directory) == Some(pid) {
             self.send();
             let _ = send_to(&directory.join("in"), raw);
         }
@@ -753,12 +687,12 @@ impl View {
     /// pane's flags or left to itself, may never tell of it, or tell of it in another form), and
     /// what the terminal still tells of that key reaches no pane.
     fn leave(&mut self, has: Option<&Path>) {
-        for at in 0..self.down.len() {
-            if let Some(((code, last), Went::Pane(directory, pid))) = self.down.get(at).cloned()
-                && Some(directory.as_path()) != has
-            {
-                self.pass(&directory, pid, format!("\x1b[{code};1:3{}", char::from(last)).as_bytes());
-                self.down.get_mut(at).into_iter().for_each(|(_, went)| *went = Went::Viewer(None));
+        for ((code, last), went) in std::mem::take(&mut self.down) {
+            match went {
+                Went::Pane(directory, pid) if Some(directory.as_path()) != has => {
+                    self.pass(&directory, pid, format!("\x1b[{code};1:3{}", char::from(last)).as_bytes());
+                }
+                went => self.down.push(((code, last), went)),
             }
         }
     }
@@ -772,11 +706,13 @@ impl View {
         let (Some(button), Some(x), Some(y)) = (numbers.next(), numbers.next(), numbers.next()) else { return };
         // A press: not a move (32), not the wheel (64), a button down; Shift, Alt and Ctrl (4, 8, 16) aside.
         let press = !release && button & 0x60 == 0 && button & 3 != 3;
-        if self.held == Some(false) {
-            // The rest of a click that only moved the focus is nobody's.
-            self.held = if release { None } else { self.held };
+        // The rest of a click that only moved the focus is nobody's; a press begins a new click
+        // (the release of the last may never have been told of).
+        if self.held == Some(false) && !press {
+            self.held = self.held.filter(|_| !release);
             return;
         }
+        self.held = self.held.filter(|program| *program);
         let inside = |r: &Rect| (r.x + 1..=r.x + r.w).contains(&x) && (r.y + 1..=r.y + r.h).contains(&y);
         let over = self.tiles.iter().find(|(_, body)| inside(body)).map(|(name, _)| name.clone());
         if self.held.is_none() && over != self.focus {
@@ -810,7 +746,7 @@ impl View {
         }
     }
 
-    fn script(&mut self, file: &Path) {
+    fn script(&mut self, file: &Path, layout: &Layout) {
         if self.scripts.len() >= SCRIPTS_MAX {
             self.message = format!("{SCRIPTS_MAX} key scripts are still running: {} was not started", file.display());
             return;
@@ -826,25 +762,19 @@ impl View {
         let mut script = Command::new(file);
         script.env(name!("DIR"), &self.session).env(name!("WS"), &self.workspace).env(name!("KEYS"), &self.keys);
         script.env(name!("PANE"), pane.unwrap_or_default()).env(name!("VIEW"), &self.ctl_path).env("PATH", path);
-        script.env(name!("SELF"), &self.own);
         // A pane a script starts begins at the size of the whole view, right for a new tab. The
         // size a tile would have if the focused pane were split is given too, side by side
         // (ROW) and one above the other (COL): a script that splits passes it on to `fux start`,
         // and its program is never drawn at one size and then at another.
         script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.to_string());
         let area = Rect { x: 0, y: 0, w: usize::from(self.size.cols), h: usize::from(self.size.rows) };
-        let layout = Layout::load(&self.session.join(&self.workspace)).1;
-        for (name, way) in [(name!("ROW"), "row"), (name!("COL"), "col")] {
-            // A pane no folder can be named after is split off in a copy of the layout.
-            let mut split = layout.clone();
-            split.tabs.push(layout::Tab { root: layout::Node::Pane("\0".into()), focus: "\0".into() });
-            // Beside the pane the script is told of, as the split keys split: the same pane for both.
-            let words: &[&str] = match &self.focus {
-                Some(focus) => &["split", way, "\0", "beside", focus],
-                None => &["split", way, "\0"],
-            };
-            let tile = split.edit(words).ok().and_then(|()| {
-                split.tab()?.tiles(area).into_iter().find(|(pane, _)| pane == "\0").map(|(_, tile)| tile)
+        for (name, row) in [(name!("ROW"), true), (name!("COL"), false)] {
+            // A pane no folder can be named after is put, in a copy of the tab shown, beside the
+            // pane the script is told of, as the split keys split.
+            let tile = layout.tab().zip(self.focus.as_ref()).and_then(|(tab, focus)| {
+                let mut split = tab.clone();
+                split.beside(focus, "\0", row);
+                split.tiles(area).into_iter().find(|(pane, _)| pane == "\0").map(|(_, tile)| tile)
             });
             let tile = tile.unwrap_or(area);
             script.env(name, format!("{}x{}", tile.w, tile.h));
@@ -881,7 +811,7 @@ impl View {
     fn frame(&mut self) -> io::Result<bool> {
         // One frame at a time: while the terminal is still reading the last, the next one waits
         // (and is then of what the panes show by then), and the keys do not.
-        if self.unwritten.load(Ordering::Acquire) > 0 {
+        if self.unwritten > 0 {
             return Ok(false);
         }
         let mut size = sys::winsize(&self.tty)?;
@@ -897,56 +827,47 @@ impl View {
             self.drawn.clear();
             out.push_str("\x1b[m\x1b[2J");
         }
-        // A workspace that is gone gives way to the one shown before it, if
-        // that is still there, and else to `main`, if that is.
-        if !self.session.join(&self.workspace).is_dir() {
-            let other = [self.before.take().unwrap_or_default(), "main".into()];
-            if let Some(other) = other.into_iter().find(|name| is_name(name) && self.session.join(name).is_dir()) {
-                self.message = format!("workspace {} is gone", std::mem::replace(&mut self.workspace, other));
-                self.forget();
-            }
-        }
         let directory = self.session.join(&self.workspace);
         let (text, mut layout, mut wrong) = Layout::load(&directory);
         // The file says what is shown: when panes came or went, it is written
         // again, so that an edit is always an edit of what is on the screen.
         if wrong.is_none() && text != layout.print() {
-            wrong = layout::command(&directory, &[]).err();
-            layout = Layout::load(&directory).1;
+            match layout::command(&directory, &[]) {
+                Ok(settled) => layout = settled,
+                Err(why) => wrong = Some(why),
+            }
         }
         let tab = layout.tab();
         // Panes get every cell but the lines between them: no titles, and no row for a bar.
         let tiles = tab.map(|tab| tab.tiles(Rect { x: 0, y: 0, w, h })).unwrap_or_default();
         self.focus = tab.map(|tab| tab.focus.clone());
+        // (With no pane to look at, none was looked at last: what it copies meanwhile is old when it is come back to.)
+        self.copied = self.copied.take().filter(|_| self.focus.is_some());
+        let first_look = self.looked.is_none();
         self.notices(&layout, &directory);
         // A frame drawn from what the last one was drawn from is the last one: nothing is put
         // together and nothing compared. (A menu is drawn from more than this: with one open,
         // every frame is.)
         let panes: Vec<(Stamp, bool)> = tiles
             .iter()
-            .map(|(name, _)| (directory.join(name), directory.join(name).join("screen.styled")))
-            .map(|(pane, screen)| {
-                let held = sys::open(pane, false)
-                    .is_ok_and(|dir| matches!(dir.try_lock_shared(), Err(fs::TryLockError::WouldBlock)));
-                (fs::metadata(screen).ok().map(screen_stamp), held)
+            .map(|(name, _)| directory.join(name))
+            // (Whether its holder lives is whether anything reads its `in`.)
+            .map(|pane| {
+                (fs::metadata(pane.join("screen.styled")).ok().map(stamp), sys::open(pane.join("in"), true).is_ok())
             })
             .collect();
-        let held: Vec<bool> = panes.iter().map(|(_, held)| *held).collect();
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
-        // (By when the file last changed in any way: one that could not be read may be readable now.)
-        let clipboard = clipboard.map(|m| (m.ino(), m.ctime(), m.ctime_nsec(), 0));
-        let terminal = (self.sixel, self.joins, self.keyboard, self.window, cell_size);
+        let clipboard = clipboard.map(stamp);
+        let terminal = (self.sixel, self.joins.is_some(), self.keyboard, self.window, cell_size);
         let picture = |file: PathBuf| fs::metadata(file).ok().map(stamp);
         let known = tiles.iter().filter_map(|(name, _)| Some((name, self.panes.get(name)?)));
         let known = known.flat_map(|(name, pane)| pane.pictures.iter().map(move |(file, _)| (name, file)));
         let known: Vec<Stamp> = known.map(|(name, file)| picture(directory.join(name).join(file))).collect();
         let message = self.message.clone();
         let from = (layout.print(), wrong.clone(), message, terminal, panes, clipboard, known);
-        let from = self.menu.is_none().then_some(from);
-        if out.is_empty() && from.is_some() && from == self.from {
+        if out.is_empty() && self.menu.is_none() && self.from.as_ref() == Some(&from) {
             return Ok(false);
         }
-        self.from = from;
         let colour = |fg: u8, bg: Option<u8>, flags: u16| Style {
             fg: Color::Indexed(fg),
             bg: bg.map_or(Color::Default, Color::Indexed),
@@ -957,7 +878,6 @@ impl View {
         let line = Cell { ch: '\u{2}', ..Cell::blank(Style::default()) };
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
-        self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
         let (mut parts, mut refused, mut bytes) = (Vec::new(), Vec::<String>::new(), 0);
         let mut cursor_colour = None;
@@ -966,16 +886,13 @@ impl View {
         let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
         let mut wants_focus = None;
         let mut keys = 0;
-        for ((name, body), held) in tiles.iter().zip(held) {
+        for ((name, body), &(seen, held)) in tiles.iter().zip(&from.4) {
             // (Before its first screen is read, a pane is one blank cell with the cursor shown on it.)
             let unread = || Pane { screen: Screen::read("", 0), ..Pane::default() };
             let pane = self.panes.entry(name.clone()).or_insert_with(unread);
             let pane_directory = directory.join(name);
-            pane.read(&pane_directory);
+            pane.read(&pane_directory, seen);
             let focused = self.focus.as_ref() == Some(name);
-            if body.w == 0 || body.h == 0 {
-                continue;
-            }
             // Each holder is asked once to take the tile's size, and told the size of a cell in pixels.
             let asked = (pane.pid, body.w, body.h, cell_size);
             if pane.asked != asked {
@@ -997,7 +914,7 @@ impl View {
                     // fux joins) would there reach past the tile's edge: a `?` stands in each of its columns.
                     let first = x - usize::from(cell.ch == '\0' && x > 0);
                     // (A terminal that says it joins characters as fux does draws it as fux counts it.)
-                    if let Some(whole) = pane.screen.cell_at(y, first).filter(|c| c.spill() > 0 && !self.joins)
+                    if let Some(whole) = pane.screen.cell_at(y, first).filter(|c| c.spill() > 0 && self.joins.is_none())
                         && first + 1 + usize::from(whole.wide()) + whole.spill() > body.w
                     {
                         cell = Cell { ch: '?', more: ['\0'; MORE], ..cell };
@@ -1033,36 +950,27 @@ impl View {
             // once: when its `clipboard` file is another than at the last look, the pane
             // having had the focus then too. Coming to a pane only notes what is there.
             if focused {
-                let file = sys::open(pane_directory.join("clipboard"), false);
-                let stamp: Stamp = file.as_ref().ok().and_then(|file| file.metadata().ok()).map(stamp);
-                let seen = self.copied.replace((pane_directory.clone(), stamp));
-                if let (Ok(file), Some((before, old))) = (file, seen)
-                    && before == pane_directory
-                    && old != stamp
+                let seen = self.copied.replace((pane_directory.clone(), clipboard));
+                if seen.is_some_and(|(before, old)| before == pane_directory && old != clipboard)
+                    && let (bytes, Ok(_)) = crate::read(sys::open(pane_directory.join("clipboard"), false), 1 << 20)
                 {
-                    let mut bytes = Vec::new();
-                    let _ = file.take(1 << 20).read_to_end(&mut bytes);
                     out.push_str(&format!("\x1b]52;c;{}\x07", base64_encode(&bytes)));
                 }
-            }
-            if focused && !pane.title.is_empty() {
-                title = Some(pane.title.clone());
-            }
-            if focused && pane.screen.cursor_shown && pane.screen.cursor.row < body.h && pane.screen.cursor.col < body.w
-            {
-                let (row, col) = (body.y + pane.screen.cursor.row + 1, body.x + pane.screen.cursor.col + 1);
-                cursor = format!("\x1b[{row};{col}H\x1b[{} q\x1b[?25h", pane.screen.cursor_shape);
-            }
-            // The outer terminal sends cursor and keypad keys the way the focused program asked for.
-            if focused {
+                title = Some(pane.title.clone()).filter(|title| !title.is_empty());
+                if pane.screen.cursor_shown && pane.screen.cursor.row < body.h && pane.screen.cursor.col < body.w {
+                    let (row, col) = (body.y + pane.screen.cursor.row + 1, body.x + pane.screen.cursor.col + 1);
+                    cursor = format!("\x1b[{row};{col}H\x1b[{} q\x1b[?25h", pane.screen.cursor_shape);
+                }
+                // The outer terminal sends cursor and keypad keys the way the focused program asked for.
                 // (The cursor's colour is a living program's, as the cursor is.)
                 cursor_colour = pane.cursor_colour.filter(|_| live);
                 let (cursor_keys, keypad) = (pane.screen.app_cursor, pane.screen.app_keypad);
                 cursor.push_str(if cursor_keys { "\x1b[?1h" } else { "\x1b[?1l" });
                 cursor.push_str(if keypad { "\x1b=" } else { "\x1b>" });
                 // And reports the mouse when, and as far as, a living program asked (always in the SGR form).
+                // (Releases too for one that asked for presses alone, 9: a click that only moves the focus ends with one.)
                 if pane.screen.mouse != 0 && live {
-                    modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.screen.mouse));
+                    modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.screen.mouse.max(1000)));
                 }
                 // And is told when this terminal's window gains and loses the keys, if it asked.
                 if pane.screen.focus && live {
@@ -1073,7 +981,7 @@ impl View {
                     keys = pane.screen.keys() & self.keyboard;
                 }
             }
-            for (file, [row, col, _, _, off]) in &pane.pictures {
+            for (file, [row, col, off]) in &pane.pictures {
                 // The cells the tile has for it, from its corner on, and what they are in pixels
                 // of this terminal's cells: what the pane counted its cells from is not asked.
                 // None is drawn on the terminal's last row: a terminal may put the cursor under a
@@ -1105,7 +1013,7 @@ impl View {
                 parts.push((key, part));
             }
         }
-        self.parts = parts;
+        (self.parts, self.from) = (parts, self.menu.is_none().then_some(from));
         if !refused.is_empty() {
             refused.dedup();
             self.message = refused.join("; ");
@@ -1113,6 +1021,7 @@ impl View {
         // The lines between panes: `│` and `─`, a tee or a cross where they
         // meet, and green where they touch the focused pane.
         let focus = tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name)).map(|(_, body)| *body);
+        self.tiles = tiles;
         let lines: Vec<bool> = back.iter().map(|cell| cell.ch == '\u{2}').collect();
         let is_line = |x: Option<usize>, y: Option<usize>| match (x, y) {
             (Some(x), Some(y)) if x < w => lines.get(y * w + x) == Some(&true),
@@ -1144,12 +1053,11 @@ impl View {
         // shown stays empty, and says how to go on.
         // (No pane is what the layout says, not what there was room to draw. A script that is
         // being waited for is still waited for: the keys typed after it are its workspace's.)
-        if self.greeted.as_deref() != Some(self.workspace.as_str()) {
-            self.greeted = Some(self.workspace.clone());
+        if first_look {
             let first = self.keys.join(".empty");
             if layout.tabs.is_empty() && wrong.is_none() && first.is_file() {
                 let waiting = self.waiting;
-                self.script(&first);
+                self.script(&first, &layout);
                 self.waiting = waiting.or(self.waiting);
             }
         }
@@ -1174,13 +1082,8 @@ impl View {
             // workspace, its tabs, the keys typed so far), and above it, in
             // the corner, the keys that can follow.
             let (bar, panel) = (colour(250, Some(236), 0), colour(255, Some(238), 0));
-            let typed: Vec<String> = directory
-                .strip_prefix(&self.keys)
-                .into_iter()
-                .flat_map(|path| path.iter())
-                .map(|key| key.to_string_lossy().into_owned())
-                .collect();
-            let typed = typed.join(" ");
+            let path = directory.strip_prefix(&self.keys).unwrap_or(Path::new(""));
+            let typed = path.iter().map(|key| key.to_string_lossy()).collect::<Vec<_>>().join(" ");
             let mut left = cells(&format!(" {} ", self.workspace), colour(250, Some(236), BOLD));
             let labels = layout.tabs.iter().enumerate().map(|(i, tab)| {
                 // (A tab with a notice not seen yet has a mark.)
@@ -1201,7 +1104,7 @@ impl View {
                 cells(&format!(" {note} "), style)
             };
             let right: Vec<Cell> = right.into_iter().take(w * 3 / 4).collect();
-            put(&mut back, w, 0, last, w, &cells(&" ".repeat(w), bar));
+            put(&mut back, w, 0, last, w, &vec![Cell::blank(bar); w]);
             // As many tabs as fit, the one shown among them.
             let room = w.saturating_sub(right.len() + 2);
             let fits = |first: usize| {
@@ -1213,11 +1116,9 @@ impl View {
             put(&mut back, w, w.saturating_sub(right.len() + 1), last, right.len(), &right);
             // The keys, under their headings; what does not fit above the bar is counted, not shown.
             let key_width = entries.iter().map(|(key, ..)| key.chars().count()).max().unwrap_or(0);
-            let mut lines = vec![(typed, BOLD)];
-            for (i, (key, about, group)) in entries.iter().enumerate() {
-                if !group.is_empty()
-                    && i.checked_sub(1).and_then(|before| entries.get(before)).is_none_or(|before| before.2 != *group)
-                {
+            let (mut lines, mut heading) = (vec![(typed, BOLD)], "");
+            for (key, about, group) in entries {
+                if std::mem::replace(&mut heading, group) != group && !group.is_empty() {
                     lines.push((group.clone(), BOLD));
                 }
                 lines.push((format!("{key:>key_width$}  {about}"), 0));
@@ -1230,33 +1131,28 @@ impl View {
                 .iter()
                 .map(|(text, flags)| cells(&format!(" {text}"), Style { flags: *flags, ..panel }))
                 .collect();
-            let widths = |boxes: &[&[Vec<Cell>]]| {
-                boxes.iter().map(|part| part.iter().map(Vec::len).max().unwrap_or(0) + 1).sum::<usize>()
-            };
-            let mut boxes: Vec<&[Vec<Cell>]> = lines.chunks(last.max(1)).collect();
-            let all = boxes.len();
-            while boxes.len() > 1 && widths(&boxes) > w {
-                boxes.pop();
+            // (A box is kept, with its width, while there is room for it; the first is cut to the terminal's width.)
+            let (mut right, mut boxes) = (w, Vec::new());
+            for part in lines.chunks(last.max(1)) {
+                let width = (part.iter().map(Vec::len).max().unwrap_or(0) + 1).min(w);
+                let Some(rest) = right.checked_sub(width) else { break };
+                boxes.push((part, width, w - right));
+                right = rest;
             }
             // The last line shown gives its place to the count, so it is counted too.
-            let hidden: usize = lines.chunks(last.max(1)).skip(boxes.len()).map(<[_]>::len).sum::<usize>() + 1;
-            let more = cells(&format!(" ▼ {hidden} more"), Style { flags: DIM, ..panel });
-            let (height, mut right) = (boxes.first().map_or(0, |part| part.len()), w);
-            for (n, part) in boxes.iter().enumerate().rev() {
-                let width = (part.iter().map(Vec::len).max().unwrap_or(0) + 1).min(right);
-                right -= width;
+            let over = lines.len().saturating_sub(boxes.len() * last.max(1));
+            let more = cells(&format!(" ▼ {} more", over + 1), Style { flags: DIM, ..panel });
+            let height = boxes.first().map_or(0, |(part, ..)| part.len());
+            for (n, (part, width, from)) in boxes.iter().enumerate().rev() {
                 for i in 0..height {
                     let y = last.saturating_sub(height) + i;
-                    let hides = n + 1 == boxes.len() && boxes.len() < all && i + 1 == height;
+                    let hides = n + 1 == boxes.len() && over > 0 && i + 1 == height;
                     let line = if hides { Some(&more) } else { part.get(i) };
-                    put(&mut back, w, right, y, width, &cells(&" ".repeat(width), panel));
-                    put(&mut back, w, right, y, width, line.map_or(&[], |line| line));
+                    put(&mut back, w, right + from, y, *width, &vec![Cell::blank(panel); *width]);
+                    put(&mut back, w, right + from, y, *width, line.map_or(&[], |line| line));
                 }
             }
             (cursor, cursor_colour, covered) = (String::new(), None, Some((right, last.saturating_sub(height))));
-        }
-        if cursor.is_empty() {
-            cursor.push_str("\x1b[?25l");
         }
         modes.push_str(if wants_focus.is_some() { "\x1b[?1004h" } else { "\x1b[?1004l" });
         self.tell(wants_focus);
@@ -1279,7 +1175,13 @@ impl View {
         }
         let mut style = None;
         let mut at = None;
+        // The link the terminal has open (OSC 8) is changed here alone, and only to another.
         let mut pen = 0;
+        let mut link = |out: &mut String, next: u16| {
+            if std::mem::replace(&mut pen, next) != next {
+                out.extend(["\x1b]8;;", address(&links, next).unwrap_or_default(), "\x1b\\"]);
+            }
+        };
         // The cells from here to `again` are sent whether they changed or not: a character before
         // them may have been drawn over them.
         let mut again = 0;
@@ -1315,9 +1217,7 @@ impl View {
             // edge stays on its row: every row starts with its place.)
             if at != Some(i) || !ascii || x == 0 {
                 // (A link is closed before the cursor moves: none is open over cells not drawn.)
-                if std::mem::take(&mut pen) != 0 {
-                    out.push_str("\x1b]8;;\x1b\\");
-                }
+                link(&mut out, 0);
                 out.push_str(&place);
             }
             if style != Some(new.style) {
@@ -1327,37 +1227,24 @@ impl View {
             if apart {
                 out.push('\u{200b}');
             }
-            let link = |out: &mut String, number: u16| {
-                out.push_str(&format!("\x1b]8;;{}\x1b\\", address(&links, number).unwrap_or_default()));
-            };
             // A wide character that may come out narrower (one of several parts, an emoji) is
             // drawn over two blanks, of its link as it is (closed again before the cursor goes
             // back over them); the cells one may come out over are sent after it.
             if new.wide() && !new.plain() {
-                if new.link != pen {
-                    link(&mut out, new.link);
-                }
+                link(&mut out, new.link);
                 out.push_str("  ");
-                if new.link != 0 {
-                    link(&mut out, 0);
-                }
-                pen = 0;
+                link(&mut out, 0);
                 out.push_str(&place);
             }
             // A cell that is part of a link is drawn inside it (OSC 8): the link is opened before
             // the first such cell and closed before the next cell that is not part of it, so
             // none reaches past its tile or over a line between tiles.
-            if new.link != pen {
-                link(&mut out, new.link);
-                pen = new.link;
-            }
+            link(&mut out, new.link);
             out.extend(new.chars());
             again = again.max(i + 1 + usize::from(new.wide()) + new.spill());
             at = ascii.then_some(i + 1);
         }
-        if pen != 0 {
-            out.push_str("\x1b]8;;\x1b\\");
-        }
+        link(&mut out, 0);
         self.links = links;
         if redraw {
             for (key, x, y, ..) in &pictures {
@@ -1437,14 +1324,6 @@ fn send_to(path: &Path, bytes: &[u8]) -> io::Result<usize> {
     sys::open(path, true)?.write(bytes)
 }
 
-/// What tells one writing of a file from the next; of a screen, with its length.
-fn stamp(m: fs::Metadata) -> (u64, i64, i64, u64) {
-    (m.ino(), m.mtime(), m.mtime_nsec(), 0)
-}
-fn screen_stamp(m: fs::Metadata) -> (u64, i64, i64, u64) {
-    (m.ino(), m.mtime(), m.mtime_nsec(), m.len())
-}
-
 /// How a pane's program asks for its input (pastes marked, the mouse, the focus, keys), as its
 /// `modes` file says now: what is typed is sent by this, not by what was last drawn.
 fn asks(directory: &Path) -> Screen {
@@ -1458,19 +1337,18 @@ fn pid(directory: &Path) -> u32 {
     text(&directory.join("status"), 256).lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0)
 }
 
-/// Who a pane's program is and whether it asks to be told of keys let go and held (flag 2 of
-/// the `keys` word in `modes`), as the files say now.
-fn program(directory: &Path) -> (u32, bool) {
-    (pid(directory), asks(directory).keys() & 2 != 0)
+/// Who a pane's program is, if it asks to be told of keys let go and held (flag 2 of the `keys`
+/// word in `modes`), as the files say now: a pane with no program has none to tell.
+fn program(directory: &Path) -> Option<NonZeroU32> {
+    NonZeroU32::new(pid(directory)).filter(|_| asks(directory).keys() & 2 != 0)
 }
 
 impl Pane {
-    /// Reads the pane if its screen's file changed: the holder writes that file last, so every
-    /// fact it wrote before is there by then. A fact may still be a moment ahead of the text
-    /// (or far off, in a folder someone copied): the rows are the lines that are there, and the
-    /// cursor is kept inside them.
-    fn read(&mut self, directory: &Path) {
-        let seen = fs::metadata(directory.join("screen.styled")).ok().map(screen_stamp);
+    /// Reads the pane if its screen's file changed (`seen`: the file as the frame found it): the
+    /// holder writes that file last, so every fact it wrote before is there by then. A fact may
+    /// still be a moment ahead of the text (or far off, in a folder someone copied): the rows are
+    /// the lines that are there, and the cursor is kept inside them.
+    fn read(&mut self, directory: &Path, seen: Stamp) {
         if seen == self.seen {
             return;
         }
@@ -1510,7 +1388,7 @@ impl Pane {
                 && is_name(name)
             {
                 let off = if above { *row } else { 0 };
-                self.pictures.push((name.into(), [row - off, *col, *cols, rows.saturating_sub(off), off]));
+                self.pictures.push((name.into(), [row - off, *col, off]));
             }
         }
         // The links (`links`: line, cells into it, how many cells, address) are put on the cells.
@@ -1572,12 +1450,11 @@ fn menu_entries(directory: &Path) -> Vec<Entry> {
     let mut names: Vec<String> = names.take(MENU_MAX + 1).collect();
     let more = names.len() > MENU_MAX;
     names.truncate(MENU_MAX);
-    let head = |path: &Path| String::from_utf8_lossy(&crate::read(File::open(path), 1024).0).into_owned();
     let described = names.into_iter().map(|name| {
         let path = directory.join(&name);
         // A script's lines after `#!`: `# caption`, `# group: NAME`. A directory's `.about`: `caption`, `# group: NAME`.
-        let (text, menu) =
-            if path.is_dir() { (format!("\n# {}", head(&path.join(".about"))), "…") } else { (head(&path), "") };
+        let (file, before, menu) = if path.is_dir() { (path.join(".about"), "\n# ", "…") } else { (path, "", "") };
+        let text = format!("{before}{}", text(&file, 1024));
         let mut lines = text.lines().skip(1).map(|line| line.strip_prefix("# ").unwrap_or_default());
         let about = format!("{}{menu}", lines.next().unwrap_or_default());
         (name, about, lines.next().and_then(|line| line.strip_prefix("group: ")).unwrap_or_default().to_string())

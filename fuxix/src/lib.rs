@@ -1,8 +1,8 @@
 //! The system calls std does not give. The only crate with `unsafe`.
-//! Every `extern` is declared by hand from the C prototypes; the constants
-//! are Linux's and macOS's own and differ where the two systems differ.
+//! Every `extern` is declared by hand after the C prototypes; the constants
+//! are those of Linux (x86-64 and arm64) and of macOS, and differ where the two differ.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_ulong};
+use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Error, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -75,7 +75,6 @@ unsafe extern "C" {
         winsize: *mut Winsize,
     ) -> c_int;
     fn setsid() -> c_int;
-    fn fchdir(fd: c_int) -> c_int;
     fn signal(signal: c_int, handler: usize) -> usize;
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
@@ -104,9 +103,9 @@ pub fn pty(mut size: Winsize) -> io::Result<(File, File)> {
         // SAFETY: fcntl on a descriptor we own, with an integer argument.
         check(unsafe { fcntl(fd.as_raw_fd(), F_SETFD, FD_CLOEXEC) })?;
     }
-    // SAFETY: as above.
+    // SAFETY: fcntl on a descriptor we own; F_GETFL takes no third argument.
     let flags = check(unsafe { fcntl(master.as_raw_fd(), F_GETFL) })?;
-    // SAFETY: as above.
+    // SAFETY: fcntl on a descriptor we own, with an integer argument.
     check(unsafe { fcntl(master.as_raw_fd(), F_SETFL, flags | os::O_NONBLOCK) })?;
     Ok((File::from(master), File::from(slave)))
 }
@@ -114,13 +113,16 @@ pub fn pty(mut size: Winsize) -> io::Result<(File, File)> {
 /// Makes the command lead a new session when it starts. With `tty`, its
 /// standard input (already the pty's slave) becomes the controlling terminal.
 pub fn new_session(command: &mut Command, tty: bool) {
-    // SAFETY: the closure runs between fork and exec and calls only setsid,
-    // ioctl and signal, all async-signal-safe; it allocates nothing.
+    // SAFETY: the closure runs between fork and exec, where only async-signal-safe functions may
+    // be called and nothing allocated. setsid and signal are such by POSIX. ioctl is not in
+    // general: relied on is that on Linux (glibc) and macOS it is the system call and no more,
+    // and that TIOCSCTTY follows its argument nowhere (C reads it as a pointer: a null one, for
+    // the number 0). An error is errno, read into a number: nothing is allocated.
     unsafe {
         command.pre_exec(move || {
             check(setsid())?;
             if tty {
-                check(ioctl(0, os::TIOCSCTTY, 0 as c_int))?;
+                check(ioctl(0, os::TIOCSCTTY, std::ptr::null_mut::<c_void>()))?;
             }
             // The classic signals (1 to 31) back to their defaults (0): what is
             // started runs as on any new terminal, whatever whoever started it
@@ -139,12 +141,6 @@ pub fn new_session(command: &mut Command, tty: bool) {
 pub fn own_children() {
     // SAFETY: signal with the default handler (0) for SIGCHLD, before any thread starts.
     unsafe { signal(os::SIGCHLD, 0) };
-}
-
-/// Makes an already open directory the working directory of this process.
-pub fn enter_directory(directory: &File) -> io::Result<()> {
-    // SAFETY: fchdir takes the descriptor of the file we own.
-    check(unsafe { fchdir(directory.as_raw_fd()) }).map(drop)
 }
 
 pub fn set_winsize(tty: &File, size: Winsize) -> io::Result<()> {
@@ -178,8 +174,9 @@ pub fn wait<const N: usize>(wanted: [(Option<BorrowedFd<'_>>, i16); N], timeout:
 
 /// This machine's name, as programs on it know it.
 pub fn host() -> Option<String> {
-    let mut name = [0u8; 256];
-    // SAFETY: gethostname writes at most the length given into a buffer of that length.
+    // (A name is 255 bytes at most, 256 with its end on macOS: one more stays zero.)
+    let mut name = [0u8; 257];
+    // SAFETY: gethostname writes at most the length given into a buffer that is longer.
     check(unsafe { gethostname(name.as_mut_ptr().cast(), name.len() - 1) }).ok()?;
     CStr::from_bytes_until_nul(&name).ok()?.to_str().ok().map(String::from)
 }
@@ -195,10 +192,14 @@ pub fn no_reader(error: &Error) -> bool {
     error.raw_os_error() == Some(6)
 }
 
-pub fn make_fifo(path: &Path) -> io::Result<()> {
-    let path = CString::new(path.as_os_str().as_bytes())?;
-    // SAFETY: the path is a valid NUL-terminated string for the call.
-    check(unsafe { mkfifo(path.as_ptr(), 0o600) }).map(drop)
+/// A FIFO of the caller's own, made anew (what was there of that name goes) and opened once, to
+/// read and to write without waiting: a writer leaving is then never the end of the file.
+pub fn fifo(path: impl AsRef<Path>) -> io::Result<File> {
+    let _ = std::fs::remove_file(&path);
+    let name = CString::new(path.as_ref().as_os_str().as_bytes())?;
+    // SAFETY: the name is a valid NUL-terminated string for the call.
+    check(unsafe { mkfifo(name.as_ptr(), 0o600) })?;
+    OpenOptions::new().read(true).write(true).custom_flags(os::O_NONBLOCK).open(path)
 }
 
 /// A terminal in raw mode. Dropped, it writes the terminal what it was given to say on leaving
