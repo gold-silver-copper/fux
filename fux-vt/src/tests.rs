@@ -971,8 +971,7 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     let mut term = term(20, 4, "ab\x1bPq\"1;1;30;12#0!30~-!30~\x1b\\");
     let picture = term.screen.pictures.first().expect("a picture");
     assert_eq!((picture.row, picture.col, picture.cols, picture.rows), (0, 2, 3, 1));
-    let bytes = term.peek().pictures.first().map(|(id, bytes)| (*id, bytes.as_slice()));
-    assert!(bytes.is_some_and(|(id, d)| id == picture.id && d.starts_with(b"\x1bPq") && d.ends_with(b"\x1b\\")));
+    assert!(picture.bytes.as_ref().is_some_and(|d| d.starts_with(b"\x1bPq") && d.ends_with(b"\x1b\\")));
     assert_eq!((term.screen.cursor.row, term.screen.cursor.col), (1, 0));
     // It stays through a full-screen program, an erase beside it and a resize that fits it.
     term.feed(b"\x1b[?1049h\x1b[2Jless\x1b[?1049l\x1b[1;10H\x1b[K\x1b[2;1H");
@@ -1025,6 +1024,9 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     // A screen filled with E's (ESC # 8) is written over whole, as by any other fill: the picture goes.
     term.feed(b"\x1b#8");
     assert!(term.plain().starts_with("EEEEE") && term.screen.pictures.is_empty(), "{:?}", term.screen.pictures);
+    // Its bytes go when it goes: placed and erased a hundred times with nothing taken between, none waits.
+    let mut gone = self::term(4, 3, &"\x1b[H\x1bPq~\x1b\\\x1b[2J".repeat(100));
+    assert_eq!(gone.new_pictures().len(), 0);
 }
 
 fn drawn(w: usize, h: usize, colours: &[&str], rule: impl Fn(usize, usize) -> Option<usize>) -> String {

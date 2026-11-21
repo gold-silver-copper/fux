@@ -446,13 +446,9 @@ impl Holder {
     /// or `hungup` once the pty is closed.
     fn publish(&mut self, ended: Option<&str>) -> io::Result<()> {
         let out = self.collect(0);
-        for (id, data) in out.pictures {
-            // One that left the screen before it was written has no reader. One that
-            // cannot be written is not on the screen either: it goes, and the log says why.
+        for (id, data) in self.term.new_pictures() {
+            // (One that cannot be written is not on the screen either: it goes, and the log says why.)
             let name = format!("pic-{id}.sixel");
-            if !self.term.has_picture(id) {
-                continue;
-            }
             self.pictures.insert(id);
             if let Err(e) = fs::write(&name, data) {
                 let _ = fs::remove_file(&name);

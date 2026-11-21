@@ -216,7 +216,7 @@ impl Cell {
 }
 
 /// A picture the program drew: where what the screen has of it is, in cells, and how many of
-/// its rows have gone off the screen's top (`row` is 0 then). Its bytes leave in the outbox.
+/// its rows have gone off the screen's top (`row` is 0 then); and its bytes, until they are taken.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Picture {
     pub id: u32,
@@ -225,6 +225,7 @@ pub struct Picture {
     pub cols: usize,
     pub rows: usize,
     pub off: usize,
+    bytes: Option<Vec<u8>>,
 }
 
 /// Where a mark is: on the main screen, a row and a column, for as long as its row is there
@@ -281,8 +282,6 @@ pub struct Out {
     pub unstyled: usize,
     /// What was dropped for being over a bound, or refused, for the log (each kind once).
     pub refused: Vec<&'static str>,
-    /// New pictures: the number of each and its bytes, a whole sixel string.
-    pub pictures: Vec<(u32, Vec<u8>)>,
     /// What the program put on the clipboard last.
     pub clipboard: Option<Vec<u8>>,
     /// The directory the program said it is in last (OSC 7): the host it named, and the path.
@@ -577,6 +576,12 @@ impl Term {
         &mut self.told
     }
 
+    /// The pictures on either screen whose bytes were not taken yet: the number of each and its bytes.
+    pub fn new_pictures(&mut self) -> Vec<(u32, Vec<u8>)> {
+        let pictures = self.screen.pictures.iter_mut().chain(&mut self.other_pictures);
+        pictures.filter_map(|p| Some((p.id, p.bytes.take()?))).collect()
+    }
+
     /// Whether either screen has the picture of this number.
     pub fn has_picture(&self, id: u32) -> bool {
         self.screen.pictures.iter().chain(&self.other_pictures).any(|p| p.id == id)
@@ -610,8 +615,8 @@ impl Term {
         let all = self.out.history.len().max(self.out.styled.len()) >= over;
         let mut out = Out { reply, refused, ..if all { std::mem::take(&mut self.out) } else { Out::default() } };
         if all && over > 0 {
-            (self.out.pictures, self.out.clipboard) = (std::mem::take(&mut out.pictures), out.clipboard.take());
-            (self.out.cwd, self.out.notice) = (out.cwd.take(), out.notice.take());
+            (self.out.clipboard, self.out.cwd, self.out.notice) =
+                (out.clipboard.take(), out.cwd.take(), out.notice.take());
         }
         out
     }
@@ -1952,14 +1957,12 @@ impl Term {
             return self.refuse("a picture over 500 cells wide or high was dropped");
         }
         if self.screen.pictures.len() >= PICTURES_MAX {
-            let oldest = self.screen.pictures.remove(0).id;
-            self.out.pictures.retain(|(id, _)| *id != oldest);
+            self.screen.pictures.remove(0);
             self.refuse("a screen keeps 8 pictures: the oldest was dropped for a new one");
         }
-        let whole = [b"\x1bP", data, b"\x1b\\"].concat();
+        let bytes = Some([b"\x1bP", data, b"\x1b\\"].concat());
         let Cursor { row, col, .. } = self.screen.cursor;
-        self.screen.pictures.push(Picture { id: self.next_picture, row, col, cols, rows, off: 0 });
-        self.out.pictures.push((self.next_picture, whole));
+        self.screen.pictures.push(Picture { id: self.next_picture, row, col, cols, rows, off: 0, bytes });
         self.next_picture = self.next_picture.wrapping_add(1);
         // The picture scrolls with the text; of one taller than the screen the last rows stay.
         for _ in 0..rows {
