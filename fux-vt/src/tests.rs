@@ -1331,3 +1331,25 @@ fn a_screen_read_from_nothing_is_one_blank_cell_with_the_cursor_shown() {
     assert_eq!((screen.cursor.row, screen.cursor.col, screen.cursor_shape), (0, 0, 0));
     assert!(screen.cell_at(0, 0).is_some_and(|cell| cell.ch == ' '));
 }
+
+#[test]
+fn a_row_that_goes_on_from_the_one_above_still_does_when_characters_are_put_in_or_taken_out_at_its_start() {
+    // (Each with the line's text after it; a wide character first in the row is taken out whole.)
+    let cases = [
+        ("\x1b[P", "aaaaaaaaaabcde", "bcde"),
+        ("\x1b[@", "aaaaaaaaaa abcde", " abcde"),
+        ("\x1b[2@\x1b[2P", "aaaaaaaaaaabcde", "abcde"),
+        ("\x1b[99@", "aaaaaaaaaa", ""),
+        ("\x1b[99P", "aaaaaaaaaa", ""),
+    ];
+    for (edit, line, row) in cases {
+        let term = term(10, 3, &format!("aaaaaaaaaaabcde\x1b[2;1H{edit}"));
+        assert_eq!((term.wraps().as_str(), term.lines().0.trim_end()), ("1", line), "{edit:?}");
+        assert_eq!(term.plain().lines().nth(1), Some(row), "{edit:?}");
+    }
+    let wide = term(10, 3, "aaaaaaaaaa日bc\x1b[2;1H\x1b[P");
+    assert_eq!((wide.wraps().as_str(), wide.plain().as_str(), wide.lines().2), ("1", "aaaaaaaaaa\n bc\n\n", true));
+    // Not at its start, nothing of the row's first cell moves; and an erased row goes on no more.
+    let erased = term(10, 3, "aaaaaaaaaaabcde\x1b[2;2H\x1b[P\x1b[@\x1b[2K");
+    assert_eq!(erased.wraps(), "");
+}

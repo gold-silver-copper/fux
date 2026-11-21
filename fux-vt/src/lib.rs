@@ -2037,6 +2037,7 @@ impl Term {
             },
             (0, 0, b'X') => self.erase(row, col, col.saturating_add(n)),
             (0, 0, b'@' | b'P') => {
+                let goes_on = col == 0 && self.screen.grid.get(row).is_some_and(|cells| continues(cells));
                 self.split(row, col);
                 if last == b'P' {
                     self.split(row, col.saturating_add(n));
@@ -2055,6 +2056,9 @@ impl Term {
                         rest.copy_within(n.., 0);
                         rest.split_at_mut(keep).1.fill(blank);
                     }
+                    // (That the row goes on from the one above is said by its first cell, whichever that is now.)
+                    rest.iter_mut().for_each(|cell| cell.style.flags &= !CONT);
+                    rest.first_mut().into_iter().for_each(|first| first.style.flags |= u16::from(goes_on) * CONT);
                 }
                 self.tidy(row);
                 self.screen.cursor.wrap = false;
