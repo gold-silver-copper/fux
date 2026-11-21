@@ -575,7 +575,7 @@ impl View {
             let file = sys::open(&file, false);
             let stamp = file.as_ref().map_or(named, |f| f.metadata().ok().filter(|m| m.is_file()).map(stamp));
             self.notices.insert(key(name), (stamp, stamp.is_some() && self.focus.as_deref() != Some(name)));
-            if stamp.is_some() && !first {
+            if file.is_ok() && stamp.is_some() && !first {
                 let text = String::from_utf8_lossy(&crate::read(file, 1200).0).into_owned();
                 let words = text.lines().next().unwrap_or_default().split_once(' ').map_or("", |(_, words)| words);
                 let words: String = words.chars().filter(|c| !c.is_control()).take(200).collect();

@@ -2054,8 +2054,10 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - which workspace is meant is chosen and checked by one function
     that a command must hand its own name, if it has one;
   - the bar, a notice and the menu are lent only the cells they may
-    paint, by rows: the menu reaching the bar's row by a sum does not
-    compile (naming the bar's row outright still would);
+    paint, by rows: inside the menu's loop a call is handed one row
+    above the bar and can paint no other; reaching the bar's row by a
+    sum there does not compile (outside the loop, or naming the bar's
+    row outright, it still would);
   - the pty and the input waiting for it are one value: a hang-up
     cannot keep one without the other.
   Classes with no such remedy, and why, are in the pull request (each
@@ -2073,7 +2075,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   marked ends marked; a key's script is told the size the terminal
   has now; a sign outside ASCII that is no letter is itself in both
   forms of a key (one Unicode calls alphabetic, a vowel sign say, is
-  still named by its US key in the kitty form), and
+  still named by its US key where a kitty terminal tells one), and
   so is a letter on a key that is no letter on a US layout; what is
   typed before an empty workspace has its shell waits for it, also
   after a key that went there; a notice is read from one open file;
@@ -2098,14 +2100,17 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   an erase takes, for `erase` and the whole-screen fill).
   Known and left from this run's own review: a paste whose pane
   loses the keys to another viewer's edit midway ends in the other
-  pane, now with its end mark (D109's case); a notice whose file is
+  pane, with its end mark if it began marked; a notice whose file is
   swapped between the look and the open by a hard link can ring
   twice; with 32 scripts running past their two seconds each key
   looks at all 32; `C-b S-c` on a pane moved between its two reads
-  opens blank lines; `C-b w n` gives up when the folder it lost is
+  can open blank lines; `C-b w n` gives up when the folder it lost is
   removed in the same instant; a character printed in insert mode
-  clears the flags of the rest of its row (a pass over cells the
-  move already makes). And the
+  clears the two row flags on the rest of its row (a pass over cells
+  the move already makes); `.restore` tells a refused start by the
+  last words of what `fux start` says, which a session path of a
+  thousand characters cuts off, and removes its copy when it cannot
+  be moved to `before`. And the
   leftovers of D112's review that the base shared: five fixed, the
   rest each given its line in the README.
 
