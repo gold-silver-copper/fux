@@ -1466,8 +1466,10 @@ impl Term {
         self.interrupt();
         if self.screen.alt {
             self.cluster = None;
-            (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap) =
-                (self.screen.cursor.row.min(rows - 1), self.screen.cursor.col.min(cols - 1), false);
+            // (A wrap that waits is done still if the width is the one it waited at, as in xterm.)
+            self.screen.cursor.wrap &= cols == self.screen.cols;
+            (self.screen.cursor.row, self.screen.cursor.col) =
+                (self.screen.cursor.row.min(rows - 1), self.screen.cursor.col.min(cols - 1));
         } else {
             // A cursor past its row's last column is the one that waits to wrap there.
             let here = (row, col.min(cols - 1), col >= cols);

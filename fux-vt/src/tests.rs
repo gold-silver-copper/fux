@@ -1485,3 +1485,12 @@ fn an_erase_that_takes_the_whole_screen_with_half_a_wide_character_keeps_in_hist
     term.resize(4, 3);
     assert_eq!(term.plain().trim(), "");
 }
+
+#[test]
+fn a_wrap_that_waits_on_the_alternate_screen_is_done_after_a_resize_that_keeps_the_width() {
+    let mut term = term(4, 3, "\x1b[?1049hABCD");
+    term.resize(4, 4);
+    term.feed(b"E");
+    let ch = |row, col| term.screen.cell_at(row, col).map(|cell| cell.ch);
+    assert_eq!((ch(0, 3), ch(1, 0)), (Some('D'), Some('E')));
+}
