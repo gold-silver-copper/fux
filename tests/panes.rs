@@ -2222,3 +2222,24 @@ fn a_new_workspace_key_that_another_got_ahead_of_takes_the_next_name() {
     );
     assert!(!session.0.join("w1/1").exists(), "the other key's workspace is the other's");
 }
+
+#[test]
+fn the_blank_lines_a_command_ended_with_are_in_its_output() {
+    // `A` and two blank lines, and then the end mark: the screen's text is taken without the blank
+    // rows at its end, and the lines up to the end mark are the output's all the same.
+    let session = Session::new("blanks");
+    let keys = concat!(env!("CARGO_MANIFEST_DIR"), "/keys");
+    let shell = "printf '\\033]133;C\\007A\\n\\n\\n\\033]133;D;0\\007'; sleep 600";
+    let pane = session.start("sh", &["sh", "-c", shell]);
+    until("the marks are there", || read(&pane.join("marks")).lines().count() == 2);
+    let out = session.0.join("out");
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let mut script = Command::new(Path::new(keys).join("C-b/S-c"));
+    script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("OUT", &out);
+    script.env("FUXN_EDIT", "cat \"$1\" > \"$OUT.new\" && mv \"$OUT.new\" \"$OUT\"");
+    script.env("FUXN_DIR", &session.0).env("FUXN_KEYS", keys).env("FUXN_WS", "main").env("FUXN_PANE", &pane);
+    let said = script.env_remove("COLUMNS").env_remove("LINES").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&said.stdout), "", "marks: {:?}", read(&pane.join("marks")));
+    until("the editor was given the output", || out.exists());
+    assert_eq!(read(&out), "A\n\n\n");
+}
