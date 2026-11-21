@@ -1965,3 +1965,31 @@ fn a_key_script_is_told_the_terminals_size_before_the_first_frame_and_none_where
     });
     assert_eq!((fact(&first, "state").as_str(), fact(&first, "size").as_str()), ("running", "80 24"), "{}", log());
 }
+
+#[test]
+fn what_is_typed_right_after_the_new_workspace_key_goes_to_its_shell() {
+    // The new workspace's shell runs by the time the key's script tells the viewer of the workspace:
+    // the viewer keeps what is typed after a key until its script ends, and it is then that shell's.
+    let (outer, inner) = (Session::new("nwouter"), Session::new("nwinner"));
+    let keys = inner.0.join(".keys");
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let viewer = ["env", "SHELL=/bin/sh", env!("CARGO_BIN_EXE_fux"), "view"];
+    let view = outer.start("view", &[&command[..], &viewer[..]].concat());
+    until("the first workspace has its shell", || fact(&inner.0.join("main/1"), "state") == "running");
+    // (The script by itself, as the viewer runs it: `fux` is the one beside the viewer.)
+    let mut path = std::ffi::OsString::from(Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap());
+    let mut script = Command::new(keys.join("C-b/w/n"));
+    script.env("FUXN_DIR", &inner.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main").env("PATH", path);
+    let said = script.env("FUXN_PANE", inner.0.join("main/1")).env("SHELL", "/bin/sh").output().unwrap();
+    let state = fact(&inner.0.join("w1/1"), "state");
+    assert_eq!((String::from_utf8_lossy(&said.stdout).as_ref(), state.as_str()), ("workspace w1\n", "running"));
+    // And the key with a letter after it in one write: the letter is typed to the new shell.
+    fs::write(view.join("in"), "\x02wnZ").unwrap();
+    let shell = inner.0.join("w2/1");
+    let seen = || {
+        format!(": the new shell shows {:?}, the viewer {:?}", read(&shell.join("screen")), read(&view.join("screen")))
+    };
+    until_or("the letter is typed to the new shell", seen, || read(&shell.join("screen")).contains('Z'));
+}

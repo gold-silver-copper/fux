@@ -1,7 +1,8 @@
 #!/bin/sh
 # new workspace
 # group: Workspaces
-# (Its first shell is `.empty`'s to start, as in any workspace with no pane.)
 n=1
 while [ -e "$FUXN_DIR/w$n" ]; do n=$((n + 1)); done
-mkdir "$FUXN_DIR/w$n" && echo "workspace w$n"
+mkdir "$FUXN_DIR/w$n" || exit
+# (Its first shell is started before the viewer is told of it: what is typed after the key is that shell's.)
+FUXN_WS="w$n" FUXN_PANE= "$FUXN_KEYS/.new-shell" && echo "workspace w$n"
