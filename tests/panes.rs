@@ -1397,3 +1397,32 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     let why = "left: a picture is not drawn: it names a colour register over 255";
     until("the corner says why", || read(&view.join("screen")).contains(why) && fact(&view, "pictures").is_empty());
 }
+
+#[test]
+fn a_click_gives_a_tile_the_keys_also_between_programs_that_ask_for_presses_only() {
+    // Two programs that ask for the oldest mouse reports (mode 9: presses, no releases), side by side.
+    let (outer, inner) = (Session::new("mouter"), Session::new("minner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let asking = ["sh", "-c", "stty raw -echo; printf '\\033[?9h'; exec cat -v"];
+    let (a, b) = (inner.start("a", &asking), inner.start("b", &asking));
+    until("both ask for presses", || fact(&a, "modes") == "mouse9" && fact(&b, "modes") == "mouse9");
+    lay(&inner.0, "* row(a b) focus=a\n");
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    // The viewer asks its own terminal for releases too: a click that only moves the focus ends
+    // with its release, which a terminal asked for presses alone would never tell of.
+    until("the viewer asked its terminal for the mouse", || fact(&view, "modes").contains("mouse"));
+    assert!(fact(&view, "modes").contains("mouse1000 mousesgr"), "{}", fact(&view, "modes"));
+    let focus = || read(&inner.0.join("main/layout"));
+    for (click, tile) in [("50;3", "b"), ("5;3", "a"), ("50;3", "b")] {
+        fs::write(view.join("in"), format!("\x1b[<0;{click}M\x1b[<0;{click}m")).unwrap();
+        until_or("the click moved the focus", focus, || focus().contains(&format!("focus={tile}")));
+    }
+    // The program that has the keys is told of presses and of nothing else, as it asked: in the
+    // old form, counted from its tile's corner (which is at column 42).
+    until("the pane is the size of its tile", || fact(&b, "size") == "39 24");
+    fs::write(view.join("in"), "\x1b[<0;50;3M\x1b[<0;50;3m\x1b[<0;51;4M\x1b[<0;51;4m").unwrap();
+    until("the presses arrive", || read(&b.join("screen")).contains("^[[M )#^[[M *$"));
+    assert_eq!((read(&b.join("screen")).trim_end(), read(&a.join("screen")).trim_end()), ("^[[M )#^[[M *$", ""));
+}

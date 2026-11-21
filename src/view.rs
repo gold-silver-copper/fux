@@ -1002,8 +1002,9 @@ impl View {
                 cursor.push_str(if cursor_keys { "\x1b[?1h" } else { "\x1b[?1l" });
                 cursor.push_str(if keypad { "\x1b=" } else { "\x1b>" });
                 // And reports the mouse when, and as far as, a living program asked (always in the SGR form).
+                // (Releases too for one that asked for presses alone, 9: a click that only moves the focus ends with one.)
                 if pane.screen.mouse != 0 && live {
-                    modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.screen.mouse));
+                    modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.screen.mouse.max(1000)));
                 }
                 // And is told when this terminal's window gains and loses the keys, if it asked.
                 if pane.screen.focus && live {
