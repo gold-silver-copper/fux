@@ -1494,3 +1494,12 @@ fn a_wrap_that_waits_on_the_alternate_screen_is_done_after_a_resize_that_keeps_t
     let ch = |row, col| term.screen.cell_at(row, col).map(|cell| cell.ch);
     assert_eq!((ch(0, 3), ch(1, 0)), (Some('D'), Some('E')));
 }
+
+#[test]
+fn a_picture_on_the_alternate_screen_keeps_its_column_on_a_screen_too_narrow_to_show_it() {
+    let mut term = term(10, 4, "\x1b[?1049h\x1b[1;8H\x1bPq@\x1b\\");
+    for cols in [5, 10] {
+        term.resize(cols, 4);
+        assert_eq!(term.screen.pictures.first().map(|p| (p.row, p.col)), Some((0, 7)), "{cols} columns");
+    }
+}

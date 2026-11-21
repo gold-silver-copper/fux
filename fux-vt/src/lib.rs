@@ -1363,7 +1363,7 @@ impl Term {
         let last = self.going_on().and_then(|last| last.at).filter(|_| !self.screen.alt);
         let shown = (&mut self.screen.grid, &mut self.screen.pictures);
         let hidden = (&mut self.other, &mut self.other_pictures);
-        let ((main, main_pictures), (cut, still)) = if self.screen.alt { (hidden, shown) } else { (shown, hidden) };
+        let ((main, main_pictures), (cut, _)) = if self.screen.alt { (hidden, shown) } else { (shown, hidden) };
         // Places on the main screen that stay on their character, each with whether it waits to
         // wrap at its row's end. First the cursor, whose line is taken to reach as far as it
         // stands (behind the alternate screen, the saved cursor is the one that will come back);
@@ -1457,7 +1457,6 @@ impl Term {
                 kept.push(Picture { row: row.saturating_sub(up), col, rows, off: off + gone, ..picture });
             }
         }
-        still.retain(|p| p.row < rows && p.col < cols);
         (*main, *main_pictures) = (wrapped, kept);
         let fit = |(row, col): (usize, usize)| (row.saturating_sub(up).min(rows - 1), col);
         let ((row, col), saved_at) = (fit(at(0)), fit(at(1)));
