@@ -1961,6 +1961,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   read, loses the good one (the emulator cannot tell which host is
   this one; the holder's fix is more than three lines); a kitty key
   release sent for a press that a full `in` dropped.
+- **D111. A last audit for cuts of a whole thing, and a second panel of
+  ten** (the owner, 2026-11-21: the line-by-line audits are dry; ask
+  only for a whole command, file, state, boundary, check or part of
+  the emulator worth about 30 lines or a class of bug). Four readers,
+  each measuring in a copy of its own: three found nothing of that
+  size (no command a recipe replaces, no file derivable from another,
+  no state out of reach, no type that removes more lines than it adds,
+  no part of the emulator nothing exercises, nothing in `fuxix` that
+  std covers), one found the clipboard's codec. Two questions went to
+  the panel (2 Opus, 4 gpt-6.2-sol, 4 gpt-6.2-astra; seven settles):
+  1. The `clipboard` file as the base64 the program sent (38 lines,
+     the codec gone): **kept as bytes, 9 of 10** (Opus 2/2, sol 3/4,
+     astra 4/4). It would be the one file of a pane not readable as it
+     is; a hand-written file would need `base64 -w0`; malformed text
+     would reach the terminal. The dissent: fux could relay the
+     payload and leave the coding to `base64`, one way to do it.
+  2. The four `arrange` presets and their keys (34 lines): **kept, 10
+     of 10**. They are part of tiling as tmux and fux 1 users know it,
+     and the command rewrites the tree under the workspace's lock,
+     which a script over the file cannot.
+  Nothing of that size was taken: the tree is at the least this run
+  could prove.
 
 ## The old fux3's bugs: which classes are gone
 
