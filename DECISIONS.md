@@ -1488,6 +1488,36 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     (two crate roots' headers); the safe owners took 1 back. The panel
     said so before the work: the lines come from the simplifications.
   - Not done here: `Term`'s fields private behind a `Screen` and one
+    `Out` (8 of 8, a change of its own: D98).
+- **D98. The emulator's interface: a `Screen` read, an `Out` taken, a
+  `Told` said** (8 of 8 in the same panel). No field of `Term` is public.
+  - **`Screen`** is what is shown: the size, the grid (`cell_at`), the
+    cursor, the modes and the pictures on it. The holder reads its
+    terminal's by reference (`Term::screen`). The viewer holds one for
+    each pane and no emulator: `Screen::read` makes it of
+    `screen.styled`, beside the writer of that file in fux-vt, and the
+    round-trip unit test reads back with it.
+  - **`Out`** is everything produced since it was last taken, as before.
+    **`Told`** is what comes from outside (the name for XTVERSION, the
+    keyboard flags the terminal takes, a cell's size, the session's
+    colours), reached through the one method `Term::told`.
+  - What can no longer be written: a holder or a viewer setting the
+    cursor, a mode or the size of an emulator; a caller that drops a
+    picture from one screen's list and not the other's (`has_picture`,
+    `keep_pictures`); a viewer feeding an emulator cursor moves to draw
+    a file. A mode that is one switch is kept in one place (`switch`)
+    for set, reset and the question: none can be set and then answered
+    "not recognised".
+  - It cost lines: 7,127 to 7,172 (fux-vt +68, fux -23). Sixteen are
+    lines rustfmt wraps for `self.screen.`; the rest are the two
+    structs' headers and the methods that took the fields' place. The
+    target of 7,100 is not met by this series.
+  - Left out, not reached in the time given: the cursor as one struct
+    saved by assignment, the wrap and gap marks in the row and not in a
+    cell's style, marks and resize places as structs. Still the
+    viewer's: the words of `modes`, the `cursor` line and the links of
+    `links` are put on its own `Screen` by `view.rs` (`set_words`,
+    `set_link`, the cursor's fields).
     `Out` (8 of 8, a change of its own).
 - **D99. The simplifying run changes no behaviour: what its fix checks
   found was put back** (message 29's rule). Two readers for each series
