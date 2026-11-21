@@ -14,6 +14,7 @@ use crate::{Stamp, is_name, keys, sixel, stamp, text};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::num::NonZeroU32;
 use std::os::fd::AsFd;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -116,7 +117,7 @@ struct Pane {
 #[derive(Clone)]
 enum Went {
     Script(PathBuf),
-    Pane(PathBuf, u32),
+    Pane(PathBuf, NonZeroU32),
 }
 
 struct View {
@@ -668,11 +669,10 @@ impl View {
             _ if menu.is_none() => {
                 self.typed.extend_from_slice(raw);
                 self.keyed = Some(Instant::now());
-                // (Its release is the pane's only if the program there asks to be told of
-                // releases now: a key typed to one that does not is typed, and no more.)
+                // (Its release is the pane's only if it can have one and the program there asks to be
+                // told of releases now: a key typed to one that does not is typed, and no more.)
                 let directory = self.session.join(&self.workspace).join(self.focus.as_deref().unwrap_or_default());
-                let (pid, releases) = program(&directory);
-                (pid != 0 && releases).then_some(Went::Pane(directory, pid))
+                event.and_then(|_| program(&directory)).map(|pid| Went::Pane(directory, pid))
             }
             // A key that a menu which stays open does not have ends it; if it is the key that
             // led there (the prefix), its own menu is open again, as when it is pressed anew.
@@ -697,8 +697,8 @@ impl View {
     /// A key's repeat or release goes to the pane that got its press, after what was typed before
     /// it, if that pane's program is still the one that got it and still asks to be told of keys
     /// let go. Who a pane is, is read when it matters: nothing the viewer remembers of it is asked.
-    fn pass(&mut self, directory: &Path, pid: u32, raw: &[u8]) {
-        if pid != 0 && program(directory) == (pid, true) {
+    fn pass(&mut self, directory: &Path, pid: NonZeroU32, raw: &[u8]) {
+        if program(directory) == Some(pid) {
             self.send();
             let _ = send_to(&directory.join("in"), raw);
         }
@@ -1373,10 +1373,10 @@ fn pid(directory: &Path) -> u32 {
     text(&directory.join("status"), 256).lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0)
 }
 
-/// Who a pane's program is and whether it asks to be told of keys let go and held (flag 2 of
-/// the `keys` word in `modes`), as the files say now.
-fn program(directory: &Path) -> (u32, bool) {
-    (pid(directory), asks(directory).keys() & 2 != 0)
+/// Who a pane's program is, if it asks to be told of keys let go and held (flag 2 of the `keys`
+/// word in `modes`), as the files say now: a pane with no program has none to tell.
+fn program(directory: &Path) -> Option<NonZeroU32> {
+    NonZeroU32::new(pid(directory)).filter(|_| asks(directory).keys() & 2 != 0)
 }
 
 impl Pane {
