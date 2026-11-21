@@ -3,7 +3,7 @@
 Written 2026-11-21, at `fux` 0.40.0 / `fux-vt` 0.18.0 / `fuxix` 0.11.0 (tag `v0.40.0`, all three on
 crates.io). Read this first, then `README.md` (the contract: commands, the pane folder's files, keys,
 bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D115, append-only:
-every choice with why and how it was decided).
+a historical log: later entries supersede earlier ones, and each says what it replaces).
 
 ## What fux is
 
@@ -25,13 +25,14 @@ A terminal multiplexer that is a view over the filesystem and pane daemons.
 
 | Name | What it is |
 |---|---|
-| `master` | this fux (it was the branch `next`; an orphan branch, no history shared with fux 1) |
+| `master` | this fux, since 2026-11-21 (it was the branch `next`, an orphan branch with no history shared with fux 1) |
 | `old-main` | fux 1, fux2 and the first fux3: the earlier `master`, kept as it was |
 | `next` | the same commit as `master` at the switch; can be deleted once nothing points at it |
 | tag `v0.40.0` | the commit published to crates.io as fux 0.40.0, fux-vt 0.18.0, fuxix 0.11.0 |
 
 Old tags (`v0.38.0` and earlier) and the crates.io versions up to fux 0.38.0, fux-vt 0.17.0 and
-fuxix 0.10.0 are fux 1's. koh depends on those old versions (fux-vt 0.3, fuxix 0.1) and is unaffected.
+fuxix 0.10.0 are fux 1's. koh depends on old versions (`fux-vt = "0.3.4"`, `fuxix = "0.1.7"`) and is unaffected. `tools/referee`
+builds the old emulator from a commit on `old-main`, so `old-main` must stay.
 
 ## The code
 
@@ -44,13 +45,16 @@ About 6,460 production lines (`./sizes.sh`).
 | `fux-vt` | the terminal emulator: bytes in, a grid of cells out; widths and grapheme clusters (UAX #29, `tools/unicode.py` makes the tables); sixel scanning and cropping | `#![forbid(unsafe_code)]`; the `Term` has no public fields |
 | `fux` | `src/holder.rs` (one process per pane, writes the files), `src/view.rs` (the viewer), `src/layout.rs`, `src/keys.rs` (key names, the embedded default scripts), `src/main.rs` (the command line), `src/help-agents.txt` (`fux help agents`), `keys/` (the default key scripts) | `#![forbid(unsafe_code)]` |
 
-Rules the code follows (each is enforced or tested, not only written down):
+Rules the code follows (the first and the fourth are enforced by clippy; the others are kept by review
+and tests):
 - Non-test code never panics: `unwrap`, `expect`, indexing, `panic!` and friends are denied by clippy.
 - One source of truth for every fact, in the code and in the files; no field mirrors another.
-- Everything is bounded, and what is refused or lost is said in the pane's `log`.
-- A plain blocking open of a file (`File::open`, `fs::read`) is refused by `clippy.toml`: a FIFO
-  put there by anyone would hang the caller. Use `sys::open` and friends.
-- Tests state properties; none freezes a screen.
+- Everything is bounded and refused out loud (the README's "Bounds" says each bound and who reports
+  a loss: the holder in the pane's `log`, which itself stops at 64 KiB; the viewer in its corner).
+- `File::open`, `fs::read` and `fs::read_to_string` are refused by `clippy.toml`: a FIFO put there by
+  anyone would hang the caller. Use `sys::open` and friends. (Other opens, `OpenOptions` for history and
+  the viewer's own FIFO, are reviewed by hand.)
+- Tests state properties; screens are compared only where the screen is the property.
 
 ## The pane folder (summary; the README's table is the contract)
 
@@ -68,39 +72,58 @@ marks                           OSC 133 prompt marks, in the text's numbering
 pic-N.sixel                     a picture's bytes
 ```
 
-A name is a thing and never a role; a fact counts in the numbering of the thing it is of. A script
-that reads several files keeps the read only when the same even `generation` brackets it (the recipe
-is on `fux help agents`). A script reading one file needs nothing: every file is replaced in one rename.
+`alt/` can also remain after a pane ended under a full-screen program. A name is a thing and never a
+role; a fact counts in the numbering of the thing it is of.
+
+Reading: the screens, `lines`, `links`, `pictures`, `cursor`, `size`, `modes`, `state` and the other
+facts the holder publishes are each replaced in one rename, so one of them read alone is always
+whole. `generation` brackets a round of those: a script that reads several keeps the read only when the
+same even number is there before and after (the recipe is on `fux help agents`; a holder that died
+mid-round leaves it odd). `history` is appended in place, `log` grows, and picture bytes are written
+before `pictures` names them: they are not part of a round.
 
 ## Standards
 
-Controls follow xterm (`TERM=xterm-256color`); text segmentation follows UAX #29; widths follow modern
-terminals; each protocol follows its own spec (kitty keyboard, OSC 8, OSC 133, mode 2026, ...). Every
-departure is a row in the README. `tools/referee` runs the same bytes through this emulator, the old
-fux-vt, tmux and xterm and counts disagreements; CI fails on an unlisted one.
+Controls follow xterm (`TERM=xterm-256color`); text segmentation follows UAX #29; widths follow fux's
+own documented rule (modern terminals'); each protocol follows its own spec (kitty keyboard, OSC 8,
+OSC 133, mode 2026, ...). Departures are rows in the README, and what is left out is in its "Left out".
+`tools/referee` runs a corpus of byte streams through this emulator, the old fux-vt, tmux and xterm and
+compares text and cursor; CI fails on a disagreement that is not listed.
 
 ## Names are temporary until fux 1 is retired
 
 So that the two never share a session: the environment variables are `FUXN_*` (to become `FUX_*`),
 the session is `$XDG_RUNTIME_DIR/fux-next`, the keys are in `~/.config/fux-next/keys`, a pane's program
-sees `TERM_PROGRAM=fux-next`, and XTVERSION says `fux-next`. When the owner retires fux 1, these become
-the plain names in one change (DECISIONS D41 lists them: three lines at the top of `src/main.rs` and one `sed` over `keys/`, the README and the tests), followed by a release. `cargo install fux`
-already installs this fux and replaces fux 1's binary.
+sees `TERM_PROGRAM=fux-next`, and XTVERSION says `fux-next VERSION` (the README says the full set,
+with the fallbacks when `XDG_RUNTIME_DIR` is unset). When the owner retires fux 1, these become the
+plain names in one change, followed by a release. D41 says how: the names are at the top of
+`src/main.rs`, and a `sed` over the text that spells them out: `keys/`, the README, `src/help-agents.txt`,
+the tests, `example.sh`, `tools/help-agents.sh`, `tools/referee` and `tools/perf.py`.
+`cargo install fux` already installs this fux and replaces fux 1's binary.
 
 ## Build, test, try
 
 ```sh
 cargo build --release
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked          # about 130 tests; a few drive real panes and take ~20 s
+cargo test --workspace --locked -- --test-threads 4   # 127 tests; the real-binary suite takes ~20 s
 tools/help-agents.sh                     # runs every example on the agents' page as one sh session
 ./example.sh                             # the README's example
-python3 tools/perf.py target/release/fux # speed beside tmux (needs tmux): flood, key echo, CPU
+python3 tools/perf.py target/release/fux # speed: flood, key echo, CPU (with tmux, beside it)
 ```
 
-Try it without touching a fux 1 session: run it by path, with a session folder of your own
-(`FUXN_DIR=… FUXN_KEYS=… ./target/release/fux view`). Never run a bare `fux` on a machine where fux 1
-is installed and in use: it is fux 1.
+Needed: stable Rust with clippy, Python 3, sh; perl only for the help page's optional section; the
+referee also needs xterm, Xvfb and tmux. Releases: `cargo publish` for `fuxix`, then `fux-vt`, then `fux`
+(D115).
+
+Try it without touching a running session: run it by path, with a session folder and a keys folder
+of your own that do not exist yet (`FUXN_DIR=… FUXN_KEYS=… ./target/release/fux view`). A bare `fux`
+is whatever `PATH` finds first, which may be fux 1.
+
+Upgrading a running session: a holder keeps the code it was started with, so after a rebuild the panes
+it keeps still write the old files until they are closed and started again. The viewer writes the default
+key scripts only when the keys folder does not exist: remove it (or point `FUXN_KEYS` at a new one) to
+get the new defaults.
 
 CI (Linux, macOS, and the referee) runs on pushes and pull requests to `master` and `next`; it takes
 about two minutes.
@@ -114,7 +137,8 @@ about two minutes.
   who vote on a fixed ballot; the result and the strongest dissent go into `DECISIONS.md`.
 - Before review, blind testers use the built binary with only the README and `fux help agents`;
   their scripts are rerun on the final head.
-- Review is capped at two rounds; round two checks only round one's must-fixes. A must-fix needs a
+- Review is capped at two rounds; round two checks only round one's must-fixes and what their fixes
+  touched. A must-fix needs a
   script or a traced sequence. A finding that asks for a safeguard against the user's own action is
   answered with a README line, not code.
 - Cleanup work aims at a negative line count; nothing on the keep-list (every feature in the README)
@@ -122,12 +146,14 @@ about two minutes.
 
 ## State at handoff
 
-- CI green on `master`. 127 tests pass (`cargo test --workspace`).
-- Speed (one run, one laptop, 2026-11-21): a flood of `seq 1 2000000` 1.49 s (tmux 0.99 s); key to
-  echo 2.9 ms typed slowly, 4.1 ms fast (tmux about 0.1 ms; the gap is the design, files between the
-  holder and the viewer, and far below what a person notices); viewer CPU while busy 10%, idle 0.1%.
+- CI green on `c5645729b` (the published commit) and on this document's PR; 127 tests.
+- Speed: the README's table is an earlier run. A later one (one laptop, 2026-11-21, at `3ebc9fb41`):
+  a flood of `seq 1 2000000` 1.49 s (tmux 0.99 s); key to echo 2.9 ms typed slowly, 4.1 ms fast (tmux
+  about 0.1 ms; the gap comes from the design, files between the holder and the viewer); viewer CPU
+  while busy 10%, idle 0.1%. The flood got slightly slower in the per-screen change after that (frames
+  699 to 695 a second on a bench machine).
 - Tested by hand and by blind testers on Linux only; macOS only through CI. Not tried in a real desktop
-  terminal by a tester; htop not tried (it was not installed).
+  terminal by a tester. htop is in the referee's recorded sessions, but no tester ran it live.
 
 ## Decided by the owner (do not reopen without new evidence from use)
 
@@ -136,10 +162,13 @@ about two minutes.
 - No command in the binary that a script recipe can do; recipes are plain sh (perl alternatives are
   documented, not required).
 - Plain and styled files both stay; no header lines in files; one file per fact.
-- When a pane shrinks, text is kept: rows go to history and the cursor may move (D54).
-- Lowest common denominator of Linux and macOS; no platform workarounds; no Windows.
+- When a pane shrinks, the main screen's text is kept: rows go to history and the cursor may move
+  (D54). The alternate screen is cut or padded; it has no history.
+- Lowest common denominator of Linux and macOS; no workarounds for a platform's kernel bugs (D46);
+  no Windows.
 - The pane folder's format: D114 (folder per screen, `shown`, `generation`).
-- Kitty graphics is wanted eventually, beside sixel (overruling a panel that said never).
+- Kitty graphics is wanted eventually, beside sixel (the owner, overruling an earlier panel's "not
+  worth doing"; to be recorded in `DECISIONS.md` with the change that starts it).
 
 ## Open work, roughly in order
 
@@ -147,10 +176,12 @@ about two minutes.
    decides the next changes better than another audit (the last line-by-line audits found almost
    nothing left to cut).
 2. **Small known items:** `C-b c`'s menu caption still says "history in the editor" (it opens history
-   and screen); `keys/.edit` passes no line number to an `$EDITOR` that is a wrapper script around a
-   known editor (it falls back to line 1; `FUXN_EDIT` is the workaround); a pane kept by a holder from
+   and screen); `keys/.edit` passes no line number to an `$EDITOR` it does not know by name, such as a
+   wrapper script around a known editor (the file opens where that editor starts; `FUXN_EDIT` passes
+   the line); a pane kept by a holder from
    an older build writes the old file layout and nothing says so; in the pane picker the first Enter
-   can be lost; `.restore` restarts the pane of a detached viewer; two role-named items in the code
+   can be lost (seen by a blind tester; the record is in the owner's notes); `.restore` can restart a
+   pane whose saved command was a viewer; two role-named items in the code
    (`term.screen()`, `Holder.facts`); the word `shown` is both the link and a word of `cursor`.
 3. **Kitty graphics**, in three steps: (a) output only: pictures fux has are drawn in the outer
    terminal with the kitty protocol, which is what makes pictures work in terminals without sixel
@@ -160,5 +191,5 @@ about two minutes.
    are out.
 4. **Retire fux 1:** take the plain names (above), delete nothing of `old-main` (it is the record),
    release.
-5. **koh:** whether koh (the owner's remote shell) can carry pane folders between machines instead of
+5. **koh:** whether koh (a remote shell over QUIC, a separate project) can carry pane folders between machines instead of
    needing its own emulator. A spike once the folder format has stopped changing.
