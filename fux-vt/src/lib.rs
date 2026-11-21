@@ -1251,13 +1251,15 @@ impl Term {
             {
                 *lead = blank;
             }
+            let goes_on = col == 0 && continues(line);
             match line.get_mut(col..) {
                 Some(rest) if insert => rest.rotate_right(cells.min(rest.len())),
                 _ => under = line.get(col).copied().filter(|c| c.ch != '\0').unwrap_or(blank),
             }
-            // Written over, a row's first cell still says that the row goes on from the one
-            // above: a line editor draws a long line again row by row. Erased, it does not.
-            new.style.flags |= under.style.flags & CONT;
+            // Written over, a row's first cell still says that the row goes on from the one above (a line
+            // editor draws a long line again row by row), and so does one put before it. Erased, it does not.
+            new.style.flags |= u16::from(goes_on) * CONT;
+            line.get_mut(col + cells).into_iter().for_each(|moved| moved.style.flags &= !CONT);
             if let Some(half) = line.get_mut(col + cells).filter(|c| c.ch == '\0') {
                 *half = blank;
             }

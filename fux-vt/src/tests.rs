@@ -1361,6 +1361,21 @@ fn a_row_that_goes_on_from_the_one_above_still_does_when_characters_are_put_in_o
 }
 
 #[test]
+fn a_row_that_goes_on_from_the_one_above_still_does_when_a_character_is_printed_into_its_start_in_insert_mode() {
+    // (CSI 4 h: what is printed pushes the rest of the row along, as CSI @ does before a character is written.)
+    let narrow = term(10, 3, "aaaaaaaaaaabcde\x1b[2;1H\x1b[4hX");
+    assert_eq!((narrow.wraps().as_str(), narrow.lines().0.trim_end()), ("1", "aaaaaaaaaaXabcde"));
+    let wide = term(10, 3, "aaaaaaaaaaabcde\x1b[2;1H\x1b[4h日");
+    assert_eq!((wide.wraps().as_str(), wide.lines().0.trim_end()), ("1", "aaaaaaaaaa日abcde"));
+    // No later cell says so in its place: a character taken out at the row's start brings no second mark back.
+    let twice = term(10, 3, "aaaaaaaaaaabcde\x1b[2;1H\x1b[4hXY\x1b[2;2H\x1b[4lZ\x1b[2;1H\x1b[2P");
+    assert_eq!((twice.wraps().as_str(), twice.lines().0.trim_end()), ("1", "aaaaaaaaaaabcde"));
+    // A shell's mark in that row is on the same line still.
+    let marked = term(10, 3, "aaaaaaaaaaabc\x1b]133;B\x07de\x1b[2;1H\x1b[4hX");
+    assert!(marked.marks().starts_with("0 "), "{}", marked.marks());
+}
+
+#[test]
 fn the_test_pattern_leaves_the_shells_marks_at_the_screens_start_and_the_rows_a_resize_lent_in_history() {
     // (ESC # 8 writes over the whole screen, as CSI 2 J erases it: what the marks marked is gone.)
     for whole in ["\x1b#8", "\x1b[2J"] {
