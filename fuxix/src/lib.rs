@@ -34,10 +34,8 @@ mod os {
     pub type Nfds = c_uint;
     pub type Mode = u16;
 }
-const F_SETFD: c_int = 2;
 const F_GETFL: c_int = 3;
 const F_SETFL: c_int = 4;
-const FD_CLOEXEC: c_int = 1;
 pub const POLLIN: i16 = 0x1;
 pub const POLLOUT: i16 = 0x4;
 
@@ -99,15 +97,12 @@ pub fn pty(mut size: Winsize) -> io::Result<(File, File)> {
     check(unsafe { openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) })?;
     // SAFETY: openpty succeeded, so both are open descriptors nobody else owns.
     let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-    for fd in [&master, &slave] {
-        // SAFETY: fcntl on a descriptor we own, with an integer argument.
-        check(unsafe { fcntl(fd.as_raw_fd(), F_SETFD, FD_CLOEXEC) })?;
-    }
     // SAFETY: fcntl on a descriptor we own; F_GETFL takes no third argument.
     let flags = check(unsafe { fcntl(master.as_raw_fd(), F_GETFL) })?;
     // SAFETY: fcntl on a descriptor we own, with an integer argument.
     check(unsafe { fcntl(master.as_raw_fd(), F_SETFL, flags | os::O_NONBLOCK) })?;
-    Ok((File::from(master), File::from(slave)))
+    // (A copy std makes is closed in a program started later; the two openpty gave close here.)
+    Ok((File::from(master.try_clone()?), File::from(slave.try_clone()?)))
 }
 
 /// Makes the command lead a new session when it starts. With `tty`, its
