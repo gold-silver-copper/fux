@@ -2021,10 +2021,7 @@ impl Term {
             self.out.pictures.retain(|(id, _)| *id != oldest);
             self.refuse("a screen keeps 8 pictures: the oldest was dropped for a new one");
         }
-        let mut whole = Vec::with_capacity(data.len() + 4);
-        whole.extend_from_slice(b"\x1bP");
-        whole.extend_from_slice(data);
-        whole.extend_from_slice(b"\x1b\\");
+        let whole = [b"\x1bP", data, b"\x1b\\"].concat();
         let Cursor { row, col, .. } = self.screen.cursor;
         self.screen.pictures.push(Picture { id: self.next_picture, row, col, cols, rows, off: 0 });
         self.out.pictures.push((self.next_picture, whole));
