@@ -633,9 +633,16 @@ impl Term {
     /// `styled` gets the same row with its looks, and a line's end wherever `out` gets one;
     /// `joiner` is what the open line's last character is to this row's first, `own` the colours
     /// the program set, in which the row is told as it is now: history is not told again later.
-    fn row_history(row: &[Cell], goes_on: bool, own: &Own, tail: &mut Tail, out: &mut String, styled: &mut String) {
-        if tail.open.is_some() && !continues(row) {
+    /// With 4 MiB waiting to be written (`waiting`, and what `out` has) the row is not kept, which
+    /// is what false says: it ends the line it would have gone on, in both texts.
+    fn row_history(row: &[Cell], goes_on: bool, own: &Own, tail: &mut Tail, waiting: usize, out: &mut Out) -> bool {
+        let (out, styled) = (&mut out.history, &mut out.styled);
+        let kept = waiting + out.len().max(styled.len()) < HISTORY_PENDING_MAX;
+        if tail.open.is_some() && !(kept && continues(row)) {
             tail.end(out, styled);
+        }
+        if !kept {
+            return false;
         }
         if tail.open.is_none() {
             tail.joiner = Joiner::default();
@@ -662,6 +669,7 @@ impl Term {
         if !goes_on {
             tail.end(out, styled);
         }
+        true
     }
 
     /// The screen as plain text, one line per row, blanks at the end cut.
@@ -1079,16 +1087,9 @@ impl Term {
             // where they start, and they are neither read for history, which would cut them,
             // nor written again.)
             let used = row.iter().rposition(|cell| *cell != blank).map_or(0, |last| last + 1);
-            if kept && self.out.history.len().max(self.out.styled.len()) < HISTORY_PENDING_MAX {
+            if kept {
                 let text = row.get(..used.max(1)).filter(|_| cut && !goes_on).unwrap_or(row);
-                let out = &mut self.out;
-                Term::row_history(text, goes_on, &self.own, &mut self.tail, &mut out.history, &mut out.styled);
-            } else if kept {
-                // (A row that is not kept ends the line it would have gone on, in both texts.)
-                if self.tail.open.is_some() {
-                    self.tail.end(&mut self.out.history, &mut self.out.styled);
-                }
-                full = true;
+                full |= !Term::row_history(text, goes_on, &self.own, &mut self.tail, 0, &mut self.out);
             }
             row.iter_mut().take(used).for_each(|cell| *cell = blank);
         }
@@ -1397,22 +1398,14 @@ impl Term {
         // the last of them, a screen's worth at most, are kept to come back another time.
         let keep = up.saturating_sub(ABOVE_MAX / cols);
         let mut tail = lent.as_ref().map_or(self.tail, |lent| lent.before);
-        let (mut history, mut styled, mut before, mut styled_before, mut was) =
-            (String::new(), String::new(), 0, 0, tail);
+        let (mut given, mut before, mut styled_before, mut was) = (Out::default(), 0, 0, tail);
         let (waiting, mut full) = (self.out.history.len().max(self.out.styled.len()), false);
         for (y, (row, goes_on)) in with_next(&wrapped).take(up).enumerate() {
             if y == keep {
-                (before, styled_before, was) = (history.len(), styled.len(), tail);
+                (before, styled_before, was) = (given.history.len(), given.styled.len(), tail);
             }
-            // (The same bound as for rows that scroll off: one past it ends the line, in both texts.)
-            if waiting + history.len().max(styled.len()) >= HISTORY_PENDING_MAX {
-                if tail.open.is_some() {
-                    tail.end(&mut history, &mut styled);
-                }
-                full = true;
-                continue;
-            }
-            Term::row_history(row, goes_on, &self.own, &mut tail, &mut history, &mut styled);
+            // (The same bound as for rows that scroll off, with what waits from before.)
+            full |= !Term::row_history(row, goes_on, &self.own, &mut tail, waiting, &mut given);
         }
         let rows_lent: Vec<Vec<Cell>> = wrapped.drain(..up).skip(keep).collect();
         wrapped.resize(rows, vec![blank; cols]);
@@ -1480,12 +1473,12 @@ impl Term {
             *given = given.get(..waiting).unwrap_or_default().to_string() + again;
         };
         let (back, styled_back) = lent.map_or((0, 0), |lent| (lent.bytes, lent.styled));
-        retake(&mut self.out.history, &mut self.out.unhistory, back, &history);
-        retake(&mut self.out.styled, &mut self.out.unstyled, styled_back, &styled);
+        retake(&mut self.out.history, &mut self.out.unhistory, back, &given.history);
+        retake(&mut self.out.styled, &mut self.out.unstyled, styled_back, &given.styled);
         self.lent = (!rows_lent.is_empty()).then(|| Lent {
             rows: rows_lent,
-            bytes: history.len() - before,
-            styled: styled.len() - styled_before,
+            bytes: given.history.len() - before,
+            styled: given.styled.len() - styled_before,
             before: was,
         });
         self.tail = tail;

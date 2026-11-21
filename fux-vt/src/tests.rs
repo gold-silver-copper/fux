@@ -16,17 +16,17 @@ impl Term {
     /// before the cursor; and whether every wide character on both screens has both its cells.
     pub fn lines(&self) -> (String, String, bool) {
         let (main, row) = (self.main(), if self.screen.alt { self.saved[0].row } else { self.screen.cursor.row });
-        let (mut all, mut before, mut open) = (String::new(), String::new(), self.tail);
+        let (mut all, mut before, mut open) = (Out::default(), String::new(), self.tail);
         for (y, (cells, goes_on)) in with_next(main).enumerate() {
             if y == row {
-                before.clone_from(&all);
+                before.clone_from(&all.history);
                 if open.open.is_some() && !continues(cells) {
                     before.push('\n');
                 }
                 before.extend(cells.iter().take(self.screen.cursor.place().1).flat_map(Cell::chars));
             }
             open.joiner = Joiner::default();
-            Term::row_history(cells, goes_on, &self.own, &mut open, &mut all, &mut String::new());
+            Term::row_history(cells, goes_on, &self.own, &mut open, 0, &mut all);
         }
         let whole = [&self.screen.grid, &self.other].iter().all(|grid| {
             grid.len() == self.screen.rows
@@ -39,7 +39,7 @@ impl Term {
                         })
                 })
         });
-        (all, before, whole)
+        (all.history, before, whole)
     }
 }
 
