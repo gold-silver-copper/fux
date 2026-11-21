@@ -266,28 +266,13 @@ impl Layout {
     /// Makes the layout agree with the panes that exist: a pane that is gone
     /// leaves it, a pane it does not place gets a tab of its own, and every
     /// tab's focus is one of its panes.
-    pub fn settle(&mut self, mut existing: Vec<String>) {
-        let mut seen: Vec<String> = Vec::new();
+    pub fn settle(&mut self, existing: Vec<String>) {
         let (shown, marked) = (self.names(Some(self.current)), self.names(self.before));
-        let tabs = std::mem::take(&mut self.tabs);
-        for tab in tabs {
-            let mut keep = |name: &str| {
-                let fresh = existing.iter().any(|e| e == name) && !seen.iter().any(|s| s == name);
-                seen.extend(fresh.then(|| name.to_string()));
-                fresh
-            };
-            if let Some(root) = tab.root.filter(&mut keep) {
-                self.tabs.push(Tab { root, ..tab });
-            }
-        }
-        existing.retain(|name| !seen.contains(name));
-        existing.sort_by(|a, b| (a.len(), a).cmp(&(b.len(), b)));
-        self.tabs.extend(existing.iter().map(|name| tab_of(name)));
-        for tab in &mut self.tabs {
-            if !tab.panes().contains(&tab.focus.as_str()) {
-                tab.focus = tab.panes().first().map(|name| name.to_string()).unwrap_or_default();
-            }
-        }
+        let mut unplaced: std::collections::HashSet<_> = existing.into_iter().collect();
+        self.retain_panes(|name| unplaced.remove(name));
+        let mut unplaced: Vec<_> = unplaced.into_iter().collect();
+        unplaced.sort_by(|a, b| (a.len(), a).cmp(&(b.len(), b)));
+        self.tabs.extend(unplaced.iter().map(|name| tab_of(name)));
         // The tab shown stays the one that was shown, wherever it is now. If
         // it is gone, the tab shown before it is shown; if that is gone too,
         // the tab now in its place.
@@ -359,16 +344,18 @@ impl Layout {
         self.tabs.get_mut(self.current).ok_or_else(|| "there are no panes here".into())
     }
 
-    /// Takes a pane out of the layout, wherever it is.
-    fn remove(&mut self, name: &str) {
-        let tabs = std::mem::take(&mut self.tabs);
-        self.tabs =
-            tabs.into_iter().filter_map(|t| Some(Tab { root: t.root.filter(&mut |n| n != name)?, ..t })).collect();
-        for tab in &mut self.tabs {
-            if tab.focus == name {
-                tab.focus = tab.panes().first().map(|n| n.to_string()).unwrap_or_default();
-            }
-        }
+    /// Prune the trees, dropping empty tabs and giving a surviving pane the focus.
+    fn retain_panes(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.tabs = std::mem::take(&mut self.tabs)
+            .into_iter()
+            .filter_map(|mut tab| {
+                tab.root = tab.root.filter(&mut keep)?;
+                if !tab.root.contains(&tab.focus) {
+                    tab.focus = tab.panes().first()?.to_string();
+                }
+                Some(tab)
+            })
+            .collect();
     }
 
     fn apply(&mut self, words: &[&str]) -> Result<(), String> {
@@ -392,7 +379,7 @@ impl Layout {
                     ["beside", pane] => return Err(format!("cannot split pane {name} beside {pane}")),
                     _ => return Err("split takes row|col PANE [beside ANCHOR]".into()),
                 };
-                self.remove(name);
+                self.retain_panes(|pane| pane != *name);
                 let new = (Node::Pane(name.to_string()), 1);
                 let at =
                     self.tabs.iter().position(|tab| beside.as_deref().is_some_and(|pane| tab.panes().contains(&pane)));
@@ -465,7 +452,7 @@ impl Layout {
             ["break"] if self.tab().is_some_and(|tab| tab.panes().len() < 2) => {}
             ["break"] => {
                 let name = self.tab_mut()?.focus.clone();
-                self.remove(&name);
+                self.retain_panes(|pane| pane != name);
                 self.current = (self.current + 1).min(self.tabs.len());
                 self.tabs.insert(self.current, tab_of(&name));
             }
