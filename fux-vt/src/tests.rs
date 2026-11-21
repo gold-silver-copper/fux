@@ -130,6 +130,9 @@ fn the_styled_screen_read_back_is_the_same_screen() {
     assert_eq!(first.styled(), second.styled());
     assert_eq!(first.plain(), second.plain());
     assert!(first.plain().contains("wide 日本語 e\u{301} curly rev") && first.plain().contains("┌─┐"));
+    // (A control character of more than one byte is one `?` like any other, and the row goes on after it.)
+    let odd = Term { screen: Screen::read("A\u{9b}B\n", 8), ..Term::new(8, 1) };
+    assert_eq!(odd.plain(), "A?B\n");
 }
 
 #[test]

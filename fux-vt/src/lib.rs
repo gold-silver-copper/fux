@@ -467,7 +467,8 @@ impl Screen {
                 });
                 text.push_str(before);
                 text.push_str(colour.and_then(|length| after.get(..length)).unwrap_or("?"));
-                rest = after.get(colour.unwrap_or(1)..).unwrap_or_default();
+                let length = colour.or(after.chars().next().map(char::len_utf8)).unwrap_or(1);
+                rest = after.get(length..).unwrap_or_default();
             }
             text.push_str(rest);
             term.feed(format!("\x1b[{};1H\x1b[m{text}", row + 1).as_bytes());
