@@ -12,10 +12,20 @@ exclude = ["/tools/referee"]
 panic = "abort"
 opt-level = 2
 
-[lints.rust]
-unsafe_code = "deny"
+[dependencies]
+fux-vt = { path = "fux-vt" }
+fuxix = { path = "fuxix" }
 
-[lints.clippy]
+# The emulator and the system calls are crates beside this one. The referee's old emulator is no member.
+[workspace]
+members = ["fux-vt", "fuxix"]
+default-members = [".", "fux-vt", "fuxix"]
+exclude = ["tools/referee/old"]
+
+[lints]
+workspace = true
+
+[workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 indexing_slicing = "deny"

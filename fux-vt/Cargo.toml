@@ -1,0 +1,10 @@
+[package]
+name = "fux-vt"
+version = "0.18.0"
+edition = "2024"
+description = "A terminal emulator: bytes in, a grid of cells out; sixel pictures, sized and cut"
+license = "MIT"
+publish = false
+
+[lints]
+workspace = true

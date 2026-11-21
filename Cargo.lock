@@ -5,3 +5,15 @@ version = 4
 [[package]]
 name = "fux"
 version = "0.40.0"
+dependencies = [
+ "fux-vt",
+ "fuxix",
+]
+
+[[package]]
+name = "fux-vt"
+version = "0.18.0"
+
+[[package]]
+name = "fuxix"
+version = "0.11.0"

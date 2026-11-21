@@ -1,8 +1,13 @@
 //! The terminal emulator: bytes in, a grid of cells out. It answers the
 //! queries programs wait on, keeps the lines that scroll off the top, and
 //! takes sixel pictures whole. It knows nothing of files or processes.
+#![forbid(unsafe_code)]
 
-use crate::sixel;
+pub mod sixel;
+#[cfg(test)]
+mod tests;
+pub mod width;
+
 use crate::width::{Joiner, plain, spread, width};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

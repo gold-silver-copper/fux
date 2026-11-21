@@ -1,6 +1,7 @@
 //! fux: a terminal multiplexer that is a view over directories. A pane is a
 //! directory kept by one small process; a workspace is a folder of panes;
 //! the viewer and every other client only read and write files.
+#![forbid(unsafe_code)]
 
 /// The names that tell this program from the fux it is to replace. They are
 /// temporary: when that fux is retired, these three lines become `FUX_`,
@@ -18,13 +19,13 @@ pub const TERM_PROGRAM: &str = "fux-next";
 mod holder;
 mod keys;
 mod layout;
-mod sixel;
-mod sys;
-mod term;
 #[cfg(test)]
 mod tests;
 mod view;
-mod width;
+
+// The emulator and the system calls are crates of their own, under the names this one calls them by.
+use fux_vt::{self as term, sixel, width};
+use fuxix as sys;
 
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File, OpenOptions};

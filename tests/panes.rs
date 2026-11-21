@@ -1,16 +1,12 @@
 //! The program itself, driven the way a person drives it: with files.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
+use fux_vt::sixel;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-
-/// The reader of sixel pictures the viewer cuts them with, to look at what it drew.
-#[allow(dead_code)]
-#[path = "../src/sixel.rs"]
-mod sixel;
 
 /// A session directory of the test's own. Removing it ends its panes.
 struct Session(PathBuf);
