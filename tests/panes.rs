@@ -151,6 +151,69 @@ fn the_two_histories_keep_their_bounds_and_the_same_lines() {
     assert!(!styled.contains("one10") && styled.starts_with("\x1b[0;3"), "{styled}");
 }
 
+#[test]
+fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were() {
+    let session = Session::new("recipes");
+    fs::create_dir_all(&session.0).unwrap();
+    let keys = session.0.join(".keys");
+    assert!(
+        Command::new("cp")
+            .arg("-R")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"))
+            .arg(&keys)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let path = format!("{bin}:{}", std::env::var("PATH").unwrap());
+    // Two panes with text: one whose line has scrolled into history, one still running. And an
+    // editor for the test, which notes the line it is to open at and the line it finds there.
+    let old = session.start("w/old", &["sh", "-c", "echo 'a needle in old'; seq 1 60; exec sleep 600"]);
+    let argued = ["sh", "-c", "echo \"$1|$2\"; echo 'the needle again'; sleep 600", "sh", "two words", ""];
+    let other = session.start("v/other", &argued);
+    until("both have printed", || {
+        read(&old.join("history")).contains("needle") && read(&other.join("screen")).contains("again")
+    });
+    fs::write(session.0.join("ed"), "#!/bin/sh\nsed -n \"${1#+}p\" \"$2\" > \"$OUT\"\n").unwrap();
+    Command::new("chmod").arg("+x").arg(session.0.join("ed")).status().unwrap();
+    let out = session.0.join("out");
+    // The search, in a pane as the key starts it: the words, then the first line of the list.
+    let mut search = session.fux();
+    search.env("PATH", &path).env("FUXN_KEYS", &keys).env("OUT", &out).env("SHELL", "/bin/sh");
+    search
+        .env("FUXN_EDIT", format!("{} +%l %f", session.0.join("ed").display()))
+        .env("PATH", format!("{}:{path}", session.0.join("none").display()));
+    let found = search.args(["start", "w/find", "--"]).arg(keys.join(".search")).output().unwrap();
+    let find = PathBuf::from(String::from_utf8(found.stdout).unwrap().trim());
+    until("it asks", || read(&find.join("screen")).contains("search every pane for:"));
+    fs::write(find.join("in"), "NEEDLE\r").unwrap();
+    // (With a finder installed the list is its own; without, the lines are numbered.)
+    if ["fzf", "sk", "fzy"].iter().all(|finder| {
+        Command::new("sh").args(["-c", &format!("command -v {finder}")]).output().is_ok_and(|o| !o.status.success())
+    }) {
+        until("the lines found are listed", || read(&find.join("screen")).contains("w/old 1:a needle in old"));
+        assert!(read(&find.join("screen")).contains("v/other 2:the needle again"));
+        fs::write(find.join("in"), "1\r").unwrap();
+        until("the editor was opened at the line", || read(&out) == "the needle again\n");
+    }
+    let _ = fs::remove_dir_all(&find);
+    // A pane whose program has ended is started again by `.restore`: the same arguments, each
+    // as it was, and what it had printed kept beside it. The one that runs is left alone.
+    let (was, runs) = (read(&other.join("argv")), read(&old.join("status")));
+    assert_eq!(was, "sh\0-c\0echo \"$1|$2\"; echo 'the needle again'; sleep 600\0sh\0two words\0\0");
+    fs::write(other.join("ctl"), "kill\n").unwrap();
+    assert!(session.fux().arg("wait").arg(&other).status().unwrap().success());
+    let restored =
+        Command::new("sh").arg(keys.join(".restore")).env("PATH", &path).env("FUXN_DIR", &session.0).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&restored.stdout), "started v/other again\n");
+    until("it runs again", || {
+        fact(&other, "state") == "running" && read(&other.join("screen")).starts_with("two words|\n")
+    });
+    assert!(read(&other.join("before")).contains("the needle again") && read(&other.join("argv")) == was);
+    assert_eq!(read(&old.join("status")), runs);
+}
+
 /// Gives a session's `main` workspace a layout, as an editor that saves in one step does: the
 /// file is whole at every moment (the viewer reads it, and writes it too, at any time).
 fn lay(session: &Path, text: &str) {

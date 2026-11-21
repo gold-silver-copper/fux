@@ -92,6 +92,7 @@ in `FUXN_WS`.
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
 | `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself: `pwd > "$FUXN_PANE/cwd"` |
 | `notice` | what was last to be noticed: a number that grows with each one, then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
+| `argv` | the program and its arguments as `fux start` was given them, each ended by a zero byte, written once: what starts the pane again exactly (`xargs -0 fux start NAME -- < argv`), where `status`'s `command` is for reading |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture over 4 MiB, history it could not write); stops at 64 KiB |
 
 **One fact, one file.** The screens are text and nothing else; everything
@@ -636,6 +637,33 @@ average; 4 MiB of sixel written. A picture past one of these is not drawn
 so is one in a terminal that does not say how many pixels a cell has.
 Another protocol later is another file extension beside `.sixel` and a few
 lines in the viewer.
+
+## Search every pane, and after a reboot
+
+Both are scripts over the files, and yours to change.
+
+**`C-b f s` searches every pane of the session.** It asks for words in a pane
+of its own, lists every line that has them (each pane's `history.1`,
+`history` and screen, wrapped lines whole, letters of either case; ended
+panes too), and opens the pane's text at the line you choose, in the editor.
+`keys/.search` does it: `.text` for a pane's text, `grep`, `.pick` for the
+choice, `.edit` to open.
+
+**`sh "$FUXN_KEYS/.restore"` starts every ended pane again**, under its name,
+with its program and arguments as they were (`argv`) and in the directory the
+program last said it was in (`cwd`: a shell that announces it; else your home
+directory). What the pane had printed is kept beside it in `before`, since a
+start in place begins a pane's files anew. A pane that is alive is left
+alone, and the layouts are files, so tiles and tabs are as they were. It
+starts programs, it does not bring them back: a shell starts fresh in its
+directory, an editor without its open files.
+For that to be of use after a reboot, the session directory must outlast
+one. The default (`$XDG_RUNTIME_DIR/fux-next`) is in memory on Linux and
+gone at logout; set `FUXN_DIR` to a directory on disk, in your shell's
+profile so that every `fux` agrees: `export FUXN_DIR=~/.local/state/fux-next`.
+On disk a busy pane costs writes (see "Bounds"). Then run the script at
+login, or put its line first in `keys/.empty`, so the first `fux view` after
+a reboot brings the panes back before it shows them.
 
 ## Don't
 

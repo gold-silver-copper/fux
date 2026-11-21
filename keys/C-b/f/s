@@ -1,0 +1,8 @@
+#!/bin/sh
+# search every pane's text
+# group: Find
+# Asks for words in a pane of its own and lists the lines of every pane of the
+# session that have them; the one chosen is opened in the editor. `.search`
+# does it.
+p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.search") || exit
+[ -d "$p" ] && fux layout pane "${p##*/}"

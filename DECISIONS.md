@@ -1374,6 +1374,22 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     terminal is set up with: a colour another program had given the
     cursor before the viewer started is not put back, as its shape is
     not.
+- **D94. Search and restore are scripts** (message 23; the panel split
+  between "now" and "recipe only", and no seat wanted a subcommand).
+  `C-b f s` (`keys/.search`) greps every pane's text and opens the line
+  chosen with the helpers the other find keys use. `keys/.restore` starts
+  every ended pane again; that a live one is left alone is `fux start`'s
+  own refusal of a name a holder keeps, so the script needs no test of
+  liveness (the pids in `status` mean nothing after a reboot).
+  - One new file per pane, `argv`: the arguments each ended by a zero
+    byte, written once. `status` has the command flattened with blanks for
+    a person to read, and a script cannot split `sh -c "a b" x` back out
+    of it (a seat's restore re-ran commands with wrong quoting). Nothing
+    else is new: no restart command, no saved environment (the starter's
+    is gone; the script's own is what the pane gets).
+  - A start in place begins a pane's files anew, so the script keeps what
+    the pane had printed in `before` first. Keeping `history` across a
+    restart in the holder was a seat's wish; the script does it without.
 
 ## The old fux3's bugs: which classes are gone
 
