@@ -9,11 +9,16 @@ fux is a view over the filesystem and pane daemons. Everything else follows.
   its program runs, and a `layout` file. Viewers: processes that read all of
   this. Key scripts: files.
 - **One source of truth for each fact.** What a terminal shows: the holder's
-  emulator, published as `screen` and `screen.styled`. Whether a pane lives:
+  emulator, published as a folder for each of its two screens (`main/`
+  always, `alt/` while a program has the alternate screen), the same names
+  in each. Which of them is drawn: the link `shown`. Whether a pane lives:
   the kernel's lock on its directory, held by its holder. Which panes exist:
   the folders. Where they are drawn and which has the keys: the `layout`
-  file. What a key does: the file of its name. Whether a program has the
-  alternate screen: that `screen.main` is there. In the code as in the
+  file. What a key does: the file of its name. Whether the pane's files
+  agree: that `generation` is even. A name is a thing and never a role:
+  `main/screen` is the main screen whichever is drawn, and a fact counts in
+  the numbering of the thing it is of (a screen's links in that screen's
+  lines, the marks in the pane's text). In the code as in the
   files: no field mirrors another, and what is kept of a file is kept under
   that file's stamp and read again when the stamp changes.
 - **What is derived.** The viewer's picture, from the screens and the layout.
@@ -22,9 +27,12 @@ fux is a view over the filesystem and pane daemons. Everything else follows.
 - **What changes it, and who may.** A program writes to its terminal. Anyone
   writes to `in` and `ctl`, makes, renames and removes folders, edits
   `layout`. Nothing is asked of a server, because there is none.
-- **What makes a change correct.** A screen file is replaced in one rename,
-  so it is always whole. History is appended before the screens that no
-  longer show those lines. A layout edit is read, change, rename, under a
+- **What makes a change correct.** A file is replaced in one rename, so it
+  is always whole; `shown` too. `generation` is odd from the first change of
+  a round of writing to its last, so files read between two looks at the
+  same even number are of one round. History is appended before the screens
+  that no longer show those lines, and holds whole lines: one that never
+  ends is ended there, in the text's numbering too. A layout edit is read, change, rename, under a
   lock on the workspace folder. A pane's name is claimed by `mkdir`, and
   the pane by the lock on its folder.
 
@@ -53,16 +61,19 @@ folder is called.
 **Holding.** One loop waits on the pty, `in`, `ctl` and a pipe on which a
 waiting thread reports the program's end. No signal is handled anywhere.
 Output goes through the emulator; when the program has gone quiet for a moment, and at a
-steady pace while it keeps writing (the README's "Bounds" has the numbers), the screens are
-written: first each fact that changed, in a small file of its own, then the two screens, which
-are text and nothing else. When the program ends the holder writes `state` and its last screen
+steady pace while it keeps writing (the README's "Bounds" has the numbers), a round is
+written: `generation` (odd), then each file that changed (a fact in a small file of its own, a
+screen's text, which is text and nothing else, in its folder), then `generation` (even). A
+program that takes the alternate screen has `alt/` filled before `shown` is turned to it, and
+one that leaves it has `shown` turned back before `alt/` is removed. When the program ends the holder writes `state` and its last screen
 (once: a failure is a line in `log`), removes its FIFOs and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
 is a hangup, and the rest is the kernel's and the program's business. If the
 folder is gone, the pane is gone: the holder leaves, which hangs up too.
 
 **Viewing.** The viewer has no channel to holders but each pane's `in` and `ctl`. It looks at files (often just after something happened, seldom at rest), reads a pane's
-facts and its `screen.styled` when that file changed (it is written last), and
-parses it with the same emulator that wrote it. It sends keys with a write to `in` that never waits, opening it by
+facts and the `screen.styled` that `shown` leads to when the pane's `generation` is another file
+(it is written last), keeps what it read if it is still that file afterwards, and
+parses the screen with the same emulator that wrote it. It sends keys with a write to `in` that never waits, opening it by
 its path each time, so that the pane typed into is the pane of that name
 now. There is no header and no version: a reader that
 takes a fact and a text one write apart is wrong for one frame, and the next

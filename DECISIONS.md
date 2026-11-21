@@ -2114,6 +2114,71 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   leftovers of D112's review that the base shared: five fixed, the
   rest each given its line in the README.
 
+- **D114. A folder for each screen, and reads that agree** (the owner,
+  2026-11-21: "have a panel do a full audit of our file format and see
+  if they can come up with a better architecture that is more
+  ontologically correct"; a panel of eight, 2 Fable, 2 Opus, 2
+  gpt-6.2-sol, 2 gpt-6.2-astra, two rounds; its result and ballots are
+  in the notes, `panel-files-2026-11-21`). Decided by the panel and
+  approved by the owner:
+  - a folder for each screen, `main/` always and `alt/` while a program
+    has the alternate screen, the same five names in each, and `shown`,
+    a link to the one drawn (8/8 in round two, the four Codex seats
+    having changed on a measurement: a script that read the plain names
+    under vim got vim's rows as the shell's text and exit 0);
+  - flat everywhere else; a dot suffix says how a file is told or how
+    old it is, never which thing it is of (8/8);
+  - `generation`, odd while the holder writes and even when the files
+    agree (7/8 in round one; a reader of two files got them from two
+    rounds 77 times in 1,000 on the base);
+  - each screen's facts in that screen's own numbering (6/8), a line
+    that history cut keeps its marks on text that exists (1/8, with a
+    script), a picture says the cells it was laid out in (1/8, with a
+    script).
+  Decided here, where the panel left a choice or this run found better:
+  - **`alt/lines` begins with `0`, not `-`.** The panel offered both.
+    With a number one rule reads both folders (a row's line is that
+    number plus the rows above it that do not go on; a link's LINE
+    counts the same way), and the viewer reads `shown/lines` with no
+    branch. What says "this is not the pane's text" is the folder's
+    name. Against: `-` would fail a script that did arithmetic on it;
+    that script has to name `alt/` to get there.
+  - **A line that never ends is ended, not given an origin.** The seat
+    that found the bug proposed a file `history.origin` (the line and
+    byte of the first byte kept). Instead the holder ends the line
+    where it cuts it: a line's end in both history files, the
+    emulator's numbering moved on (`Term::end_line`), the marks after
+    it in the next line, a line in `log`. History then holds whole
+    lines always, no reader's arithmetic changes, and there is no new
+    file. The cost: the text has a line break the program did not
+    print, once in 8 MiB of a line with none.
+  - **The cell size is two more words on each `pictures` line**, not a
+    file at the root: the picture carries it in the emulator (it is of
+    the picture's layout, and the holder drops pictures when cells
+    change), a reader of one file needs no `generation`, and a line
+    copied with its picture stays whole.
+  - **`pictures` keeps ROW as a row of its screen** in both folders (the
+    prompt had "in the text's numbering" for `main/pictures`): a
+    picture lies on cells, not in the text, and a row becomes a line
+    through `lines` like any other.
+  - **Every file is written only when it changes, the screens too**, and
+    `generation` is what a watcher watches (it was `screen.styled`,
+    written every round). One rule for every name, a covered main
+    screen costs nothing, and a cursor that moves rewrites two small
+    files and no screen.
+  - **`alt/` is removed with all that is in it** (the one recursive
+    removal the holder does, of a folder that is its own): a file a
+    killed holder left half written there cannot keep a pane from ever
+    agreeing again.
+  - **The viewer keeps a read only when `generation` brackets it**, and
+    does not read while it is odd and the holder lives. A folder with
+    no `generation` (made by hand) is read once, and again when one is
+    written.
+  - **`keys/.text` reads under `generation`, ten tries**, then takes the
+    files as they are (a flood, a killed holder): a key must not hang.
+  - The emulator tells each screen through one function, `files(alt)`;
+    `covered`, `wraps`, `links` and `top` are gone from its interface.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.
