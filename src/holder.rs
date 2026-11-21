@@ -235,11 +235,9 @@ impl Holder {
                 }
                 dirty.get_or_insert_with(Instant::now);
             }
-            if program & !sys::POLLOUT != 0 && budget > 0 {
-                let n = self.read_program(buffer.get_mut(..budget.min(64 << 10)).unwrap_or(&mut []));
-                budget -= n.min(budget);
-                heard = if n > 0 { Instant::now() } else { heard };
-                dirty = dirty.or((n > 0).then_some(heard));
+            if program & !sys::POLLOUT != 0 && budget > 0 && self.read_program(&mut buffer, &mut budget) {
+                heard = Instant::now();
+                dirty.get_or_insert(heard);
             }
             if typed != 0 && self.master.is_some() {
                 let room = INPUT_MAX.saturating_sub(self.input.len()).min(buffer.len());
@@ -301,28 +299,26 @@ impl Holder {
         }
     }
 
-    /// Feeds the emulator what the program wrote; says how many bytes.
-    fn read_program(&mut self, buffer: &mut [u8]) -> usize {
+    /// Feeds the emulator one read of what the program wrote, of no more bytes than are `left`, and takes
+    /// them from that; says whether there were any.
+    fn read_program(&mut self, buffer: &mut [u8], left: &mut usize) -> bool {
+        let buffer = buffer.get_mut(..(*left).min(buffer.len())).unwrap_or_default();
         let Some(n) = self.master.as_ref().and_then(|mut m| m.read(buffer).ok()) else {
-            return 0;
+            return false;
         };
         // What the colours are is in the session's `colours` file, two folders up, if a viewer
         // (or a person) wrote one: read again when it has changed, 16 KiB of it at most.
         self.told();
         self.term.feed(buffer.get(..n).unwrap_or(&[]));
         self.collect(READ_BUDGET);
-        n
+        *left = left.saturating_sub(n);
+        n != 0
     }
 
     /// Reads what the program has written and was not read yet, `most` bytes of it at most.
     fn drain(&mut self, mut most: usize) {
         let mut buffer = vec![0u8; 64 << 10];
-        while most > 0 {
-            match self.read_program(buffer.get_mut(..most.min(64 << 10)).unwrap_or(&mut [])) {
-                0 => break,
-                n => most -= n.min(most),
-            }
-        }
+        while most > 0 && self.read_program(&mut buffer, &mut most) {}
     }
 
     /// Takes what the emulator produced: answers go to the program and refusals to the log now,
