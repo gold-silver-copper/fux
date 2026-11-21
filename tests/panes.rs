@@ -1478,3 +1478,38 @@ fn a_workspace_whose_layout_is_a_fifo_is_drawn_and_left_all_the_same() {
     fs::write(view.join("in"), "\x02d").unwrap();
     soon("left", &|| fact(&view, "state").starts_with("exited"));
 }
+
+#[test]
+fn a_clipboard_set_while_a_workspace_with_no_pane_was_shown_is_not_sent_on_the_way_back() {
+    // A pane that copies each word typed to it (OSC 52), shown by a viewer whose keys have no
+    // `.empty`: a workspace with no pane stays empty.
+    let (outer, inner) = (Session::new("couter"), Session::new("cinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(inner.0.join("other")).unwrap();
+    let copies = "stty -echo; while read -r word; do printf '\\033]52;c;%s\\007did %s\\n' \"$word\" \"$word\"; done";
+    let pane = inner.start("a", &["sh", "-c", copies]);
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    let (screen, sent) = (|| read(&view.join("screen")), || read(&view.join("clipboard")));
+    // What the pane copies while it has the keys reaches the viewer's own terminal.
+    until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
+    std::thread::sleep(Duration::from_millis(300));
+    fs::write(pane.join("in"), "b25l\n").unwrap();
+    until("the first copy is passed on", || sent() == "one");
+    // What it copies while the viewer shows a workspace with no pane is old when the viewer
+    // comes back: it is not sent.
+    let ctl =
+        fs::read_dir(&inner.0).unwrap().flatten().find(|file| file.file_name().to_string_lossy().starts_with(".view."));
+    let ctl = ctl.unwrap().path();
+    fs::write(&ctl, "workspace other\n").unwrap();
+    until("the workspace with no pane is shown", || screen().contains("no panes in other"));
+    fs::write(pane.join("in"), "dHdv\n").unwrap();
+    until("the pane copied again", || read(&pane.join("clipboard")) == "two");
+    fs::write(&ctl, "workspace main\n").unwrap();
+    until("the pane is shown again", || screen().contains("did dHdv"));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(sent(), "one", "a clipboard set while another workspace was shown was sent on the way back");
+    fs::write(pane.join("in"), "dGhyZWU=\n").unwrap();
+    until("the next copy is passed on", || sent() == "three");
+}

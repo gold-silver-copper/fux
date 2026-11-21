@@ -861,6 +861,8 @@ impl View {
         // Panes get every cell but the lines between them: no titles, and no row for a bar.
         let tiles = tab.map(|tab| tab.tiles(Rect { x: 0, y: 0, w, h })).unwrap_or_default();
         self.focus = tab.map(|tab| tab.focus.clone());
+        // (With no pane to look at, none was looked at last: what it copies meanwhile is old when it is come back to.)
+        self.copied = self.copied.take().filter(|_| self.focus.is_some());
         self.notices(&layout, &directory);
         // A frame drawn from what the last one was drawn from is the last one: nothing is put
         // together and nothing compared. (A menu is drawn from more than this: with one open,
