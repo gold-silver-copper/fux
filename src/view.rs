@@ -166,8 +166,6 @@ struct View {
     /// this viewer has not shown on a focused pane yet. And when all were last looked at.
     notices: HashMap<String, (Stamp, bool)>,
     looked: Option<Instant>,
-    /// The workspace that was looked at for panes when it was first shown.
-    greeted: Option<String>,
     /// While the terminal is still being asked what it is like: since when, and the colours it
     /// has told of.
     colours: Option<(Instant, String)>,
@@ -271,7 +269,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         told_focus: None,
         notices: HashMap::new(),
         looked: None,
-        greeted: None,
         colours: Some((Instant::now(), String::new())),
         drawn: Vec::new(),
         cursor: String::new(),
@@ -856,6 +853,7 @@ impl View {
         self.focus = tab.map(|tab| tab.focus.clone());
         // (With no pane to look at, none was looked at last: what it copies meanwhile is old when it is come back to.)
         self.copied = self.copied.take().filter(|_| self.focus.is_some());
+        let first_look = self.looked.is_none();
         self.notices(&layout, &directory);
         // A frame drawn from what the last one was drawn from is the last one: nothing is put
         // together and nothing compared. (A menu is drawn from more than this: with one open,
@@ -1074,8 +1072,7 @@ impl View {
         // shown stays empty, and says how to go on.
         // (No pane is what the layout says, not what there was room to draw. A script that is
         // being waited for is still waited for: the keys typed after it are its workspace's.)
-        if self.greeted.as_deref() != Some(self.workspace.as_str()) {
-            self.greeted = Some(self.workspace.clone());
+        if first_look {
             let first = self.keys.join(".empty");
             if layout.tabs.is_empty() && wrong.is_none() && first.is_file() {
                 let waiting = self.waiting;
