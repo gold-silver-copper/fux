@@ -56,10 +56,10 @@ pub struct Rect {
 }
 
 impl Node {
-    pub fn panes<'a>(&'a self, into: &mut Vec<&'a str>) {
+    fn panes(&self) -> Vec<&str> {
         match self {
-            Node::Pane(name) => into.push(name),
-            Node::Split(_, parts) => parts.iter().for_each(|(part, _)| part.panes(into)),
+            Node::Pane(name) => vec![name],
+            Node::Split(_, parts) => parts.iter().flat_map(|(part, _)| part.panes()).collect(),
         }
     }
 
@@ -174,9 +174,7 @@ impl Node {
 
 impl Tab {
     pub fn panes(&self) -> Vec<&str> {
-        let mut names = Vec::new();
-        self.root.panes(&mut names);
-        names
+        self.root.panes()
     }
 
     /// Where each pane of the tab is drawn in `area`.
