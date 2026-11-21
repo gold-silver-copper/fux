@@ -2273,17 +2273,9 @@ impl Term {
             (b'?', b'$', b'p') => {
                 let mode = self.arg(0, 0);
                 let set = match mode {
-                    1 => Some(self.screen.app_cursor),
-                    6 => Some(self.origin),
-                    7 => Some(self.autowrap),
-                    25 => Some(self.screen.cursor_shown),
                     47 | 1047 | 1049 => Some(self.screen.alt),
                     9 | 1000 | 1002 | 1003 => Some(usize::from(self.screen.mouse) == mode),
-                    1006 => Some(self.screen.mouse_sgr),
-                    2004 => Some(self.screen.paste),
-                    1004 => Some(self.screen.focus),
-                    2026 => Some(self.screen.sync),
-                    _ => None,
+                    _ => self.switch(mode).map(|on| *on),
                 };
                 // Text is always cut into grapheme clusters (2027): permanently set.
                 let answer = if mode == 2027 { 3 } else { set.map_or(0, |on| 2 - u8::from(on)) };
@@ -2387,20 +2379,26 @@ impl Term {
         self.wrap_pending = false;
     }
 
+    /// Where a mode that is one switch is kept: what sets it, resets it and answers for it.
+    fn switch(&mut self, mode: usize) -> Option<&mut bool> {
+        Some(match mode {
+            1 => &mut self.screen.app_cursor,
+            6 => &mut self.origin,
+            7 => &mut self.autowrap,
+            25 => &mut self.screen.cursor_shown,
+            1004 => &mut self.screen.focus,
+            1006 => &mut self.screen.mouse_sgr,
+            2004 => &mut self.screen.paste,
+            2026 => &mut self.screen.sync,
+            _ => return None,
+        })
+    }
+
     fn private_mode(&mut self, mode: usize, on: bool) {
+        let was = self.switch(mode).map(|switch| std::mem::replace(switch, on));
         match mode {
-            1 => self.screen.app_cursor = on,
-            6 => {
-                self.origin = on;
-                self.move_to(0, 0);
-            }
-            7 => self.autowrap = on,
-            25 => self.screen.cursor_shown = on,
-            1004 => self.screen.focus = on,
-            2026 => {
-                (self.screen.sync, self.screen.syncs) =
-                    (on, self.screen.syncs.wrapping_add(u32::from(on && !self.screen.sync)))
-            }
+            6 => self.move_to(0, 0),
+            2026 => self.screen.syncs = self.screen.syncs.wrapping_add(u32::from(on && was == Some(false))),
             47 => self.set_alt(on, false),
             1047 => {
                 if !on && self.screen.alt {
@@ -2419,9 +2417,7 @@ impl Term {
                 self.set_alt(false, false);
                 self.restore_cursor();
             }
-            2004 => self.screen.paste = on,
             9 | 1000 | 1002 | 1003 => self.screen.mouse = if on { mode as u16 } else { 0 },
-            1006 => self.screen.mouse_sgr = on,
             _ => {}
         }
     }
