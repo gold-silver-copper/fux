@@ -171,8 +171,8 @@ fn start(args: &[OsString]) -> Result<(), String> {
     };
     // The lock on the pane's directory is the proof that a holder lives: the
     // kernel drops it when the holder is gone, however it went. We take it
-    // here and the holder inherits it.
-    let lock = File::open(&dir).map_err(|e| fail(&dir, e))?;
+    // here and the holder inherits it. (Opened without waiting: a FIFO of that name holds nobody.)
+    let lock = sys::open(&dir, false).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
         Ok(()) => launch(&dir, lock, &program),
         Err(_) => Err("a holder already keeps this pane".into()),

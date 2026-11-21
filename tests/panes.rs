@@ -1630,3 +1630,27 @@ fn a_clipboard_set_while_a_workspace_with_no_pane_was_shown_is_not_sent_on_the_w
     fs::write(pane.join("in"), "dGhyZWU=\n").unwrap();
     until("the next copy is passed on", || sent() == "three");
 }
+
+#[test]
+fn a_fifo_where_a_named_pane_would_be_is_refused_at_once() {
+    // A FIFO nobody reads or writes, under a pane's name: it is no directory to start a pane
+    // in, and the start says so without waiting for its other end.
+    let session = Session::new("fifoname");
+    fs::create_dir_all(session.0.join("main")).unwrap();
+    assert!(Command::new("mkfifo").arg(session.0.join("main/p")).status().unwrap().success());
+    let mut start = session.fux().args(["start", "p", "--", "sleep", "600"]).spawn().unwrap();
+    // (A few seconds, not `until`'s minute: a start that waits for the FIFO waits for good.)
+    let begun = Instant::now();
+    let status = loop {
+        if let Some(status) = start.try_wait().unwrap() {
+            break status;
+        }
+        if begun.elapsed() > Duration::from_secs(4) {
+            start.kill().unwrap();
+            start.wait().unwrap();
+            panic!("after 4 s the start was still waiting for the FIFO");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(!status.success());
+}
