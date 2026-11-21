@@ -238,9 +238,8 @@ background #1c1c1c
 (`foreground`, `background`, `cursor`, or a palette number from 0 to 255, then `#` and
 six hex digits; of two lines for one colour the last counts, a line that is
 anything else counts for nothing, and 16 KiB of the file are read). The
-viewer asks its terminal once when it starts, gives it a second to answer
-(and writes again if more comes within ten, on a slow line),
-and writes the file with what it was told, in place of the one that was
+viewer asks its terminal once when it starts and, when the terminal has
+answered (or ten seconds have gone by, on a slow line), writes the file with what it was told, in place of the one that was
 there, yours too; a terminal that tells of no colour leaves the file as it
 is. Two viewers on terminals of different colours do not agree: the one that
 wrote last is believed. A pane's holder answers a program's question (OSC

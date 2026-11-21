@@ -174,8 +174,6 @@ struct View {
     /// While the terminal is still being asked what it is like: since when, and the colours it
     /// has told of.
     colours: Option<(Instant, String)>,
-    /// What this viewer wrote into the session's `colours` and `keyboard` files last.
-    written: Vec<(&'static str, String)>,
     /// The pictures on the terminal now.
     drawn: Vec<Drawn>,
     /// What the last frame had of each picture of its tiles, by its part: the sixel to draw (the
@@ -285,7 +283,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         looked: None,
         greeted: None,
         colours: Some((Instant::now(), String::new())),
-        written: Vec::new(),
         drawn: Vec::new(),
         cursor: String::new(),
         cursor_colour: None,
@@ -403,11 +400,10 @@ impl View {
                 self.unwritten = self.unwritten.saturating_sub((&*wrote).read(&mut buffer)?);
                 active = Instant::now();
             }
-            // The terminal is given a second to say what it is like before that is written down
-            // for the session, and ten (a slow line) before a string from it is no answer any more.
-            let asked = self.colours.as_ref().map_or(Duration::ZERO, |(since, _)| since.elapsed());
-            if asked > Duration::from_secs(1) {
-                self.told(asked > Duration::from_secs(10));
+            // The terminal is given ten seconds (a slow line) to say what it is like: after
+            // that a string from it is no answer any more, and what it said is written down.
+            if self.colours.as_ref().is_some_and(|(since, _)| since.elapsed() > Duration::from_secs(10)) {
+                self.told();
             }
             if self.waiting.is_none() && !self.carry.is_empty() {
                 // When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
@@ -495,7 +491,7 @@ impl View {
                     // It was asked last: the colours the terminal told of before it are all it
                     // will tell. They go into the session's `colours` file, from which every
                     // pane's program is answered; the viewer that wrote last is believed.
-                    self.told(true);
+                    self.told();
                 }
                 name if name.starts_with("answer:") => self.colour(name.trim_start_matches("answer:")),
                 // The terminal takes the kitty keyboard protocol, and these of the flags it was asked for.
@@ -552,31 +548,21 @@ impl View {
     }
 
     /// The terminal has said all it will of what it is like (it answered the last question, or
-    /// a second went by): the colours it told of go into the session's `colours` file, from
-    /// which every pane's program is answered. If it told of none, the file is left as it is.
-    /// The file is written whole under a name of this viewer's own and then given its name, so
-    /// of two viewers the last to write is believed.
-    fn told(&mut self, last: bool) {
-        let Some((since, told)) = self.colours.take() else { return };
-        // And which keyboard flags it takes (none, if it did not say): a program in a pane that
-        // asks is told no more than that.
-        let files = [("colours", told.clone()), ("keyboard", format!("{}\n", self.keyboard))];
+    /// ten seconds went by): the colours it told of go into the session's `colours` file, from
+    /// which every pane's program is answered (if it told of none, the file is left as it is),
+    /// and the keyboard flags it takes (none, if it did not say) into `keyboard`: a program in
+    /// a pane that asks is told no more than that. Each is written whole under a name of this
+    /// viewer's own and then given its name, so of two viewers the last to write is believed.
+    fn told(&mut self) {
+        let Some((_, told)) = self.colours.take() else { return };
+        let files = [("colours", told), ("keyboard", format!("{}\n", self.keyboard))];
         for (name, text) in files.into_iter().filter(|(name, text)| *name == "keyboard" || !text.is_empty()) {
-            // (Only what is new since it was written last.)
-            if self.written.iter().any(|(file, was)| *file == name && *was == text) {
-                continue;
-            }
             let own = self.session.join(format!(".{name}.{}", std::process::id()));
-            let written = fs::write(&own, &text).and_then(|()| fs::rename(&own, self.session.join(name)));
-            if let Err(e) = written {
+            if let Err(e) = fs::write(&own, &text).and_then(|()| fs::rename(&own, self.session.join(name))) {
                 let _ = fs::remove_file(&own);
                 self.message = format!("cannot write {}: {e}", self.session.join(name).display());
             }
-            self.written.retain(|(file, _)| *file != name);
-            self.written.push((name, text));
         }
-        // Until its last answer has come, the terminal is still being listened to.
-        self.colours = (!last).then_some((since, told));
     }
 
     /// Tells the pane that has the keys so, if it asked to be told (mode 1004), and the one
