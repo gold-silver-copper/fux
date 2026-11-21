@@ -510,8 +510,6 @@ impl View {
                 name if name.starts_with("keyboard:") => {
                     self.keyboard = name.trim_start_matches("keyboard:").parse::<u8>().unwrap_or(0) & KEYS;
                 }
-                // The terminal's answer about joining characters into clusters (mode 2027): set (1,
-                // or 3 for good) or not set but known (2), which is then turned on.
                 // The window's own focus: for the pane that has the keys, if it asked to be told.
                 name if name.starts_with("focus:") => {
                     // (To the pane that was told it has the keys, whichever the layout names by now.)
@@ -521,6 +519,8 @@ impl View {
                         let _ = send_to(&pane.join("in"), raw);
                     }
                 }
+                // The terminal's answer about joining characters into clusters (mode 2027): set (1,
+                // or 3 for good) or not set but known (2), which is then turned on.
                 name if name.starts_with("mode:2027;") && !self.joins => {
                     let state = name.trim_start_matches("mode:2027;").parse::<u8>().unwrap_or(0);
                     (self.joins, self.joined) = (matches!(state, 1..=3), state == 2);
