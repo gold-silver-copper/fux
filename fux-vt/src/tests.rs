@@ -565,6 +565,14 @@ fn a_title_and_a_clipboard_leave_as_text_and_bytes_and_a_string_has_one_bound() 
     term.feed(b"\x1b]52;c;QU=JD\x07\x1b]52;c\x07\x1b[23;2t\x1b[23;2t");
     let out = term.take(0);
     assert!(out.clipboard.is_none() && term.title() == "my title");
+    // Asked for its history alone (as the holder asks between two rounds of writing), it keeps
+    // what the program said once for the round that writes it.
+    let mut asked = self::term(4, 1, "\x1b]52;c;aGk=\x07gone\r\n");
+    let (early, whole) = (asked.take(1), asked.take(0));
+    assert_eq!(
+        (early.history.as_str(), early.clipboard, whole.clipboard.as_deref()),
+        ("gone\n", None, Some(&b"hi"[..]))
+    );
     // A string of any kind that never ends is dropped at its bound, and said; what follows is text again.
     term.feed(b"\x1b]0;");
     term.feed(&vec![b'x'; (4 << 20) + 2]);

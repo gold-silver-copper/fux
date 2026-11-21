@@ -58,8 +58,6 @@ struct Holder {
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
     pictures: BTreeSet<u32>,
-    /// What the emulator produced and the next publish writes: pictures, a clipboard, a directory, a notice.
-    pending: Out,
     /// The session's folder, where the files are that say what the terminal outside is like, and
     /// which `colours` and `keyboard` were read last.
     session: PathBuf,
@@ -147,7 +145,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: BTreeSet::new(),
-        pending: Out::default(),
         session,
         told: (None, None),
         logged: 0,
@@ -345,10 +342,10 @@ impl Holder {
         }
     }
 
-    /// Takes what the emulator produced: answers go to the program and refusals to the log now.
-    /// The rest is taken once `over` bytes of history wait there: the history is written, and
-    /// what else there is waits for the next publish.
-    fn collect(&mut self, over: usize) {
+    /// Takes what the emulator produced: answers go to the program and refusals to the log now,
+    /// and history to its files once `over` bytes of it wait. What the program said once (pictures,
+    /// a clipboard, a directory, a notice) comes with `over` 0 alone, and is the caller's to write.
+    fn collect(&mut self, over: usize) -> Out {
         let mut out = self.term.take(over);
         if self.input.len() + out.reply.len() <= INPUT_MAX {
             self.input.extend_from_slice(&out.reply);
@@ -356,14 +353,11 @@ impl Holder {
             out.refused
                 .push("an answer to the program was dropped: as many typed bytes as are kept were waiting for it");
         }
-        out.refused.into_iter().for_each(|refused| self.log(refused));
-        self.pending.pictures.append(&mut out.pictures);
-        self.pending.clipboard = out.clipboard.or(self.pending.clipboard.take());
-        self.pending.cwd = out.cwd.or(self.pending.cwd.take());
-        self.pending.notice = out.notice.or(self.pending.notice.take());
+        out.refused.drain(..).for_each(|refused| self.log(refused));
         if !out.history.is_empty() || !out.styled.is_empty() || out.unhistory.max(out.unstyled) > 0 {
-            self.history([("history", out.history, out.unhistory), ("history.styled", out.styled, out.unstyled)]);
+            self.history([("history", &out.history, out.unhistory), ("history.styled", &out.styled, out.unstyled)]);
         }
+        out
     }
 
     fn commands(&mut self, mut ctl: &File, buffer: &mut [u8]) {
@@ -433,7 +427,7 @@ impl Holder {
     /// `history.styled`. What cannot be written to a file is lost to that file, and the log says
     /// so: it is not kept to try again, and what a resize sent there is no longer taken back.
     /// Before them, the bytes a resize took back from each file's end go from it (the third of each).
-    fn history(&mut self, files: [(&str, String, usize); 2]) {
+    fn history(&mut self, files: [(&str, &str, usize); 2]) {
         for (name, _, back) in &files {
             let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(*back as u64));
             let cut = if *back > 0 { OpenOptions::new().write(true).open(name).and_then(cut) } else { Ok(()) };
@@ -465,8 +459,8 @@ impl Holder {
     /// `killed SIGNAL`), once it has ended: the `state` file, which until then says `running`,
     /// or `hungup` once the pty is closed.
     fn publish(&mut self, ended: Option<&str>) -> io::Result<()> {
-        self.collect(0);
-        for (id, data) in std::mem::take(&mut self.pending.pictures) {
+        let out = self.collect(0);
+        for (id, data) in out.pictures {
             // One that left the screen before it was written has no reader. One that
             // cannot be written is not on the screen either: it goes, and the log says why.
             let name = format!("pic-{id}.sixel");
@@ -527,18 +521,17 @@ impl Holder {
                 self.facts.insert(name, bytes);
             }
         }
-        // What the program said, each waiting until a round has written it. The clipboard is the
-        // bytes it set, and set again is written again (what is on the terminal's clipboard may
-        // be another's by now).
-        if let Some(bytes) = &self.pending.clipboard {
+        // What the program said once is this round's to write, as history is: what a round that
+        // fails did not write of it is lost, and the log has the failure. A clipboard set again is
+        // written again (what is on the terminal's clipboard may be another's by now).
+        if let Some(bytes) = &out.clipboard {
             replace("clipboard", bytes)?;
-            self.pending.clipboard = None;
         }
         // The directory the program says it is in: kept if it is one of this machine (no host
         // named, or this one's name or address), and forgotten if it is another machine's (a
         // shell at the far end of ssh): a path of there means nothing here.
         // (The file is the program's to write too: what it says is written, whatever was written last.)
-        if let Some((host, path)) = &self.pending.cwd {
+        if let Some((host, path)) = &out.cwd {
             let same = |name: &str| name.eq_ignore_ascii_case(host);
             let here = host.is_empty()
                 || ["localhost", "127.0.0.1", "[::1]"].into_iter().any(same)
@@ -548,14 +541,12 @@ impl Holder {
                 (true, false) => {}
                 (false, _) => write("cwd", None)?,
             }
-            self.pending.cwd = None;
         }
         // What the program wanted noticed last: a number that grows with each round that writes
         // one (so that the same words twice are two), then the words; the number alone is the bell.
-        if let Some(text) = &self.pending.notice {
-            let noticed = self.noticed.wrapping_add(1);
-            replace("notice", (format!("{noticed} {text}").trim_end().to_string() + "\n").as_bytes())?;
-            (self.noticed, self.pending.notice) = (noticed, None);
+        if let Some(text) = &out.notice {
+            self.noticed = self.noticed.wrapping_add(1);
+            replace("notice", (format!("{} {text}", self.noticed).trim_end().to_string() + "\n").as_bytes())?;
         }
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
         // end: who watches a pane watches that one file, and finds every fact already there.

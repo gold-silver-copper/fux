@@ -602,12 +602,17 @@ impl Term {
         &self.title
     }
 
-    /// Everything produced since the last time this was asked, once `over` bytes of history wait
-    /// (0: always); until then the answers and refusals alone: the rest waits here.
+    /// What was produced since the last time this was asked: the answers and refusals; the history
+    /// once `over` bytes of it wait; and the rest (what the program said once) when `over` is 0.
     pub fn take(&mut self, over: usize) -> Out {
         let (reply, refused) = (std::mem::take(&mut self.out.reply), std::mem::take(&mut self.out.refused));
         let all = self.out.history.len().max(self.out.styled.len()) >= over;
-        Out { reply, refused, ..if all { std::mem::take(&mut self.out) } else { Out::default() } }
+        let mut out = Out { reply, refused, ..if all { std::mem::take(&mut self.out) } else { Out::default() } };
+        if all && over > 0 {
+            (self.out.pictures, self.out.clipboard) = (std::mem::take(&mut out.pictures), out.clipboard.take());
+            (self.out.cwd, self.out.notice) = (out.cwd.take(), out.notice.take());
+        }
+        out
     }
 
     // ---- files -----------------------------------------------------------
