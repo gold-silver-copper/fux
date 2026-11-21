@@ -41,8 +41,8 @@ const ECHO_WAIT: Duration = Duration::from_millis(40);
 /// A key of a menu: its name, what it does, and the heading it is listed under (or none).
 type Entry = (String, String, String);
 
-/// What tells one writing of a file from the next: its inode and its time.
-type Stamp = Option<(u64, i64, i64)>;
+/// What tells one writing of a file from the next: its inode, its time and its length.
+type Stamp = Option<(u64, i64, i64, u64)>;
 
 /// The most bytes of pictures in one frame, and so in a viewer's memory.
 const FRAME_PICTURES_MAX: usize = 4 * PICTURE_MAX;
@@ -67,12 +67,8 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
     if *wide == 0 || *high == 0 {
         return Err("the terminal does not say how many pixels a cell has");
     }
-    // Opened without waiting (should the name be a FIFO), and read up to a picture's bound.
-    let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path);
-    let mut bytes = Vec::new();
-    if file.and_then(|file| file.take(PICTURE_MAX as u64 + 9).read_to_end(&mut bytes)).is_err() {
-        return Ok(None);
-    } else if bytes.len() > PICTURE_MAX + 8 {
+    let bytes = read(path, PICTURE_MAX as u64 + 9);
+    if bytes.len() > PICTURE_MAX + 8 {
         return Err("its file is over 4 MiB");
     }
     // Only one whole sixel picture is passed on: nothing else in the file can reach the terminal.
@@ -89,20 +85,17 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
     Ok((wide > 0 && high > 0 && !sixel.is_empty()).then_some((sixel, wide, high)))
 }
 
-/// What a frame is drawn from, other than the terminal's size: the workspace's folder, its
-/// layout and what is wrong with it, the message, what the terminal is like and whether its
-/// window has the keys, each tile's screen file (as `Pane::seen`: a holder writes it anew after
-/// any fact of its pane, the cursor's colour among them) and whether its holder lives,
+/// What a frame is drawn from, other than the terminal's size and the workspace (another one
+/// forgets it): the layout and what is wrong with it, the message, what the terminal is like and
+/// whether its window has the keys, each tile's screen file (as `Pane::seen`: a holder writes it
+/// anew after any fact of its pane, the cursor's colour among them) and whether its holder lives,
 /// the focused pane's `clipboard` file, and each picture's file.
-type From =
-    (PathBuf, String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Seen, bool)>, Stamp, Vec<Stamp>);
-/// A screen file's inode, time and length.
-type Seen = Option<(u64, i64, i64, u64)>;
+type From = (String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Stamp, bool)>, Stamp, Vec<Stamp>);
 
 /// What the viewer knows of a pane: its last screen, read from the file.
 struct Pane {
     /// The screen's file when it was last read.
-    seen: Seen,
+    seen: Stamp,
     term: Term,
     /// The size the pane says it has (`size`), if it says one.
     size: (usize, usize),
@@ -161,11 +154,9 @@ struct View {
     sixel: bool,
     /// The kitty keyboard flags the terminal takes, of those fux passes on.
     keyboard: u8,
-    /// The addresses of the links drawn: a cell's `link` less one is its place here. And each
-    /// address's number, and how many of them the last frame drew.
+    /// The addresses of the links of the last frame: a cell's `link` in `front` less one is its
+    /// place here. Each frame makes its own, of its tiles' panes' addresses in turn.
     links: Vec<String>,
-    numbers: HashMap<String, u16>,
-    live: usize,
     /// The keys that are down, as far as the terminal tells, and where the press of each went.
     down: Vec<((u32, u8), Went)>,
     /// The terminal joins characters into clusters as fux does (its mode 2027), and whether
@@ -296,8 +287,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         parts: Vec::new(),
         keyboard: 0,
         links: Vec::new(),
-        numbers: HashMap::new(),
-        live: 0,
         down: Vec::new(),
         joins: false,
         joined: false,
@@ -428,7 +417,6 @@ impl View {
                 let _ = (&*wrote).read(&mut buffer)?;
                 active = Instant::now();
             }
-            // The terminal is given a second to say what it is like.
             // The terminal is given a second to say what it is like before that is written down
             // for the session, and ten (a slow line) before a string from it is no answer any more.
             let asked = self.colours.as_ref().map_or(Duration::ZERO, |(since, _)| since.elapsed());
@@ -537,8 +525,7 @@ impl View {
                     self.window = name == "focus:I";
                     if let Some(pane) = self.told_focus.clone() {
                         self.send();
-                        let input = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(pane.join("in"));
-                        let _ = input.and_then(|mut input| input.write(raw));
+                        let _ = send_to(&pane.join("in"), raw);
                     }
                 }
                 name if name.starts_with("mode:2027;") && !self.joins => {
@@ -617,9 +604,7 @@ impl View {
             // other is told when the window has them again.)
             let told = self.told_focus.take().filter(|pane| self.window && asks(pane).focus);
             for (pane, report) in [(told, "\x1b[O"), (now.clone().filter(|_| self.window), "\x1b[I")] {
-                let input =
-                    pane.map(|pane| OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(pane.join("in")));
-                let _ = input.map(|input| input.and_then(|mut input| input.write_all(report.as_bytes())));
+                let _ = pane.map(|pane| send_to(&pane.join("in"), report.as_bytes()));
             }
             self.told_focus = now;
         }
@@ -646,13 +631,12 @@ impl View {
         // (A file's time may be some milliseconds behind the clock's.)
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         let now = now.saturating_sub(Duration::from_millis(20));
-        let started = (0, now.as_secs() as i64, i64::from(now.subsec_nanos()));
+        let started = (0, now.as_secs() as i64, i64::from(now.subsec_nanos()), 0);
         let first = !self.notices.contains_key(&key(""));
         let since = self.notices.entry(key("")).or_insert((Some(started), false)).0;
         for name in layout.tabs.iter().flat_map(|tab| tab.panes()) {
             let file = directory.join(name).join("notice");
-            let stamp: Stamp =
-                fs::metadata(&file).ok().filter(|m| m.is_file()).map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
+            let stamp: Stamp = fs::metadata(&file).ok().filter(|m| m.is_file()).map(stamp);
             let known = self.notices.get(&key(name)).copied();
             if known.is_some_and(|(was, _)| was == stamp) {
                 continue;
@@ -663,10 +647,7 @@ impl View {
             let new = stamp.is_some() && !first && (known.is_some() || after);
             self.notices.insert(key(name), (stamp, stamp.is_some() && self.focus.as_deref() != Some(name)));
             if new {
-                let mut text = Vec::new();
-                let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(&file);
-                let _ = file.map(|file| file.take(1200).read_to_end(&mut text));
-                let text = String::from_utf8_lossy(&text);
+                let text = text(&file, 1200);
                 let words = text.lines().next().unwrap_or_default().split_once(' ').map_or("", |(_, words)| words);
                 let words: String = words.chars().filter(|c| !c.is_control()).take(200).collect();
                 // (With the pane's name before them, the words cannot be taken for one of the
@@ -770,8 +751,7 @@ impl View {
     fn pass(&mut self, directory: &Path, pid: u32, raw: &[u8]) {
         if pid != 0 && program(directory) == (pid, true) {
             self.send();
-            let input = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(directory.join("in"));
-            let _ = input.and_then(|mut input| input.write(raw));
+            let _ = send_to(&directory.join("in"), raw);
         }
     }
 
@@ -899,8 +879,7 @@ impl View {
         let Some(name) = self.focus.as_ref().filter(|_| !typed.is_empty()) else { return };
         // Resolve the name again: a live pane can have moved since the last frame.
         let path = self.session.join(&self.workspace).join(name).join("in");
-        let input = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(path);
-        match input.and_then(|mut input| input.write(&typed)) {
+        match send_to(&path, &typed) {
             Ok(n) if n == typed.len() => {}
             Ok(n) => self.message = format!("{name}: only {n} of {} typed bytes were queued", typed.len()),
             // A FIFO nobody reads (6, on Linux and macOS alike), or none at all: the pane has ended.
@@ -958,8 +937,7 @@ impl View {
         // A frame drawn from what the last one was drawn from is the last one: nothing is put
         // together and nothing compared. (A menu is drawn from more than this: with one open,
         // every frame is.)
-        let stamp = |file: PathBuf| fs::metadata(file).ok();
-        let panes: Vec<(Seen, bool)> = tiles
+        let panes: Vec<(Stamp, bool)> = tiles
             .iter()
             .map(|(name, _)| (directory.join(name), directory.join(name).join("screen.styled")))
             .map(|(pane, screen)| {
@@ -968,20 +946,20 @@ impl View {
                     .custom_flags(sys::O_NONBLOCK)
                     .open(pane)
                     .is_ok_and(|dir| matches!(dir.try_lock_shared(), Err(fs::TryLockError::WouldBlock)));
-                (stamp(screen).map(|m| (m.ino(), m.mtime(), m.mtime_nsec(), m.len())), held)
+                (fs::metadata(screen).ok().map(stamp), held)
             })
             .collect();
         let held: Vec<bool> = panes.iter().map(|(_, held)| *held).collect();
-        let clipboard = self.focus.as_ref().and_then(|name| stamp(directory.join(name).join("clipboard")));
+        let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
         // (By when the file last changed in any way: one that could not be read may be readable now.)
-        let clipboard = clipboard.map(|m| (m.ino(), m.ctime(), m.ctime_nsec()));
+        let clipboard = clipboard.map(|m| (m.ino(), m.ctime(), m.ctime_nsec(), m.len()));
         let terminal = (self.sixel, self.joins, self.keyboard, self.window, cell_size);
-        let picture = |file: PathBuf| stamp(file).map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
+        let picture = |file: PathBuf| fs::metadata(file).ok().map(stamp);
         let known = tiles.iter().filter_map(|(name, _)| Some((name, self.panes.get(name)?)));
         let known = known.flat_map(|(name, pane)| pane.pictures.iter().map(move |(file, _)| (name, file)));
         let known: Vec<Stamp> = known.map(|(name, file)| picture(directory.join(name).join(file))).collect();
         let message = self.message.clone();
-        let from = (directory.clone(), layout.print(), wrong.clone(), message, terminal, panes, clipboard, known);
+        let from = (layout.print(), wrong.clone(), message, terminal, panes, clipboard, known);
         let from = self.menu.is_none().then_some(from);
         if out.is_empty() && from.is_some() && from == self.from {
             return Ok(false);
@@ -996,35 +974,12 @@ impl View {
         // What no tile covers is a line: marked here, drawn once the tiles are in place.
         let line = Cell { ch: '\u{2}', ..Cell::blank(Style::default()) };
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
-        // (The table of links' addresses keeps only those of the cells on the terminal, numbered
-        // anew, when it has grown large and most of it is of links that are drawn no more, or
-        // when this frame's could be more than it has numbers left for.)
-        let most = usize::from(u16::MAX).saturating_sub(1000 * tiles.len());
-        if self.links.len() > 4000 && (self.links.len() > 2 * self.live || self.links.len() > most) {
-            let mut old = std::mem::take(&mut self.links);
-            let mut moved = vec![0u16; old.len()];
-            for cell in &mut self.front {
-                let at = usize::from(cell.link).wrapping_sub(1);
-                cell.link = match (moved.get_mut(at), old.get_mut(at)) {
-                    (Some(number), Some(address)) => {
-                        if *number == 0 {
-                            self.links.push(std::mem::take(address));
-                            *number = self.links.len() as u16;
-                        }
-                        *number
-                    }
-                    _ => 0,
-                };
-            }
-            self.numbers =
-                self.links.iter().zip(1..=u16::MAX).map(|(address, number)| (address.clone(), number)).collect();
-        }
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
         self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
         let (mut parts, mut refused, mut bytes) = (Vec::new(), Vec::<String>::new(), 0);
         let mut cursor_colour = None;
-        let mut live = 0;
+        let mut links: Vec<String> = Vec::new();
         let mut title = None;
         let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
         let mut wants_focus = None;
@@ -1041,15 +996,16 @@ impl View {
             let asked = (pane.pid, body.w, body.h, cell_size);
             if pane.asked != asked {
                 pane.asked = asked;
-                let ctl = OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(pane_directory.join("ctl"));
                 let cell =
                     if cell_size.0 > 0 { format!(" {} {}", cell_size.0, cell_size.1.max(1)) } else { String::new() };
                 if pane.size != (body.w, body.h) || !cell.is_empty() {
-                    let _ = ctl
-                        .and_then(|mut ctl| ctl.write_all(format!("resize {} {}{cell}\n", body.w, body.h).as_bytes()));
+                    let resize = format!("resize {} {}{cell}\n", body.w, body.h);
+                    let _ = send_to(&pane_directory.join("ctl"), resize.as_bytes());
                 }
             }
-            let mut mine: Vec<Option<u16>> = vec![None; pane.addresses.len()];
+            // A link's number is its address's place in this frame's table (past 65,535, no link).
+            let offset = links.len();
+            links.extend(pane.addresses.iter().cloned());
             for y in 0..body.h {
                 for x in 0..body.w {
                     let mut cell = pane.term.cell_at(y, x).copied().unwrap_or(Cell::blank(Style::default()));
@@ -1065,34 +1021,8 @@ impl View {
                     {
                         cell = Cell { ch: '?', more: ['\0'; MORE], ..cell };
                     }
-                    // A link's number is its address's place in the viewer's own table (found once
-                    // for each of the pane's addresses; past 65,535 addresses on one screen, no link).
-                    cell.link = match usize::from(cell.link).checked_sub(1) {
-                        Some(at) if mine.get(at).is_some_and(Option::is_some) => {
-                            mine.get(at).copied().flatten().unwrap_or(0)
-                        }
-                        Some(at) => {
-                            let address = pane.addresses.get(at);
-                            let number = address.and_then(|address| {
-                                let next = u16::try_from(self.links.len() + 1).ok();
-                                let number = self.numbers.get(address).copied().or(next)?;
-                                if usize::from(number) > self.links.len() {
-                                    self.links.push(address.clone());
-                                    self.numbers.insert(address.clone(), number);
-                                }
-                                Some(number)
-                            });
-                            // (Out of numbers: the next frame is put together too, and by then the
-                            // table has given up those of the links this one draws no more.)
-                            if address.is_some() && number.is_none() {
-                                self.from = None;
-                            }
-                            mine.get_mut(at).into_iter().for_each(|slot| *slot = Some(number.unwrap_or(0)));
-                            live += usize::from(number.is_some());
-                            number.unwrap_or(0)
-                        }
-                        None => 0,
-                    };
+                    let link = Some(usize::from(cell.link)).filter(|n| (1..=pane.addresses.len()).contains(n));
+                    cell.link = link.and_then(|n| u16::try_from(offset + n).ok()).unwrap_or(0);
                     if let Some(slot) = back.get_mut((body.y + y) * w + body.x + x) {
                         *slot = cell;
                     }
@@ -1115,11 +1045,7 @@ impl View {
             if focused {
                 let file =
                     OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(pane_directory.join("clipboard"));
-                let stamp: Stamp = file
-                    .as_ref()
-                    .ok()
-                    .and_then(|file| file.metadata().ok())
-                    .map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
+                let stamp: Stamp = file.as_ref().ok().and_then(|file| file.metadata().ok()).map(stamp);
                 let seen = self.copied.replace((pane_directory.clone(), stamp));
                 if let (Ok(file), Some((before, old))) = (file, seen)
                     && before == pane_directory
@@ -1194,7 +1120,6 @@ impl View {
             refused.dedup();
             self.message = refused.join("; ");
         }
-        self.live = live;
         // The lines between panes: `│` and `─`, a tee or a cross where they
         // meet, and green where they touch the focused pane.
         let focus = tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name)).map(|(_, body)| *body);
@@ -1381,10 +1306,13 @@ impl View {
                 joiner.joins(new.ch);
             }
             new.more.iter().take_while(|&&c| c != '\0').for_each(|&c| _ = joiner.joins(c));
-            if new == old && i >= again {
+            // (A link is the same link if its address is: each frame numbers its own.)
+            let same = Cell { link: 0, ..*new } == Cell { link: 0, ..*old }
+                && address(&links, new.link) == address(&self.links, old.link);
+            *old = *new;
+            if same && i >= again {
                 continue;
             }
-            *old = *new;
             redraw |= pictures.iter().any(|p| (p.1..p.1 + p.3).contains(&x) && (p.2..p.2 + p.4).contains(&y));
             if new.ch == '\0' {
                 continue;
@@ -1410,8 +1338,7 @@ impl View {
                 out.push('\u{200b}');
             }
             let link = |out: &mut String, number: u16| {
-                let address = usize::from(number).checked_sub(1).and_then(|at| self.links.get(at));
-                out.push_str(&format!("\x1b]8;;{}\x1b\\", address.map_or("", String::as_str)));
+                out.push_str(&format!("\x1b]8;;{}\x1b\\", address(&links, number).unwrap_or_default()));
             };
             // A wide character that may come out narrower (one of several parts, an emoji) is
             // drawn over two blanks, of its link as it is (closed again before the cursor goes
@@ -1441,6 +1368,7 @@ impl View {
         if pen != 0 {
             out.push_str("\x1b]8;;\x1b\\");
         }
+        self.links = links;
         if redraw {
             for (key, x, y, ..) in &pictures {
                 if let Some((_, Some((sixel, ..)))) = self.parts.iter().find(|(known, _)| known == key) {
@@ -1489,6 +1417,11 @@ fn cells(text: &str, style: Style) -> Vec<Cell> {
     (0..row.col).filter_map(|x| row.cell_at(0, x).copied()).collect()
 }
 
+/// The address of a link of the given number in a frame's table of them.
+fn address(table: &[String], number: u16) -> Option<&str> {
+    table.get(usize::from(number).checked_sub(1)?).map(String::as_str)
+}
+
 /// Puts cells on row `y` from column `x`, at most `room` of them and none
 /// past the screen's width `w`; a wide character that would be cut is a blank.
 fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Cell]) {
@@ -1509,27 +1442,47 @@ fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Ce
     }
 }
 
-/// The first 256 bytes of one of a pane's small files, as it is now.
-fn small(directory: &Path, name: &str) -> String {
+/// Up to `most` bytes of a file as it is now, opened without waiting (should the name be a
+/// FIFO); none, if it cannot be read.
+fn read(path: &Path, most: u64) -> Vec<u8> {
     let mut bytes = Vec::new();
-    let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(directory.join(name));
-    let _ = file.map(|file| file.take(256).read_to_end(&mut bytes));
-    String::from_utf8_lossy(&bytes).into_owned()
+    let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path);
+    let _ = file.map(|file| file.take(most).read_to_end(&mut bytes));
+    bytes
+}
+
+/// The same, as text.
+fn text(path: &Path, most: u64) -> String {
+    String::from_utf8_lossy(&read(path, most)).into_owned()
+}
+
+/// Writes to a pane's FIFO (`in`, `ctl`) without waiting.
+fn send_to(path: &Path, bytes: &[u8]) -> io::Result<usize> {
+    OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(path)?.write(bytes)
+}
+
+/// What tells one writing of a file from the next.
+fn stamp(m: fs::Metadata) -> (u64, i64, i64, u64) {
+    (m.ino(), m.mtime(), m.mtime_nsec(), m.len())
 }
 
 /// How a pane's program asks for its input (pastes marked, the mouse, the focus, keys), as its
 /// `modes` file says now: what is typed is sent by this, not by what was last drawn.
 fn asks(directory: &Path) -> Term {
     let mut term = Term::new(1, 1);
-    term.set_words(&small(directory, "modes"));
+    term.set_words(&text(&directory.join("modes"), 256));
     term
 }
 
-/// Who a pane's program is (the pid in `status`) and whether it asks to be told of keys let go
-/// and held (flag 2 of the `keys` word in `modes`), as the files say now.
+/// Who a pane's program is: the pid in its `status`, as the file says now.
+fn pid(directory: &Path) -> u32 {
+    text(&directory.join("status"), 256).lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0)
+}
+
+/// Who a pane's program is and whether it asks to be told of keys let go and held (flag 2 of
+/// the `keys` word in `modes`), as the files say now.
 fn program(directory: &Path) -> (u32, bool) {
-    let pid = small(directory, "status").lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0);
-    (pid, asks(directory).keys() & 2 != 0)
+    (pid(directory), asks(directory).keys() & 2 != 0)
 }
 
 impl Pane {
@@ -1553,19 +1506,12 @@ impl Pane {
     /// (or far off, in a folder someone copied): the rows are the lines that are there, and the
     /// cursor is kept inside them.
     fn read(&mut self, directory: &Path) {
-        let seen =
-            fs::metadata(directory.join("screen.styled")).ok().map(|m| (m.ino(), m.mtime(), m.mtime_nsec(), m.len()));
+        let seen = fs::metadata(directory.join("screen.styled")).ok().map(stamp);
         if seen == self.seen {
             return;
         }
         self.seen = seen;
-        // Opened without waiting (should the name be a FIFO), and read up to a bound.
-        let fact = |name: &str, most: u64| {
-            let mut bytes = Vec::new();
-            let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(directory.join(name));
-            let _ = file.map(|file| file.take(most).read_to_end(&mut bytes));
-            String::from_utf8_lossy(&bytes).into_owned()
-        };
+        let fact = |name: &str, most: u64| text(&directory.join(name), most);
         let numbers = |text: &str| {
             text.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(SIZE_MAX + 1)).collect::<Vec<_>>()
         };
@@ -1611,8 +1557,7 @@ impl Pane {
             cursor.next().and_then(|shape| shape.parse().ok()).filter(|shape| *shape <= 6).unwrap_or(0);
         self.cursor_colour = cursor.next().filter(|colour| colour.len() == 7).and_then(crate::term::colour);
         self.state = fact("state", 64).trim_end().to_string();
-        let status = fact("status", 256);
-        self.pid = status.lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0);
+        self.pid = pid(directory);
         // A picture is kept only if it lies on a screen of the largest size there is. A first row
         // below 0 says how many of its rows are above the screen: the others start at row 0.
         self.pictures.clear();
@@ -1686,11 +1631,7 @@ fn menu_entries(directory: &Path) -> Vec<Entry> {
     let mut names: Vec<String> = names.take(MENU_MAX + 1).collect();
     let more = names.len() > MENU_MAX;
     names.truncate(MENU_MAX);
-    let head = |path: &Path| {
-        let mut head = Vec::new();
-        let _ = File::open(path).map(|file| file.take(1024).read_to_end(&mut head));
-        String::from_utf8_lossy(&head).into_owned()
-    };
+    let head = |path: &Path| text(path, 1024);
     let described = names.into_iter().map(|name| {
         let path = directory.join(&name);
         // A script's lines after `#!`: `# caption`, `# group: NAME`. A directory's `.about`: `caption`, `# group: NAME`.
