@@ -145,9 +145,8 @@ fn text(path: &Path, most: u64) -> String {
 }
 
 fn start(args: &[OsString]) -> Result<(), String> {
-    let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
-    let (names, program) = (args.get(..split).unwrap_or(&[]), args.get(split + 1..).unwrap_or(&[]));
-    let name = match names {
+    let mut sections = args.splitn(2, |arg| arg == "--");
+    let name = match sections.next().unwrap_or_default() {
         [] => String::new(),
         [name] => name.to_string_lossy().into_owned(),
         _ => return Err("start takes one NAME, then -- and the program".into()),
@@ -183,7 +182,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let lock = std::env::set_current_dir(&dir).and_then(|()| File::open(".")).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
-        Ok(()) => launch(&session, &dir, &cwd, lock, program),
+        Ok(()) => launch(&session, &dir, &cwd, lock, sections.next().unwrap_or_default()),
         Err(_) => Err("a holder already keeps this pane".into()),
     };
     started.map_err(|why| format!("{}: {why}", dir.display()))?;
