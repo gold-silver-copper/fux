@@ -427,7 +427,8 @@ impl View {
         let bytes = std::mem::take(&mut self.carry);
         // The keys are for the pane the layout says has them now, which a command may have
         // changed since it was last drawn.
-        self.focus = Layout::load(&self.session.join(&self.workspace)).1.tab().map(|tab| tab.focus.clone());
+        let layout = Layout::load(&self.session.join(&self.workspace)).1;
+        self.focus = layout.tab().map(|tab| tab.focus.clone());
         // (And a key still down in the pane that had them is let go there, before what comes
         // of it now is looked at.)
         let has = self.focus.as_ref().map(|name| self.session.join(&self.workspace).join(name));
@@ -495,7 +496,7 @@ impl View {
                     }
                 }
                 ("mode", _) => {}
-                _ => self.key(&name, raw, event),
+                _ => self.key(&name, raw, event, &layout),
             }
             if self.waiting.is_some() || std::mem::take(&mut self.pause) {
                 break;
@@ -600,7 +601,7 @@ impl View {
 
     /// One key: a script if the key's file is one, a menu if it is a
     /// directory, and otherwise the key goes to the pane.
-    fn key(&mut self, name: &str, raw: &[u8], event: Option<keys::Event>) {
+    fn key(&mut self, name: &str, raw: &[u8], event: Option<keys::Event>, layout: &Layout) {
         // (A key comes from a window that has the keys, whatever it last told of its focus.)
         self.window = true;
         // A program may have asked to be told when keys are let go and held (the kitty
@@ -625,7 +626,7 @@ impl View {
                     let menu = self.menu.as_ref().map(|(directory, _)| directory.as_path());
                     if menu.is_some() && menu == script.parent() && script.with_file_name(".repeat").exists() {
                         self.send();
-                        self.script(&script);
+                        self.script(&script, layout);
                     }
                     return;
                 }
@@ -646,7 +647,7 @@ impl View {
             }
             Ok(kind) if !name.is_empty() && kind.is_file() => {
                 self.send();
-                self.script(&file);
+                self.script(&file, layout);
                 // A menu with a file `.repeat` in it stays for the next key (to resize, say), until a key it has not.
                 self.menu = menu.filter(|(directory, _)| directory.join(".repeat").exists());
                 Some(Went::Script(file))
@@ -751,7 +752,7 @@ impl View {
         }
     }
 
-    fn script(&mut self, file: &Path) {
+    fn script(&mut self, file: &Path, layout: &Layout) {
         if self.scripts.len() >= SCRIPTS_MAX {
             self.message = format!("{SCRIPTS_MAX} key scripts are still running: {} was not started", file.display());
             return;
@@ -773,7 +774,6 @@ impl View {
         // and its program is never drawn at one size and then at another.
         script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.to_string());
         let area = Rect { x: 0, y: 0, w: usize::from(self.size.cols), h: usize::from(self.size.rows) };
-        let layout = Layout::load(&self.session.join(&self.workspace)).1;
         for (name, row) in [(name!("ROW"), true), (name!("COL"), false)] {
             // A pane no folder can be named after is put, in a copy of the tab shown, beside the
             // pane the script is told of, as the split keys split.
@@ -1072,7 +1072,7 @@ impl View {
             let first = self.keys.join(".empty");
             if layout.tabs.is_empty() && wrong.is_none() && first.is_file() {
                 let waiting = self.waiting;
-                self.script(&first);
+                self.script(&first, &layout);
                 self.waiting = waiting.or(self.waiting);
             }
         }
