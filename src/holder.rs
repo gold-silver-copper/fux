@@ -58,9 +58,6 @@ struct Holder {
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
     pictures: BTreeSet<u32>,
-    /// What became of the program once it ended (`exited CODE`, `killed SIGNAL`): the `state`
-    /// file, which until then says `running`, or `hungup` once the pty is closed.
-    ended: Option<String>,
     /// What the emulator produced and the next publish writes: pictures, a clipboard, a directory, a notice.
     pending: Out,
     /// The session's folder, where the files are that say what the terminal outside is like, and
@@ -150,7 +147,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: BTreeSet::new(),
-        ended: None,
         pending: Out::default(),
         session,
         told: (None, None),
@@ -191,7 +187,7 @@ impl Holder {
                 let _ = fs::remove_file(old);
             }
         }
-        self.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
+        self.publish(None).map_err(|e| format!("cannot write the screen: {e}"))?;
         // (The pane is up: `fux start` waits for this line.)
         let _ = crate::say(b"");
 
@@ -219,7 +215,7 @@ impl Holder {
             if since >= every && dirty.is_some() && !drawing {
                 // What could not be written waits, or is still changed: the next round writes it,
                 // which the program's next output, a command or its end brings; no timer does.
-                if let Err(e) = self.publish() {
+                if let Err(e) = self.publish(None) {
                     self.log(&format!("cannot write the pane's files: {e}"));
                 }
                 (dirty, published) = (None, Instant::now());
@@ -279,16 +275,10 @@ impl Holder {
                 let mut state = String::new();
                 let _ = ended.read_to_string(&mut state);
                 // What the program wrote last is still in the pty: read it, up to 4 MiB.
-                let mut left: usize = 4 << 20;
-                while left > 0 {
-                    match self.read_program(buffer.get_mut(..left.min(64 << 10)).unwrap_or(&mut [])) {
-                        0 => break,
-                        n => left -= n.min(left),
-                    }
-                }
-                (self.master, self.ended) = (None, Some(state.clone()));
+                self.drain(4 << 20);
+                self.master = None;
                 // (What cannot be written of the last screen is said in the log.)
-                if let Err(e) = self.publish() {
+                if let Err(e) = self.publish(Some(&state)) {
                     self.log(&format!("cannot write the last screen (the program {state}): {e}"));
                 }
                 return Ok(());
@@ -342,6 +332,17 @@ impl Holder {
         self.term.feed(buffer.get(..n).unwrap_or(&[]));
         self.collect(READ_BUDGET);
         n
+    }
+
+    /// Reads what the program has written and was not read yet, `most` bytes of it at most.
+    fn drain(&mut self, mut most: usize) {
+        let mut buffer = vec![0u8; 64 << 10];
+        while most > 0 {
+            match self.read_program(buffer.get_mut(..most.min(64 << 10)).unwrap_or(&mut [])) {
+                0 => break,
+                n => most -= n.min(most),
+            }
+        }
     }
 
     /// Takes what the emulator produced: answers go to the program and refusals to the log now.
@@ -409,12 +410,7 @@ impl Holder {
                 let cell = cell.unwrap_or(old);
                 // What the program has written so far, it wrote for the old size:
                 // it is drawn at that size first (up to 1 MiB of it).
-                let mut buffer = vec![0u8; 64 << 10];
-                for _ in 0..16 {
-                    if self.read_program(&mut buffer) == 0 {
-                        break;
-                    }
-                }
+                self.drain(1 << 20);
                 let Some(master) = &self.master else {
                     return Err("the program was hung up".into());
                 };
@@ -465,8 +461,10 @@ impl Holder {
 
     /// Writes what changed: history first, then pictures, the title and the
     /// clipboard, then both screens; so nothing a screen names is missing and
-    /// no line is in neither file.
-    fn publish(&mut self) -> io::Result<()> {
+    /// no line is in neither file. `ended` is what became of the program (`exited CODE`,
+    /// `killed SIGNAL`), once it has ended: the `state` file, which until then says `running`,
+    /// or `hungup` once the pty is closed.
+    fn publish(&mut self, ended: Option<&str>) -> io::Result<()> {
         self.collect(0);
         for (id, data) in std::mem::take(&mut self.pending.pictures) {
             // One that left the screen before it was written has no reader. One that
@@ -504,7 +502,7 @@ impl Holder {
         };
         let title = Some(term.title()).filter(|title| !title.is_empty()).map(|title| format!("{title}\n").into_bytes());
         let covered = [("screen.main", main), ("screen.main.styled", looks), ("title", title)];
-        let state = self.ended.as_deref().unwrap_or(if self.master.is_some() { "running" } else { "hungup" });
+        let state = ended.unwrap_or(if self.master.is_some() { "running" } else { "hungup" });
         let texts = [
             // How the screen's rows are lines of the pane's text: the number of the first row's
             // line, then the rows that go on from the row above.
