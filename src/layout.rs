@@ -225,6 +225,9 @@ fn tree(words: &mut std::iter::Peekable<std::str::SplitWhitespace<'_>>, depth: u
 }
 
 pub fn parse(text: &str) -> Result<Layout, String> {
+    if text.len() as u64 > FILE_MAX {
+        return Err(format!("the layout file is over {} KiB", FILE_MAX >> 10));
+    }
     let mut layout = Layout::default();
     for (number, line) in text.lines().enumerate().filter(|(_, line)| !line.trim().is_empty()) {
         let spaced = line.replace('(', " ( ").replace(')', " ) ");
@@ -243,10 +246,6 @@ pub fn parse(text: &str) -> Result<Layout, String> {
         layout.tabs.push(Tab { root, focus: focus.into() });
     }
     Ok(layout)
-}
-
-fn check_file_size(bytes: usize) -> Result<(), String> {
-    (bytes as u64 <= FILE_MAX).then_some(()).ok_or_else(|| format!("the layout file is over {} KiB", FILE_MAX >> 10))
 }
 
 impl Layout {
@@ -289,10 +288,9 @@ impl Layout {
     pub fn load(workspace: &Path) -> (String, Layout, Option<String>) {
         let (bytes, read) = crate::read(crate::sys::open(workspace.join("layout"), false), FILE_MAX + 1);
         let read = read.or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(0) } else { Err(e) });
-        let text = read.map_err(|e| format!("the layout file cannot be read: {e}")).and_then(|n| {
-            check_file_size(n)?;
-            String::from_utf8(bytes).map_err(|_| "the layout file is not text".to_string())
-        });
+        let text = read
+            .map_err(|e| format!("the layout file cannot be read: {e}"))
+            .and_then(|_| String::from_utf8(bytes).map_err(|_| "the layout file is not text".to_string()));
         let (mut layout, mut wrong) = match text.as_ref().map_err(String::clone).and_then(|text| parse(text)) {
             Ok(layout) => (layout, None),
             Err(why) => (Layout::default(), Some(why)),
@@ -469,7 +467,6 @@ pub fn command(workspace: &Path, words: &[&str]) -> Result<Layout, String> {
     let (file, text) = (workspace.join("layout"), layout.print());
     if old != text {
         // What is written must be what the next reading takes: an edit that nests too deep is refused here.
-        check_file_size(text.len())?;
         parse(&text)?;
         replace(&file, text.as_bytes()).map_err(|e| format!("{}: {e}", file.display()))?;
     }
