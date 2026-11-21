@@ -863,23 +863,19 @@ impl Term {
         })?;
         let before = if first == 0 && goes_on(0) { self.tail.open.unwrap_or(0) } else { 0 };
         let mut left = bytes.checked_sub(before)?;
-        let mut last = (first, 0);
-        for (y, cells) in main.iter().enumerate().skip(first).take_while(|(y, _)| *y == first || goes_on(*y)) {
-            let gap = goes_on(y + 1) && cells.last().is_some_and(|cell| cell.style.flags & PAD != 0);
-            for (x, cell) in cells.iter().enumerate().take(cells.len() - usize::from(gap)) {
-                if left < cell.bytes() || (left == 0 && cell.ch != '\0') {
-                    return Some((y, x));
-                }
-                left -= cell.bytes();
+        for (y, (cells, goes_on)) in with_next(main).enumerate().skip(first) {
+            let text = if goes_on { text_cells(cells) } else { cells };
+            for (x, cell) in text.iter().enumerate() {
+                let Some(rest) = left.checked_sub(cell.bytes()) else { return Some((y, x)) };
+                left = rest;
             }
-            last = (y, cells.len());
             // (At a row's end rather than at the start of the row the line goes on in: where
             // the cursor waits to wrap, which is where a mark is put.)
-            if left == 0 {
-                break;
+            if left == 0 || !goes_on {
+                return Some((y, cells.len()));
             }
         }
-        Some(last)
+        None
     }
 
     /// Where each mark is, those on rows `rows` of the main screen told as places in the pane's
