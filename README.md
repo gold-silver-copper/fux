@@ -49,7 +49,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 |---|---|
 | `fux dir` | prints the session directory |
 | `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`, or typed in a pane, that pane's), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place; a start that fails leaves the folder, with a `log` that says why |
-| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` (from `status` and `state`). When it returns, every file of the pane is the last there will be: wait with this, not by watching `state`, before you read a program's last screen |
+| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. Wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
 | `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it, read it, wait, get a command's output and exit code, tell a live pane from a dead one, end and clean up, in plain sh, with the hazards said. It is `src/help-agents.txt`, in the binary; every command on it is run, in order, by `tools/help-agents.sh` (CI, both systems) |
@@ -76,7 +76,7 @@ in `FUXN_WS`.
 | `size` | `COLS ROWS` (`read cols rows < size`) |
 | `cursor` | `ROW COL shown\|hidden SHAPE`: row and column from 0, and the shape's number as a program sets it (0 to 6, as a rule); then, if the program gave the cursor a colour (OSC 12), a fifth word, `#` and six hex digits |
 | `modes` | one line of words, empty when none: how input is to be sent to the program. `appcursor`, `keypad`, `paste`, `focus` (it asked to be told when its pane gains and loses the keys), `mouse9`, `mouse1000`, `mouse1002` or `mouse1003` (the mouse reports the program asked for), `mousesgr` (their newer form), `keysN` (the keyboard flags in force for it, below) |
-| `state` | what became of the program: `running`, `hungup`, `exited CODE` or `killed SIGNAL` |
+| `state` | what became of the program: `running`, `hungup`, `exited CODE` or `killed SIGNAL` (`lost ERROR` if the holder could not wait for it) |
 | `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
 | `lines` | how the rows of `screen` are lines of the pane's text, a fact a line (`{ read -r top; read -r wraps; } < lines`, or `sed -n 2p lines`). The first line: how many lines of the pane's text are before the screen's first row, counted since the pane began, which is the number, from 0, of the line that row is part of (after `history` has become `history.1` twice, the oldest of them are in neither file). The second: the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them), as numbers with a blank between, empty when none. While a program has the alternate screen there is a third: the rows of `screen.main` that go on, in the same form; the first line counts the main screen's lines then too, and the second is of the screen shown. Written with the other facts when any of its lines changes. A row that goes on in the next keeps the blanks at its end in `screen` and in `screen.styled`, so joining the two gives the line as it was printed (of `screen.styled`, once the U+200B and the blank of a cell a wide character left empty are taken from the row's end, as `keys/.text` does; a line feed onto a row that goes on does not end the line above, as in tmux: a shell moves down a wrapped command with one. A program that writes two lines over a wrapped one without erasing it leaves them one line): with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
 | `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE AT KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it, if the shell gave one from 0 to 255). LINE is counted from the pane's first line, as the first line of `lines` is, a line being what was printed up to its line break however many rows it takes: the line of that number is the screen's first, a smaller number is in `history`, in `history.1` or older than both. AT is how many bytes of the line's text are before the mark, as `history` and `screen` (its rows joined as `lines` says) have that text: `cut -b` and `LC_ALL=C awk` cut there, and never inside a character. A mark stays on its text: when lines are scrolled, inserted, deleted or wrapped anew its numbers follow. What is erased takes its marks to where the erased part begins, in their order (so does a prompt drawn again higher up, for the marks after it): an output that was cleared away is a pair of marks at one place, and nothing. The alternate screen has no marks, and `marks` are the shell's while it is shown. The last thousand; empty when the shell marks nothing |
@@ -107,7 +107,7 @@ Files read one after another are not one moment: a fact may be one round
 (the next writing of the files) ahead of a text read just before it, or further apart in a folder
 copied while its pane was busy. So keep the cursor inside the rows you have,
 and take the rows that are there over what `size` says. The viewer does.
-When a pane is still, or ended, its files agree.
+When a pane is still, or ended, its files agree, unless `log` says a round failed.
 
 **Bounds.** Each pane's two screens are replaced as a pair, with the facts that changed (once
 a program scrolls, `lines` with every pair) and an append to `history`.
@@ -481,14 +481,14 @@ with fzf, sk or fzy if one is installed and by number or name if none is (a numb
 closes when its shell exits is the script's choice too: the defaults start
 not your shell but `keys/.shell`, a few lines that run it and then remove
 the pane's own folder, however the shell ended. Only when `.shell` itself
-is gone first is nobody left to remove the folder, and it stays until the
+is gone first (killed, or hung up) is nobody left to remove the folder, and it stays until the
 close key or `rm -r` takes it: saying `killed` after `kill` in `ctl` or a
 `.shell` killed outright, and `lost` when the holder was killed. The `a k`
 key sends TERM to the pane's program, which in a default shell pane is
 `.shell`: that ignores TERM, as an interactive shell does, so the key does
 nothing there; it is for panes started with a program of their own. The close key moves the folder out of the
 workspace (the tile goes at once), removes its `in`, and removes the folder
-when the holder has left, within two seconds.
+when `fux wait` says the holder has left (it looks for `in` every two seconds).
 
 In a menu's directory, a file `.about` holds the words shown for it in the
 menu above, and a file `.repeat` keeps the menu open after each key (until a
@@ -690,7 +690,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   still says the old one, so a default shell pane that was moved no longer
   removes its folder when its shell ends (it removes a folder only if it is
   still its own).
-- **Don't kill the viewer** (with any signal: it handles none; `C-b d`
+- **Don't kill the viewer** (a signal that ends it: it handles none; `C-b d`
   leaves it), **or type `reset` if you do.** Killed, it cannot put your
   terminal back as it found it (the main screen, the mouse, the keyboard
   flags): the terminal stays raw; with a program's keyboard flags left on,
@@ -698,8 +698,8 @@ fux adds nothing to stop these. What happens is what Unix does:
   colour a pane gave it. A FIFO `.view.PID` stays in the session directory
   (`rm` it). The panes do not care.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
-  kernel hangs up its program. `state` goes on saying `running` and the
-  FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
+  kernel hangs up its program. `state` stays as it was (`running`, as a rule) and the
+  FIFOs stay, with no reader: the viewer says `lost` in the corner of a pane that says `running`, and a plain
   `printf > in` then waits for ever, as on any FIFO nobody reads. `fux start`
   with the same name starts it again in place, with FIFOs of its own: who
   still waits on the old ones waits on. (A holder that ends normally
@@ -713,8 +713,8 @@ fux adds nothing to stop these. What happens is what Unix does:
   pane's folder with a `log` that says why. Start the name again, or `rm -r` it.
 - **Don't remove a live pane's `in`**: that is how its holder knows the
   directory is gone, and it leaves.
-- **Don't expect a pane to drop what its starter had open.** It inherits the
-  open files of whoever ran `fux start`, as any child does (`3>&-` closes one).
+- **Don't expect a pane to drop what its starter had open.** Past 0, 1 and 2, its
+  terminal, it inherits the open files of whoever ran `fux start` (`3>&-` closes one).
 - **Don't write more to `in` in one go than a FIFO takes whole, if others
   write too**: a larger write can interleave with theirs (how much that is:
   "Linux and macOS", below).
@@ -744,7 +744,7 @@ Differences are left as they are:
   disk as often as Bounds says. Point `FUXN_DIR` at a RAM disk if that
   matters.
 - One write of up to 4096 bytes to a FIFO arrives whole on Linux; 512 on macOS.
-- macOS ships no `flock(1)`; `fux wait` is the same test.
+- macOS ships no `flock(1)`; `fux wait` takes the same lock, and waits for it.
 - macOS file names ignore case by default, hence `S-h` for H.
 - macOS is covered by CI only (the tests, the viewer among them, and the
   example); nobody has used it there by hand.

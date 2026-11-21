@@ -54,8 +54,8 @@ waiting thread reports the program's end. No signal is handled anywhere.
 Output goes through the emulator; when the program has gone quiet for a moment, and at a
 steady pace while it keeps writing (the README's "Bounds" has the numbers), the screens are
 written: first each fact that changed, in a small file of its own, then the two screens, which
-are text and nothing else. When the program ends the holder writes `state` and its last screen,
-removes its FIFOs and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
+are text and nothing else. When the program ends the holder writes `state` and its last screen
+(once: a failure is a line in `log`), removes its FIFOs and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
 is a hangup, and the rest is the kernel's and the program's business. If the
 folder is gone, the pane is gone: the holder leaves, which hangs up too.
 

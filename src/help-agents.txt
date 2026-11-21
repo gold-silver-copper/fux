@@ -66,7 +66,7 @@ what the program shows; send long text as lines, or as a paste.
 
 A WRITE THAT CANNOT HANG, AND WHETHER A PANE IS ALIVE
 A plain write (`> "$P/in"`) waits for ever if the pane's holder was killed outright
-(kill -9, a crash): the FIFOs stay with no reader, and `state` still says running. Opened
+(kill -9, a crash): the FIFOs stay with no reader, and `state` stays as it was (running). Opened
 for reading and writing at once (`1<>`), a FIFO never makes the opener wait:
     [ -p "$P/in" ] && printf 'echo sent\r' 1<>"$P/in"; seen '^sent$' "$P/screen"
 What that gives and does not: it cannot hang on a dead pane, but there the bytes are lost
@@ -81,7 +81,8 @@ says: it is the holder's process, there and not a zombie:
     printf 'x' 1<>"$X/in"; echo "the write to the dead pane came back"
 Its one limit: long after a crash the holder's number may be another process's. Exact,
 where there is flock(1) (Linux): the holder holds a lock on the pane's directory while it
-lives, so `flock -n "$X" true` FAILS for a live pane and succeeds for a dead one.
+lives, so `flock -sn "$X" true` FAILS for a live pane and succeeds for a dead one (without
+-s it also fails in the instant a viewer or a `fux wait` looks at the pane).
 
 READ IT
     cat "$P/screen"                           # the screen now, one line a row
@@ -96,7 +97,7 @@ cursor  ROW COL shown|hidden SHAPE, from 0, e.g. `2 8 shown 0`: row 2 is line 3 
         sets for its pane is in `screen.styled` as direct colour: `38;2;R;G;B`, `48;2;R;G;B`
         on every cell for a background, `58:2::R:G:B` for an underline)
 modes   words, or an empty line: paste, appcursor, keypad, focus, mouseN, mousesgr, keysN
-state   running | hungup | exited CODE | killed SIGNAL
+state   running | hungup | exited CODE | killed SIGNAL (lost ERROR: the holder could not wait)
 status  three lines: holder N / pid N (the program's) / command ...
 screen.main, screen.main.styled   only while a full-screen program has the alternate
         screen: the main screen it covers, as screen and screen.styled would have it
@@ -125,8 +126,9 @@ empty lines at the very end, and text older than the two history files keep (4 M
 
 RUN A COMMAND, GET ITS OUTPUT AND EXIT CODE
 Surest: make the command the pane's program. `fux wait DIR` returns when the pane's holder
-is gone, and every file of the pane is then final. It prints `pid N` and `state ...`: the
-exit code is in that line (fux wait itself exits 0). The pane stays, to be read.
+is gone, and prints `pid N` and `state ...` as the files have them: the exit code is in that
+line (fux wait itself exits 0). A holder whose program ended wrote the last screen first; one
+that was killed did not, and `state running` is what you get. The pane stays, to be read.
     J=$(fux start agent-demo/ls -- sh -c 'ls /; exit 3')
     code=$(fux wait "$J" | sed -n 's/^state exited //p'); echo "exit code $code"
     whole "$J"                                # all it printed
