@@ -1,6 +1,5 @@
 # The old emulator (fux-vt, from the fux this program is to replace) as one
-# witness for the referee. A package of its own, outside the program's: the
-# program's Cargo.lock lists one package, and nothing here is built with it.
+# witness for the referee. Its separate workspace pins that witness in its own lockfile.
 [workspace]
 
 [package]

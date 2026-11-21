@@ -12,12 +12,10 @@ A terminal multiplexer that is a view over directories.
 - **A key binding is a shell script.** A directory of them is the key table;
   a directory inside it is a menu.
 
-One package, no dependencies: the system calls, the terminal emulator, the
-character widths and sixel are all here, in about 3,900 lines of Rust.
-Linux and macOS.
+fux runs on Linux and macOS with no external dependencies. Run `./sizes.sh` for the current line counts.
 
 ```sh
-cargo build --release                       # no crates fetched: Cargo.lock lists this package only
+cargo build --release                       # fux builds entirely from this tree
 export PATH="$PWD/target/release:$PATH"     # so that `fux` below is this one
 D=$(fux dir); fux start build -- sh       # a pane is a directory kept by one small process
 printf 'echo hi\n' > "$D/main/build/in"; cat "$D/main/build/screen"     # plain tools are the clients
