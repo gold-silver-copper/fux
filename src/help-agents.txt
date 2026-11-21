@@ -95,7 +95,7 @@ size    COLS ROWS, e.g. `80 24`
 cursor  ROW COL shown|hidden SHAPE, from 0, e.g. `2 8 shown 0`: row 2 is line 3 of screen
         (a fifth word, `#rrggbb`, if the program gave the cursor a colour; a colour a program
         sets for its pane is in `screen.styled` as direct colour: `38;2;R;G;B`, `48;2;R;G;B`
-        on every cell for a background, `58:2::R:G:B` for an underline)
+        on every cell of the default background, `58:2::R:G:B` for an underline)
 modes   words, or an empty line: paste, appcursor, keypad, focus, mouseN, mousesgr, keysN
 state   running | hungup | exited CODE | killed SIGNAL (lost ERROR: the holder could not wait)
 status  three lines: holder N / pid N (the program's) / command ...
@@ -163,9 +163,9 @@ bytes; after each, wait for a changed frame or for the text you expect.
     f=$(frame "$P"); printf '/pid\r' > "$P/in"; changed "$P" "$f"      # search; vim: printf '\033:wq\r'
     printf 'q' > "$P/in"; unseen '^' "$P/screen.main"
 A program that asks what its terminal is gets fux's own answers: XTVERSION `fux-next N`;
-COLORTERM=truecolor in its environment; and by name (XTGETTCAP) only what fux does: TN name
-Co colors RGB Tc setrgbf setrgbb Smulx Setulc Ss Se. So Neovim uses true colour and
-curly underlines with no setting, and nothing asks for what is not there.
+COLORTERM=truecolor in its environment; and by name (XTGETTCAP) these, any other being "not
+valid": TN name Co colors RGB Tc setrgbf setrgbb Smulx Setulc Ss Se. So Neovim uses true
+colour and curly underlines with no setting.
 
 RESIZE, RENAME, RING, END
 `ctl` is a FIFO too, one command a line: resize COLS ROWS [CELL-WIDTH CELL-HEIGHT] (a cell's
