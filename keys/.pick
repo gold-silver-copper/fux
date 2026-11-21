@@ -22,12 +22,11 @@ else
   printf 'which (its number or its name)? '
   IFS= read -r n
   # (A number is a line of the list; one that is no line's number is a name, as any other word is.)
-  case $n in
-    '') exit ;;
-    *[!0-9]*) line= ;;
-    *) line=$(awk "NR == $n" "$list") ;;
-  esac
-  [ -n "$line" ] || line=$(name=$n awk -F '\t' '$1 "" == ENVIRON["name"] ""' "$list" | head -n 1)
+  [ -n "$n" ] || exit
+  line=$(name=$n awk -F '\t' 'BEGIN { n = ENVIRON["name"]; number = n ~ /^[0-9]+$/ }
+    number && NR == n + 0 && length($0) { pick = $0; exit }
+    $1 "" == n "" && !length(pick) { pick = $0; if (!number) exit }
+    END { print pick }' "$list")
 fi
 [ -n "$line" ] || exit
 "$@" "${line%%	*}"
