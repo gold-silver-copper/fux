@@ -33,7 +33,7 @@ pub const TERM: &str = "xterm-256color"; // The terminal a pane claims to be (th
 /// What a program is told when it asks for a capability by its terminfo name (XTGETTCAP): what
 /// this emulator does, and no more. A name that is not here is answered "not valid", each by
 /// itself. (The README has the same table; a test holds the two together.)
-const CAPS: &[(&str, &str)] = &[
+pub const CAPS: &[(&str, &str)] = &[
     ("TN", TERM),
     ("name", TERM),
     ("Co", "256"),

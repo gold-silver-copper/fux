@@ -4,7 +4,9 @@ version = "0.11.0"
 edition = "2024"
 description = "The system calls std does not give: a pty, poll, a FIFO, a new session, window size, raw mode"
 license = "MIT"
-publish = false
+repository = "https://github.com/gold-silver-copper/fux"
+keywords = ["pty", "terminal", "unix"]
+categories = ["os::unix-apis"]
 
 [lints]
 workspace = true
