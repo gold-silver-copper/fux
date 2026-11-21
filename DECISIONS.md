@@ -1810,6 +1810,41 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     k` hanging up through `ctl` (the key sends TERM, as fux 1's does);
     the picker taking a number only (the README: a number or a name);
     the viewer's own words for typing into a pane that has ended.
+- **D105. The sixth wave** (three readers; each found its part "close to
+  its minimum"). Taken:
+  - The holder works out what is due next once: the round of writing,
+    the refill of what it may read, and the look for its `in` are each a
+    time left from one reading of the clock, and the wait is the least
+    of them. (Two sets of conditions said when work was due and how long
+    to sleep; they disagreed by up to a refill's wait under mode 2026.)
+  - A pane is up when its holder said so on the pipe, and only then
+    (D100's "gone with its holder, it started, ran and ended" is taken
+    back: a folder renamed meanwhile was told as a success). A program
+    that removes its pane's folder before the first screen fails its
+    start.
+  - One function reads a FIFO's bytes into bounded lines, for the
+    holder's `ctl` and the viewer's; the bound is counted in the bytes
+    written. The session's whole path is worked out once.
+  - **Bugs**, each with a test that failed first where one could be made:
+    a run of ESC bytes making the key reader call itself once a byte (a
+    stack overflow at two thousand); a click read against the tiles of
+    the workspace shown before; text with no key (the kitty form's key
+    0) given a release of its own; a FIFO where a named pane's folder
+    should be blocking `fux start`; rounds of writing that fail leaving
+    their pictures' files for good; characters put in or taken out at
+    the start of a row that goes on cutting the row from its line;
+    `ESC # 8` keeping the marks of what it wrote over.
+  - **Tried and taken back**: marks carried through a resize as places,
+    as the cursor is (it left marks on a screen cleared after the rows
+    came back; keeping the old rule cost what the change saved); the
+    width of a character asked once in `print` (8% slower in a flood);
+    a frame drawn from `screen.styled` alone (a test replaces a
+    picture's file with no word from its pane and waits for it).
+  - **Left out**: the modes that are one switch in one table (the order
+    of the words in `modes` is the file's form); one writer for a
+    style's codes (the bytes of `screen.styled`); a frame's links as its
+    tiles' lists end to end (D99); the cursor drawn where its file says
+    without keeping it inside the rows read (the design's promise).
 
 ## The old fux3's bugs: which classes are gone
 
