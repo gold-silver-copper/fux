@@ -1,8 +1,7 @@
 #!/bin/sh
 # new workspace
 # group: Workspaces
+# (Its first shell is `.empty`'s to start, as in any workspace with no pane.)
 n=1
-while [ -e "$FUXN_DIR/w$n" ] && [ "$n" -lt 1000 ]; do n=$((n + 1)); done
-mkdir "$FUXN_DIR/w$n" || exit
-p=$(fux start "w$n/" -- "$FUXN_KEYS/.shell") || exit
-echo "workspace w$n"
+while [ -e "$FUXN_DIR/w$n" ]; do n=$((n + 1)); done
+mkdir "$FUXN_DIR/w$n" && echo "workspace w$n"
