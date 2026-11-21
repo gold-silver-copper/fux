@@ -135,13 +135,16 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let (names, program) = (args.get(..split).unwrap_or(&[]), args.get(split + 1..).unwrap_or(&[]));
     let name = match names {
-        [] => format!("{}/", workspace()?),
+        [] => String::new(),
         [name] => name.to_string_lossy().into_owned(),
         _ => return Err("start takes one NAME, then -- and the program".into()),
     };
-    let default = workspace()?;
-    let (workspace, pane) = name.split_once('/').unwrap_or((&default, &name));
-    if !is_name(workspace) || !(pane.is_empty() || is_name(pane)) {
+    // (The workspace of whoever starts it is asked for only if none is named.)
+    let (workspace, pane) = match name.split_once('/') {
+        Some((workspace, pane)) => (workspace.to_string(), pane),
+        None => (workspace()?, name.as_str()),
+    };
+    if !is_name(&workspace) || !(pane.is_empty() || is_name(pane)) {
         return Err(format!(
             "{name}: a name is letters, digits, '.', '_' and '-', at most 64, not starting with a dot, and not layout, colours or keyboard"
         ));
