@@ -597,7 +597,7 @@ coming back to it, never sends an old clipboard again. Without a viewer the
 `clipboard` file is still there to read.
 
 **The mouse** passes through. When the focused pane's program asks for mouse
-reports, the viewer asks your terminal for the same and forwards each one to
+reports, the viewer asks your terminal for the same (and for releases too when the program asked for presses alone, mode 9: a click on another tile ends with its release, and the program is still told of presses only) and forwards each one to
 that pane, counted from its tile's corner; a drag that leaves the tile is
 reported at its edge until the button is let go. A click on another tile
 gives that tile the keys and is not passed on. The viewer uses the mouse for nothing else, and when the
