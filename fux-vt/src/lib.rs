@@ -771,11 +771,10 @@ impl Term {
         }
     }
 
-    /// How many lines are before the main screen's first row: those gone into history whole,
-    /// and one more that history has the start of, if what it went on in was erased.
+    /// How many lines are before the main screen's first row: those gone into history whole
+    /// (one that history has the start of is whole once what it went on in was erased: `settle`).
     pub fn top(&self) -> usize {
         self.tail.lines
-            + usize::from(self.tail.open.is_some() && !self.main().first().is_some_and(|row| continues(row)))
     }
 
     /// The number of a link's address in the table, which keeps at most `LINKS_MAX`: when it is
@@ -922,10 +921,10 @@ impl Term {
 
     /// What is done to the main screen's rows is done to the marks on them: `to` says where a
     /// mark at a row and column goes.
-    fn move_marks(&mut self, to: impl Fn(usize, usize) -> At) {
+    fn move_marks(&mut self, to: impl Fn(usize, usize) -> (usize, usize)) {
         for mark in self.marks.iter_mut().filter(|_| !self.screen.alt) {
-            if let At::Screen(row, col) = mark.0 {
-                mark.0 = to(row, col);
+            if let At::Screen(row, col) = &mut mark.0 {
+                (*row, *col) = to(*row, *col);
             }
         }
     }
@@ -1007,7 +1006,7 @@ impl Term {
         self.screen.cursor.wrap = false;
         self.uncover(row, from, to);
         // (Its marks are where the erased part begins; the place right after it is its end too.)
-        self.move_marks(|r, c| At::Screen(r, if r == row && (from + 1..=to).contains(&c) { from } else { c }));
+        self.move_marks(|r, c| (r, if r == row && (from + 1..=to).contains(&c) { from } else { c }));
     }
 
     /// The pictures that lie on cells `from` to `to` of a row are written over: they go.
@@ -1053,6 +1052,7 @@ impl Term {
         // that is dropped, it is where the rows that stay begin; on a row that moves, it moves.
         let bottom = self.bottom;
         if kept {
+            self.settle();
             // (Asked first: a flood scrolls two million times past no mark.)
             if !self.marks.is_empty() {
                 self.mark_texts(0..n);
@@ -1061,9 +1061,9 @@ impl Term {
             self.lent = None;
         }
         self.move_marks(|row, col| match row {
-            row if row < from || row > bottom => At::Screen(row, col),
-            row if row >= from + n => At::Screen(row - n, col),
-            _ => At::Screen(from, 0),
+            row if row < from || row > bottom => (row, col),
+            row if row >= from + n => (row - n, col),
+            _ => (from, 0),
         });
         let Some(region) = self.screen.grid.get_mut(from..=self.bottom) else {
             return;
@@ -1105,9 +1105,9 @@ impl Term {
         let blank = self.blank();
         let bottom = self.bottom;
         self.move_marks(|row, col| match row {
-            row if row < from || row > bottom => At::Screen(row, col),
-            row if row + n > bottom => At::Screen(bottom, usize::MAX),
-            row => At::Screen(row + n, col),
+            row if row < from || row > bottom => (row, col),
+            row if row + n > bottom => (bottom, usize::MAX),
+            row => (row + n, col),
         });
         let Some(region) = self.screen.grid.get_mut(from..=self.bottom) else {
             return;
@@ -1164,14 +1164,14 @@ impl Term {
         let mut joiner = self.going_on().map_or(Joiner::default(), |last| last.joiner);
         if joiner.joins(c) {
             self.join(c);
-        } else if width(c, &[]) == 0 {
-            // A mark or a joiner with nothing to go on: it has no place on a screen.
-            self.cluster = None;
-        } else {
+        } else if let columns @ 1.. = width(c, &[]) {
             // Until it is placed it has no cell: what joins a character that found no room goes with it.
             (self.last, self.cluster) = (c, Some(Last { at: None, cursor: here, joiner }));
             let new = Cell { ch: c, more: ['\0'; MORE], style: self.screen.cursor.style, link: self.link };
-            self.place(new, width(c, &[]) == 2, self.insert);
+            self.place(new, columns == 2, self.insert);
+        } else {
+            // A mark or a joiner with nothing to go on: it has no place on a screen.
+            self.cluster = None;
         }
         // What the next character must find to go on from this one.
         let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
@@ -1436,9 +1436,8 @@ impl Term {
         (*main, *main_pictures) = (wrapped, kept);
         let fit = |(row, col): (usize, usize)| (row.saturating_sub(up).min(rows - 1), col);
         let ((row, col), saved_at) = (fit(at(0)), fit(at(1)));
-        let [main, alt] = &mut self.saved;
+        let [main, _] = &mut self.saved;
         (main.row, main.col, main.wrap) = (saved_at.0, saved_at.1.min(cols - 1), saved_at.1 >= cols);
-        (alt.row, alt.col) = (alt.row.min(rows - 1), alt.col.min(cols - 1));
         self.interrupt();
         if self.screen.alt {
             self.cluster = None;
@@ -1645,7 +1644,7 @@ impl Term {
                     marks: std::mem::take(&mut self.marks),
                     ..Term::new(self.screen.cols, self.screen.rows)
                 };
-                self.move_marks(|_, _| At::Screen(0, 0));
+                self.move_marks(|_, _| (0, 0));
             }
             _ => {}
         }
@@ -1667,7 +1666,7 @@ impl Term {
                 self.screen.grid.iter_mut().for_each(|row| row.fill(fill));
                 self.screen.pictures.clear();
                 // (As a screen that was erased whole: its marks, and what a resize took off its top.)
-                self.move_marks(|_, _| At::Screen(0, 0));
+                self.move_marks(|_, _| (0, 0));
                 self.lent = self.lent.take().filter(|_| self.screen.alt);
                 // And, as in xterm, the whole screen scrolls again and the cursor goes home.
                 (self.top, self.bottom, self.screen.cursor.origin) = (0, self.screen.rows - 1, false);
@@ -1879,7 +1878,7 @@ impl Term {
                 // was marked before is still in its order, with nothing between. Only a prompt
                 // says so: a program that moved up and ended has erased nothing.
                 if kind == "prompt" {
-                    self.move_marks(|r, c| if (r, c) > (row, col) { here } else { At::Screen(r, c) });
+                    self.move_marks(|r, c| (r, c).min((row, col)));
                     // (A prompt drawn again in its place is one prompt.)
                     while self.marks.last().is_some_and(|last| last.0 == here && matches!(last.1, "prompt" | "command"))
                     {
@@ -2014,17 +2013,17 @@ impl Term {
                 0 => {
                     self.erase(row, col, self.screen.cols);
                     (row + 1..self.screen.rows).for_each(|r| self.erase(r, 0, self.screen.cols));
-                    self.move_marks(|r, c| At::Screen(r.min(row), if (r, c) > (row, col) { col } else { c }));
+                    self.move_marks(|r, c| (r.min(row), if (r, c) > (row, col) { col } else { c }));
                 }
                 1 => {
                     (0..row).for_each(|r| self.erase(r, 0, self.screen.cols));
                     self.erase(row, 0, col + 1);
                     // (The place right after what was erased is its end too.)
-                    self.move_marks(|r, c| if (r, c) <= (row, col + 1) { At::Screen(0, 0) } else { At::Screen(r, c) });
+                    self.move_marks(|r, c| if (r, c) <= (row, col + 1) { (0, 0) } else { (r, c) });
                 }
                 2 => {
                     (0..self.screen.rows).for_each(|r| self.erase(r, 0, self.screen.cols));
-                    self.move_marks(|_, _| At::Screen(0, 0));
+                    self.move_marks(|_, _| (0, 0));
                     // A screen that was cleared is not given back what a resize took off its top.
                     self.lent = self.lent.take().filter(|_| self.screen.alt);
                 }
@@ -2046,7 +2045,7 @@ impl Term {
                 let (blank, cols) = (self.blank(), self.screen.cols);
                 // (The marks from there on go with their cells: one on a cell taken out, to where that part begins.)
                 let to = |c: usize| if last == b'@' { (c + n).min(cols) } else { c.saturating_sub(n).max(col) };
-                self.move_marks(|r, c| At::Screen(r, if r == row && c >= col { to(c) } else { c }));
+                self.move_marks(|r, c| (r, if r == row && c >= col { to(c) } else { c }));
                 if let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
                     let n = n.min(rest.len());
                     let keep = rest.len() - n;
