@@ -2023,6 +2023,68 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   that worked. As it stands (D107, D110): `size -N` never grows a
   share in a row of two, and in a longer row a part at the edge of
   the rounding can end one cell wider (the base did the same).
+- **D113. The bugs of D100 to D112 by class, and what makes a class hard
+  to write again** (the owner, 2026-11-21: "keep cutting code while
+  making bugs impossible"; a second pull request, with the same bands:
+  no more lines than before, nothing slower). Two readers sorted the
+  76 bugs by the kind of mistake, each trying its remedies in a copy
+  of its own and counting lines. The largest class, eighteen, is "the
+  grid changed and something kept beside it was not told" (marks, the
+  flag of a row that goes on, rows a resize lent, pictures, a wrap
+  that waits). Taken, each at no more lines than it removed, with
+  what refuses the old mistake now:
+  - cells are moved sideways in a row by one function, `shift`, which
+    moves the marks, keeps the flag on the first cell and mends halved
+    wide characters (three sites did each by hand; five bugs were one
+    of them forgetting one). The tests refuse a hand-written move, not
+    the compiler: a row is a plain list of cells;
+  - `place` decides itself whether a character is inserted (callers
+    said so with a flag, and one said it wrong for an emoji that
+    widens at a row's end): the old call does not compile;
+  - `ESC # 8` erases through the erase every other whole-screen erase
+    uses;
+  - a reader's screen is built at its width by the constructor
+    (`Term::sized`): the reader has no width sum of its own left;
+  - a plain open to read (`File::open`, `fs::read`,
+    `fs::read_to_string`) is refused by clippy, which CI runs: a FIFO
+    there holds the caller (three bugs). With it went the known one, a
+    FIFO where a workspace's folder is;
+  - which workspace is meant is chosen and checked by one function
+    that a command must hand its own name, if it has one;
+  - the bar, a notice and the menu are lent only the cells they may
+    paint: the menu reaching the bar's row by a sum does not compile;
+  - the pty and the input waiting for it are one value: a hang-up
+    cannot keep one without the other.
+  Classes with no such remedy, and why, are in the pull request (each
+  bound is another quantity; orders of steps cross processes; the
+  races that are left are in sh). Not taken: "a press always begins a
+  new click" (no line saved, and it changes what a second button
+  does); continuation kept on the row instead of its first cell (the
+  reflow reads it everywhere).
+  Beside it, three passes of reading for bugs, each fixed with a test
+  that failed first unless said: what is written to `in` after a
+  `kill` is dropped, not left to block its writer; `SHELL` or
+  `FUXN_WS` set and empty is not set; an emoji widened at a row's end
+  in insert mode is put in before the next row's text; a row
+  shortened keeps no sign of where its end was; a paste that began
+  marked ends marked; a key's script is told the size the terminal
+  has now; a sign outside ASCII is itself in both forms of a key, and
+  so is a letter on a key that is no letter on a US layout; what is
+  typed before an empty workspace has its shell waits for it, also
+  after a key that went there; a notice is read from one open file;
+  `.restore` starts no pane whose text it could not copy; `focus
+  left|right|up|down` goes by the terminal's size when told it;
+  `C-b w n` takes the next name when another took the one it found;
+  `split` has one rule for what it splits beside, and a pane beside
+  itself is refused in every form (the form that made a pane a tab
+  of its own, the last, is `break`); `C-b S-c` keeps a command's
+  last blank lines; a picker's or editor's file that could not be
+  moved is removed; a sixel at the bottom of a scroll region that
+  ends above the last row stays; `CSI Ps $ p` is answered; a start
+  from a directory that is gone claims no name; a shell split from a
+  pane that went meanwhile is shown in its own tab. And the
+  leftovers of D112's review that the base shared: five fixed, the
+  rest each given its line in the README.
 
 ## The old fux3's bugs: which classes are gone
 

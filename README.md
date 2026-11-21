@@ -203,7 +203,7 @@ clipboard works (OSC 52 with `c`) and is not in the table: the capability's
 name, `Ms`, promises a choice of clipboard and a way to read it, and fux has
 neither. All it does is under "Whose rules it
 follows". What it leaves out (left and right margins among them: `CSI ? 69 $ p` is
-answered "not known") a program that asks first does not turn on. A pane's program also has
+answered "not known"; of the modes that are not private, `CSI Ps $ p`, insert mode is told as it is and every other as not known, the line feed mode too, which xterm tells) a program that asks first does not turn on. A pane's program also has
 `COLORTERM=truecolor` in its environment, which is what many read instead of
 asking. `TERM` stays `xterm-256color`: fux has no terminal description of
 its own to install, and claims no other terminal's. Three things follow.
