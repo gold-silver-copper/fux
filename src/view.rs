@@ -18,8 +18,7 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -131,10 +130,10 @@ struct View {
     keys: PathBuf,
     tty: File,
     /// What goes to the terminal is written by a thread of its own, so that a terminal that
-    /// reads slowly holds up the frames and not the keys: the way to it (until the viewer
-    /// leaves), and how much of what was sent there it has not written yet.
-    out: Option<mpsc::Sender<String>>,
-    unwritten: Arc<AtomicUsize>,
+    /// reads slowly holds up the frames and not the keys: the way to it, and how much of what
+    /// was sent there it has not said it has written yet.
+    out: mpsc::Sender<String>,
+    unwritten: usize,
     size: Winsize,
     /// What the terminal shows now, to send only what changes.
     front: Vec<Cell>,
@@ -243,16 +242,14 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     let restore = restore.map_err(|e| format!("cannot set the terminal: {e}"))?;
     size.rows = 0; // the first frame sees a new size and draws everything
     let (out, queue) = mpsc::channel::<String>();
-    let unwritten = Arc::new(AtomicUsize::new(0));
     // (The writer says so on a pipe when it has written, or cannot: the loop waits on that as on
     // the keys, and looks no more often for a terminal that reads slowly.)
     let (wrote, mut done) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
     let writer = {
-        let (mut tty, unwritten) = (tty.try_clone().map_err(|e| e.to_string())?, unwritten.clone());
+        let mut tty = tty.try_clone().map_err(|e| e.to_string())?;
         std::thread::Builder::new().spawn(move || {
             let written = queue.into_iter().try_for_each(|text| {
                 tty.write_all(text.as_bytes())?;
-                unwritten.fetch_sub(1, Ordering::Release);
                 done.write_all(b"w")
             });
             let _ = done.write_all(b"w");
@@ -266,8 +263,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         before: None,
         keys,
         tty,
-        out: Some(out),
-        unwritten,
+        out,
+        unwritten: 0,
         size,
         front: Vec::new(),
         from: None,
@@ -328,7 +325,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         view.write("\x1b[?2027l".into());
     }
     // All of it is written before the terminal is put back; what could not be is why the viewer stopped.
-    view.out = None;
+    drop(view.out);
     let result = result.and(writer.join().unwrap_or(Ok(())));
     drop(restore);
     let _ = fs::remove_file(&view.ctl_path);
@@ -338,10 +335,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
 impl View {
     /// Hands the terminal's writer something to write.
     fn write(&mut self, text: String) {
-        if let Some(out) = &self.out {
-            self.unwritten.fetch_add(1, Ordering::Release);
-            let _ = out.send(text);
-        }
+        self.unwritten += 1;
+        let _ = self.out.send(text);
     }
 
     fn run(&mut self, ctl: &File, wrote: &io::PipeReader, writer: &JoinHandle<io::Result<()>>) -> io::Result<()> {
@@ -408,7 +403,7 @@ impl View {
             }
             // (What the writer said is taken: the frame that waited for it is next.)
             if written != 0 {
-                let _ = (&*wrote).read(&mut buffer)?;
+                self.unwritten = self.unwritten.saturating_sub((&*wrote).read(&mut buffer)?);
                 active = Instant::now();
             }
             // The terminal is given a second to say what it is like before that is written down
@@ -879,7 +874,7 @@ impl View {
     fn frame(&mut self) -> io::Result<bool> {
         // One frame at a time: while the terminal is still reading the last, the next one waits
         // (and is then of what the panes show by then), and the keys do not.
-        if self.unwritten.load(Ordering::Acquire) > 0 {
+        if self.unwritten > 0 {
             return Ok(false);
         }
         let mut size = sys::winsize(&self.tty)?;
