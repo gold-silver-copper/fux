@@ -1,34 +1,16 @@
 #!/usr/bin/env python3
-"""Writes the generated part of the corpus again: tools/referee/corpus.py
-
-terminfo/  every output capability of `infocmp -x xterm-256color` (not the keys, k…, nor the
-           shapes of replies: u6, u8, rv, xr, xm), each applied to a 12x6 screen
-           full of text with the cursor at row 3, column 5, then `@` printed where the cursor is
-unicode/   each string after `a` and before `|`, and again started in a row's last-but-one column
-resize/    text, then sizes
-
-The cases are kept as files and this is only how they were made: sessions/ and controls/ are
-written by hand or recorded, and are not touched.
+"""Refreshes the pinned xterm-256color output bytes in corpus/terminfo/ with local tput.
+Edit Unicode, resize, control and session cases directly in corpus/.
 """
 import pathlib, subprocess
 
-HERE = pathlib.Path(__file__).resolve().parent / "corpus"
+HERE = pathlib.Path(__file__).resolve().parent / "corpus" / "terminfo"
 TERM = "xterm-256color"
 
 
 def literal(data):
     """Bytes as the inside of a Python bytes literal, with no blank at either end."""
-    out = "".join(chr(b) if 33 <= b < 127 and b != 92 else {13: "\\r", 10: "\\n", 92: "\\\\"}.get(b, f"\\x{b:02x}") for b in data)
-    return out
-
-
-def case(folder, name, size, *lines):
-    (HERE / folder).mkdir(parents=True, exist_ok=True)
-    (HERE / folder / f"{name}.case").write_text("\n".join([f"size {size}", *lines]) + "\n", encoding="utf-8")
-
-
-def feed(data):
-    return "feed " + literal(data)
+    return "".join(chr(b) if 33 <= b < 127 and b != 92 else {13: "\\r", 10: "\\n", 92: "\\\\"}.get(b, f"\\x{b:02x}") for b in data)
 
 
 def tput(*args):
@@ -73,82 +55,10 @@ def terminfo():
     made["smglr"] = tput("smglr", 2, 8) + b"\r\nMMMMMMMMMM"
     made["u6+u7"] = tput("u7")
     made["u8+u9"] = tput("u9")
+    HERE.mkdir(parents=True, exist_ok=True)
     for name, data in made.items():
-        case("terminfo", name, "12x6", feed(filled + data + b"@"))
-
-
-UNICODE = {
-    "flag": "\U0001F1EF\U0001F1F5",
-    "flag-lone": "\U0001F1EF",
-    "flags-three": "\U0001F1EF\U0001F1F5\U0001F1FA",
-    "family": "\U0001F468‍\U0001F469‍\U0001F467",
-    "family-four": "\U0001F468‍\U0001F469‍\U0001F467‍\U0001F466",
-    "skin-tone": "\U0001F44D\U0001F3FD",
-    "hangul-jamo": "각",
-    "hangul-syllable": "한",
-    "devanagari": "क्ष",
-    "devanagari-joiner": "क्‍ष",
-    "vs16": "❤️",
-    "vs15": "\U0001F600︎",
-    "keycap": "1️⃣",
-    "joiner-after-letter": "x‍",
-    "e-acute": "é",
-    "three-marks": "é̂̃",
-    "cjk": "一",
-    "fullwidth": "Ａ",
-    "ambiguous": "§①α",
-    "zero-width-space": "b​c",
-    "prepend": "؀x",
-    "thai": "กำ",
-    "tamil": "நி",
-    "bengali-vowel-sign": "\u0995\u09be",
-    "tamil-vowel-sign": "\u0ba8\u0bbe",
-    "halfwidth-voiced-mark": "\uff76\uff9e",
-    "kana-voiced-mark": "\u304b\u3099",
-    "hangul-extended-final": "\uac00\ud7cb",
-    "mark-after-letter": "́",
-}
-
-
-def unicode():
-    for name, string in UNICODE.items():
-        escaped = string.encode("unicode_escape").decode()
-        case("unicode", name, "16x2", "text a" + escaped + "|")
-        case("unicode", name + "-at-end", "16x2", "feed \\x1b[1;15H", "text a" + escaped + "|")
-    case("unicode", "mark-after-style", "16x2", "feed caf\\x1b[1;31me\\x1b[m", "text \\u0301|")
-    case("unicode", "joiner-after-style", "16x2", "text \\U0001f469", "feed \\x1b[1m", "text \\u200d\\U0001f4bb|")
-    case("unicode", "mark-after-title", "16x2", "feed e\\x1b]2;t\\x07", "text \\u0301|")
-    case("unicode", "skin-tone-alone", "16x2", "text \\U0001f3fd|")
-    case("unicode", "spacing-mark-alone", "16x2", "text \\u0bbe|")
-    case("unicode", "mark-first", "16x2", "text \\u0301|")
-    case("unicode", "mark-after-move", "16x2", "feed a\\x1b[1;2H", "text \\u0301|")
-
-
-def resize():
-    line = bytes(range(48, 48 + 75)).replace(b"\\", b"/") + b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS"
-    labels = b"\r\n".join(f"R{n}".encode() for n in range(1, 7))
-    wide = "一二三四五六七八".encode("unicode_escape").decode()
-    case("resize", "narrow-and-back", "120x10", feed(line + b"\r\nend"), "resize 40x10", "resize 120x10")
-    case("resize", "narrow", "120x10", feed(line + b"\r\nend"), "resize 40x10")
-    case("resize", "widen", "40x10", feed(line[:100] + b"\r\nend"), "resize 120x10")
-    case("resize", "shorter", "20x6", feed(labels), "resize 20x3")
-    case("resize", "shorter-and-back", "20x6", feed(labels), "resize 20x3", "resize 20x6")
-    case("resize", "taller", "20x3", feed(labels), "resize 20x6")
-    case("resize", "narrow-cursor-mid-line", "40x6", feed(line[:30] + b"\x1b[1;25H"), "resize 10x6")
-    case("resize", "narrow-wide-characters", "16x6", "text " + wide, "resize 7x6")
-    case("resize", "narrow-wide-and-back", "16x6", "text " + wide, "resize 7x6", "resize 16x6")
-    case("resize", "narrow-full-screen", "20x4", feed(b"\r\n".join(line[n : n + 20] for n in (0, 20, 40, 60))), "resize 10x4")
-    case("resize", "alternate-narrow", "20x6", feed(b"main text here\x1b[?1049h" + line[:20] + b"\r\n" + line[20:35]), "resize 10x6")
-    case("resize", "alternate-leave-after", "20x6", feed(b"main text that is long\x1b[?1049halt"), "resize 10x6", feed(b"\x1b[?1049l"))
-    case("resize", "region-then-resize", "20x6", feed(labels + b"\x1b[2;4r"), "resize 20x4", feed(b"\x1b[4;1H\nZ"))
-    full = b"\r\n".join(bytes([c]) * 30 for c in b"ABC") + b"\r\nDDDDD"
-    case("resize", "narrow-and-back-full-screen", "30x6", feed(full), "resize 10x6", "resize 30x6")
-    case("resize", "overwrite-last-column", "10x5", feed(b"abcdefghijKLMNOPQRST\x1b[1;10HZ"), "resize 20x5")
-    case("resize", "erased-row-in-line", "10x5", feed(b"abcdefghijKLMNOPQRSTuvw\x1b[2;1H\x1b[2K"), "resize 30x5")
-    case("resize", "cursor-above-text", "20x4", feed(b"0123456789ABCDEFGHIJ\x1b[1;3H"), "resize 4x4")
-    case("resize", "hard-lines-narrow", "20x6", feed(b"one\r\ntwo two two two\r\nthree"), "resize 8x6")
+        contents = "size 12x6\nfeed " + literal(filled + data + b"@") + "\n"
+        (HERE / f"{name}.case").write_text(contents, encoding="utf-8")
 
 
 terminfo()
-unicode()
-resize()

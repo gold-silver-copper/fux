@@ -3,7 +3,7 @@
 
 usage: tools/referee/referee.py [--fux PATH] [--old PATH] [--witness NAME,…] [-v] [CASE…]
 
-Each case (tools/referee/corpus/**/NAME.case) is played to fux (the built program, in a pane of
+Each case in tools/referee/corpus/ is played to fux (the built program, in a pane of
 a session of the referee's own) and to each witness:
 
   old    the emulator of the fux this one replaces (tools/referee/old, built apart)
@@ -26,7 +26,8 @@ with differs, and a row that does not differ here is noted. A case's lines:
   resize COLSxROWS    the terminal is resized here
   # anything          a note
 
-Feeds that follow each other reach the terminal as one stream.
+Feeds that follow each other reach the terminal as one stream. A .pair file is a .case played
+at two positions: its usual start, and at the penultimate column on the first row (-at-end).
 """
 import ast, fcntl, os, pathlib, re, select, shlex, shutil, signal, subprocess, sys, tempfile, time
 
@@ -41,7 +42,21 @@ class Unplayed(Exception):
     """A terminal could not be played a case: the harness's trouble, not a difference."""
 
 
-def parse(path):
+def case_files(root):
+    cases = {}
+    for path in root.rglob("*"):
+        if path.suffix not in (".case", ".pair") or not path.is_file():
+            continue
+        name = path.relative_to(root).with_suffix("").as_posix()
+        names = (name, name + "-at-end") if path.suffix == ".pair" else (name,)
+        for key in names:
+            if key in cases:
+                raise SystemExit(f"duplicate referee case: {key}")
+            cases[key] = (path, key != name)
+    return cases
+
+
+def parse(path, at_end=False):
     """A case file as (cols, rows, steps); a step is ("feed", bytes) or ("resize", cols, rows)."""
     size, steps = None, []
     for line in path.read_text(encoding="utf-8").split("\n"):
@@ -63,6 +78,8 @@ def parse(path):
             raise SystemExit(f"{path}: not a line of a case: {line!r}")
     if size is None:
         raise SystemExit(f"{path}: no size line")
+    if at_end:
+        steps.insert(0, ("feed", f"\x1b[1;{max(1, size[0] - 1)}H".encode()))
     return size[0], size[1], steps
 
 
@@ -286,18 +303,17 @@ def main():
     for name, asked in (("tmux", ["tmux", "-V"]), ("xterm", ["xterm", "-version"])):
         if name in witnesses:
             print(f"witness {name}: " + subprocess.run(asked, capture_output=True, text=True).stdout.strip())
-    cases = sorted(HERE.glob("corpus/**/*.case"))
-    named = lambda path: str(path.relative_to(HERE / "corpus").with_suffix(""))
-    cases = [c for c in cases if not names or c.stem in names or named(c) in names]
+    every_case = case_files(HERE / "corpus")
+    cases = [name for name in every_case if not names or name in names or name.rsplit("/", 1)[-1] in names]
+    cases.sort(key=lambda name: pathlib.PurePath(name + ".case"))
     if not cases or not witnesses or not os.path.exists(options["--fux"]):
         raise SystemExit("nothing to compare: no case of that name, no witness, or no fux at --fux")
     known, new, stale, agree = departures(), [], [], {name: 0 for name in witnesses}
-    every_case = {named(path) for path in HERE.glob("corpus/**/*.case")}
     # A row for a case or a witness that does not exist excuses nothing, and is somebody's slip.
     new += [f"the README's table has a row for {case} and {witness}: no such case or witness" for case, witness in known if case not in every_case or witness not in every]
     try:
-        for path in cases:
-            name, case = named(path), parse(path)
+        for name in cases:
+            case = parse(*every_case[name])
             try:
                 ours = fux(case, options["--fux"])
             except Unplayed as error:
@@ -335,7 +351,7 @@ def main():
         Display.stop()
     print()
     for witness in witnesses:
-        listed = len({case for (case, w) in known if w == witness} & {named(path) for path in cases})
+        listed = len({case for (case, w) in known if w == witness} & set(cases))
         print(f"{witness}: same on {agree[witness]} of {len(cases)} cases; {listed} departures in the README's table")
     for case, witness in stale:
         print(f"note: the README lists {case} as differing from {witness}, and from this {witness} it does not")
