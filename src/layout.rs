@@ -113,13 +113,14 @@ impl Node {
         let room = length.saturating_sub(shown.saturating_sub(1));
         let focused = parts.iter().skip(shown).find(|(part, _)| part.panes().contains(&focus));
         let parts = parts.iter().take(shown - usize::from(focused.is_some())).chain(focused);
-        let total: usize = parts.clone().map(|p| p.1.max(1) as usize).sum();
+        let total: u64 = parts.clone().map(|p| p.1.max(1) as u64).sum();
         // A part ends at its share of the room, counted from the start, leaving a cell
         // for itself and for each part after it; the last ends where the room does.
         let (start, mut used, mut weight) = (if row { area.x } else { area.y }, 0, 0);
         for (i, (part, share)) in parts.enumerate() {
-            weight += (*share).max(1) as usize;
-            let end = (room * weight).div_ceil(total.max(1)).min(room.saturating_sub(shown - 1 - i)).max(used + 1);
+            weight += (*share).max(1) as u64;
+            let end =
+                ((room as u64 * weight).div_ceil(total) as usize).min(room.saturating_sub(shown - 1 - i)).max(used + 1);
             let (at, size) = (start + used + i, end - used);
             let rect = if row { Rect { x: at, w: size, ..area } } else { Rect { y: at, h: size, ..area } };
             part.place(rect, focus, into);
