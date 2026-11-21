@@ -2623,3 +2623,25 @@ fn nothing_of_a_pane_changes_under_an_even_generation_also_when_the_odd_one_cann
     assert_eq!(text.lines().filter(|line| line.parse::<u32>().is_ok()).count(), 200_000);
     assert!(!read(&pane.join("log")).contains("history"), "{}", read(&pane.join("log")));
 }
+
+#[test]
+fn the_readme_and_the_agents_page_list_the_capabilities_the_emulator_answers() {
+    // The README's table is this table, row for row, and the agents' page lists the same names.
+    let (readme, page) = (include_str!("../README.md"), include_str!("../src/help-agents.txt"));
+    let rows: Vec<String> = fux_vt::CAPS
+        .iter()
+        .map(|(name, value)| match value.replace('\x1b', "\\E").as_str() {
+            "" => format!("| `{name}` | yes |"),
+            shown => format!("| `{name}` | `{shown}` |"),
+        })
+        .collect();
+    assert!(
+        readme.contains(&format!("| Name | Value |\n|---|---|\n{}\n\n", rows.join("\n"))),
+        "the README's table of capabilities"
+    );
+    let names: Vec<&str> = fux_vt::CAPS.iter().map(|(name, _)| *name).collect();
+    assert!(
+        page.split_whitespace().collect::<Vec<_>>().join(" ").contains(&format!("{}.", names.join(" "))),
+        "the agents' page"
+    );
+}

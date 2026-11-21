@@ -582,24 +582,6 @@ fn what_fux_is_and_can_do_is_answered_under_its_own_name_and_no_more() {
         "{:?}",
         shaped.styled()
     );
-    // The README's table is this table, row for row, and the agents' page lists the same names.
-    let (readme, page) = (include_str!("../../README.md"), include_str!("../../src/help-agents.txt"));
-    let rows: Vec<String> = crate::CAPS
-        .iter()
-        .map(|(name, value)| match value.replace('\x1b', "\\E").as_str() {
-            "" => format!("| `{name}` | yes |"),
-            shown => format!("| `{name}` | `{shown}` |"),
-        })
-        .collect();
-    assert!(
-        readme.contains(&format!("| Name | Value |\n|---|---|\n{}\n\n", rows.join("\n"))),
-        "the README's table of capabilities"
-    );
-    let names: Vec<&str> = crate::CAPS.iter().map(|(name, _)| *name).collect();
-    assert!(
-        page.split_whitespace().collect::<Vec<_>>().join(" ").contains(&format!("{}.", names.join(" "))),
-        "the agents' page"
-    );
 }
 
 #[test]

@@ -40,9 +40,9 @@ variables are `FUXN_…` (to become `FUX_…`), the session is
 `$FUXN_DIR`, else `$XDG_RUNTIME_DIR/fux-next`, else `~/.cache/fux-next`, the
 keys directory is a `fux-next/keys` too, and a pane's program sees `TERM_PROGRAM=fux-next`.
 It is on crates.io as `fux` (with `fux-vt` and `fuxix`), so `cargo install fux`
-gives this one and puts it where fux 1's `fux` is: while you run fux 1, run this
-one by its path (`target/release/fux`), as the example does with `PATH` for one
-shell.
+gives this one and replaces fux 1's `fux`. While you still use fux 1, build this
+one from the repository and run it by its path (`target/release/fux`), as the
+example does with `PATH` for one shell.
 
 ## Commands
 
