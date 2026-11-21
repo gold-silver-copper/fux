@@ -403,9 +403,10 @@ impl Holder {
             if waiting.is_char_boundary(keep) {
                 waiting.truncate(keep);
             }
+            // (Only then: the files are not opened for every read of the program's output.)
             let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(written));
-            let cut = OpenOptions::new().write(true).open(name).and_then(cut);
-            cut.err().filter(|_| written > 0).map(|e| format!("{name} keeps bytes that are on the screen again: {e}"))
+            let cut = if written > 0 { OpenOptions::new().write(true).open(name).and_then(cut) } else { Ok(()) };
+            cut.err().map(|e| format!("{name} keeps bytes that are on the screen again: {e}"))
         });
         kept.into_iter().flatten().for_each(|kept| self.log(&kept));
         self.pending.styled.push_str(&out.styled);
