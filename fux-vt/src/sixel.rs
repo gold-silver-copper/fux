@@ -166,12 +166,6 @@ impl Row {
 }
 
 impl Part {
-    /// The colour of a pixel as its number: 0 if it was never painted or is not in the part.
-    fn pen(&self, x: usize, y: usize) -> u16 {
-        let at = y.checked_mul(self.stride).filter(|_| x < self.w && y < self.h).and_then(|at| at.checked_add(x));
-        at.and_then(|at| self.pixels.get(at)).copied().unwrap_or(0)
-    }
-
     /// The part as a sixel picture of exactly its size, with square pixels. A pixel never
     /// painted is left unpainted, and the picture says that such a pixel keeps what is under it.
     pub fn write(&self, max: usize) -> Result<String, &'static str> {
@@ -193,9 +187,12 @@ impl Part {
             });
         }
         let mut rows: Vec<Row> = self.colours.iter().map(|_| Row::default()).collect();
+        // The rows, each from its first pixel on (nothing, if it is not there): a band takes the next six.
+        let mut line = (0..self.h).map(|y| self.pixels.get(y.saturating_mul(self.stride)..).unwrap_or_default());
         for band in 0..self.h.div_ceil(6) {
+            let lines: [&[u16]; 6] = std::array::from_fn(|_| line.next().unwrap_or_default());
             for x in 0..self.w {
-                let column: [u16; 6] = std::array::from_fn(|k| self.pen(x, band * 6 + k));
+                let column = lines.map(|line| line.get(x).copied().unwrap_or(0));
                 for (k, pen) in column.iter().enumerate() {
                     // Each colour of the column once, with all its pixels there.
                     if *pen == 0 || column.iter().take(k).any(|above| above == pen) {
