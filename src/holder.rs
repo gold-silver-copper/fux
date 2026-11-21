@@ -419,8 +419,7 @@ impl Holder {
         }
     }
 
-    /// Says in `generation` that the pane's files are being written (`odd`: the next odd number,
-    /// or the one it has), or that they agree again (the next even one).
+    /// Says in `generation` that the files are being written (the next `odd` number, or the one it has) or agree (even).
     fn turn(&mut self, odd: bool) -> io::Result<()> {
         self.generation = self.generation.wrapping_add(u64::from(odd == self.generation.is_multiple_of(2)));
         replace("generation", format!("{}\n", self.generation).as_bytes())

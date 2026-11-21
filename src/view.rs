@@ -92,6 +92,8 @@ type From = (String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)),
 struct Pane {
     /// The pane's `generation` file when its files were last read (none: they never were).
     seen: Option<Stamp>,
+    /// That file as the last look found it, and whether its number was odd: read again when it is another.
+    looked: (Stamp, bool),
     screen: Screen,
     /// The size the pane says it has (`size`), if it says one.
     size: (usize, usize),
@@ -844,6 +846,8 @@ impl View {
         // (With no pane to look at, none was looked at last: what it copies meanwhile is old when it is come back to.)
         self.copied = self.copied.take().filter(|_| self.focus.is_some());
         let first_look = self.looked.is_none();
+        // (Before its first screen is read, a pane is one blank cell with the cursor shown on it.)
+        let unread = || Pane { screen: Screen::read("", 0), ..Pane::default() };
         self.notices(&layout, &directory);
         // A frame drawn from what the last one was drawn from is the last one: nothing is put
         // together and nothing compared. (A menu is drawn from more than this: with one open,
@@ -854,9 +858,9 @@ impl View {
                 // (Whether its holder lives is whether anything reads its `in`. While it is in the
                 // middle of writing, a pane is as it was last read.)
                 let held = sys::open(directory.join(name).join("in"), true).is_ok();
-                let (now, writing) = generation(&directory.join(name));
-                let last = self.panes.get(name).filter(|_| writing && held).and_then(|pane| pane.seen);
-                (last.unwrap_or(now), held)
+                let pane = self.panes.entry(name.clone()).or_insert_with(unread);
+                pane.looked = generation(&directory.join(name), pane.looked);
+                (pane.seen.filter(|_| pane.looked.1 && held).unwrap_or(pane.looked.0), held)
             })
             .collect();
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
@@ -890,8 +894,6 @@ impl View {
         let mut wants_focus = None;
         let mut keys = 0;
         for ((name, body), &(seen, held)) in tiles.iter().zip(&from.4) {
-            // (Before its first screen is read, a pane is one blank cell with the cursor shown on it.)
-            let unread = || Pane { screen: Screen::read("", 0), ..Pane::default() };
             let pane = self.panes.entry(name.clone()).or_insert_with(unread);
             let pane_directory = directory.join(name);
             pane.read(&pane_directory, seen);
@@ -1349,19 +1351,18 @@ fn program(directory: &Path) -> Option<NonZeroU32> {
     NonZeroU32::new(pid(directory)).filter(|_| asks(directory).keys() & 2 != 0)
 }
 
-/// A pane's `generation` as a look finds it: which file, and whether its number is odd (its holder is writing).
-fn generation(directory: &Path) -> (Stamp, bool) {
-    let file = sys::open(directory.join("generation"), false);
-    let stamp = file.as_ref().ok().and_then(|file| file.metadata().ok()).filter(fs::Metadata::is_file).map(stamp);
-    let number = String::from_utf8_lossy(&crate::read(file, 32).0).trim().parse::<u64>();
-    (stamp, number.is_ok_and(|number| number % 2 == 1))
+/// A pane's `generation` as a look finds it: which file, and whether its number is odd (its holder is
+/// writing), which is read when the file is another than the one `known`.
+fn generation(directory: &Path, known: (Stamp, bool)) -> (Stamp, bool) {
+    let stamp = fs::metadata(directory.join("generation")).ok().filter(fs::Metadata::is_file).map(stamp);
+    let odd = || text(&directory.join("generation"), 32).trim().parse::<u64>().is_ok_and(|number| number % 2 == 1);
+    (stamp, if stamp == known.0 { known.1 } else { odd() })
 }
 
 impl Pane {
-    /// Reads the pane if its `generation` file changed (`seen`: the file as the frame found it): the
-    /// holder writes that file last. What was read is kept only if the file is the same one afterwards:
-    /// then every file is of that one round, the screen that `shown` leads to and its facts too. (In a
-    /// folder made by hand they may still disagree: the rows are the lines there are, the cursor is inside.)
+    /// Reads the pane if its `generation` file changed (`seen`: the file as the frame found it; a holder
+    /// writes it last). What was read is kept only if it is the same file afterwards: then every file is of
+    /// one round. (In a folder made by hand they may disagree: the rows are the lines there are, the cursor inside.)
     fn read(&mut self, directory: &Path, seen: Stamp) {
         if self.seen == Some(seen) {
             return;
@@ -1448,7 +1449,7 @@ impl Pane {
         }
         let title = fact("title", 1024);
         self.title = title.lines().next().unwrap_or_default().chars().filter(|c| !c.is_control()).take(256).collect();
-        if generation(directory).0 != seen {
+        if generation(directory, last.looked).0 != seen {
             *self = last;
         }
     }

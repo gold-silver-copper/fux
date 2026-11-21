@@ -2562,14 +2562,14 @@ fn two_files_of_a_pane_that_floods_are_read_as_of_one_moment() {
 
 #[test]
 fn a_mark_in_a_line_that_never_ends_is_found_in_the_text_after_history_was_put_aside() {
-    // One line of 3,200,000 characters in rows of two, each row a colour: `history.styled` is past
-    // twice its size twice, so the line's start is in no file any more. Then a command's output
-    // with its marks, in that same line.
+    // One line of 1,200,000 characters in rows of one, each row with its looks (16 bytes of
+    // `history.styled` for a character): that file is past twice its size twice, so the line's start
+    // is in no file any more. Then a command's output with its marks, in that same line.
     let session = Session::new("endless");
-    let prints = "printf '\\033[44m'; head -c 3200000 /dev/zero | tr '\\0' x; \
+    let prints = "printf '\\033[1;31;44m'; head -c 1200000 /dev/zero | tr '\\0' x; \
         printf '\\033]133;C\\007MARKED-TAIL\\033]133;D;0\\007yy\\r\\nafter\\r\\n'";
     let mut start = session.fux();
-    start.env("COLUMNS", "2").env("LINES", "2").args(["start", "line", "--", "sh", "-c", prints]);
+    start.env("COLUMNS", "1").env("LINES", "2").args(["start", "line", "--", "sh", "-c", prints]);
     let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
     until("the program has ended", || fact(&pane, "state") == "exited 0");
     assert!(session.fux().arg("wait").arg(&pane).status().unwrap().success());
