@@ -1371,6 +1371,15 @@ fn in_insert_mode_a_character_that_wraps_is_put_in_before_what_is_on_the_next_ro
 }
 
 #[test]
+fn a_row_shortened_keeps_no_sign_of_where_its_end_was() {
+    // A wide character with no room leaves the row's last cell as no text. With a character taken
+    // out at the row's start (CSI P) that cell is no longer the last: put back at the end (CSI @),
+    // it is a blank like any other.
+    let term = term(8, 3, "aaaaaaa\u{65e5}\x1b[1;1H\x1b[P\x1b[@");
+    assert_eq!(term.lines().0.trim_end(), " aaaaaa \u{65e5}");
+}
+
+#[test]
 fn a_row_that_goes_on_from_the_one_above_still_does_when_a_character_is_printed_into_its_start_in_insert_mode() {
     // (CSI 4 h: what is printed pushes the rest of the row along, as CSI @ does before a character is written.)
     let narrow = term(10, 3, "aaaaaaaaaaabcde\x1b[2;1H\x1b[4hX");

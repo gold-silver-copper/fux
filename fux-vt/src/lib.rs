@@ -1004,7 +1004,7 @@ impl Term {
             let keep = rest.len() - n;
             rest.rotate_left(if on { keep } else { n });
             rest.get_mut(if on { 0..n } else { keep..keep + n }).into_iter().for_each(|gone| gone.fill(blank));
-            rest.iter_mut().for_each(|cell| cell.style.flags &= !CONT);
+            rest.iter_mut().for_each(|cell| cell.style.flags &= !MARKS);
             rest.first_mut().into_iter().for_each(|first| first.style.flags |= u16::from(goes_on) * CONT);
         }
         self.tidy(row);
