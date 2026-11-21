@@ -1475,3 +1475,13 @@ fn a_mark_goes_with_its_cell_when_a_character_is_printed_before_it_in_insert_mod
     assert_eq!(term(8, 2, "ab\x1b]133;B\x07cd\r\x1b[4h日").marks(), "0 5 command\n");
     assert_eq!(term(8, 2, "ab\x1b]133;B\x07cd\x1b[1;3H\x1b[4hX").marks(), "0 2 command\n");
 }
+
+#[test]
+fn an_erase_that_takes_the_whole_screen_with_half_a_wide_character_keeps_in_history_what_a_resize_took() {
+    let mut term = term(4, 3, "top\r\n界x\r\nz");
+    term.resize(4, 2);
+    // (From the second half of the wide character on: the character goes whole, and so the screen.)
+    term.feed(b"\x1b[1;2H\x1b[J");
+    term.resize(4, 3);
+    assert_eq!(term.plain().trim(), "");
+}

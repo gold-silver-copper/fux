@@ -1008,6 +1008,8 @@ impl Term {
         // (Half a wide character erased is the character erased: its other cell is of the erased part.)
         let half = |(row, at)| usize::from(self.screen.cell_at(row, at).is_some_and(|cell| cell.ch == '\0'));
         (from.1, to.1) = (from.1.saturating_sub(half(from)), to.1 + half(to));
+        // A main screen cleared whole is not given back what a resize took off its top.
+        _ = self.lent.take_if(|_| !self.screen.alt && from == (0, 0) && to == (self.screen.rows - 1, cols));
         for row in from.0..=to.0 {
             let (start, end) = (if row == from.0 { from.1 } else { 0 }, if row == to.0 { to.1 } else { cols });
             if start == 0 && end == cols {
@@ -2029,11 +2031,6 @@ impl Term {
                     _ => return,
                 };
                 self.erase(from, to);
-                // A screen that was cleared is not given back what a resize took off its top. (From the
-                // screen's first cell on, or up to its last, is the whole screen, as 2 is.)
-                if last == b'J' && (from, to) == (first, end) && !self.screen.alt {
-                    self.lent = None;
-                }
             }
             (0, 0, b'X') => self.erase((row, col), (row, col.saturating_add(n).min(self.screen.cols))),
             (0, 0, b'@' | b'P') => {
