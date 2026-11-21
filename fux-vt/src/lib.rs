@@ -1828,11 +1828,8 @@ impl Term {
             "112" => _ = self.own.remove(&CURSOR),
             // The directory the program is in: `file://HOST/PATH`, the path's odd bytes as `%XX`.
             "7" => {
-                let named = rest.starts_with("file://");
-                let (host, path) = rest
-                    .strip_prefix("file://")
-                    .and_then(|rest| rest.split_at_checked(rest.find('/')?))
-                    .unwrap_or_default();
+                let Some(uri) = rest.strip_prefix("file://") else { return };
+                let Some((host, path)) = uri.find('/').and_then(|at| uri.split_at_checked(at)) else { return };
                 let mut bytes = Vec::new();
                 let mut rest = path.bytes();
                 while let Some(byte) = rest.next() {
@@ -1842,10 +1839,10 @@ impl Term {
                 }
                 // (A path that is no text, has a control character in it or is longer than a path
                 // can be is not told: only that the program is on the machine it named.)
-                let path = String::from_utf8(bytes).ok().filter(|path| {
-                    !path.is_empty() && path.len() <= 4096 && !path.chars().any(|c| c.is_control() || c == '\u{fffd}')
-                });
-                if named && (path.is_some() || !host.is_empty()) {
+                let path = String::from_utf8(bytes)
+                    .ok()
+                    .filter(|path| path.len() <= 4096 && !path.chars().any(|c| c.is_control() || c == '\u{fffd}'));
+                if path.is_some() || !host.is_empty() {
                     self.out.cwd = Some((host.to_string(), path.unwrap_or_default()));
                 }
             }
