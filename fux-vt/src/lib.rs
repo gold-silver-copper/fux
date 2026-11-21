@@ -453,12 +453,7 @@ impl Screen {
     /// The screen a `styled` text says, `cols` wide and of as many rows as it has lines (a reader's
     /// side of `Term::styled`): cells and looks, and none of what `set_words` and `set_link` say.
     pub fn read(styled: &str, cols: usize) -> Screen {
-        // (One column more than the pane is said to have, also past the widest a terminal may be:
-        // there a line that is longer ends, and is cut off.)
-        let mut term = Term::new(cols.saturating_add(1).min(SIZE_MAX), styled.lines().count());
-        term.screen.cols = cols.min(SIZE_MAX) + 1;
-        term.screen.grid.iter_mut().for_each(|row| row.resize(term.screen.cols, Cell::blank(Style::default())));
-        term.feed(b"\x1b[?7l");
+        let mut term = Term::sized(cols, styled.lines().count(), false);
         for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
             // The rows are text and colours, as the holder writes them: anything else in a
             // file of someone's own making is shown as `?`.
@@ -533,10 +528,15 @@ impl Screen {
 
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Term {
-        let (cols, rows) = (cols.clamp(1, SIZE_MAX), rows.clamp(1, SIZE_MAX));
+        Term::sized(cols, rows, true)
+    }
+
+    /// With no `wrap` (a reader's) it has one column more, also past the widest: there a longer line ends, cut off.
+    fn sized(cols: usize, rows: usize, wrap: bool) -> Term {
+        let (cols, rows) = (cols.clamp(usize::from(wrap), SIZE_MAX) + usize::from(!wrap), rows.clamp(1, SIZE_MAX));
         let grid = vec![vec![Cell::blank(Style::default()); cols]; rows];
         Term {
-            screen: Screen { cols, rows, grid: grid.clone(), cursor_shown: true, autowrap: true, ..Screen::default() },
+            screen: Screen { cols, rows, grid: grid.clone(), cursor_shown: true, autowrap: wrap, ..Screen::default() },
             told: Told { cell: (10, 20), ..Told::default() },
             other: grid,
             top: 0,
