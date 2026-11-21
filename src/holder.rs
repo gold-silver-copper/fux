@@ -153,10 +153,10 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
 
 impl Holder {
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
-        // What an earlier holder of this pane left goes before this one's first screen is there: its
-        // clipboard and its history (and its title, as it is a fact with none). Not its pictures'
-        // files: `pictures` names none of them, and each stays until a picture of its number is written.
-        for old in ["clipboard", "cwd", "notice"] {
+        // What an earlier holder of this pane left goes before this one's first screen is there: its clipboard,
+        // its history, its title (a fact with none) and its program's end, which is not that of the one `status`
+        // names now. Not its pictures' files: each stays until a picture of its number is written.
+        for old in ["clipboard", "cwd", "notice", "state"] {
             let _ = fs::remove_file(old);
         }
         for history in ["history", "history.styled"] {

@@ -1824,3 +1824,19 @@ fn a_name_that_is_a_number_of_no_line_is_chosen_without_a_word_of_complaint() {
     let (said, wrong) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(said.ends_with("chose 0\n") && wrong.is_empty(), "{said:?} {wrong:?}");
 }
+
+#[test]
+fn a_pane_started_again_that_never_came_up_leaves_no_state_of_the_run_before() {
+    // A pane whose program ended with 37 is started again, and the new holder cannot write its
+    // first screen (`marks.new` is a directory). Its `status` has the new program's number by
+    // then: the `state` beside it is not the old program's, so `fux wait` has no end to tell of.
+    let session = Session::new("wrongrun");
+    let pane = session.start("p", &["sh", "-c", "exit 37"]);
+    let wait = || session.fux().arg("wait").arg(&pane).output().unwrap();
+    assert!(String::from_utf8_lossy(&wait().stdout).ends_with("state exited 37\n"));
+    fs::create_dir(pane.join("marks.new")).unwrap();
+    let again = session.fux().args(["start", "p", "--", "sleep", "600"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&again.stderr).contains("cannot write the screen"), "{again:?}");
+    let (waited, state) = (wait(), read(&pane.join("state")));
+    assert!(!waited.status.success() && waited.stdout.is_empty() && state.is_empty(), "{waited:?} {state:?}");
+}
