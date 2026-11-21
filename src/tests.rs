@@ -290,6 +290,27 @@ fn when_the_tab_shown_goes_the_tab_shown_before_it_is_shown() {
 }
 
 #[test]
+fn when_the_tab_shown_goes_with_no_tab_shown_before_it_the_tab_now_in_its_place_is_shown() {
+    let after = |text: &str, existing: &[&str]| {
+        let mut layout = parse(text).expect("a layout");
+        layout.settle(existing.iter().map(|name| name.to_string()).collect());
+        layout.print()
+    };
+    let four = "  1 focus=1\n* 2 focus=2\n  3 focus=3\n  4 focus=4\n";
+    // Only the shown tab goes: the tab after it is in its place.
+    assert_eq!(after(four, &["1", "3", "4"]), "  1 focus=1\n* 3 focus=3\n  4 focus=4\n");
+    // An earlier tab goes with it: its place is counted among the tabs that stay, not among those that were.
+    assert_eq!(after(four, &["3", "4"]), "* 3 focus=3\n  4 focus=4\n");
+    // With a tab shown before it, that one is shown, wherever it is now.
+    let marked = "  1 focus=1\n* 2 focus=2\n  3 focus=3\n- 4 focus=4\n";
+    assert_eq!(after(marked, &["3", "4"]), "  3 focus=3\n* 4 focus=4\n");
+    // The last tab is shown and goes: the tab that is last now; a pane with no tab yet gets the place.
+    let last = "  1 focus=1\n  2 focus=2\n* 3 focus=3\n";
+    assert_eq!(after(last, &["1", "2"]), "  1 focus=1\n* 2 focus=2\n");
+    assert_eq!(after(last, &["2", "9"]), "  2 focus=2\n* 9 focus=9\n");
+}
+
+#[test]
 fn keys_have_the_names_of_their_files() {
     let name = |bytes: &[u8]| next(bytes, true, false);
     for (bytes, expected) in [

@@ -272,15 +272,12 @@ impl Layout {
     /// tab's focus is one of its panes.
     pub fn settle(&mut self, existing: Vec<String>) {
         let mut unplaced: std::collections::HashSet<_> = existing.into_iter().collect();
-        let [same, back] = self.retain_panes(|name| unplaced.remove(name));
+        self.retain_panes(|name| unplaced.remove(name));
         let mut unplaced: Vec<_> = unplaced.into_iter().collect();
         unplaced.sort_by(|a, b| (a.len(), a).cmp(&(b.len(), b)));
         self.tabs.extend(unplaced.iter().map(|name| tab_of(name)));
-        // The tab shown stays the one that was shown, wherever it is now. If
-        // it is gone, the tab shown before it is shown; if that is gone too,
-        // the tab now in its place.
-        self.current = same.or(back).unwrap_or(self.current).min(self.tabs.len().saturating_sub(1));
-        self.before = back.filter(|back| *back != self.current);
+        // (The place of a shown tab that was the last and is gone is the first new tab's, or the last tab's.)
+        self.current = self.current.min(self.tabs.len().saturating_sub(1));
     }
 
     /// The workspace's layout as it stands: its file's text, the layout
@@ -326,7 +323,9 @@ impl Layout {
     }
 
     /// Prune the trees, dropping empty tabs and giving a surviving pane the focus.
-    /// Says where the tab shown and the tab shown before it are now, if they are still there.
+    /// It alone turns places in the old list of tabs into places in the new: the tab shown stays
+    /// the one that was shown, wherever it is now; if it is gone, the tab shown before it is
+    /// shown; if that is gone too, the tab now in its place. Says where the two are, if still there.
     fn retain_panes(&mut self, mut keep: impl FnMut(&str) -> bool) -> [Option<usize>; 2] {
         let mut kept = Vec::new();
         self.tabs = std::mem::take(&mut self.tabs)
@@ -341,7 +340,10 @@ impl Layout {
                 Some(tab)
             })
             .collect();
-        [Some(self.current), self.before].map(|old| kept.iter().position(|at| Some(*at) == old))
+        let [same, back] = [Some(self.current), self.before].map(|old| kept.iter().position(|at| Some(*at) == old));
+        self.current = same.or(back).unwrap_or(kept.partition_point(|at| *at < self.current));
+        self.before = back.filter(|back| *back != self.current);
+        [same, back]
     }
 
     /// One edit, as `fux layout WORDS…` gives it. An edit that ends on another
