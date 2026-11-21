@@ -2,13 +2,12 @@
 # What a pane started by the default keys runs: your shell (or the command
 # given), and when that has ended, the removal of the pane's own folder. That a
 # pane closes when its shell exits is this script's doing, not fux's.
-# A shell killed outright never gets here: its folder stays for the close key.
+# This script killed outright never gets there: the folder stays for the close key.
 here=$(ls -di "$FUXN_PANE")
-# TERM (the `C-b a k` key) is for what runs in the shell, not for this wrapper.
-trap : TERM
 if [ $# -gt 0 ]; then "$@"; else "${SHELL:-sh}"; fi
-# (A program that could not be run at all has said why: that stays to be read.)
-case $? in 126 | 127) echo "it could not be run: Enter closes this pane"; read -r _ ;; esac
+# (A program that could not be run at all has said why: that stays to be read.
+# One that is there to run has run, and 126 or 127 is its own: a shell's last command's, say.)
+case $? in 126 | 127) [ -x "$(command -v "${1:-${SHELL:-sh}}" 2> /dev/null)" ] || { echo "it could not be run: Enter closes this pane"; read -r _; } ;; esac
 # Only its own folder: if it was moved and another pane has its old name by
 # now, that one is not this script's to remove.
 # (The holder may write a file into it in the moment it is emptied, and `rm`
@@ -18,6 +17,3 @@ while [ "$(ls -di "$FUXN_PANE" 2>/dev/null)" = "$here" ] && [ $n -lt 20 ]; do
   rm -rf "$FUXN_PANE" 2>/dev/null || sleep 0.05
   n=$((n + 1))
 done
-# (And its workspace's layout follows at once, also when no viewer shows it.)
-ws=${FUXN_PANE%/*}
-FUXN_WS=${ws##*/} fux layout > /dev/null 2>&1

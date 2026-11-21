@@ -1,30 +1,26 @@
 #!/bin/sh
 # Starts again every pane of the session whose program is not running: after a
 # reboot, say. Run it by hand or from your login: sh "$FUXN_KEYS/.restore"
-# (`fux` on PATH; FUXN_DIR set if you set it for the viewer). The session
-# directory must be one that outlasts a reboot: see the README, "After a reboot".
+# (`fux` on PATH; FUXN_KEYS as a login may not have it, FUXN_DIR set if you set it
+# for the viewer). It tries every pane that has a command in `status`. The session
+# directory must be one that outlasts a reboot.
 # Each pane is started under its name, with the words of its command line
-# (`status`) and in the directory its program last said it was in (`cwd`, if
-# it said). The words are those between the line's blanks, as they are:
-# nothing in them is expanded and no shell reads them. So it is honest, not
-# exact: an argument that had a blank in it is several words now, an empty
-# one is gone, and a quote is a character like any other; such a pane starts
-# wrongly or not at all (as does one whose command was longer than `status`
-# keeps). The default panes (`.shell`) and programs with plain arguments
-# start as they were; a project that needs more keeps a start script of its own.
-# What a pane had printed is kept beside it in `before`: a start in place
-# begins the pane's files anew. The layouts are files, and are as they were.
-# A pane that is alive is left alone: `fux start` refuses a name a holder keeps.
-D=${FUXN_DIR:-$(fux dir)} || exit
+# (`status`: those between the line's blanks, nothing expanded, no shell) and
+# in the directory its program last said it was in (`cwd`, if it said). What it
+# had printed is kept beside it in `before` (if the start went well): a start in place begins the pane's
+# files anew. A pane that is alive is left alone: `fux start` refuses a name a
+# holder keeps. Which panes that starts wrongly, and how a session outlasts a
+# reboot: the README, "Search every pane, and after a reboot".
+D=$(fux dir) && export FUXN_DIR="$D" || exit
 for p in "$D"/*/*/; do
   p=${p%/}
   command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)
   [ -n "$command" ] || continue
-  cat "$p/history.1" "$p/history" "$p/screen" > "$p/before.new" 2>/dev/null
+  cat "$p/history.1" "$p/history" "$p/screen" > "$p/before.$$" 2>/dev/null
   dir=
   IFS= read -r dir 2>/dev/null < "$p/cwd"
   if (cd "${dir:-$HOME}" 2>/dev/null || cd; set -f; set -- $command; fux start "${p#"$D"/}" -- "$@") > /dev/null 2>&1
-  then mv "$p/before.new" "$p/before"; echo "started ${p#"$D"/} again"
-  else rm -f "$p/before.new"
+  then mv "$p/before.$$" "$p/before" && echo "started ${p#"$D"/} again"
+  else rm -f "$p/before.$$"
   fi
 done

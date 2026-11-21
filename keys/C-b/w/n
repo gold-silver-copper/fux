@@ -2,8 +2,7 @@
 # new workspace
 # group: Workspaces
 n=1
-while [ -e "$FUXN_DIR/w$n" ] && [ "$n" -lt 1000 ]; do n=$((n + 1)); done
+while [ -e "$FUXN_DIR/w$n" ]; do n=$((n + 1)); done
 mkdir "$FUXN_DIR/w$n" || exit
-# `.shell` runs your shell and removes the pane's folder when it ends.
-p=$(fux start "w$n/" -- "$FUXN_KEYS/.shell") || exit
-echo "workspace w$n"
+# (Its first shell is started before the viewer is told of it: what is typed after the key is that shell's.)
+FUXN_WS="w$n" FUXN_PANE= "$FUXN_KEYS/.new-shell" && echo "workspace w$n"

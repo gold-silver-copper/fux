@@ -6,6 +6,11 @@
 use crate::layout::{Layout, Rect, parse};
 use crate::term::Term;
 
+/// The key at the start of the bytes, as the one parser tells it: how long it is and its name.
+fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)> {
+    crate::keys::next(bytes, whole, answers).map(|(length, name, _)| (length, name))
+}
+
 fn term(cols: usize, rows: usize, bytes: &str) -> Term {
     let mut term = Term::new(cols, rows);
     term.feed(bytes.as_bytes());
@@ -17,33 +22,32 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     // Told nothing, the terminal says nothing: the answer to the next question comes alone.
     let asks = "\x1b]11;?\x07\x1b]10;?\x1b\\\x1b]4;1;?;7;?;300;?\x1b\\\x1b[c";
     let da = "\x1b[?62;4;22c".to_string();
-    assert_eq!(String::from_utf8(term(20, 2, asks).take().reply).unwrap(), da);
+    assert_eq!(String::from_utf8(term(20, 2, asks).take(0).reply).unwrap(), da);
     // Told, it answers in the order asked, each answer ended as its question was, and is silent
     // about what it was not told (a palette entry, a number that is no entry).
     let mut told = Term::new(20, 2);
     told.told().colours = "foreground #d0d0d0\nbackground #1c1c1c\n1 #cc0000\nnonsense\n".into();
     told.feed(asks.as_bytes());
     let answers = "\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]4;1;rgb:cccc/0000/0000\x1b\\";
-    assert_eq!(String::from_utf8(told.take().reply).unwrap(), answers.to_string() + &da);
+    assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), answers.to_string() + &da);
     // `10` with two parts asks for the foreground and then the background, and `11`'s second
     // part for the cursor's colour, which is told if there is a line for it; a line that is no
     // colour (not six hex digits) is no answer.
     told.feed(b"\x1b]10;?;?\x07\x1b]11;?;?\x07");
     let both = "\x1b]10;rgb:d0d0/d0d0/d0d0\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07";
-    assert_eq!(String::from_utf8(told.take().reply).unwrap(), both);
+    assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), both);
     told.told().colours.push_str("cursor #ff8000\n");
     told.feed(b"\x1b]12;?\x07");
-    assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]12;rgb:ffff/8080/0000\x07");
+    assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), "\x1b]12;rgb:ffff/8080/0000\x07");
     told.told().colours = "background #+12345\nforeground #d0d0d\n7 cc0000\n".into();
     told.feed(b"\x1b]11;?\x07\x1b]10;?\x07\x1b]4;7;?\x07");
-    assert!(told.take().reply.is_empty());
+    assert!(told.take(0).reply.is_empty());
     // A person's file: blanks do not matter, capitals neither, and of two lines for a colour the last counts.
     told.told().colours = "background #000000\n  background\t#FDF6E3  # paper\r\n".into();
     told.feed(b"\x1b]11;?\x07");
-    assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]11;rgb:fdfd/f6f6/e3e3\x07");
+    assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), "\x1b]11;rgb:fdfd/f6f6/e3e3\x07");
     assert_eq!(told.plain(), "\n\n");
     // The viewer reads its terminal's answers as answers, not as keys.
-    use crate::keys::next;
     assert_eq!(
         next(b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\x", false, true),
         Some((25, "answer:11;rgb:1c1c/1c1c/1c1c".into()))
@@ -53,9 +57,9 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     assert_eq!((next(b"\x1b]11;rgb:1c", false, true), next(b"\x1b]", false, true)), (None, None));
     assert_eq!(next(b"\x1b]x\x07", false, false), Some((2, "M-]".into())));
     // The viewer reads its terminal's answer about a mode as an answer.
-    assert_eq!(crate::keys::next(b"\x1b[?2027;2$y", false, false), Some((11, "mode:2027;2".into())));
+    assert_eq!(next(b"\x1b[?2027;2$y", false, false), Some((11, "mode:2027;2".into())));
     // And its window's gain and loss of the keys as that, not as a key.
-    assert_eq!(crate::keys::next(b"\x1b[Ox", false, false), Some((3, "focus:O".into())));
+    assert_eq!(next(b"\x1b[Ox", false, false), Some((3, "focus:O".into())));
 }
 
 #[test]
@@ -66,15 +70,15 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     let mut early = term(9, 2, "\x1b[>1u\x1b[?u");
     early.told().keyboard = crate::term::KEYS;
     early.feed(b"\x1b[?u");
-    assert_eq!((early.take().reply.as_slice(), early.screen().keys()), (&b"\x1b[?0u\x1b[?0u"[..], 0));
+    assert_eq!((early.take(0).reply.as_slice(), early.screen().keys()), (&b"\x1b[?0u\x1b[?0u"[..], 0));
     early.feed(b"\x1b[=1u\x1b[?u");
     early.told().keyboard = 0;
-    assert_eq!((early.take().reply.as_slice(), early.screen().keys()), (&b"\x1b[?1u"[..], 1));
+    assert_eq!((early.take(0).reply.as_slice(), early.screen().keys()), (&b"\x1b[?1u"[..], 1));
     let asked = |bytes: &str| {
         let mut term = Term::new(9, 2);
         term.told().keyboard = crate::term::KEYS;
         term.feed(bytes.as_bytes());
-        (String::from_utf8(term.take().reply).unwrap(), term.words())
+        (String::from_utf8(term.take(0).reply).unwrap(), term.words())
     };
     // The protocol's own examples: flags are set, set aside and come back; setting adds or
     // takes bits; going back past the first is no flags; the two screens have their own.
@@ -88,10 +92,10 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     let mut lacking = Term::new(4, 1);
     lacking.told().keyboard = 5;
     lacking.feed(b"\x1b[>31u\x1b[?u\x1b[=2;2u\x1b[?u");
-    assert_eq!(lacking.take().reply, b"\x1b[?5u\x1b[?5u");
+    assert_eq!(lacking.take(0).reply, b"\x1b[?5u\x1b[?5u");
     // What a key's sequence says beyond its name: which key, pressed, held or let go, and
     // whether it is a modifier by itself. Bytes in the old form say none of it.
-    use crate::keys::event;
+    let event = |raw: &[u8]| crate::keys::next(raw, true, false).and_then(|(.., event)| event);
     assert_eq!(event(b"\x1b[97;1:3u"), Some(((97, b'u'), None, 3, false)));
     assert_eq!(event(b"\x1b[98;5u"), Some(((98, b'u'), None, 1, false)));
     assert_eq!(event(b"\x1b[97:65;2:2;65u"), Some(((97, b'u'), Some((65, b'u')), 2, false)));
@@ -100,14 +104,16 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     assert_eq!(event(b"\x1b[57358u"), Some(((57358, b'u'), None, 1, true)));
     // A key with much text is one key, also when it comes in two pieces.
     let long = format!("\x1b[97;;{}", "97:".repeat(24));
-    assert_eq!(crate::keys::next(long.as_bytes(), false, false), None);
-    assert_eq!(crate::keys::next(format!("{long}97u").as_bytes(), false, false), Some((long.len() + 3, "a".into())));
+    assert_eq!(next(long.as_bytes(), false, false), None);
+    assert_eq!(next(format!("{long}97u").as_bytes(), false, false), Some((long.len() + 3, "a".into())));
     assert_eq!(event(b"\x1b[57441;2u"), Some(((57441, b'u'), None, 1, true)));
     assert_eq!(event(b"\x1b[1;5:3A"), Some(((1, b'A'), None, 3, false)));
     assert_eq!(
         (event(b"A"), event(b"\x1b[<0;1;1M"), event(b"\x1ba")),
         (Some(((97, b'u'), None, 1, false)), None, None)
     );
+    // Text with no key (number 0, the text after it) is no key: nothing is down, nothing to let go.
+    assert_eq!((event(b"\x1b[0;;229u"), next(b"\x1b[0;;229u", true, false)), (None, Some((9, String::new()))));
     // Going back takes a count: none given is one, 0 is none.
     assert_eq!(asked("\x1b[=4u\x1b[>1u\x1b[<0u\x1b[?u\x1b[<u\x1b[?u").0, "\x1b[?1u\x1b[?4u");
     // What is kept aside is bounded at 16: of 17, the oldest (4) is gone, and the 16 come back in turn.
@@ -124,7 +130,6 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     }
     assert!(!asked("x").1.contains("keys"));
     // The viewer still finds its keys in that protocol's forms, and tells apart what the old forms cannot.
-    use crate::keys::next;
     let name = |bytes: &str| next(bytes.as_bytes(), true, false).map(|(length, name)| (length == bytes.len(), name));
     for (bytes, key) in [
         ("\x1b[98;5u", "C-b"),
@@ -267,6 +272,10 @@ fn when_the_tab_shown_goes_the_tab_shown_before_it_is_shown() {
     // The marked tab goes too: the position, as before there was a mark.
     layout.settle(vec!["c".into()]);
     assert_eq!(layout.print(), "* c focus=c\n");
+    // A pane of the shown tab that an earlier line has too stays with the earlier line; the mark stays on its own.
+    let mut twice = parse("  a focus=a\n- b focus=b\n* row(a c) focus=c\n").expect("a layout");
+    twice.settle(vec!["a".into(), "b".into(), "c".into()]);
+    assert_eq!(twice.print(), "  a focus=a\n- b focus=b\n* c focus=c\n");
     // A pane that leaves for a tab of its own leaves its old tab marked, and `tab -` goes back.
     let mut broken = parse("* row(a b) focus=b\n").expect("a layout");
     broken.edit(&["break"]).expect("break");
@@ -277,7 +286,7 @@ fn when_the_tab_shown_goes_the_tab_shown_before_it_is_shown() {
 
 #[test]
 fn keys_have_the_names_of_their_files() {
-    let name = |bytes: &[u8]| crate::keys::next(bytes, true, false);
+    let name = |bytes: &[u8]| next(bytes, true, false);
     for (bytes, expected) in [
         (&b"\x02"[..], "C-b"),
         (b"v", "v"),
@@ -296,12 +305,49 @@ fn keys_have_the_names_of_their_files() {
         (b"\x1b", "esc"),
         (b"/", "slash"),
         ("é".as_bytes(), "é"),
+        // A capital is Shift and the small letter in the old form and in the new, whatever the alphabet.
+        ("É".as_bytes(), "S-é"),
+        (b"\x1b[233;2u", "S-é"),
+        ("\x1bÉ".as_bytes(), "M-S-é"),
+        (b"\x1b[233;4u", "M-S-é"),
         (b"\x1b[200~", "paste-start"),
         (b"\x1b[?62;4c", "terminal:?62;4"),
     ] {
         assert_eq!(name(bytes), Some((bytes.len(), expected.to_string())));
     }
-    assert_eq!(crate::keys::next(b"\x1b[20", true, false), None, "half a sequence waits for the rest, however long");
+    assert_eq!(next(b"\x1b[20", true, false), None, "half a sequence waits for the rest, however long");
+    // Alt with a character of several bytes, of which not all have come yet, waits for the rest
+    // as the character by itself does.
+    assert_eq!(next(b"\x1b\xc3", false, false), None);
+    assert_eq!(next("\x1bé".as_bytes(), false, false), Some((3, "M-é".to_string())));
+    // And so when nothing more came for a moment: half a character is no key, however late its rest
+    // is. A byte that is none of its ends the wait, and is a key of its own.
+    for half in [&b"\xc3"[..], b"\xe2\x82", b"\xf0\x9f\x98", b"\x1b\xc3"] {
+        assert_eq!(next(half, true, false), None, "{half:?}");
+    }
+    assert_eq!(
+        (next(b"\xe2a", true, false), next(b"\xff", true, false)),
+        (Some((1, String::new())), Some((1, String::new())))
+    );
+}
+
+#[test]
+fn a_run_of_esc_bytes_is_the_escape_key_again_and_again_and_no_key_of_a_long_name() {
+    // Many ESC at once (a paste on a terminal that does not mark pastes): each is the key `esc`,
+    // told at once, until two are left, which are Alt with Escape if nothing more comes.
+    let run = [0x1b; 2000];
+    for whole in [true, false] {
+        assert_eq!(next(&run, whole, false), Some((1, "esc".to_string())));
+    }
+    let (mut at, mut longest) = (0, 0);
+    while let Some((length, name)) = next(&run[at..], true, false) {
+        (at, longest) = (at + length, longest.max(name.len()));
+    }
+    assert_eq!((at, longest), (run.len(), "M-esc".len()));
+    assert_eq!((next(b"\x1b\x1b", true, false), next(b"\x1b\x1b", false, false)), (Some((2, "M-esc".into())), None));
+    // Alt with a key that is a sequence is still that.
+    assert_eq!(next(b"\x1b\x1b[A", false, false), Some((4, "M-up".into())));
+    assert_eq!(next(b"\x1b\x1b\x1b[A", false, false), Some((1, "esc".into())));
 }
 
 #[test]
@@ -314,6 +360,21 @@ fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour(
         (flat.print(), deep.print()),
         ("* row(a:21 b:16 c:66) focus=a\n".into(), "* col(d row(a:21 b:16 c:66)) focus=a\n".into())
     );
+    // A share asked to shrink never grows, and one asked to grow never shrinks: a pane at a hundredth
+    // stays there when it is made narrower, and is not brought up to the least a step leaves.
+    let mut thin = parse("* row(a:1 b:99) focus=a\n").expect("thin");
+    thin.edit(&["size", "row", "-5"]).expect("size");
+    assert_eq!(thin.print(), "* row(a b:99) focus=a\n");
+    thin.edit(&["size", "row", "+5"]).expect("size");
+    thin.edit(&["size", "row", "-3"]).expect("size");
+    assert_eq!(thin.print(), "* row(a:5 b:94) focus=a\n");
+    // Nor does its tile: a share under a hundredth of its row is left as it is (made 1 of 100, it
+    // had five columns of 500 where it had one).
+    let mut sliver = parse("* row(a:1 b:9999) focus=a\n").expect("sliver");
+    let area = Rect { x: 0, y: 0, w: 500, h: 3 };
+    let before = sliver.tabs.first().expect("a tab").tiles(area).first().expect("a tile").1.w;
+    sliver.edit(&["size", "row", "-5"]).expect("size");
+    assert_eq!((before, sliver.tabs.first().expect("a tab").tiles(area).first().expect("a tile").1.w), (1, 1));
     // The focus is on d by now; the new pane still goes beside the pane it was asked for.
     let mut layout = parse("* row(a b) focus=b\n  d focus=d\n  n focus=n\n").expect("a layout");
     layout.edit(&["split", "col", "n", "beside", "a"]).expect("split");
@@ -323,4 +384,29 @@ fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour(
     let crowded = parse("* row(a b c) focus=c\n").expect("a layout");
     let tiles = crowded.tabs.first().expect("a tab").tiles(Rect { x: 0, y: 0, w: 1, h: 3 });
     assert_eq!(tiles.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["c"]);
+}
+
+#[test]
+fn arrange_puts_a_tabs_panes_in_a_row_a_column_a_grid_or_one_beside_the_rest() {
+    let arranged = |text: &str, way: &str| {
+        let mut layout = parse(text).expect("a layout");
+        layout.edit(&["arrange", way]).expect("arrange");
+        layout.print()
+    };
+    let five = "* row(a col(b:3 c) d e) focus=c\n";
+    assert_eq!(arranged(five, "row"), "* row(a b c d e) focus=c\n");
+    assert_eq!(arranged(five, "col"), "* col(a b c d e) focus=c\n");
+    assert_eq!(arranged(five, "grid"), "* col(row(a b c) row(d e)) focus=c\n");
+    assert_eq!(arranged(five, "main"), "* row(a:2 col(b c d e)) focus=c\n");
+    // A grid is as many across as it takes to be no taller than wide; a row of one is that pane.
+    assert_eq!(arranged("* row(a b c d) focus=a\n", "grid"), "* col(row(a b) row(c d)) focus=a\n");
+    assert_eq!(
+        arranged("* col(a b c d e f g h i j) focus=a\n", "grid"),
+        "* col(row(a b c d) row(e f g h) row(i j)) focus=a\n"
+    );
+    assert_eq!(arranged("* col(a b c) focus=a\n", "grid"), "* col(row(a b) c) focus=a\n");
+    assert_eq!(arranged("* col(a b) focus=b\n", "main"), "* row(a:2 b) focus=b\n");
+    for way in ["row", "col", "grid", "main"] {
+        assert_eq!(arranged("* a focus=a\n", way), "* a focus=a\n");
+    }
 }

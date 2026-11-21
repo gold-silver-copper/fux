@@ -1,5 +1,4 @@
 #!/bin/sh
 # split side by side
 # group: Panes
-. "$FUXN_KEYS/.new-shell"
-new_shell row "$FUXN_ROW"
+exec "$FUXN_KEYS/.new-shell" row "$FUXN_ROW"

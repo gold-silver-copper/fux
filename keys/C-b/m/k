@@ -1,4 +1,0 @@
-#!/bin/sh
-# move pane earlier
-# group: Move
-fux layout swap prev

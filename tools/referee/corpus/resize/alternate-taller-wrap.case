@@ -1,0 +1,4 @@
+size 4x3
+feed \x1b[?1049hABCD
+resize 4x4
+feed E

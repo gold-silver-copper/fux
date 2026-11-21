@@ -6,15 +6,14 @@
 # the pane's first line and how many bytes into the line's text it is. The text
 # from the last `output` mark to the `end` after it (or to the end of the text,
 # if the command still runs) is opened in the editor.
-[ -n "$FUXN_PANE" ] || exit 0
 [ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
-case " $(cat "$FUXN_PANE/modes" 2>/dev/null) " in *" alt "*) echo "this pane shows a program's own screen: the marks are of the shell's"; exit ;; esac
+[ ! -e "$FUXN_PANE/screen.main" ] || { echo "this pane shows a program's own screen: the marks are of the shell's"; exit; }
+set -- $(awk '$3 == "output" { from = $1 " " $2; to = "" } $3 == "end" && from != "" && to == "" { to = $1 " " $2 } END { print from, to }' "$FUXN_PANE/marks")
+[ -n "$1" ] || { echo "no command has run here yet"; exit; }
+[ "$1 $2" != "$3 $4" ] || { echo "nothing of the last command's output is here (it printed none, or the screen was cleared)"; exit; }
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
 umask 077
 add=$("$FUXN_KEYS/.text" "$f") || { rm -f "$f"; exit; }
-set -- $(awk '$3 == "output" { from = $1 " " $2; to = "" } $3 == "end" && from != "" && to == "" { to = $1 " " $2 } END { print from, to }' "$FUXN_PANE/marks")
-[ -n "$1" ] || { rm -f "$f"; echo "no command has run here yet"; exit; }
-[ "$1 $2" != "$3 $4" ] || { rm -f "$f"; echo "nothing of the last command's output is here (it printed none, or the screen was cleared)"; exit; }
 # From the output mark's line and byte to the end mark's (bytes, so `LC_ALL=C`:
 # a mark is never inside a character). A line older than the files is the file's first.
 first=$(($1 + add)) last=${3:+$(($3 + add))}

@@ -1,11 +1,9 @@
 #!/bin/sh
 # history in colour, in less
 # group: Panes
-# The pane's text with its colours (older styled history, styled history, then
-# the styled screen) as one private file, in `less -R` at its end, in a tab of
-# its own that goes when less ends: `.text` makes the file, `.edit` opens it.
-# (`-+F`: a text shorter than the screen stays open too.)
+# `.text` makes the file from the styled files, `.edit` opens it: in `less -R`
+# whatever `$EDITOR` is, with `-+F` so that a short text stays open too.
 [ -n "$FUXN_PANE" ] || exit 0
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
 "$FUXN_KEYS/.text" "$f" styled > /dev/null
-FUXN_EDIT='less -+F -R +G %f' exec "$FUXN_KEYS/.edit" "$f"
+FUXN_EDIT='less -+F -R +G "$1"' exec "$FUXN_KEYS/.edit" "$f"
