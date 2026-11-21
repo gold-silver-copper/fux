@@ -1322,6 +1322,15 @@ impl Term {
         if (cols, rows) == (self.cols, self.rows) {
             return true;
         }
+        // A command is being typed if the shell's last two marks are a prompt and where its
+        // command begins, in that order and still on the screen (where each is, noted before
+        // the marks become places in the text).
+        let pending = match self.marks.as_slice() {
+            [.., (At::Screen(ar, ac), "prompt", _), (At::Screen(br, bc), "command", _)] if (br, bc) > (ar, ac) => {
+                Some(((*ar, *ac), (*br, *bc)))
+            }
+            _ => None,
+        };
         // (The marks on the screen are places in the text while it is wrapped anew.)
         let texts = self.marks.iter().map(|mark| match mark.0 {
             At::Screen(row, col) => {
@@ -1351,15 +1360,29 @@ impl Term {
         let held = self.above.len();
         places.iter_mut().for_each(|place| place.0 += held);
         let old: Vec<Vec<Cell>> = self.above.iter().chain(main).cloned().collect();
-        // While a shell reads a command (its last mark is `command`), the line being typed is cut
-        // or padded, not wrapped anew: the shell draws it again counting rows as it left them.
-        let typing = !self.alt && self.marks.last().is_some_and(|mark| matches!(mark.1, "prompt" | "command"));
-        let keep = places.first().filter(|_| typing).map_or(0..0, |&(row, ..)| {
-            let start = (0..=row).rev().find(|&y| old.get(y).is_none_or(|r| !continues(r))).unwrap_or(0);
-            let end = (row + 1..old.len()).find(|&y| old.get(y).is_some_and(|r| !continues(r))).unwrap_or(old.len());
-            start..end
+        // While a shell reads a command, the line being typed is cut or padded at a new width,
+        // not wrapped anew: the shell draws it again counting rows as it left them. Only where
+        // that is sure to be the shell's own line: the cursor is at or after where the command
+        // begins and on its line, and the prompt began that line or an earlier one (so nothing
+        // before it on the line is finished output). Anything else is wrapped anew, whole.
+        let typed = pending.filter(|_| !self.alt && cols != self.cols).and_then(|(prompt, command)| {
+            let goes_on = |y: usize| main.get(y).is_some_and(|row| continues(row));
+            let first = (1..=command.0).rev().find(|&y| !goes_on(y)).unwrap_or(0);
+            let end = (command.0 + 1..main.len()).find(|&y| !goes_on(y)).unwrap_or(main.len());
+            let ours = prompt.0 < first || prompt == (first, 0);
+            let here = (self.row, self.col + usize::from(self.wrap_pending));
+            (ours && here >= command && here.0 < end).then_some(first + held..end + held)
         });
+        let keep = typed.unwrap_or(0..0);
+        // (Its rows are noted, to be one line still when each has been cut.)
+        let kept = places.len();
+        places.extend(keep.clone().map(|y| (y, 0, false)));
         let mut wrapped = reflow(&old, cols, &mut places, keep);
+        for place in places.split_off(kept).iter().skip(1) {
+            if let Some(cell) = wrapped.get_mut(place.0).and_then(|row| row.first_mut()) {
+                cell.style.flags |= CONT;
+            }
+        }
         let at = |i: usize| places.get(i).map_or((0, 0), |place| (place.0, place.1));
         // Blank rows below the cursor go first; a row with something on it is never dropped:
         // rows go to history from the top, and the cursor with them if text below it needs the room.

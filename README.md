@@ -798,9 +798,14 @@ draws a long command you have not entered yet a second time below the first
 (it clears and redraws as if nothing had been wrapped anew; tmux shows the
 same). Ctrl-L or Enter tidies it. With prompt marks (OSC 133: the bash lines
 are with the `C-b C` key, above) it does not happen: while a command is
-being typed, that line is not wrapped anew at a resize (its rows are cut or
-padded where they are, as kitty and Ghostty do), and the shell's own redraw
-lands on it clean. Everything above the prompt is wrapped anew as always.
+being typed, its line is not wrapped anew when the width changes (its rows
+are cut or padded where they are, as kitty and Ghostty do), and the shell's
+own redraw lands on it clean. That is done only where the line is surely the
+shell's: its last two marks are a prompt and where the command begins, the
+cursor is there, and the prompt began the line. In every other case (output
+that did not end its line with the prompt after it, a shell that marks only
+its prompts, a command that runs) every line is wrapped anew as always, and
+no text is ever cut that the shell would not draw again.
 
 
 Of the mouse, the UTF-8 and urxvt report forms

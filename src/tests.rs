@@ -768,26 +768,53 @@ fn lines_of(text: &str) -> String {
 fn the_command_being_typed_is_not_wrapped_anew_where_the_shell_marks_its_prompt() {
     // A shell that marks its prompt (OSC 133) draws its command line again after a resize,
     // counting rows up from the cursor as it left them. So while a command is being typed
-    // (the last mark is a prompt's), that line's rows are cut or padded, not wrapped anew:
-    // the shell's own drawing lands on them. Everything above is wrapped as ever.
-    let (a, b) = ("\x1b]133;A\x07", "\x1b]133;B\x07");
+    // (the last marks are a prompt and where its command begins, and the cursor is there), that
+    // line's rows are cut or padded, not wrapped anew: the shell's own drawing lands on them.
+    // Everything above is wrapped as ever.
+    let (a, b, d) = ("\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;D;0\x07");
+    let whole = |term: &Term| lines_of(&(term.peek().history.clone() + &term.lines().0));
     let typed = format!("a line of output that is long\r\n{a}p> {b}echo abcdefghijabcdefghij");
     let mut marked = term(20, 6, &typed);
     assert_eq!(marked.plain(), "a line of output tha\nt is long\np> echo abcdefghijab\ncdefghij\n\n\n");
     assert!(marked.resize(12, 6));
-    // (The output above is whole, in more rows; the command's two rows are two rows, cut.)
+    // (The output above is whole, in more rows; the command's two rows are two rows, cut, and
+    // one line still.)
     assert_eq!(marked.plain(), "a line of ou\ntput that is\n long\np> echo abcd\ncdefghij\n\n");
-    assert_eq!((marked.row, marked.col, marked.wraps().as_str()), (4, 8, "1 2"));
+    assert_eq!((marked.row, marked.col, marked.wraps().as_str()), (4, 8, "1 2 4"));
     // What the shell then draws (bash: to the line's start, erase, a row up, erase, the line
     // again) is one command line, once.
-    marked.feed(format!("\r\x1b[K\r\x1b[A\x1b[K\r{a}p> {b}echo abcdefghijabcdefghij").as_bytes());
+    let redraw = |rows: usize| format!("\r\x1b[K{}\r{a}p> {b}echo abcdefghijabcdefghij", "\r\x1b[A\x1b[K".repeat(rows));
+    marked.feed(redraw(1).as_bytes());
     assert_eq!(marked.plain(), "a line of ou\ntput that is\n long\np> echo abcd\nefghijabcdef\nghij\n");
-    // With no marks, or once the command runs (its output has begun), nothing is different:
-    // every line is wrapped anew, and no text is lost.
-    for running in [typed.replace(a, "").replace(b, ""), format!("{typed}\x1b]133;C\x07")] {
-        let mut plain = term(20, 6, &running);
-        assert!(plain.resize(12, 6));
-        assert!(plain.plain().ends_with("p> echo abcd\nefghijabcdef\nghij\n"), "{:?}", plain.plain());
+    // Made narrower twice before the shell has drawn: its rows are the same two rows still.
+    let mut twice = term(20, 6, &typed);
+    assert!(twice.resize(14, 6) && twice.resize(9, 6));
+    twice.feed(redraw(1).as_bytes());
+    assert_eq!(twice.plain().matches("p> echo").count(), 1, "{:?}", twice.plain());
+    // The height alone changes nothing of it.
+    let mut taller = term(20, 6, &typed);
+    let before = whole(&taller);
+    assert!(taller.resize(20, 7) && taller.wraps() == "1 3" && whole(&taller) == before);
+    // Nothing that may be finished output is ever cut: every case below is wrapped anew, whole.
+    let zeros = "0".repeat(50);
+    for other in [
+        // no marks; the command runs (its output has begun); the prompt's mark alone;
+        typed.replace(a, "").replace(b, ""),
+        format!("{typed}\x1b]133;C\x07"),
+        format!("{a}p> go\r\n{zeros}"),
+        // output on the line after the command's (a shell that sends no mark for it);
+        format!("{a}p> {b}go\r\n{zeros}"),
+        // output that did not end its line, with the prompt after it on that line;
+        format!("abcdefghijklmnopqrstuvwxyz0123{d}{a}p> {b}"),
+        format!("{a}>{b}run\r\nABCDEFGHIJKLMNOPQRST{d}{a}>{b}x"),
+        // the cursor somewhere else; marks whose text was cleared away.
+        format!("RESULT-OF-SOMETHING-LONG\r\n{a}>{b}x\x1b[1;1H"),
+        format!("old\r\nxx{a}p{b}\x1b[H\x1b[2JRESULT-OF-SOMETHING-LONG"),
+    ] {
+        let mut term = term(20, 6, &other);
+        let before = whole(&term);
+        assert!(term.resize(7, 6));
+        assert_eq!(whole(&term), before, "{other:?}");
     }
 }
 

@@ -1312,6 +1312,27 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   begun (mark `output`) nothing changes either.
   - Tried with a real bash at 30 columns made 17 and back: one command
     line with marks, the doubled one without.
+- **D91. The fix check of D90 (1 Opus, 1 gpt-6.2-astra, a tester; one pass).**
+  All three showed finished output cut and lost: D90 kept the whole line
+  the cursor was on whenever the last mark was a prompt's or a command's.
+  So output that did not end its line (the prompt after it on the same
+  line), a shell that marks only its prompts, and a running command of a
+  shell that sends no mark for output all lost text at a narrowing. The
+  rule now asks for proof that the line is the shell's own: the last two
+  marks are a prompt and a command's start, in that order and on the
+  screen, the command's after the prompt's; the cursor is at or after the
+  command's start and on its line; and the prompt began that line or an
+  earlier one. Anything else is wrapped anew, whole. The unit test holds
+  eight such cases to "the text before is the text after".
+  - The rows kept stay one line (they lost their mark of going on, so a
+    second narrowing before the shell had drawn doubled the command
+    again, and `wraps` and history took them for separate lines). A change
+    of height alone does nothing of this.
+  - Kept: text a program prints on the prompt's own line after the
+    command's mark is taken for typed text (a shell moves to the next
+    line before a command prints); a mark beyond the cut is at the cut
+    until the shell draws its prompt again; a shell that does not redraw
+    after a resize leaves its command cut.
 
 ## The old fux3's bugs: which classes are gone
 
