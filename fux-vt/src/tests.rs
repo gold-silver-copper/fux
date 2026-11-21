@@ -1445,3 +1445,15 @@ fn text_that_wraps_on_the_last_row_below_the_scroll_region_stays_there_and_joins
     assert_eq!((term.plain().as_str(), term.wraps().as_str(), cursor.row, cursor.col), ("\nUP\nEbcd\n", "", 2, 1));
     assert_eq!(term.lines().0, "\nUP\nEbcd\n");
 }
+
+#[test]
+fn a_sequence_with_an_intermediate_byte_too_many_is_none_of_the_ones_known() {
+    let mut term = term(4, 2, "A\x1b##8");
+    assert_eq!(term.plain(), "A\n\n");
+    term.feed(b"\x1b[?25$$p\x1b[2 !q\x1b[!!p");
+    assert!(term.peek().reply.is_empty() && term.screen().cursor_shape == 0);
+    // (With one, each is what it was.)
+    term.feed(b"\x1b[?25$p\x1b[2 q\x1b#8");
+    assert_eq!((term.peek().reply.as_slice(), term.screen().cursor_shape), (&b"\x1b[?25;1$y"[..], 2));
+    assert_eq!(term.plain(), "EEEE\nEEEE\n");
+}

@@ -1667,7 +1667,8 @@ impl Term {
 
     fn escape_inter(&mut self, first: u8, byte: u8) {
         if (0x20..=0x2f).contains(&byte) {
-            return;
+            // (A second one: of `ESC #` nothing is known with two, as in xterm. A set of characters may have two.)
+            return self.state = State::EscapeInter(if first == b'#' { 0 } else { first });
         }
         self.state = State::Ground;
         match (first, byte) {
@@ -1982,7 +1983,8 @@ impl Term {
                 self.csi.private = byte
             }
             b'<'..=b'?' => self.csi.too_long = true,
-            0x20..=0x2f => self.csi.inter = byte,
+            // (Two intermediate bytes are no sequence that is known: it is ignored, as in xterm.)
+            0x20..=0x2f => (self.csi.inter, self.csi.too_long) = (byte, self.csi.too_long || self.csi.inter != 0),
             _ => self.state = State::Ground,
         }
     }
