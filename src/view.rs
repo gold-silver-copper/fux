@@ -945,8 +945,8 @@ impl View {
                 (_, state) => format!(" {state} "),
             };
             let state = cells(&state, colour(11, Some(236), 0));
-            let room = state.len().min(body.w);
-            put(&mut back, w, body.x + body.w - room, body.y + body.h - 1, room, &state);
+            let (room, y) = (state.len().min(body.w), body.y + body.h - 1);
+            put(back.get_mut(y * w..(y + 1) * w).unwrap_or_default(), body.x + body.w - room, room, &state);
             // What the focused pane's program copies goes to this terminal's clipboard, once: when its `clipboard`
             // file is another than at the last look, the pane having had the focus then too. Coming to a pane only
             // notes what is there. (The name's stamp says whether to open it. Which copy it is is asked of the open
@@ -1075,16 +1075,18 @@ impl View {
             None if layout.tabs.is_empty() && self.message.is_empty() => (&hint, colour(11, Some(236), 0)),
             None => (&self.message, colour(11, Some(236), 0)),
         };
+        // (The last row, the bar's and a notice's, is lent apart from the rows above it, the keys': what is given
+        // one cannot write on the other, nor past a row's end.)
         let (last, mut covered) = (h.saturating_sub(1), None);
+        let (above, foot) = back.split_at_mut_checked(last * w).unwrap_or_default();
         if !note.is_empty() && self.menu.is_none() {
             let note = cells(&format!(" {note} "), style);
             let room = note.len().min(w.saturating_sub(1));
-            put(&mut back, w, w.saturating_sub(room + 1), last, room, &note);
+            put(foot, w.saturating_sub(room + 1), room, &note);
         }
         if let Some((directory, entries)) = &self.menu {
-            // While a prefix is in use: the bar over the last row (the
-            // workspace, its tabs, the keys typed so far), and above it, in
-            // the corner, the keys that can follow.
+            // While a prefix is in use: the bar over the last row (the workspace, its tabs, the keys typed so far),
+            // and above it, in the corner, the keys that can follow.
             let (bar, panel) = (colour(250, Some(236), 0), colour(255, Some(238), 0));
             let path = directory.strip_prefix(&self.keys).unwrap_or(Path::new(""));
             let typed = path.iter().map(|key| key.to_string_lossy()).collect::<Vec<_>>().join(" ");
@@ -1108,7 +1110,7 @@ impl View {
                 cells(&format!(" {note} "), style)
             };
             let said = right.len().min(w * 3 / 4);
-            put(&mut back, w, 0, last, w, &vec![Cell::blank(bar); w]);
+            foot.fill(Cell::blank(bar));
             // As many tabs as fit, the one shown among them.
             let room = w.saturating_sub(said + 2);
             let fits = |first: usize| {
@@ -1116,8 +1118,8 @@ impl View {
             };
             let first = (0..=layout.current).find(|first| fits(*first)).unwrap_or(layout.current);
             left.extend(labels.iter().skip(first).flatten());
-            put(&mut back, w, 0, last, room, &left);
-            put(&mut back, w, w.saturating_sub(said + 1), last, said, &right);
+            put(foot, 0, room, &left);
+            put(foot, w.saturating_sub(said + 1), said, &right);
             // The keys, under their headings; what does not fit above the bar is counted, not shown.
             let key_width = entries.iter().map(|(key, ..)| key.chars().count()).max().unwrap_or(0);
             let (mut lines, mut heading) = (vec![(typed, BOLD)], "");
@@ -1148,12 +1150,11 @@ impl View {
             let more = cells(&format!(" ▼ {} more", over + 1), Style { flags: DIM, ..panel });
             let height = boxes.first().map_or(0, |(part, ..)| part.len());
             for (n, (part, width, from)) in boxes.iter().enumerate().rev() {
-                for i in 0..height {
-                    let y = last.saturating_sub(height) + i;
+                for (i, row) in above.chunks_exact_mut(w.max(1)).skip(last.saturating_sub(height)).enumerate() {
                     let hides = n + 1 == boxes.len() && over > 0 && i + 1 == height;
                     let line = if hides { Some(&more) } else { part.get(i) };
-                    put(&mut back, w, right + from, y, *width, &vec![Cell::blank(panel); *width]);
-                    put(&mut back, w, right + from, y, *width, line.map_or(&[], |line| line));
+                    put(row, right + from, *width, &vec![Cell::blank(panel); *width]);
+                    put(row, right + from, *width, line.map_or(&[], |line| line));
                 }
             }
             (cursor, cursor_colour, covered) = (String::new(), None, Some((right, last.saturating_sub(height))));
@@ -1303,23 +1304,20 @@ fn address(table: &[String], number: u16) -> Option<&str> {
     table.get(usize::from(number).checked_sub(1)?).map(String::as_str)
 }
 
-/// Puts cells on row `y` from column `x`, at most `room` of them and none
-/// past the screen's width `w`; a wide character that would be cut is a blank.
-fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Cell]) {
-    let room = room.min(w.saturating_sub(x));
+/// Puts cells on a row from column `x`, at most `room` of them and none past
+/// the row's end, which is all it can reach; a wide character that would be cut is a blank.
+fn put(row: &mut [Cell], x: usize, room: usize, cells: &[Cell]) {
+    let room = room.min(row.len().saturating_sub(x));
     // What is written over the right half of a wide character takes its left half with it.
     if room > 0
-        && x > 0
-        && back.get(y * w + x).is_some_and(|under| under.ch == '\0')
-        && let Some(left) = back.get_mut(y * w + x - 1)
+        && row.get(x).is_some_and(|c| c.ch == '\0')
+        && let Some(left) = row.get_mut(x.wrapping_sub(1))
     {
         *left = Cell::blank(left.style);
     }
-    for (i, cell) in cells.iter().enumerate().take(room) {
+    for (i, (slot, cell)) in row.iter_mut().skip(x).zip(cells).take(room).enumerate() {
         let cut = i + 1 == room && cells.get(i + 1).is_some_and(|next| next.ch == '\0');
-        if let Some(slot) = back.get_mut(y * w + x + i) {
-            *slot = if cut { Cell::blank(cell.style) } else { *cell };
-        }
+        *slot = if cut { Cell::blank(cell.style) } else { *cell };
     }
 }
 
