@@ -14,7 +14,7 @@ use crate::{is_name, keys, sixel, text};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -400,10 +400,9 @@ impl View {
             let timeout = if self.carry.is_empty() || rest.is_zero() { timeout } else { rest.as_millis() as i32 + 1 };
             // Typed bytes are not read while 64 KiB of them wait for a script.
             let typing = if self.carry.len() < TYPED_MAX { sys::POLLIN } else { 0 };
-            let wanted =
-                [(self.tty.as_raw_fd(), typing), (ctl.as_raw_fd(), sys::POLLIN), (wrote.as_raw_fd(), sys::POLLIN)];
-            let events = sys::wait(&wanted, timeout)?;
-            if events.first().is_some_and(|e| *e != 0) {
+            let wanted = [(self.tty.as_fd(), typing), (ctl.as_fd(), sys::POLLIN), (wrote.as_fd(), sys::POLLIN)];
+            let [typed, _, written] = sys::wait(wanted.map(|(file, events)| (Some(file), events)), timeout)?;
+            if typed != 0 {
                 let n = (&self.tty).read(&mut buffer)?;
                 if n == 0 {
                     return Ok(());
@@ -412,7 +411,7 @@ impl View {
                 (active, heard) = (Instant::now(), Instant::now());
             }
             // (What the writer said is taken: the frame that waited for it is next.)
-            if events.get(2).is_some_and(|e| *e != 0) {
+            if written != 0 {
                 let _ = (&*wrote).read(&mut buffer)?;
                 active = Instant::now();
             }

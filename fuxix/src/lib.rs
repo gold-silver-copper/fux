@@ -5,7 +5,7 @@
 use std::ffi::{CString, c_char, c_int, c_ulong, c_void};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Error};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
@@ -51,11 +51,10 @@ pub struct Winsize {
 
 /// `struct pollfd`, the same on both systems.
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PollFd {
+struct PollFd {
     fd: c_int,
     events: i16,
-    pub revents: i16,
+    revents: i16,
 }
 
 /// `struct termios` is 60 bytes on Linux and 72 on macOS. Nothing here looks
@@ -166,21 +165,17 @@ pub fn winsize(tty: &File) -> io::Result<Winsize> {
 }
 
 /// Waits until one of the files is ready or the time (milliseconds, -1 for
-/// ever) is over. Each entry is (descriptor, events wanted); the answer has
-/// the events that happened, in the same order. An interrupted wait is an
-/// answer with no events.
-pub fn wait(wanted: &[(RawFd, i16)], timeout: i32) -> io::Result<Vec<i16>> {
-    let mut fds: Vec<PollFd> = wanted.iter().map(|&(fd, events)| PollFd { fd, events, revents: 0 }).collect();
-    // SAFETY: the pointer and length describe `fds`, alive for the call.
-    let result = unsafe { poll(fds.as_mut_ptr(), fds.len() as os::Nfds, timeout) };
-    if result < 0 {
-        let error = Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
-        return Ok(vec![0; wanted.len()]);
+/// ever) is over. Each entry is (file, events wanted), a file that is not there
+/// being no file to wait on; the answer has the events that happened, in the
+/// same order. An interrupted wait is an answer with no events.
+pub fn wait<const N: usize>(wanted: [(Option<BorrowedFd<'_>>, i16); N], timeout: i32) -> io::Result<[i16; N]> {
+    let mut fds = wanted.map(|(fd, events)| PollFd { fd: fd.map_or(-1, |fd| fd.as_raw_fd()), events, revents: 0 });
+    // SAFETY: the pointer and length describe `fds`, whose descriptors are borrowed for the call.
+    match check(unsafe { poll(fds.as_mut_ptr(), N as os::Nfds, timeout) }) {
+        Err(error) if error.kind() != io::ErrorKind::Interrupted => Err(error),
+        Err(_) => Ok([0; N]),
+        Ok(_) => Ok(fds.map(|fd| fd.revents)),
     }
-    Ok(fds.iter().map(|fd| fd.revents).collect())
 }
 
 /// This machine's name, as programs on it know it.

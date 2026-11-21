@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Seek, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -276,13 +276,15 @@ impl Holder {
                     return Ok(());
                 }
             }
-            let mut wanted = vec![(ended.as_raw_fd(), sys::POLLIN), (ctl.as_raw_fd(), sys::POLLIN)];
-            if let Some(master) = &self.master {
-                let read = if budget > 0 { sys::POLLIN } else { 0 };
-                let write = if self.input.is_empty() { 0 } else { sys::POLLOUT };
-                wanted.push((master.as_raw_fd(), read | write));
-                wanted.push((input.as_raw_fd(), if self.input.len() < INPUT_MAX { sys::POLLIN } else { 0 }));
-            }
+            let master = self.master.as_ref();
+            let read = if budget > 0 { sys::POLLIN } else { 0 };
+            let write = if self.input.is_empty() { 0 } else { sys::POLLOUT };
+            let wanted = [
+                (Some(ended.as_fd()), sys::POLLIN),
+                (Some(ctl.as_fd()), sys::POLLIN),
+                (master.map(AsFd::as_fd), read | write),
+                (master.map(|_| input.as_fd()), if self.input.len() < INPUT_MAX { sys::POLLIN } else { 0 }),
+            ];
             let look = LOOK_EVERY.saturating_sub(looked.elapsed());
             let wait = match dirty || budget == 0 {
                 // (While it draws there is nothing to write out, only more of it to read.)
@@ -295,19 +297,19 @@ impl Holder {
             };
             // (To the millisecond above, and one at least: a wait that ends early only comes round again.)
             let wait = (wait.as_micros().div_ceil(1000) as i32).max(1);
-            let events = sys::wait(&wanted, wait).map_err(|e| format!("cannot wait: {e}"))?;
-            let event = |i: usize| events.get(i).copied().unwrap_or(0);
-            if event(1) != 0 {
+            let [ended_now, commanded, program, typed] =
+                sys::wait(wanted, wait).map_err(|e| format!("cannot wait: {e}"))?;
+            if commanded != 0 {
                 self.commands(ctl, &mut buffer);
                 dirty = true;
             }
-            if event(2) & !sys::POLLOUT != 0 && budget > 0 {
+            if program & !sys::POLLOUT != 0 && budget > 0 {
                 let n = self.read_program(buffer.get_mut(..budget.min(64 << 10)).unwrap_or(&mut []));
                 budget -= n.min(budget);
                 dirty |= n > 0;
                 heard = if n > 0 { Instant::now() } else { heard };
             }
-            if event(3) != 0 && self.master.is_some() {
+            if typed != 0 && self.master.is_some() {
                 let room = INPUT_MAX.saturating_sub(self.input.len()).min(buffer.len());
                 if let Some(Ok(n)) = buffer.get_mut(..room).map(|b| (&*input).read(b)) {
                     self.input.extend_from_slice(buffer.get(..n).unwrap_or(&[]));
@@ -317,7 +319,7 @@ impl Holder {
             if let Some(Ok(n)) = typed {
                 self.input.drain(..n.min(self.input.len()));
             }
-            if event(0) != 0 {
+            if ended_now != 0 {
                 let mut state = String::new();
                 let _ = ended.read_to_string(&mut state);
                 // What the program wrote last is still in the pty: read it, up to 4 MiB.
