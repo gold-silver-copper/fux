@@ -52,5 +52,5 @@ else
   esac
 fi
 p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.edit" --in "$f" "$n" "$@") || { rm -f "$f"; exit; }
-# An editor that is done at once has taken its pane with it already.
-[ ! -d "$p" ] || fux layout pane "${p##*/}"
+# (An editor that is done by now has taken its pane with it: then there is none to show.)
+fux layout pane "${p##*/}" 2> /dev/null || :

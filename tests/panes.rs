@@ -1018,6 +1018,48 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
 }
 
 #[test]
+fn an_editor_that_ends_while_its_key_runs_has_taken_its_pane_and_the_key_says_nothing() {
+    // The editor's pane removes its own folder when the editor ends. When that is before the
+    // key's script asks the layout to show the pane, there is none to show: no error of the
+    // key's. (An editor that ends when told, and a `fux` first in PATH whose `layout` tells it
+    // and waits until the pane has gone.)
+    let session = Session::new("atonce");
+    let (keys, bin) = (session.0.join(".keys"), session.0.join("bin"));
+    fs::create_dir_all(&bin).unwrap();
+    assert!(
+        Command::new("cp")
+            .arg("-R")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"))
+            .arg(&keys)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let fux = env!("CARGO_BIN_EXE_fux");
+    let scripts = [
+        ("ed", "#!/bin/sh\nuntil [ -e \"$FUXN_DIR/go\" ]; do sleep 0.02; done\n".to_string()),
+        (
+            "fux",
+            format!(
+                "#!/bin/sh\nif [ \"$1 $2\" = 'layout pane' ]; then : > \"$FUXN_DIR/go\"; while [ -d \"$FUXN_DIR/main/$3\" ]; do sleep 0.02; done; fi\nexec {fux} \"$@\"\n"
+            ),
+        ),
+    ];
+    for (name, text) in scripts {
+        fs::write(bin.join(name), text).unwrap();
+        assert!(Command::new("chmod").arg("+x").arg(bin.join(name)).status().unwrap().success());
+    }
+    fs::write(session.0.join("file"), "text\n").unwrap();
+    let mut script = Command::new(keys.join(".edit"));
+    script.arg(session.0.join("file")).env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()));
+    script.env("FUXN_EDIT", "ed %f").env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main");
+    let out = script.env_remove("FUXN_PANE").output().unwrap();
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && said.is_empty(), "{:?}: {said}", out.status);
+    assert!(!session.0.join("main/1").exists() && !session.0.join("file").exists());
+}
+
+#[test]
 fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_press() {
     // As the test before: the viewer in a pane of an outer session whose terminal is said to
     // take every flag of the kitty keyboard protocol.

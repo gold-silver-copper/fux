@@ -14,4 +14,4 @@ for p in "$FUXN_DIR/$FUXN_WS"/*/; do
   printf '%s\t%s  %s\n' "$(basename "$p")" "$(head -n 1 "$p/title" 2>/dev/null)" "$(sed -n "$((row + 1))p" "$p/screen")"
 done > "$list"
 p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$list" sh -c 'fux layout tab - 2>/dev/null; fux layout pane "$1"' sh) || { rm -f "$list"; exit; }
-[ -d "$p" ] && fux layout pane "${p##*/}"
+fux layout pane "${p##*/}" 2> /dev/null || :
