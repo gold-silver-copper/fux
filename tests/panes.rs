@@ -1889,3 +1889,20 @@ fn a_colours_file_that_could_not_be_read_is_read_once_it_can_be() {
         || read(&pane.join("screen")).contains("rgb:1010/2020/3030"),
     );
 }
+
+#[test]
+fn a_line_of_ctl_that_has_not_ended_writes_no_screen() {
+    // The first half of a line is no command yet: who watches `screen.styled` of a quiet pane is
+    // not woken for it. The line's end is what has the notice written, and the screen after it.
+    use std::os::unix::fs::MetadataExt;
+    let session = Session::new("halfline");
+    let pane = session.start("p", &["sleep", "600"]);
+    let screen = || fs::metadata(pane.join("screen.styled")).unwrap().ino();
+    let first = screen();
+    fs::write(pane.join("ctl"), "notify the first").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!((screen(), fact(&pane, "notice")), (first, String::new()), "a screen was written for half a line");
+    fs::write(pane.join("ctl"), " half\n").unwrap();
+    until("the whole line is taken", || fact(&pane, "notice") == "1 the first half");
+    until("the screen follows the notice", || screen() != first);
+}
