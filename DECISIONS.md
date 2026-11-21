@@ -1571,6 +1571,78 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     The key rows land on 2, 3, 4, 5 or 6 ms from run to run with one
     build, so they say nothing at this size; the others are inside
     their spread.
+- **D100. The least code that is still the whole multiplexer: guards and
+  second copies go** (the owner, 2026-11-20: "no guards against the user
+  or the filesystem", "negative LOC", "behavior changes are allowed if its
+  a simplification"; and 2026-11-21: "single source of truth should be a
+  principle"). An audit by six readers, one area each, and a second pass
+  by two for facts held twice; the writer alone decided. Where an earlier
+  entry had added a guard after a reviewer's finding, this entry takes it
+  back and says what Unix does instead; owner's decisions and panels'
+  (no copy mode, no zoom, two session files, `FUXN_ROW`/`FUXN_COL`, the
+  rows a resize sends to history coming back) are not reopened.
+  - **D23, in part.** `fux start` takes no lock on the workspace: `mkdir`
+    claims a new name and the pane's own lock says who starts it. A start
+    that failed removes the folder it made under that lock (the old
+    removal, under the workspace's, could take another start's folder).
+    The start is done when the holder says so on a pipe, not when a loop
+    finds `status` naming it.
+  - **D27, D84/D87, in part.** What cannot be written to `history` or to
+    `history.styled` is lost to that file, and `log` says so.
+    `history.styled` is not begun anew, tracked as lost and tried again.
+    The two files are put aside where the last line of what is being
+    added ends, so nothing remembers, or reads back from the file,
+    whether it ends inside a line.
+  - The last screen is written once: no two seconds of trying.
+  - **D86, in part.** `.empty` claims nothing: two viewers that find a
+    workspace empty in the same instant start a shell each. (A script
+    killed after its claim left `.first` behind for good.)
+  - **D71, in part.** `.shell` does not settle the layout at its end:
+    every edit and every viewer does.
+  - A notice that appears after the viewer first looked at a workspace
+    is new: no comparison of file times with the clock. A pane moved
+    there with an old notice is rung once.
+  - A holder makes its FIFOs anew; it does not look for ones to keep.
+  - `fux layout pane NAME` names a pane, `focus` takes a way: one way.
+  - The names fux will not make are one list (`layout`, `layout.new`,
+    `colours`, `keyboard`, `-`), in exact case.
+  - `fux wait` enters the directory by name with std; `fchdir` is gone.
+  - **D99, in part** (its "no behaviour change" was that run's rule, not
+    a decision about the things): one stamp (number, time, length) for
+    every file; capability answers bounded by the one bound on answers.
+  - **One source for each fact.** Gone as second copies: the holder's
+    list of what the program said last (beside what waits to be written
+    and what each file holds), its word for running or hung up (beside
+    the pty it holds or not), its count of 2026s (beside the
+    emulator's), its `status` text (beside the file); the viewer's
+    counter shared with its writer thread (beside the writer's own word
+    on the pipe), its keys kept as "nowhere" (beside not kept), its
+    second stamp; the emulator's count of lines gone into history
+    (beside where history ends), `main_row` (beside the saved cursor),
+    `string_over` (beside the string's length); `contains` beside
+    `panes`; `read_some` beside `text`; the split's tree operation
+    written out for the edit and run again, through the edit's words, for
+    the viewer's prediction.
+  - **Types.** As the last run found for its two, a type that adds lines
+    and removes no check is left out: a pane's state as an enum, `Way`
+    for a split's bool, rows and columns as newtypes, a validated `Name`
+    (two audits, each showing the lines). What a type now holds: a key
+    with nowhere to go cannot be in the list of keys down; a workspace's
+    name that is none cannot become `main`; the way to the terminal's
+    writer is owned and dropped, not an `Option` each write looks into.
+  - **Bugs found on the way**, each with a test that failed first: an
+    editor that ends while its key's script runs (the macOS failure of
+    the last run); Alt with a character split across two reads; the bar
+    on a terminal over 250 columns; `FUXN_WS` that is no name taken for
+    `main`; `ESC # 8` leaving pictures; a blank joined to a Prepend
+    character lost from `screen`; a sixel register over 255 used only
+    outside the part drawn refusing the part; a hostname of 255 bytes
+    cut by one (no test: it needs such a machine).
+  - **Tests changed on purpose**: the unwritable history file (the new
+    rule); the alternate screen entered by 1047 at a resize (blank rows
+    kept down to the saved cursor's row, as by 1049); forty capability
+    names in one question (forty answers); the picture that cannot be
+    cut (it painted its register 256 only outside the part).
 
 ## The old fux3's bugs: which classes are gone
 
