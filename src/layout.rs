@@ -64,6 +64,13 @@ impl Node {
         }
     }
 
+    fn panes_mut<'a>(&'a mut self, into: &mut Vec<&'a mut String>) {
+        match self {
+            Node::Pane(name) => into.push(name),
+            Node::Split(_, parts) => parts.iter_mut().for_each(|(part, _)| part.panes_mut(into)),
+        }
+    }
+
     /// Keeps only the panes `keep` accepts; a split left with one part becomes that part.
     fn filter(self, keep: &mut impl FnMut(&str) -> bool) -> Option<Node> {
         match self {
@@ -360,10 +367,9 @@ impl Layout {
 
     fn apply(&mut self, words: &[&str]) -> Result<(), String> {
         let count = self.tabs.len();
-        let step = |at: usize, word: &str, count: usize| match word {
-            "next" => Ok((at + 1) % count.max(1)),
-            "prev" => Ok((at + count.max(1) - 1) % count.max(1)),
-            _ => Err(format!("'{word}' is not next or prev")),
+        let step = |at: usize, count: usize, previous: bool| {
+            let count = count.max(1);
+            (at + if previous { count - 1 } else { 1 }) % count
         };
         match words {
             ["split", way @ ("row" | "col"), name, tail @ ..] => {
@@ -427,11 +433,17 @@ impl Layout {
                     tab.focus = name.clone();
                 }
             }
-            ["focus", way @ ("next" | "prev")] => {
+            [edit @ ("focus" | "swap"), way @ ("next" | "prev")] => {
                 let tab = self.tab_mut()?;
-                let panes = tab.panes();
-                let at = step(panes.iter().position(|p| *p == tab.focus).unwrap_or(0), way, panes.len())?;
-                tab.focus = panes.get(at).map(|name| name.to_string()).unwrap_or_default();
+                let mut panes = Vec::new();
+                tab.root.panes_mut(&mut panes);
+                let from = panes.iter().position(|name| name.as_str() == tab.focus).unwrap_or(0);
+                let to = step(from, panes.len(), *way == "prev");
+                if *edit == "focus" {
+                    tab.focus = panes.get(to).map(|name| name.to_string()).unwrap_or_default();
+                } else if let Ok([a, b]) = panes.get_disjoint_mut([from, to]) {
+                    std::mem::swap(*a, *b);
+                }
             }
             // `pane NAME` is `focus NAME` for a pane whose name is a direction's word.
             ["focus" | "pane", name] => {
@@ -443,7 +455,7 @@ impl Layout {
                 self.current = at;
                 self.tab_mut()?.focus = name.to_string();
             }
-            ["tab", way @ ("next" | "prev")] => self.current = step(self.current, way, count)?,
+            ["tab", way @ ("next" | "prev")] => self.current = step(self.current, count, *way == "prev"),
             ["tab", "-"] => self.current = self.before.ok_or("no tab was shown before this one")?,
             ["tab", number] => {
                 let number = number.parse::<usize>().ok().filter(|n| (1..=count).contains(n));
@@ -455,16 +467,6 @@ impl Layout {
                 self.retain_panes(|pane| pane != name);
                 self.current = (self.current + 1).min(self.tabs.len());
                 self.tabs.insert(self.current, tab_of(&name));
-            }
-            ["swap", way @ ("next" | "prev")] => {
-                let tab = self.tab_mut()?;
-                let (focus, panes) = (tab.focus.clone(), tab.panes().iter().map(|p| p.to_string()).collect::<Vec<_>>());
-                let at = step(panes.iter().position(|p| *p == focus).unwrap_or(0), way, panes.len())?;
-                let other = panes.get(at).cloned().unwrap_or_default();
-                // Three renames through a name no pane can have.
-                for (from, to) in [(&focus, "/"), (&other, focus.as_str()), (&"/".to_string(), other.as_str())] {
-                    tab.root.rename(from, to);
-                }
             }
             ["size", way @ ("row" | "col"), change] => {
                 let change = change.parse::<i64>().map_err(|_| format!("'{change}' is not a number like +5 or -5"))?;
@@ -504,16 +506,6 @@ impl Layout {
             _ => return Err(format!("'{}' is not a layout edit: see the README", words.join(" "))),
         }
         Ok(())
-    }
-}
-
-impl Node {
-    fn rename(&mut self, from: &str, to: &str) {
-        match self {
-            Node::Pane(name) if name == from => *name = to.to_string(),
-            Node::Pane(_) => {}
-            Node::Split(_, parts) => parts.iter_mut().for_each(|(part, _)| part.rename(from, to)),
-        }
     }
 }
 
