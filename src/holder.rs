@@ -180,22 +180,29 @@ impl Holder {
         // When the program last wrote anything, and when it was last given its read budget.
         let (mut heard, mut filled) = (Instant::now(), Instant::now());
         loop {
-            let since = published.elapsed();
-            // The program has gone quiet: nothing more from it for a millisecond (whatever else
+            // How long it still is until `long` after a moment: no time, once that has come.
+            let now = Instant::now();
+            let left = |since: Instant, long: Duration| long.saturating_sub(now.duration_since(since));
+            // When the next round of writing is due. A program in the middle of drawing (mode 2026)
+            // is not shown until it says it is done, or the oldest of what is not written is half a
+            // second old: nothing it wrote waits longer, so one that never says so, or says it again
+            // at once, cannot freeze its pane. Any other is shown this long after the last round, or
+            // sooner once it has gone quiet: nothing more from it for a millisecond (whatever else
             // the holder was woken for meanwhile), and not because it is not being read.
-            let quiet = budget > 0 && heard.elapsed() >= QUIET;
-            // A program in the middle of drawing (mode 2026) is not shown until it says it is done,
-            // or the oldest of what is not written is half a second old: nothing it wrote waits
-            // longer, so one that never says so, or says it again at once, cannot freeze its pane.
-            let left = dirty.map_or(Duration::ZERO, |first: Instant| DRAWING_MAX.saturating_sub(first.elapsed()));
-            let drawing = self.term.screen().sync && !left.is_zero() && self.master.is_some();
-            let every = if quiet { PUBLISH_QUIET } else { PUBLISH_EVERY };
+            let drawing = self.term.screen().sync && self.master.is_some();
+            let round = dirty.map(|first: Instant| match budget {
+                _ if drawing => left(first, DRAWING_MAX),
+                0 => left(published, PUBLISH_EVERY),
+                _ => left(published, PUBLISH_EVERY).min(left(published, PUBLISH_QUIET).max(left(heard, QUIET))),
+            });
             // The budget is for what is read between two screens; while a program in the middle
             // of drawing is not shown, for what is read in the time of one.
-            if drawing && filled.elapsed() >= PUBLISH_EVERY {
-                (budget, filled) = (READ_BUDGET, Instant::now());
-            }
-            if since >= every && dirty.is_some() && !drawing {
+            let refill = (budget == 0).then(|| left(filled, PUBLISH_EVERY));
+            let look = left(looked, LOOK_EVERY);
+            // What is due is done, one thing at a time; the wait is for the first of them, and none
+            // after one was done (what is next is worked out anew). To the millisecond above.
+            let wait = round.into_iter().chain(refill).fold(look, Duration::min).as_nanos().div_ceil(1_000_000) as i32;
+            if round == Some(Duration::ZERO) {
                 // What could not be written waits, or is still changed: the next round writes it,
                 // which the program's next output, a command or its end brings; no timer does.
                 if let Err(e) = self.publish(None) {
@@ -203,10 +210,11 @@ impl Holder {
                 }
                 (dirty, published) = (None, Instant::now());
                 (budget, filled) = (READ_BUDGET, published);
-            }
-            // The directory is the pane: when it is gone, so is this.
-            if looked.elapsed() >= LOOK_EVERY {
-                looked = Instant::now();
+            } else if refill == Some(Duration::ZERO) {
+                (budget, filled) = (READ_BUDGET, now);
+            } else if look.is_zero() {
+                // The directory is the pane: when it is gone, so is this.
+                looked = now;
                 if fs::symlink_metadata("in").is_err() {
                     return Ok(());
                 }
@@ -220,18 +228,6 @@ impl Holder {
                 (master.map(AsFd::as_fd), read | write),
                 (master.map(|_| input.as_fd()), if self.input.len() < INPUT_MAX { sys::POLLIN } else { 0 }),
             ];
-            let look = LOOK_EVERY.saturating_sub(looked.elapsed());
-            let wait = match dirty.is_some() {
-                // (While it draws there is nothing to write out, only more of it to read.)
-                true if drawing && budget > 0 => left.min(look),
-                true if drawing => PUBLISH_EVERY.saturating_sub(filled.elapsed()),
-                // (Has it more to say? A millisecond without it tells.)
-                true if budget > 0 && !quiet => QUIET.saturating_sub(heard.elapsed()).min(every.saturating_sub(since)),
-                true => every.saturating_sub(since),
-                false => look,
-            };
-            // (To the millisecond above, and one at least: a wait that ends early only comes round again.)
-            let wait = (wait.as_micros().div_ceil(1000) as i32).max(1);
             let [ended_now, commanded, program, typed] =
                 sys::wait(wanted, wait).map_err(|e| format!("cannot wait: {e}"))?;
             if commanded != 0 {
