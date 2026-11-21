@@ -9,11 +9,11 @@
 # left empty at a row's end, which `screen.styled` tells as U+200B and a blank where it has a colour).
 # The files are of one round of the holder's writing (`generation` the same even number before and after),
 # or read again, ten times: a pane that never stops printing, or whose holder was killed as it wrote, is taken as it is.
-umask 077
-s=${2:+.$2} m=$FUXN_PANE/main n=0
+# A third word names a file for the pane's `marks` of that same round (`.text FILE '' MARKS`).
+umask 077; s=${2:+.$2} m=$FUXN_PANE/main n=0
 generation() { cat "$FUXN_PANE/generation" 2>/dev/null; }
 while g=$(generation); :; do
-{ read -r top; read -r wraps; } 2>/dev/null < "$m/lines"
+{ read -r top; read -r wraps; } 2>/dev/null < "$m/lines"; [ -z "$3" ] || cat "$FUXN_PANE/marks" > "$3"
 screen=$(awk -v wraps="$wraps" -v gap="$(printf '\342\200\213 \033[m')" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
   NR == FNR && $0 != "" { last = NR } { row[FNR] = $0 }
   END { for (i = 1; i <= last; i++) { r = row[i]; n = length(r) - length(gap)

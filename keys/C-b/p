@@ -5,11 +5,11 @@
 # `marks` has the line numbers. The pane's text is opened in the editor
 # at the last marked prompt but one, wherever the cursor is.
 [ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
-# (The only prompt there is, if there is one only.)
-line=$(awk '$3 == "prompt" { before = last; last = $1 } END { print (before != "" ? before : last) }' "$FUXN_PANE/marks")
-[ -n "$line" ] || { echo "no prompt is marked here"; exit; }
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
-add=$("$FUXN_KEYS/.text" "$f") || { rm -f "$f"; exit; }
+add=$("$FUXN_KEYS/.text" "$f" '' "$f.marks") || { rm -f "$f" "$f.marks"; exit; }
+# (The marks of the same read as the text. The only prompt there is, if there is one only.)
+line=$(awk '$3 == "prompt" { before = last; last = $1 } END { print (before != "" ? before : last) }' "$f.marks"; rm -f "$f.marks")
+[ -n "$line" ] || { rm -f "$f"; echo "no prompt is marked here"; exit; }
 n=$((line + add))
 [ "$n" -ge 1 ] || n=1
 exec "$FUXN_KEYS/.edit" "$f" "$n"

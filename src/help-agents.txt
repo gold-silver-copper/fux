@@ -135,13 +135,15 @@ times it was the same even number; else read again, with a limit:
     together "$P" first && echo "the main screen's first row is line $top of the pane's text: $row"
 (It runs the command after DIR until the read is one to keep, so the command starts anew
 each time: one that writes a file writes it anew, `> file` inside it and not after `together`.
-It counts in `tries`: leave that name alone in the command. DIR must name the same pane
-throughout. A pane whose holder was killed while it wrote stays odd: the limit runs out, and
-you take the files as they are.)
+It keeps what it knows in `d`, `g` and `tries`: the command must leave those names alone, and
+not call `together` itself. DIR must name the same pane throughout. The number speaks for what
+the holder alone writes: not for `cwd` (the program's to write too, and removed when a pane is
+started again in place), `log`, the FIFOs or files of your own. A pane whose holder was killed
+while it wrote stays odd: the limit runs out, and you take the files as they are.)
 The text a pane keeps, oldest first, wrapped rows joined into lines:
     whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(sed -n 2p "$1/main/lines")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/main/screen"; }
     whole "$P" | tail -n 5
-    snap() { whole "$P" > "$P/whole.new"; }; together "$P" snap && tail -n 1 "$P/whole.new"; rm -f "$P/whole.new"
+    f=$(mktemp); snap() { whole "$P" > "$f"; }; together "$P" snap && tail -n 1 "$f"; rm -f "$f"
 It is exact for a pane that is still or ended, whichever screen it shows, and under `together`
 (the line above) for one that prints meanwhile, but for: colours, blanks at a line's end,
 empty lines at the very end, what was erased or written over, and text older than the two

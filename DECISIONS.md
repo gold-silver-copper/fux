@@ -2181,7 +2181,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     the key scripts, the docs as a user, and the model). Fixed, each
     from a traced sequence: an odd number that could not be written no
     longer lets anything change under the even one (history is not
-    added to, no picture's file goes: the round fails first); the odd
+    added to, no picture's file goes: the round does not begin); the odd
     number is written once a round, not again when the round adds to
     history; what was in `alt/` is forgotten before the folder is
     removed, so a removal that fails half way cannot leave `shown` at
@@ -2197,11 +2197,24 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     history file that cannot be put aside loses its lines for good and
     the round still ends even (`log` says so: an odd number that never
     turns would say less); `cwd` is outside what the number speaks for
-    (the program writes it too); the text keys read `marks` before the
-    text and not in one read with it (so does the base: a mark's line
-    and byte are of the text's numbering and hold unless the text is
-    erased in that moment; a later change may have `.text` hand the
-    marks out with the text).
+    (the program writes it too).
+  - **The review, round two, the last** (the same six, on round one's
+    must-fixes and what the fixes touched; the viewer's and the
+    model's readers found nothing more). Fixed: history that cannot be
+    written under an odd number is no longer dropped but waits in the
+    emulator, bounded as it always was (dropping it kept the files
+    from changing under an even number, and put every later mark a
+    few lines off for good); the keys of the last output and the
+    previous prompt take `marks` in the same read as the text
+    (`.text FILE '' MARKS`): since a line can be ended where history
+    cuts it, a mark's line may change between two reads, which it
+    could not on the base; a test that waited for `$` in the shell's
+    prompt names its own prompt, and one that read a screen a moment
+    after its first half waits for both halves (each failed once in
+    CI, on a slower machine, as they could on the base); the recipe
+    says what its command must leave alone, the page's snapshot goes
+    to a file of its own, the README's recipe sets `P`, and a round
+    that cannot begin is told apart from one that failed once begun.
   - The emulator tells each screen through one function, `files(alt)`;
     `plain`, `styled`, `covered`, `wraps`, `links` and `top` are gone
     from its interface (its tests keep the first two and the last

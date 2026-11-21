@@ -355,10 +355,10 @@ fn fact(pane: &Path, name: &str) -> String {
 #[test]
 fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     let session = Session::new("io");
-    let pane = session.start("build", &["sh"]);
+    let pane = session.start("build", &["env", "PS1=ready$ ", "sh"]);
     assert_eq!(pane, session.0.join("main/build"));
     // (What is typed before the shell's first prompt is answered on that prompt's row.)
-    until("the shell's prompt shows", || read(&pane.join("shown/screen")).contains('$'));
+    until("the shell's prompt shows", || read(&pane.join("shown/screen")).contains("ready$"));
     fs::write(pane.join("in"), "echo h''i; stty size\n").unwrap();
     until("the answers show", || read(&pane.join("shown/screen")).contains("\nhi\n24 80\n"));
     // A resize reaches the program and the `size` file; the screen is its rows and nothing else.
@@ -1854,7 +1854,8 @@ fn keys_typed_after_the_key_that_leaves_are_not_typed_into_the_pane() {
     fs::write(view.join("in"), "\x02dZ").unwrap();
     until("the viewer has left", || fact(&view, "state").starts_with("exited"));
     fs::write(one.join("in"), "END\n").unwrap();
-    until("the pane has what was typed", || read(&one.join("shown/screen")).contains("END\n"));
+    // (What was typed is echoed, and `cat` says it again a moment later: both are waited for.)
+    until("the pane has what was typed", || read(&one.join("shown/screen")).contains("END\nEND\n"));
     assert_eq!(read(&one.join("shown/screen")).trim_end(), "shown\nshown\nEND\nEND");
 }
 
@@ -2601,21 +2602,24 @@ fn a_mark_in_a_line_that_never_ends_is_found_in_the_text_after_history_was_put_a
 #[test]
 fn nothing_of_a_pane_changes_under_an_even_generation_also_when_the_odd_one_cannot_be_written() {
     // A directory where `generation` is written anew: the holder cannot say that it is writing, so
-    // it writes nothing, neither the screens nor the history that waits (which is lost: `log` says so).
+    // it writes nothing, neither the screens nor the history, which waits (over a megabyte of it).
     let session = Session::new("even");
-    let pane = session.start("p", &["sh", "-c", "read x; seq 1 100000; echo done; sleep 600"]);
+    let prints = "read x; seq 1 200000; : > \"$FUXN_PANE/printed\"; echo done; sleep 600";
+    let pane = session.start("p", &["sh", "-c", prints]);
     let files = |pane: &Path| (fact(pane, "generation"), read(&pane.join("history")), read(&pane.join("main/screen")));
     let before = files(&pane);
     fs::create_dir(pane.join("generation.new")).unwrap();
     fs::write(pane.join("in"), "\n").unwrap();
-    until("the rounds fail", || {
-        let log = read(&pane.join("log"));
-        log.contains("history was lost") && log.contains("cannot write the pane's files")
+    until("the program has printed and the rounds fail", || {
+        pane.join("printed").exists() && read(&pane.join("log")).matches("cannot write the pane's files").count() >= 2
     });
     assert!(files(&pane) == before, "a file changed while `generation` said {}", before.0);
-    // When it can be written again, the next round is written whole and ends even.
+    // When it can be written again, the next round is written whole and ends even, and no line is lost.
     fs::remove_dir(pane.join("generation.new")).unwrap();
     fs::write(pane.join("ctl"), "notify again\n").unwrap();
     let even = |pane: &Path| fact(pane, "generation").parse::<u64>().is_ok_and(|n| n % 2 == 0 && n > 2);
     until("a round is written", || even(&pane) && files(&pane).2.contains("\ndone\n"));
+    let text = files(&pane).1 + &files(&pane).2;
+    assert_eq!(text.lines().filter(|line| line.parse::<u32>().is_ok()).count(), 200_000);
+    assert!(!read(&pane.join("log")).contains("history"), "{}", read(&pane.join("log")));
 }

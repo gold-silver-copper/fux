@@ -322,6 +322,8 @@ impl Holder {
     /// and history to its files once `over` bytes of it wait. What the program said once (pictures,
     /// a clipboard, a directory, a notice) comes with `over` 0 alone, and is the caller's to write.
     fn collect(&mut self, over: usize) -> Out {
+        // (History is written under an odd `generation`: while that cannot be written, it waits where it is.)
+        let over = if over > 0 && self.term.waits() >= over && self.turn(true).is_err() { usize::MAX } else { over };
         let mut out = self.term.take(over);
         match &mut self.pty {
             Some((_, waiting)) if waiting.len() + out.reply.len() <= INPUT_MAX => waiting.extend_from_slice(&out.reply),
@@ -384,11 +386,6 @@ impl Holder {
     /// so: it is not kept to try again, and what a resize sent there is no longer taken back.
     /// Before them, the bytes a resize took back from each file's end go from it (the third of each).
     fn history(&mut self, files: [(&str, &str, usize); 2]) {
-        // (The text is ahead of the screens' files until the next round has ended: none is written under an even number.)
-        if let Err(e) = self.turn(true) {
-            self.term.keep_lent();
-            return self.log(&format!("history was lost, as generation could not be written: {e}"));
-        }
         for (name, _, back) in &files {
             let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(*back as u64));
             let cut = if *back > 0 { OpenOptions::new().write(true).open(name).and_then(cut) } else { Ok(()) };

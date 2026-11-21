@@ -625,11 +625,16 @@ impl Term {
         &self.title
     }
 
+    /// How much history waits to be taken, in bytes (of the longer of its two texts).
+    pub fn waits(&self) -> usize {
+        self.out.history.len().max(self.out.styled.len())
+    }
+
     /// What was produced since the last time this was asked: the answers and refusals; the history
     /// once `over` bytes of it wait; and the rest (what the program said once) when `over` is 0.
     pub fn take(&mut self, over: usize) -> Out {
         let (reply, refused) = (std::mem::take(&mut self.out.reply), std::mem::take(&mut self.out.refused));
-        let all = self.out.history.len().max(self.out.styled.len()) >= over;
+        let all = self.waits() >= over;
         let mut out = Out { reply, refused, ..if all { std::mem::take(&mut self.out) } else { Out::default() } };
         if all && over > 0 {
             (self.out.clipboard, self.out.cwd, self.out.notice) =
@@ -794,8 +799,8 @@ impl Term {
     /// has of the line is the next line, from its start, and a mark there is on it. False, and nothing
     /// ended, if history has no such line, was not given all of it, or its last rows are a resize's.
     pub fn end_line(&mut self) -> bool {
-        let (line, waits) = (self.tail.lines, self.out.history.len().max(self.out.styled.len()));
-        let Some(cut) = self.tail.open.filter(|_| waits == 0 && self.lent.is_none()) else { return false };
+        let line = self.tail.lines;
+        let Some(cut) = self.tail.open.filter(|_| self.waits() == 0 && self.lent.is_none()) else { return false };
         let main = if self.screen.alt { &mut self.other } else { &mut self.screen.grid };
         main.first_mut().and_then(|row| row.first_mut()).into_iter().for_each(|first| first.style.flags &= !CONT);
         // (The character printed last may be that cell: the next may still join it. A mark there is on the screen.)

@@ -116,22 +116,26 @@ you read only if it was the same even number both times:
 
 ```sh
 # together DIR COMMAND…: runs COMMAND until what it read of the pane DIR is of one round (100 tries)
-# P is a pane's folder: after the example at the top, P=$D/main/build
+P=$(fux dir)/main/build     # a pane's folder: here that of the example at the top
 together() { d=$1; shift; tries=0; until g=$(cat "$d/generation") && [ $((g % 2)) -eq 0 ] && "$@" && [ "$g" = "$(cat "$d/generation")" ]; do tries=$((tries+1)); [ $tries -lt 100 ] || return 1; sleep 0.05; done; }
 first() { top=$(sed -n 1p "$P/main/lines") && row=$(sed -n 1p "$P/main/screen"); }
 together "$P" first && echo "line $top of the pane's text is: $row"
 ```
 
 Resolve `shown` inside the read (`cat "$P/shown/screen"`), not before it, and
-have the path name the same pane throughout (`together` counts in `tries`,
-and runs its command anew each time: a command that writes a file writes it
-anew). The number speaks for what the holder alone writes: not for `cwd`,
+have the path name the same pane throughout (`together` keeps what it knows
+in `d`, `g` and `tries`, which its command must leave alone, as it must not
+call `together` itself; and it runs the command anew each time: a command
+that writes a file writes it anew). The number speaks for what the holder alone writes: not for `cwd`,
 which is the program's to write too and goes when a start in place begins,
 nor for `log`, the FIFOs or a script's own files. What is lost for good
 does not keep it odd: history a file could not take is a line in `log`, and
-the round ends. After a round that failed (`log` says why) the number stays odd until a
-later round puts it right, and after a holder was killed in the middle of
-one it stays odd for good: so a reader gives up after some tries and takes
+the round ends. A round that cannot begin (the odd number cannot be written:
+`log` says why) changes no file, and the number stays the even one it was;
+history waits meanwhile, up to the 4 MiB of "Bounds". After a round that
+failed once it had begun the number stays odd until a later round puts it
+right, and after a holder was killed in the middle of one it stays odd for
+good: so a reader gives up after some tries and takes
 the files as they are, as `keys/.text` does. A folder copied while its pane
 was busy has no such promise (copy it under the same check). The viewer
 reads a pane when its `generation` is another file than at the last look,
