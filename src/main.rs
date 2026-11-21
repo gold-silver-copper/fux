@@ -228,14 +228,10 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
         // An error here is the end too: there is nothing left to wait for.
         let ended = !matches!(holder.try_wait(), Ok(None));
         // (Its status comes with its first facts, a moment before its first screen.)
-        if read_some(&dir.join("status")).is_ok_and(|status| status.contains(&ours))
-            && dir.join("screen.styled").exists()
-        {
-            return Ok(());
-        }
+        let up = read_some(&dir.join("status")).is_ok_and(|status| status.contains(&ours));
         // A pane may remove its own folder when its program is done (the default
         // shell panes do): gone with its holder, it started, ran and ended.
-        if ended && !dir.exists() {
+        if (up && dir.join("screen.styled").exists()) || (ended && !dir.exists()) {
             return Ok(());
         }
         if ended {
