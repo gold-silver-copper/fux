@@ -430,9 +430,8 @@ pub struct Term {
     utf8_left: u8,
     /// The smallest character this many bytes may encode: a longer spelling of a smaller one is refused.
     utf8_min: u32,
-    /// The string being read, after the byte that began it (`]` for OSC, `P` for DCS…); and whether it outgrew its bound.
+    /// The string being read, after the byte that began it (`]` for OSC, `P` for DCS…).
     string: Vec<u8>,
-    string_over: bool,
     /// (A control byte came inside it and was dropped: what is left is not what was sent.)
     string_holed: bool,
     out: Out,
@@ -560,7 +559,6 @@ impl Term {
             utf8_left: 0,
             utf8_min: 0,
             string: Vec::new(),
-            string_over: false,
             string_holed: false,
             out: Out::default(),
             other_pictures: Vec::new(),
@@ -1582,11 +1580,12 @@ impl Term {
                 0x00..=0x1f | 0x7f => self.string_holed = true,
                 _ if self.string.len() <= PICTURE_MAX => self.string.push(byte),
                 // Past its bound a string is dropped, and said so at once: it may never end.
-                _ if self.string_over => {}
-                _ => {
-                    self.string_over = true;
+                // (The one byte too many is kept: the string's length says that it is dropped.)
+                _ if self.string.len() == PICTURE_MAX + 1 => {
+                    self.string.push(byte);
                     self.refuse("a control string over 4 MiB (a picture, a clipboard, a title) was dropped");
                 }
+                _ => {}
             },
             State::StrEscape => {
                 self.end_string((byte == b'\\').then_some("\x1b\\"));
@@ -1681,7 +1680,7 @@ impl Term {
                 (self.csi, self.state) = (Csi { params, ..Csi::default() }, State::Csi);
             }
             b']' | b'P' | b'X' | b'^' | b'_' => {
-                (self.string, self.string_over, self.string_holed) = (vec![byte], false, false);
+                (self.string, self.string_holed) = (vec![byte], false);
                 self.state = State::Str;
             }
             0x20..=0x2f => self.state = State::EscapeInter(byte),
@@ -1750,7 +1749,7 @@ impl Term {
     fn end_string(&mut self, end: Option<&str>) {
         self.state = State::Ground;
         let string = std::mem::take(&mut self.string);
-        if std::mem::take(&mut self.string_over) {
+        if string.len() > PICTURE_MAX + 1 {
             return;
         }
         match string.split_first().zip(end) {
