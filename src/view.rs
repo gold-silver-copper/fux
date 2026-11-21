@@ -285,7 +285,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // The terminal is asked once what its colours are (the two it draws with, its cursor's and its palette),
     // and last of all what it is: its answer to that ends the wait for the others.
     // (First a link is closed: whatever ran before may have left one open, and no cell here is part of it.)
-    const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
+    const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[2J\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     view.write(START.to_string() + &asked + "\x1b[c");
     let result = view.run(&ctl, &wrote);
