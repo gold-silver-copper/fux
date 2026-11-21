@@ -63,7 +63,8 @@ struct Holder {
 /// Keeps the pane whose directory is the working directory until its program
 /// ends. `fux start` locked the directory and handed the lock over as this
 /// process's standard input: it is held for exactly as long as the holder lives.
-pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
+pub fn hold(args: &[OsString]) -> Result<(), String> {
+    let [cwd, program, program_args @ ..] = args else { return Err("hold is started by `fux start`".into()) };
     // The first size is COLUMNS x LINES when the starter set them (the viewer
     // does, for key scripts), and 80x24 otherwise. `resize` changes it later.
     let number = |name: &str, or: u16| {
@@ -76,7 +77,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // The slave stays open until this function ends, so that output a program wrote just before it
     // ended is not thrown away (macOS drops it when the last slave closes).
     let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
-    let (program, args) = command.split_first().ok_or("no program to run")?;
     // `fux start` says under what name the pane's directory was started, and its program is told
     // the same. The session is found as by any command in a pane: the one named, or two folders up.
     let session = crate::here().ok_or("hold is started by `fux start`".into()).and_then(|_| crate::session())?;
@@ -90,7 +90,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         for name in [name!("WS"), name!("VIEW"), name!("ROW"), name!("COL")] {
             child.env_remove(name);
         }
-        child.args(args).current_dir(cwd).env("TERM", TERM).env_remove("COLUMNS").env_remove("LINES");
+        child.args(program_args).current_dir(cwd).env("TERM", TERM).env_remove("COLUMNS").env_remove("LINES");
         child
             .env("COLORTERM", "truecolor")
             .env("TERM_PROGRAM", crate::TERM_PROGRAM)
@@ -115,7 +115,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     });
     waiter.map_err(|e| format!("cannot start a thread: {e}"))?;
     // The command as `status` shows it: without control characters, and its first 4,096 characters.
-    let command = plain(&command.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
+    let command = plain(&args.iter().skip(1).map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
     let command: String = command.chars().take(4096).collect();
     let mut holder = Holder {
         term: Term::new(usize::from(cols), usize::from(rows)),

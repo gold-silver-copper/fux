@@ -257,10 +257,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             let layout = layout::command(&session()?.join(workspace()?), &words)?;
             if words.is_empty() { say(layout.print().trim_end().as_bytes()) } else { Ok(()) }
         }
-        Some("hold") => match rest.split_first() {
-            Some((cwd, program)) => holder::hold(program, cwd),
-            None => Err("hold is started by `fux start`".into()),
-        },
+        Some("hold") => holder::hold(rest),
         Some("help") if rest == ["agents"] => say(AGENTS.trim_end().as_bytes()),
         Some("help" | "--help" | "-h") => say(USAGE.as_bytes()),
         _ => Err(format!("usage:\n{USAGE}")),
