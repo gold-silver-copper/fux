@@ -8,8 +8,8 @@ here=$(ls -di "$FUXN_PANE")
 trap : TERM
 if [ $# -gt 0 ]; then "$@"; else "${SHELL:-sh}"; fi
 # (A program that could not be run at all has said why: that stays to be read.
-# A program that ran and itself ended with 126 or 127 waits for Enter the same.)
-case $? in 126 | 127) echo "it could not be run: Enter closes this pane"; read -r _ ;; esac
+# One that is there to run has run, and 126 or 127 is its own: a shell's last command's, say.)
+case $? in 126 | 127) [ -x "$(command -v "${1:-${SHELL:-sh}}" 2> /dev/null)" ] || { echo "it could not be run: Enter closes this pane"; read -r _; } ;; esac
 # Only its own folder: if it was moved and another pane has its old name by
 # now, that one is not this script's to remove.
 # (The holder may write a file into it in the moment it is emptied, and `rm`

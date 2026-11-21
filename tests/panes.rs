@@ -1100,6 +1100,28 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
 }
 
 #[test]
+fn a_shell_that_ends_with_127_closes_its_pane_and_a_command_that_cannot_be_run_stays_to_be_read() {
+    // `.shell`'s "it could not be run" is for a program that could not be started. A shell that
+    // was started and ends with the status of its last command (127 after a mistyped one) has
+    // run: its pane closes as after any other exit.
+    let session = Session::new("could");
+    fs::create_dir_all(&session.0).unwrap();
+    let wrapper = concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.shell");
+    fs::write(session.0.join("sh127"), "#!/bin/sh\nexit 127\n").unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(session.0.join("sh127")).status().unwrap().success());
+    let mut start = session.fux();
+    start.env("SHELL", session.0.join("sh127")).args(["start", "ran", "--", wrapper]);
+    let ran = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let seen = || format!(": its screen is {:?}", read(&ran.join("screen")).trim());
+    until_or("the pane of a shell that ended with 127 is gone", seen, || !ran.exists());
+    // A command that is not there could not be run: that is said, and stays until Enter.
+    let none = session.start("none", &[wrapper, "/no/such/program"]);
+    until("it says that it could not be run", || read(&none.join("screen")).contains("it could not be run: Enter"));
+    fs::write(none.join("in"), "\r").unwrap();
+    until("Enter closed the pane", || !none.exists());
+}
+
+#[test]
 fn an_editor_that_ends_while_its_key_runs_has_taken_its_pane_and_the_key_says_nothing() {
     // The editor's pane removes its own folder when the editor ends. When that is before the
     // key's script asks the layout to show the pane, there is none to show: no error of the
