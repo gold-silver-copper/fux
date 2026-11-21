@@ -16,11 +16,11 @@ for p in "$D"/*/*/; do
   p=${p%/}
   command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)
   [ -n "$command" ] || continue
-  cat "$p/history.1" "$p/history" "$p/screen" > "$p/before.new" 2>/dev/null
+  cat "$p/history.1" "$p/history" "$p/screen" > "$p/before.$$" 2>/dev/null
   dir=
   IFS= read -r dir 2>/dev/null < "$p/cwd"
   if (cd "${dir:-$HOME}" 2>/dev/null || cd; set -f; set -- $command; fux start "${p#"$D"/}" -- "$@") > /dev/null 2>&1
-  then mv "$p/before.new" "$p/before"; echo "started ${p#"$D"/} again"
-  else rm -f "$p/before.new"
+  then mv "$p/before.$$" "$p/before" && echo "started ${p#"$D"/} again"
+  else rm -f "$p/before.$$"
   fi
 done
