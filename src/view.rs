@@ -948,9 +948,13 @@ impl View {
             // once: when its `clipboard` file is another than at the last look, the pane
             // having had the focus then too. Coming to a pane only notes what is there.
             if focused {
-                let seen = self.copied.replace((pane_directory.clone(), clipboard));
-                if seen.is_some_and(|(before, old)| before == pane_directory && old != clipboard)
-                    && let (bytes, Ok(_)) = crate::read(sys::open(pane_directory.join("clipboard"), false), 1 << 20)
+                // (Which copy it is is asked of the open file its bytes are then read from: one that
+                // lands between a look at the name and a reading of it would be sent twice.)
+                let file = sys::open(pane_directory.join("clipboard"), false);
+                let stamp: Stamp = file.as_ref().ok().and_then(|file| file.metadata().ok()).map(stamp);
+                let seen = self.copied.replace((pane_directory.clone(), stamp));
+                if seen.is_some_and(|(before, old)| before == pane_directory && old != stamp)
+                    && let (bytes, Ok(_)) = crate::read(file, 1 << 20)
                 {
                     out.push_str(&format!("\x1b]52;c;{}\x07", base64_encode(&bytes)));
                 }
