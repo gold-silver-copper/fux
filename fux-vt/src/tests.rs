@@ -1436,3 +1436,12 @@ fn erasing_half_a_wide_character_erases_it_whole_for_the_marks_and_the_pictures_
     assert_eq!((term.plain().as_str(), term.marks().as_str()), ("    x\n\n\n", "0 0 end\n"));
     assert!(term.screen().pictures.is_empty());
 }
+
+#[test]
+fn text_that_wraps_on_the_last_row_below_the_scroll_region_stays_there_and_joins_no_other_line() {
+    // (As in xterm: nothing scrolls and the cursor stays on that row, which is the line it was.)
+    let term = term(4, 3, "\x1b[1;2r\x1b[2;1HUP\x1b[3;1HabcdE");
+    let cursor = term.screen().cursor;
+    assert_eq!((term.plain().as_str(), term.wraps().as_str(), cursor.row, cursor.col), ("\nUP\nEbcd\n", "", 2, 1));
+    assert_eq!(term.lines().0, "\nUP\nEbcd\n");
+}

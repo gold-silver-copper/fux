@@ -1236,7 +1236,9 @@ impl Term {
                 // The text goes on in the next row, whose first cell will say so. A wide
                 // character that had no room in this row's last cell leaves it as no text, if
                 // nothing is in it.
-                let waiting = self.screen.cursor.wrap;
+                // (On the last row below the scroll region nothing scrolls and the cursor stays, as in
+                // xterm: that row is the line it was, and goes on from no other.)
+                let (waiting, row) = (self.screen.cursor.wrap, self.screen.cursor.row);
                 if let Some(last) = self.screen.grid.get_mut(self.screen.cursor.row).and_then(|row| row.last_mut())
                     && !waiting
                     && *last == Cell::blank(last.style)
@@ -1245,7 +1247,7 @@ impl Term {
                 }
                 self.screen.cursor.col = 0;
                 self.linefeed(true);
-                new.style.flags |= CONT;
+                new.style.flags |= u16::from(row == self.bottom || row + 1 < self.screen.rows) * CONT;
             } else if wide {
                 return; // No room and no wrapping: it is dropped, as xterm drops it.
             }
