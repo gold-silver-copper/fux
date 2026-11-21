@@ -422,15 +422,13 @@ impl Layout {
             ["size", way @ ("row" | "col"), change] => {
                 let change = change.parse::<i64>().map_err(|_| format!("'{change}' is not a number like +5 or -5"))?;
                 let tab = self.tab_mut()?;
-                let focus = tab.focus.clone();
-                if !tab.root.change_share(&focus, *way == "row", change) {
+                if !tab.root.change_share(&tab.focus, *way == "row", change) {
                     return Err(format!("this pane is in no {way}"));
                 }
             }
             ["rotate"] => {
                 let tab = self.tab_mut()?;
-                let focus = tab.focus.clone();
-                tab.root.with_parent(&focus, &mut |row, _, _| *row = !*row);
+                tab.root.with_parent(&tab.focus, &mut |row, _, _| *row = !*row);
             }
             ["arrange", way @ ("row" | "col" | "grid" | "main")] => {
                 let tab = self.tab_mut()?;
