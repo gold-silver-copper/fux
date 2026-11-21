@@ -432,9 +432,8 @@ impl Holder {
         match words.next() {
             // Anyone may have something noticed: the words after `notify`, as a program's own notice.
             Some("notify") => {
-                let text = line.trim_start().strip_prefix("notify").unwrap_or_default().trim();
-                let text: String = text.chars().filter(|c| !c.is_control()).take(1024).collect();
-                (self.pending.notice, self.pending.notices) = (Some(text), self.pending.notices + 1);
+                self.term.notice(line.trim_start().strip_prefix("notify").unwrap_or_default().trim());
+                self.collect();
                 Ok(())
             }
             Some("kill") if words.next().is_none() => {

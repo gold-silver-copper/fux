@@ -1778,7 +1778,7 @@ impl Term {
     }
 
     /// Something the program wants noticed: text without control characters, a kibibyte at most.
-    fn notice(&mut self, text: &str) {
+    pub fn notice(&mut self, text: &str) {
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         let cut = (0..=text.len().min(1024)).rev().find(|at| text.is_char_boundary(*at)).unwrap_or(0);
         (self.out.notice, self.out.notices) = (text.get(..cut).map(str::to_string), self.out.notices.saturating_add(1));
