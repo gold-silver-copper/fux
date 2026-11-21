@@ -1033,7 +1033,6 @@ impl Term {
         }
     }
 
-    /// Blanks columns `from..to` of a row.
     /// Row `row` no longer goes on from the one above it: its neighbour is another now.
     fn parts(&mut self, row: usize) {
         if let Some(first) = self.screen.grid.get_mut(row).and_then(|cells| cells.first_mut()) {
@@ -1041,6 +1040,7 @@ impl Term {
         }
     }
 
+    /// Blanks columns `from..to` of a row.
     fn erase(&mut self, row: usize, from: usize, to: usize) {
         let (blank, to) = (self.blank(), to.min(self.screen.cols));
         if from == 0 && to == self.screen.cols {
