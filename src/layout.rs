@@ -374,7 +374,9 @@ impl Layout {
             }
             ["focus", way @ ("left" | "right" | "up" | "down")] => {
                 let tab = self.tab_mut()?;
-                let tiles = tab.tiles(Rect { x: 0, y: 0, w: 10000, h: 10000 });
+                // (In the room the viewer told the key's script of, where the tiles are as it draws them.)
+                let told = |v| std::env::var(v).ok().and_then(|n| n.parse::<u16>().ok()).map_or(10000, usize::from);
+                let tiles = tab.tiles(Rect { x: 0, y: 0, w: told("COLUMNS"), h: told("LINES") });
                 let Some(&(_, from)) = tiles.iter().find(|tile| tile.0 == tab.focus) else { return Ok(()) };
                 // The nearest pane on that side whose edge overlaps ours the most.
                 let overlap = |a: usize, a_len: usize, b: usize, b_len: usize| {

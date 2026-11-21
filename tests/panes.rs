@@ -2181,3 +2181,16 @@ fn a_restore_that_cannot_copy_what_a_pane_printed_does_not_start_it_again() {
     assert!(said.is_empty() && kept.contains("KEEP") && before.is_none(), "{said:?} {kept:?} {before:?}");
     assert!(String::from_utf8_lossy(&restored.stderr).contains("screen"), "cat says which file it could not read");
 }
+
+#[test]
+fn the_focus_goes_to_the_pane_that_is_beside_it_in_the_terminal_a_key_is_pressed_in() {
+    // Of `row(col(a b:99) col(c d:9999))` in 80 columns and 24 rows, a and c have the first row
+    // each: c is the pane to the right of a, and a key's script is told the terminal's size.
+    let session = Session::new("diag");
+    ["a", "b", "c", "d"].iter().for_each(|pane| fs::create_dir_all(session.0.join("main").join(pane)).unwrap());
+    lay(&session.0, "* row(col(a b:99) col(c d:9999)) focus=a\n");
+    let mut edit = session.fux();
+    edit.env("FUXN_WS", "main").env("COLUMNS", "80").env("LINES", "24").args(["layout", "focus", "right"]);
+    assert!(edit.status().unwrap().success());
+    assert_eq!(read(&session.0.join("main/layout")), "* row(col(a b:99) col(c d:9999)) focus=c\n");
+}
