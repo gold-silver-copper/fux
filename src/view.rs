@@ -1473,7 +1473,8 @@ impl Pane {
     fn new() -> Pane {
         Pane {
             seen: None,
-            screen: Screen::default(),
+            // (Before its first screen is read: one blank cell, the cursor shown on it.)
+            screen: Screen::read("", 0),
             size: (0, 0),
             pid: 0,
             state: String::new(),

@@ -1546,6 +1546,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - a wait passes the system only the files up to the last one that is
     there (four entries with two absent failed on Linux under a limit of
     three open files, where the old two entries did not).
+  - a pane the viewer has not read yet is one blank cell with the cursor
+    shown, as the emulator it used to hold was (an empty `Screen` had
+    hidden the cursor of a focused pane with no `screen.styled` yet);
   - Kept, and so the two changes of this run: a split or new-tab script
     reads `keys/.new-shell`, which is written with them, as `.shell` is
     (a keys folder put together by hand needs both files); and a viewer

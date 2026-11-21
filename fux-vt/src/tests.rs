@@ -1216,3 +1216,11 @@ fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
     // A program that asks is told clusters are always on.
     assert_eq!(term(8, 1, "\x1b[?2027$p").take().reply, b"\x1b[?2027;3$y");
 }
+
+#[test]
+fn a_screen_read_from_nothing_is_one_blank_cell_with_the_cursor_shown() {
+    let screen = Screen::read("", 0);
+    assert_eq!((screen.rows, screen.cols, screen.cursor_shown), (1, 1, true));
+    assert_eq!((screen.cursor.row, screen.cursor.col, screen.cursor_shape), (0, 0, 0));
+    assert!(screen.cell_at(0, 0).is_some_and(|cell| cell.ch == ' '));
+}
