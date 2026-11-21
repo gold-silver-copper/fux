@@ -18,6 +18,3 @@ while [ "$(ls -di "$FUXN_PANE" 2>/dev/null)" = "$here" ] && [ $n -lt 20 ]; do
   rm -rf "$FUXN_PANE" 2>/dev/null || sleep 0.05
   n=$((n + 1))
 done
-# (And its workspace's layout follows at once, also when no viewer shows it.)
-ws=${FUXN_PANE%/*}
-FUXN_WS=${ws##*/} fux layout > /dev/null 2>&1
