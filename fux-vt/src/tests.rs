@@ -1210,6 +1210,10 @@ fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
     assert_eq!(term(4, 1, "a\r\x1b[C\u{301}").plain(), "a\u{301}\n");
     assert_eq!(term(4, 1, "a\x1b[C\u{301}").plain(), "a\n");
     assert_eq!(term(4, 1, "a\x08\x1b[X\x1b[C\u{301}|").plain(), " |\n");
+    // A blank joined to the character before it (a mark that goes before its letter) is part of
+    // that character at a row's end too: the plain screen and the styled one have the same text.
+    let joined = term(8, 1, "a\u{600} ");
+    assert_eq!((joined.plain().as_str(), bare(&joined.styled()).as_str()), ("a\u{600} \n", "a\u{600} \n"));
     // A wide mark (a voiced mark of kana) takes no column.
     assert_eq!(term(8, 1, "\u{304b}\u{3099}|").screen.cursor.col, 3);
     // REP's copies are each a character.

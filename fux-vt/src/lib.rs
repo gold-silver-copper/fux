@@ -618,7 +618,6 @@ impl Term {
 
     /// A wrapped row keeps its trailing spaces, except for a wide character's padding cell.
     fn row_text(row: &[Cell], goes_on: bool, out: &mut String) {
-        let start = out.len();
         let blank = |cell: &Cell| cell.ch == '\0' || (cell.ch == ' ' && cell.more.first() == Some(&'\0'));
         let used = if goes_on {
             text_cells(row).len()
@@ -626,9 +625,6 @@ impl Term {
             row.iter().rposition(|cell| !blank(cell)).map_or(0, |last| last + 1)
         };
         out.extend(row.iter().take(used).flat_map(Cell::chars));
-        if !goes_on {
-            out.truncate(start + out.get(start..).map_or(0, |text| text.trim_end_matches(' ').len()));
-        }
     }
 
     /// A row's text as history keeps it. A row that goes on in the next is not ended, so history
