@@ -116,7 +116,8 @@ pub fn width(first: char, rest: &[char]) -> usize {
     } else if class & EMOJI != 0 && rest.contains(&'\u{fe0f}') {
         2
     } else {
-        (columns(first) + rest.iter().map(|&c| columns(c)).sum::<usize>()).clamp(1, 2)
+        // (The rest ends at its first empty place: the others are not looked at.)
+        (columns(first) + rest.iter().take_while(|&&c| c != '\0').map(|&c| columns(c)).sum::<usize>()).clamp(1, 2)
     }
 }
 
@@ -131,7 +132,7 @@ pub fn plain(first: char, rest: &[char]) -> bool {
 /// that some give it.
 pub fn spread(first: char, rest: &[char]) -> usize {
     let most = |c: char| if class(c) & KIND == REGIONAL { 2 } else { columns(c) };
-    most(first) + rest.iter().map(|&c| most(c)).sum::<usize>()
+    most(first) + rest.iter().take_while(|&&c| c != '\0').map(|&c| most(c)).sum::<usize>()
 }
 
 // A table written by tools/unicode.py from Unicode 17.0.0: where a run of characters of one kind starts, and the kind.
