@@ -181,11 +181,12 @@ struct View {
 }
 
 /// Puts the terminal back when the viewer leaves, however it leaves short of
-/// being killed.
+/// being killed. (The cursor's shape and colour are put to the terminal's own, not to what
+/// another program may have made them before.)
 struct Restore(File, sys::Termios);
 impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = self.0.write_all(b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t");
+        let _ = self.0.write_all(b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b]112\x1b\\\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t");
         let _ = sys::restore_mode(&self.0, &self.1);
     }
 }
@@ -302,10 +303,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     view.tell(None);
     if view.joined {
         view.write("\x1b[?2027l".into());
-    }
-    // And the cursor has its terminal's own colour again, if a pane's was given it.
-    if view.cursor_colour.is_some() {
-        view.write("\x1b]112\x1b\\".into());
     }
     // All of it is written before the terminal is put back; what could not be is why the viewer stopped.
     view.out = None;
@@ -1099,7 +1096,8 @@ impl View {
             }
             // The outer terminal sends cursor and keypad keys the way the focused program asked for.
             if focused {
-                cursor_colour = pane.cursor_colour;
+                // (The cursor's colour is a living program's, as the cursor is.)
+                cursor_colour = pane.cursor_colour.filter(|_| live);
                 let (cursor_keys, keypad) = (pane.term.app_cursor, pane.term.app_keypad);
                 cursor.push_str(if cursor_keys { "\x1b[?1h" } else { "\x1b[?1l" });
                 cursor.push_str(if keypad { "\x1b=" } else { "\x1b>" });
@@ -1433,7 +1431,7 @@ impl View {
             self.title = title;
         }
         // This terminal's cursor has the colour the focused pane's program set (OSC 12) while that
-        // pane has the keys, and its own again (OSC 112) when it has them no more. No other colour
+        // pane has the keys and its program lives, and its own again (OSC 112) when not. No other colour
         // of this terminal is ever set: what a pane's program set is in the pane's cells.
         if cursor_colour != self.cursor_colour {
             let own = |[r, g, b]: [u8; 3]| format!("\x1b]12;#{r:02x}{g:02x}{b:02x}\x1b\\");

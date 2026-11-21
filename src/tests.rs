@@ -161,13 +161,44 @@ fn a_colour_a_program_sets_is_its_panes_until_it_gives_it_back() {
     pane.feed(b"\x1b[?1049h\x1b[H\x1b[0;31mz");
     assert!(pane.styled().starts_with("\x1b[0;38;2;255;128;0;48;2;255;136;0mz"), "{:?}", pane.styled());
     assert_eq!(answers(&mut pane, "\x1bP$qm\x1b\\\x1b[?1049l\x1b[m"), "\x1bP1$r0;31m\x1b\\");
-    // What is no colour sets nothing and is said once in the log: a name, `rgbi:`, a part too
-    // long or missing, a number that is no palette entry (passed over without a word).
-    let bad = "\x1b]4;1;red;2;rgbi:1/0/0;3;rgb:12345/0/0;3;rgb:0/0;3;#12345;3;#+1+2+3;256;#000000;x;#000000;1;?\x07";
-    assert_eq!(answers(&mut pane, &(bad.to_string() + "\x1b]11;\x07")), " 4;1;rgb:ffff/8080/0000");
-    assert_eq!(pane.take().refused.len(), 0);
-    pane.feed(b"\x1b]4;1;red\x07");
-    assert_eq!(pane.take().refused, ["a colour was not set: it was not `#` with hex digits or `rgb:R/G/B`"]);
+    // What sets nothing is said in the log, once for each kind until the log is written: what
+    // is no colour (a name, `rgbi:`, a part too long, missing or one too many, no value at all),
+    // and a number that is no palette number. Each of these alone is said, and none sets a
+    // colour; a question about a number that is none is passed over without a word.
+    let (no_colour, no_number) = (
+        "a colour was not set: it was not `#` with hex digits or `rgb:R/G/B`",
+        "a colour was not set: its number was not 0 to 255",
+    );
+    let slashes = format!("rgb:{}", "/".repeat(1 << 20));
+    for bad in ["red", "rgbi:1/0/0", "rgb:12345/0/0", "rgb:0/0", "rgb:1/2/3/4", "#12345", "#+1+2+3", "", &slashes] {
+        pane.feed(format!("\x1b]4;3;{bad}\x07\x1b]11;{bad}\x07").as_bytes());
+        assert_eq!(pane.take().refused, [no_colour], "{bad}");
+    }
+    for bad in ["256", "x", "-1", ""] {
+        pane.feed(format!("\x1b]4;{bad};#000000;{bad};?\x07").as_bytes());
+        assert_eq!(pane.take().refused, [no_number], "{bad}");
+    }
+    assert_eq!(answers(&mut pane, "\x1b]4;1;red;1;?;3;?\x07\x1b]10;?;?\x07").split(' ').count(), 5);
+    // One string may set more colours than a counter of 16 bits counts, and ask more than is
+    // answered: 16 KiB of answers wait at most (said in the log), and what the string sets after
+    // them is set all the same.
+    pane.feed(format!("\x1b]4;{}7;#070707\x07", "0;#000;".repeat(1 << 16)).as_bytes());
+    // (Here 646 answers of 25 bytes and 8 of 26; a ninth would have filled the 16 KiB to the byte.)
+    pane.feed(format!("\x1b]4;10;#000;{}{}8;#080808\x07", "0;?;".repeat(646), "10;?;".repeat(9)).as_bytes());
+    let (out, dropped) = (pane.take(), "an answer to the program was dropped: 16 KiB of answers were waiting");
+    assert_eq!((out.reply.len(), out.refused), (646 * 25 + 8 * 26, vec![dropped]));
+    let told = answers(&mut pane, "\x1b]4;7;?;8;?\x07\x1b]104;0;7;8;10\x07");
+    assert_eq!(told, " 4;7;rgb:0707/0707/0707 4;8;rgb:0808/0808/0808");
+    // The cell a wide character left empty at a row's end has the background as every other: the
+    // screen with colours tells it, after U+200B since it is no text, and no other file does.
+    let mut gap = Term::new(4, 2);
+    gap.feed("\x1b]11;#123456\x07ABC\u{754c}".as_bytes());
+    let bg = "\x1b[0;48;2;18;52;86m";
+    assert_eq!(gap.styled(), format!("{bg}ABC\u{200b} \x1b[m\n{bg}\u{754c}  \x1b[m\n"));
+    assert_eq!((gap.plain().as_str(), gap.wraps().as_str()), ("ABC\n\u{754c}\n", "1"));
+    gap.feed(b"\r\n\r\n");
+    let styled = format!("{bg}ABC\x1b[m{bg}\u{754c}  \x1b[m\n");
+    assert_eq!((gap.peek().history.as_str(), gap.peek().styled.as_str()), ("ABC\u{754c}\n", styled.as_str()));
     // Given back one by one (104 with numbers, 110, 111, 112), a colour is the terminal's again.
     let asks = "\x1b]4;1;?;2;?;3;?\x07\x1b]10;?;?;?\x07";
     let told = answers(&mut pane, &format!("\x1b]104;1;x;300;3\x07\x1b]111\x07\x1b]112\x07{asks}"));

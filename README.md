@@ -74,14 +74,14 @@ in `FUXN_WS`.
 | `in` | FIFO. Bytes written here are typed to the program |
 | `ctl` | FIFO, one command a line: `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]`, `notify TEXT` (have something noticed, as a program does: `printf 'notify %s\n' 'the build is done' > ctl`) |
 | `screen` | the screen as plain text: one line per row, and nothing else |
-| `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them |
+| `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them. The cell a wide character left empty at a row's end, having no room there, is no text; where it has a colour it is told all the same, as U+200B and a blank at the row's end, so that the row is coloured to its last cell |
 | `size` | `COLS ROWS` (`read cols rows < size`) |
 | `cursor` | `ROW COL shown\|hidden SHAPE`: row and column from 0, and the shape's number as a program sets it (0 to 6, as a rule); then, if the program gave the cursor a colour (OSC 12), a fifth word, `#` and six hex digits |
 | `modes` | one line of words, empty when none: how input is to be sent to the program. `appcursor`, `keypad`, `paste`, `focus` (it asked to be told when its pane gains and loses the keys), `alt` (the alternate screen), `mouse9`, `mouse1000`, `mouse1002` or `mouse1003` (the mouse reports the program asked for), `mousesgr` (their newer form), `keysN` (the keyboard flags in force for it, below) |
 | `state` | what became of the program: `running`, `hungup`, `exited CODE` or `killed SIGNAL` |
 | `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
 | `top` | how many lines of the pane's text are before the screen's first row, counted since the pane began: the number, from 0, of the line that row is part of. (After `history` has become `history.1` twice, the oldest of them are in neither file) |
-| `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. A row that goes on in the next keeps the blanks at its end in `screen` and in `screen.styled`, so joining the two gives the line as it was printed (a line feed onto a row that goes on does not end the line above, as in tmux: a shell moves down a wrapped command with one. A program that writes two lines over a wrapped one without erasing it leaves them one line): with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
+| `wraps` | the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them): one line of numbers, empty when none. A row that goes on in the next keeps the blanks at its end in `screen` and in `screen.styled`, so joining the two gives the line as it was printed (of `screen.styled`, once the U+200B and the blank of a cell a wide character left empty are taken from the row's end, as `keys/.text` does; a line feed onto a row that goes on does not end the line above, as in tmux: a shell moves down a wrapped command with one. A program that writes two lines over a wrapped one without erasing it leaves them one line): with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
 | `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE AT KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it, if the shell gave one from 0 to 255). LINE is counted from the pane's first line, as `top` is, a line being what was printed up to its line break however many rows it takes: line `top` is the screen's first, a smaller number is in `history`, in `history.1` or older than both. AT is how many bytes of the line's text are before the mark, as `history` and `screen` (its rows joined by `wraps`) have that text: `cut -b` and `LC_ALL=C awk` cut there, and never inside a character. A mark stays on its text: when lines are scrolled, inserted, deleted or wrapped anew its numbers follow. What is erased takes its marks to where the erased part begins, in their order (so does a prompt drawn again higher up, for the marks after it): an output that was cleared away is a pair of marks at one place, and nothing. The alternate screen has no marks, and `marks` are the shell's while it is shown. The last thousand; empty when the shell marks nothing |
 | `links` | the links on the screen (a program makes one with OSC 8, as `ls --hyperlink` does), a line each: `LINE COL LEN ADDRESS`. LINE is the line's number as in `marks`, COL how many cells from the start of the line's first row on the screen the link begins (a whole row for each row the line has above it there), LEN how many cells it has, in reading order (a row counts as many cells as `size` says, also where a wide character that did not fit left its last cell empty, which `screen` does not show; a wide character is two cells); a link that goes over a line break is a line for each line. ADDRESS is printable ASCII without blanks, 2,048 bytes at most: anything else is no link, an address with a control byte in it among them. A cell keeps its link when it scrolls on the screen and when the text is wrapped anew, and loses it when it is erased or written over; text in `history` has none. At most a thousand different addresses at a time (one more is no link, with a line in `log`), and a list of 256 KiB at most (the runs past that are left out); empty when there are none. The files are read one after another: a reader that reads `links` of one moment and `screen` of the next has, until the next change, a link on the text that was there before |
 | `pictures` | a line `pic-N.sixel ROW COL COLS ROWS` for each picture that has a row on the screen: the file, where its first row and column are, its size in cells. COLS and ROWS are the whole picture's, also where it goes past the screen's right edge or its last row; ROW is below 0 when rows of it have scrolled off the top (`-2`: its third row is on the screen's first) |
@@ -254,8 +254,13 @@ A colour a program sets is its pane's, and no other's. It sets one with OSC
 4 (a palette number, any number of pairs in one string), 10 (the
 foreground), 11 (the background) or 12 (the cursor's) and a value: `#` and
 3, 6, 9 or 12 hex digits, or `rgb:R/G/B` with one to four hex digits each.
-Eight bits of each part are kept; a name (`red`), `rgbi:` and the other
-forms X has set nothing, with a line in the pane's `log`. From then on:
+Eight bits of each part are kept. What sets nothing is said in the pane's
+`log`: a value that is none of these (a name such as `red`, `rgbi:` and the
+other forms X has, no value at all) and, in OSC 4, a number that is not 0
+to 255. A question about such a number is passed over without a word, as is
+a number that has no value after it; and one string may ask more than is
+answered (16 KiB of answers wait at most, with a line in `log`): what it
+sets is set all the same. From then on:
 
 - the program is told what it set when it asks, the file or no file;
 - the pane is shown in it. `screen.styled` (and so the viewer, and the last
@@ -265,18 +270,22 @@ forms X has set nothing, with a line in the pane's `log`. From then on:
   before as well, since the emulator keeps a cell as the program wrote it
   (and tells DECRQSS so). With a background of its own every cell of the
   pane has it, the blank ones too: each row of `screen.styled` is then as
-  long as the pane is wide, and the tile is that colour to its edges. The
+  long as the pane is wide (the cell a wide character left empty at a
+  row's end among them), and the tile is that colour to its edges. The
   plain `screen` and `history` have no colours and do not change;
 - the cursor's colour is the fifth word of the pane's `cursor` file, and the
   viewer gives its terminal's cursor that colour (OSC 12) while the pane has
-  the keys. When another pane has them, a menu is open or the viewer leaves,
-  the terminal's cursor has its own colour again (OSC 112);
+  the keys and its program lives. When another pane has them, a menu is open
+  or the viewer leaves, the terminal's cursor has its own colour again (OSC
+  112), which is the one the terminal is set up with: a colour another
+  program gave the cursor before the viewer started is not put back, as its
+  shape is not;
 - the program gives a colour back with OSC 104 (the whole palette, or the
   numbers it names), 110, 111, 112, or a full reset (`ESC c`): then it is
   what the file says again, on the screen too.
 
-The pane has one set of colours for its main and its alternate screen, 259
-at most. The viewer never sets a colour of your terminal other than the
+The pane has one set of colours for its main and its alternate screen: the
+256 palette numbers and these three, no more. The viewer never sets a colour of your terminal other than the
 cursor's: a theme a program chose in one pane does not repaint the pane
 beside it, and no file is needed to learn a pane's colours, as its cells
 carry them.
@@ -644,7 +653,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   puts your terminal back as it found it (the main screen, the mouse, the
   keyboard flags) when it leaves by itself; killed, it cannot, and with a
   program's keyboard flags left on, Ctrl-C reaches your shell as an escape
-  sequence.
+  sequence, and the cursor keeps the colour a pane gave it.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `state` goes on saying `running` and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
@@ -709,7 +718,7 @@ does something else is a row below with a case that shows it.
 
 | Question | Authority |
 | --- | --- |
-| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6 (kept as 5), 9, 21, 58 and 59 and the colon forms of 4 (the kinds of underline), 38, 48 and 58, modes 1004 (focus) and 2026 (drawing), OSC 7, 8, 9, 777, 99 and 133, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2 |
+| What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI), SGR 6 (kept as 5), 9, 21, 58 and 59 and the colon forms of 4 (the kinds of underline), 38, 48 and 58, modes 1004 (focus) and 2026 (drawing), OSC 7, 8, 9, 777, 99 and 133, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2, OSC 10 and 11 with a value and OSC 110 and 111 (a pane's own foreground and background; the description has the palette's and the cursor's, OSC 4, 12, 104 and 112) |
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. A character goes on while the cursor is where its last part left it and its cell is unchanged: a change of colour or a title between a letter and its accent does not part them (`grep --color` does this), a move or an erase does |
 | How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). An emoji with U+FE0F in its character is two. A control, U+2028 and U+2029 among them, and a mark or joiner with no character to join, takes no cell and is dropped |
 | A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports, the kitty keyboard protocol) | Its own specification |

@@ -402,7 +402,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     let one = inner.start("one", &["sh"]);
     // The terminal the viewer runs in says what its colours are: here the outer session's file does.
     fs::create_dir_all(&outer.0).unwrap();
-    fs::write(outer.0.join("colours"), "foreground #102030\nbackground #fdf6e3\n4 #268bd2\n").unwrap();
+    fs::write(outer.0.join("colours"), "foreground #102030\nbackground #fdf6e3\ncursor #0a0b0c\n4 #268bd2\n").unwrap();
     let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
@@ -451,7 +451,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     });
     // The viewer asked its terminal once what the colours are and wrote them down for the
     // session: a program in a pane that asks is told the same, viewer or no viewer.
-    let told = "foreground #102030\nbackground #fdf6e3\n4 #268bd2\n";
+    let told = "foreground #102030\nbackground #fdf6e3\ncursor #0a0b0c\n4 #268bd2\n";
     until("the session knows its colours", || read(&inner.0.join("colours")) == told);
     fs::write(view.join("in"), "clear; printf '\\033]11;?\\007\\033]4;4;?\\007\\033]4;5;?\\007'; cat -v\r").unwrap();
     let answers = || read(&inner.0.join("main/two/screen")).replace('\n', "");
@@ -465,7 +465,8 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     // pane has the keys. The terminal's own colours are never set: the same palette number in
     // the pane beside it is drawn as that number, on no background.
     let set = "\\033]4;1;#123456\\007\\033]11;#654321\\007\\033]12;#abcdef\\007";
-    fs::write(view.join("in"), format!("printf '{set}\\033[31mr''ed\\033[m\\n'\r")).unwrap();
+    // (A wide character that has no room in its row's last cell leaves that cell empty.)
+    fs::write(view.join("in"), format!("printf '{set}\\033[31mr''ed\\033[m\\n%38s\u{754c}\\n' ''\r")).unwrap();
     fs::write(inner.0.join("main/one/in"), "clear; printf '\\033[31mpl''ain\\033[m\\n'\r").unwrap();
     let styled = || read(&view.join("screen.styled"));
     let drawn = |text: &str| styled().lines().find_map(|line| Some(line.split_once(text)?.0.to_string()));
@@ -473,8 +474,11 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
         let own = drawn("red").is_some_and(|before| before.ends_with("\x1b[0;38;2;18;52;86;48;2;101;67;33m"));
         own && drawn("plain").is_some_and(|before| before.ends_with("\x1b[0;31m") && !before.contains("48;2"))
     });
-    // (Every row of its tile, from the line between the panes to the tile's end.)
-    let whole = |row: &str| row.contains("48;2;101;67;33m") && !row.contains("\x1b[0m") && row.ends_with("\x1b[m");
+    // (Every row of its tile, from the line between the panes to the tile's end: 39 cells, the
+    // one a wide character left empty among them.)
+    let cells = |row: &str| bare(row).chars().map(|c| 1 + usize::from(c == '\u{754c}')).sum::<usize>();
+    let whole = |row: &str| row.contains("48;2;101;67;33m") && !row.contains("\x1b[0m") && cells(row) == 39;
+    assert!(read(&inner.0.join("main/two/screen.styled")).contains(&format!("{}\u{200b} \x1b[m\n", " ".repeat(38))));
     assert!(styled().lines().all(|line| line.split_once('│').is_some_and(|(_, row)| whole(row))), "{}", styled());
     assert_eq!(fact(&inner.0.join("main/two"), "cursor").split(' ').nth(4), Some("#abcdef"));
     let cursor = || fact(&view, "cursor").split(' ').nth(4).map(str::to_string);
@@ -528,13 +532,15 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     // A folder with a screen of someone's own making: what it says reaches the terminal as text only.
     fs::create_dir(inner.0.join("main/odd")).unwrap();
     fs::write(inner.0.join("main/odd/state"), "x\x1b]0;T\x07\x1b[2Jy\n").unwrap();
-    fs::write(inner.0.join("main/odd/cursor"), "99 99 shown 7\n").unwrap();
+    fs::write(inner.0.join("main/odd/cursor"), "99 99 shown 7 #abcdef\n").unwrap();
     fs::write(inner.0.join("main/odd/size"), "5 9\n").unwrap();
     fs::write(inner.0.join("main/odd/screen.styled"), "h\x1b[1mi\x1b]0;T\x07\x1b[?1049h ho-hum\n").unwrap();
     // The viewer gives the new folder a tab; a hand's edit comes after that, not across it.
     until("the viewer has placed the folder", || read(&inner.0.join("main/layout")).contains("odd"));
-    lay(&inner.0, "* row(one odd) focus=one\n");
+    lay(&inner.0, "* row(one odd) focus=odd\n");
     until("its title is drawn with the codes as marks", || screen().contains(" x?]0;T??[2Jy\n"));
+    // (No program lives there: the terminal's cursor is not given the colour its file names.)
+    assert_eq!(fact(&view, "cursor").split(' ').count(), 4);
     // Its row is text and colours and nothing more, cut where it says the pane ends (5 columns).
     assert!(screen().contains("│hi?]0\n") || screen().contains("│hi?]0 "), "{}", screen());
 }
@@ -818,11 +824,14 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     let asked = read(&session.0.join("out.at"));
     assert!(asked.starts_with("-+F -R +G /") && asked.ends_with("/text\n"), "{asked}");
     // The rows left out at the screen's end are those with no text: a colour alone is none.
-    let blue = session.start("blue", &["sh", "-c", "printf 'x\\033[44m\\033[J\\033[m'; sleep 600"]);
+    // And the cell a wide character left empty at a row's end is no text: the rows are joined without it.
+    let blue = session.start("blue", &["sh", "-c", "printf 'x\\033[44m\\033[J%78s\u{754c}\\033[m' ''; sleep 600"]);
     until("the screen is blue", || read(&blue.join("screen.styled")).matches("\x1b[0;44m").count() == 24);
     let mut text = Command::new(keys.join(".text"));
     assert!(text.arg(&out).arg("styled").env("FUXN_PANE", &blue).output().unwrap().status.success());
-    assert!(read(&out).starts_with("x\x1b[0;44m ") && read(&out).lines().count() == 1, "{:?}", read(&out));
+    assert!(read(&blue.join("screen.styled")).starts_with(&format!("x\x1b[0;44m{}\u{200b} \x1b[m\n", " ".repeat(78))));
+    let joined = format!("x\x1b[0;44m{}\x1b[m\x1b[0;44m\u{754c} ", " ".repeat(78));
+    assert!(read(&out).starts_with(&joined) && read(&out).lines().count() == 1, "{:?}", read(&out));
     // A command that prints nothing has no output to open, and the key says so; one whose
     // output does not end its line has that output, every character of it whole, without the
     // prompt that follows on the line. (And the editor is run as `FUXN_EDIT` says.)

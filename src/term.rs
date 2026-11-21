@@ -21,6 +21,7 @@ const HISTORY_PENDING_MAX: usize = 4 << 20;
 const HISTORY_FULL: &str = "lines were not kept in history: 4 MiB of it were waiting to be written";
 /// (Room for an answer to every question about a colour that a viewer asks at its start.)
 const REPLY_MAX: usize = 16 << 10;
+const DROPPED: &str = "an answer to the program was dropped: 16 KiB of answers were waiting";
 /// The keyboard flags fux passes on (all of the kitty protocol's: escape codes told apart,
 /// presses and releases, alternate keys, every key as an escape code, the text a key gives),
 /// and how many sets of flags a program can push aside on a screen.
@@ -133,24 +134,25 @@ impl Style {
 /// 3, 6, 9 or 12 hex digits (the high bits, as X reads them), or `rgb:R/G/B` with one to four
 /// hex digits each (a part of the whole). No other form is one: no name, no `rgbi:`.
 pub fn colour(text: &str) -> Option<[u8; 3]> {
-    let (parts, scaled): (Vec<&str>, bool) = match (text.strip_prefix("rgb:"), text.strip_prefix('#')) {
-        (Some(parts), _) => (parts.split('/').collect(), true),
+    let ([r, g, b], scaled) = match (text.strip_prefix("rgb:"), text.strip_prefix('#')) {
+        // (A fourth part stays in the third, which is then no number.)
+        (Some(parts), _) => {
+            let mut parts = parts.splitn(3, '/');
+            ([parts.next()?, parts.next()?, parts.next()?], true)
+        }
         (_, Some(hex)) if hex.is_ascii() && hex.len().is_multiple_of(3) => {
             let each = hex.len() / 3;
-            (vec![hex.get(..each)?, hex.get(each..2 * each)?, hex.get(2 * each..)?], false)
+            ([hex.get(..each)?, hex.get(each..2 * each)?, hex.get(2 * each..)?], false)
         }
         _ => return None,
     };
-    let value = |part: &&str| {
+    let value = |part: &str| {
         let bits = 4 * part.len() as u32;
         let hex = (1..=4).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_hexdigit());
         let n = u32::from_str_radix(part, 16).ok().filter(|_| hex)?;
         u8::try_from(if scaled { n * 0xffff / ((1 << bits) - 1) } else { n << (16 - bits) } >> 8).ok()
     };
-    match parts.as_slice() {
-        [r, g, b] => Some([value(r)?, value(g)?, value(b)?]),
-        _ => None,
-    }
+    Some([value(r)?, value(g)?, value(b)?])
 }
 
 /// Where a pane keeps a colour its program set that is no palette number's (those are 0 to
@@ -569,7 +571,7 @@ impl Term {
             *joiner = Joiner::default();
             text.chars().next_back().map(|last| joiner.joins(last));
         } else {
-            Term::row_styled(row, goes_on, own, joiner, styled);
+            Term::row_styled(row, goes_on, false, own, joiner, styled);
         }
         if !goes_on {
             out.push('\n');
@@ -641,7 +643,7 @@ impl Term {
         let mut out = String::new();
         for (y, row) in self.grid.iter().enumerate() {
             let goes_on = self.grid.get(y + 1).is_some_and(|next| continues(next));
-            Term::row_styled(row, goes_on, &self.own, &mut Joiner::default(), &mut out);
+            Term::row_styled(row, goes_on, true, &self.own, &mut Joiner::default(), &mut out);
             out.push('\n');
         }
         out
@@ -651,7 +653,9 @@ impl Term {
     /// `own` are the colours the program set: a cell that has such a palette number or default
     /// is told in that colour. `joiner` is what came before the row in its line, and then what
     /// the row leaves.
-    fn row_styled(row: &[Cell], goes_on: bool, own: &Own, joiner: &mut Joiner, out: &mut String) {
+    /// `screen`: the cell a wide character left empty at the row's end is told too, if it has a
+    /// look (it is no text: U+200B before it says so, and a history has none of it).
+    fn row_styled(row: &[Cell], goes_on: bool, screen: bool, own: &Own, joiner: &mut Joiner, out: &mut String) {
         let plain = Style::default();
         let own = |color: Color, default: Option<u16>| {
             let slot = match color {
@@ -671,16 +675,20 @@ impl Term {
             Cell { style: Style { fg, bg, ul, flags: flags & !MARKS }, link: 0, ..*cell }
         };
         // (A row that goes on in the next keeps the blanks at its end, as in `plain`.)
-        let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
+        let gap = row.last().filter(|cell| goes_on && cell.style.flags & PAD != 0);
         let used = match goes_on {
-            true => row.len() - usize::from(gap),
+            true => row.len() - usize::from(gap.is_some()),
             false => row.iter().rposition(|c| look(c) != blank).map_or(0, |last| last + 1),
         };
+        let gap = gap.filter(|cell| screen && look(cell) != blank);
         let mut style = plain;
-        for cell in row.iter().take(used).filter(|cell| cell.ch != '\0') {
+        for cell in row.iter().take(used).chain(gap).filter(|cell| cell.ch != '\0') {
             if look(cell).style != style {
                 style = look(cell).style;
                 style.sgr(out);
+            }
+            if gap.is_some_and(|gap| std::ptr::eq(gap, cell)) {
+                out.push('\u{200b}');
             }
             // Two characters that would read back as one are kept apart by U+200B, which
             // takes no room and is no part of either.
@@ -1525,7 +1533,7 @@ impl Term {
 
     fn respond(&mut self, text: &str) {
         if self.out.reply.len() + text.len() > REPLY_MAX {
-            self.refuse("an answer to the program was dropped: 16 KiB of answers were waiting");
+            self.refuse(DROPPED);
         } else {
             self.out.reply.extend_from_slice(text.as_bytes());
         }
@@ -1877,28 +1885,27 @@ impl Term {
                 // colour for this pane, if it is one.
                 let mut parts = rest.split(';');
                 let first = FOREGROUND + number.parse::<u16>().map_or(0, |number| number.saturating_sub(10));
-                for slot in first.. {
-                    let (slot, part) = match number {
-                        "4" => match parts.next().map(|index| index.parse::<u8>()) {
-                            Some(Ok(n)) => (Some(u16::from(n)), parts.next()),
-                            Some(Err(_)) => (None, parts.next()),
-                            None => break,
-                        },
-                        _ if slot <= CURSOR => (Some(slot), parts.next()),
-                        _ => break,
+                let mut slots = first..=CURSOR;
+                loop {
+                    let slot = match (number, slots.next()) {
+                        ("4", _) => parts.next().map(|index| index.parse::<u8>().ok().map(u16::from)),
+                        (_, slot) => slot.map(Some),
                     };
-                    let (name, which) = match slot {
-                        Some(FOREGROUND) => ("foreground".to_string(), "10".to_string()),
-                        Some(BACKGROUND) => ("background".to_string(), "11".to_string()),
-                        Some(CURSOR) => ("cursor".to_string(), "12".to_string()),
-                        Some(n) => (n.to_string(), format!("4;{n}")),
-                        None => Default::default(),
-                    };
+                    let (Some(slot), Some(part)) = (slot, parts.next()) else { break };
                     match (slot, part) {
+                        // (No answer is looked for that has no room, 28 bytes being the longest:
+                        // what the string sets after it is set all the same.)
+                        (Some(_), "?") if self.out.reply.len() + 28 > REPLY_MAX => self.refuse(DROPPED),
                         // Told what the program set; or else from the last line that starts with
                         // that name, if what follows the name is a colour (`#` and six hex
                         // digits; blanks around them do not matter).
-                        (Some(slot), Some("?")) => {
+                        (Some(slot), "?") => {
+                            let (name, which) = match slot {
+                                FOREGROUND => ("foreground".to_string(), "10".to_string()),
+                                BACKGROUND => ("background".to_string(), "11".to_string()),
+                                CURSOR => ("cursor".to_string(), "12".to_string()),
+                                n => (n.to_string(), format!("4;{n}")),
+                            };
                             let line = |line: &str| {
                                 let mut words = line.split_whitespace();
                                 let told = |told: &str| Some(told).filter(|told| told.len() == 7).and_then(colour);
@@ -1911,14 +1918,12 @@ impl Term {
                                 self.respond(&format!("\x1b]{which};{answer}{end}"));
                             }
                         }
-                        (Some(slot), Some(set)) => match colour(set) {
+                        (Some(slot), set) => match colour(set) {
                             Some(rgb) => _ = self.own.insert(slot, rgb),
                             None => self.refuse("a colour was not set: it was not `#` with hex digits or `rgb:R/G/B`"),
                         },
-                        _ => {}
-                    }
-                    if part.is_none() || self.out.reply.len() >= REPLY_MAX {
-                        break;
+                        (None, "?") => {}
+                        (None, _) => self.refuse("a colour was not set: its number was not 0 to 255"),
                     }
                 }
             }
