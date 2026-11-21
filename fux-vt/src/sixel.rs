@@ -63,46 +63,31 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
     let (mut registers, mut pens) = ([None::<[u8; 3]>; COLOURS_MAX], [0u16; COLOURS_MAX]);
     let mut colours: Vec<Colour> = Vec::new();
     let (mut register, mut x, mut band, mut size) = (0usize, 0usize, 0usize, (0usize, 0usize));
-    // Whose numbers are being read: `!` a repeat count, `#` a colour, `"` the raster attributes.
-    let (mut owner, mut numbers, mut square) = (b' ', vec![0usize], true);
-    let body = data.iter().copied().skip_while(|&b| b != b'q').skip(1);
-    for byte in body.chain(std::iter::once(b'$')) {
-        if byte.is_ascii_digit() {
-            if let Some(n) = numbers.last_mut() {
-                *n = n.saturating_mul(10).saturating_add(usize::from(byte - b'0')).min(1 << 20);
-            }
-            continue;
-        }
-        if byte == b';' {
-            if numbers.len() < 8 {
-                numbers.push(0);
-            }
-            continue;
-        }
-        let number = |i: usize| numbers.get(i).copied().unwrap_or(0);
-        let repeat = if owner == b'!' { number(0).max(1) } else { 1 };
-        if owner == b'"' {
-            size = (size.0.max(number(2)), size.1.max(number(3)));
-            square &= number(0) == number(1);
-        } else if owner == b'#' {
-            register = number(0);
-            // A colour given in hue, lightness and saturation (1) or in red, green and blue (2).
-            if let Some(slot) = registers.get_mut(register)
-                && numbers.len() == 5
-                && (1..=2).contains(&number(1))
-            {
-                let given = [number(2), number(3), number(4)];
-                *slot = Some(if number(1) == 1 { hls(given) } else { given.map(|n| n.min(100) as u8) });
-                pens.get_mut(register).into_iter().for_each(|pen| *pen = 0);
-            } else if register >= COLOURS_MAX {
-                wrong = wrong.or(Some("it names a colour register over 255"));
-            }
-        }
-        owner = b' ';
-        numbers.clear();
-        numbers.push(0);
+    // (A repeat count is the next command's, whatever that is.)
+    let (mut repeat, mut square) = (1, true);
+    let body = data.iter().position(|&b| b == b'q').and_then(|q| data.get(q + 1..)).unwrap_or_default();
+    // Each command with the numbers after it: `!` a repeat count, `#` a colour, `"` the raster attributes.
+    for command in body.chunk_by(|_, next| next.is_ascii_digit() || *next == b';') {
+        let Some((&byte, numbers)) = command.split_first() else { continue };
+        let digit = |n: usize, digit: &u8| n.saturating_mul(10).saturating_add(usize::from(digit - b'0')).min(1 << 20);
+        let mut each = numbers.split(|&b| b == b';').map(|number| number.iter().fold(0, digit));
+        let [n0, n1, n2, n3, n4] = std::array::from_fn(|_| each.next().unwrap_or(0));
+        let repeat = std::mem::replace(&mut repeat, if byte == b'!' { n0.max(1) } else { 1 });
         match byte {
-            b'!' | b'#' | b'"' => owner = byte,
+            b'"' => (size, square) = ((size.0.max(n2), size.1.max(n3)), square && n0 == n1),
+            b'#' => {
+                register = n0;
+                // A colour given in hue, lightness and saturation (1) or in red, green and blue (2).
+                if let Some(slot) = registers.get_mut(register)
+                    && numbers.split(|&b| b == b';').count() == 5
+                    && (1..=2).contains(&n1)
+                {
+                    *slot = Some(if n1 == 1 { hls([n2, n3, n4]) } else { [n2, n3, n4].map(|n| n.min(100) as u8) });
+                    pens.get_mut(register).into_iter().for_each(|pen| *pen = 0);
+                } else if register >= COLOURS_MAX {
+                    wrong = wrong.or(Some("it names a colour register over 255"));
+                }
+            }
             b'?'..=b'~' => {
                 let (bits, from, to) = (byte - b'?', x.max(left), x.saturating_add(repeat).min(right));
                 x = x.saturating_add(repeat);
