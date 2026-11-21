@@ -1516,7 +1516,7 @@ fn a_click_whose_release_the_terminal_never_told_of_does_not_take_the_next_click
     // A program that asks for the mouse beside one that does not. A click on the second gives it
     // the keys, and the terminal is then asked for no reports: the release of that click is
     // never told of. Back on the first, a click is that program's.
-    let (outer, inner) = (Session::new("router"), Session::new("rinner"));
+    let (outer, inner) = (Session::new("zouter"), Session::new("zinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(&keys).unwrap();
     let a = inner.start("a", &["sh", "-c", "stty raw -echo; printf '\\033[?1000h\\033[?1006h'; exec cat -v"]);
