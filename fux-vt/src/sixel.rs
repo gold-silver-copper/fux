@@ -205,8 +205,7 @@ impl Part {
         }
         let mut out = format!("0;1q\"1;1;{};{}", self.w, self.h);
         // A register the picture gave no colour keeps its number; the colours take the other numbers.
-        let own = |n: &u8| self.colours.contains(&Colour::Register(*n));
-        let mut free = (0..=u8::MAX).filter(|n| !own(n));
+        let mut free = (0..=u8::MAX).filter(|n| !self.colours.contains(&Colour::Register(*n)));
         let mut names = Vec::new();
         for colour in &self.colours {
             names.push(match colour {
