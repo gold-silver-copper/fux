@@ -1643,6 +1643,55 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     kept down to the saved cursor's row, as by 1049); forty capability
     names in one question (forty answers); the picture that cannot be
     cut (it painted its register 256 only outside the part).
+- **D101. The second wave** (the owner, 2026-11-21: "keep cutting code
+  while making bugs impossible and preserving features"; three readers on
+  the tree after D100, and two for facts held twice). Taken:
+  - **D100's first point, changed.** A start that failed removes
+    nothing: the folder it made stays, with a `log` that says why (three
+    readers: the removal named the folder by its path again, which may be
+    another's by then). `fux start` makes folders and removes none.
+  - A viewer shows the workspace it was told to show, as its folder is:
+    removed, it says so and stays. (It moved by itself to the workspace
+    shown before, or to `main`.)
+  - `FUXN_SELF` is gone: the find key offers every workspace. Only that
+    key left the viewer's own out; three other ways to show it did not.
+  - The viewer writes `colours` and `keyboard` once, when its terminal has
+    answered the last question or after ten seconds; no list of what it
+    wrote last.
+  - A round of writing that failed is tried again when the pane's
+    activity brings the next round, not by a timer every 25 ms; `log`
+    says so for each round that failed.
+  - **One source.** That a program has the alternate screen is said by
+    `screen.main` being there: the word `alt` is gone from `modes`. The
+    title is the emulator's (`Term::title`), a fact as the others; an
+    empty one is no file. History waiting to be written has one copy, the
+    emulator's, taken when it is written (the bound of 4 MiB counts what
+    still waits from before). A notice's rule (no control characters,
+    1,024 bytes) is the emulator's for `notify` on `ctl` too; its number
+    grows with each round of writing that had one. The two marked tabs of
+    a layout are followed by their places, not found again by their
+    panes' names. A key script's pane is started in the workspace
+    `fux start` itself works out. Each FIFO a holder or a viewer owns is
+    one descriptor, open to read and to write.
+  - A split's parts end where their shares end (one pass; the cells of
+    equal parts may fall 2,1,2,1 where they fell 2,2,1,1).
+  - **Bugs**, each with a test that failed first where one could be made:
+    a name with its workspace refused for the starter's own workspace's
+    name; a session named by a relative path told so to the pane's
+    program; the last read of the pty passing its 4 MiB.
+  - **Left out, and why**: `Csi.bare` and `huge` (the kitty protocol's
+    own words for `CSI < u` and a number too large); `string_holed` (D68);
+    the filter in `Screen::read` (without it a file someone wrote can
+    stall the viewer); telling the emulator its lent rows stay when
+    history is put aside (`lent()`: a test of D87 says they come back);
+    links inside `screen.styled` (D67: the screens stay text); the
+    `lost` label and the lock looked at for it each frame (the look, and
+    D4); the hint that names `C-b t n` (D86); the default keys that do
+    one thing under two names (`b`/`n` and `t h`/`t l`, `m h`/`m k`, `m
+    j`/`m l`: fux 1's keys). **For the owner**: whether a resize may drop
+    the main screen's pictures (about 24 lines of following them through
+    the wrap), and whether the constants of `fuxix` should say which
+    Linux machines they are for.
 
 ## The old fux3's bugs: which classes are gone
 
