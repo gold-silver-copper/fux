@@ -1053,8 +1053,9 @@ impl View {
             if focused && !pane.title.is_empty() {
                 title = Some(pane.title.clone());
             }
-            if focused && pane.screen.cursor_shown && pane.screen.row < body.h && pane.screen.col < body.w {
-                let (row, col) = (body.y + pane.screen.row + 1, body.x + pane.screen.col + 1);
+            if focused && pane.screen.cursor_shown && pane.screen.cursor.row < body.h && pane.screen.cursor.col < body.w
+            {
+                let (row, col) = (body.y + pane.screen.cursor.row + 1, body.x + pane.screen.cursor.col + 1);
                 cursor = format!("\x1b[{row};{col}H\x1b[{} q\x1b[?25h", pane.screen.cursor_shape);
             }
             // The outer terminal sends cursor and keypad keys the way the focused program asked for.
@@ -1408,7 +1409,7 @@ fn cells(text: &str, style: Style) -> Vec<Cell> {
     // One row with room for all of it and a column to spare, so that nothing wraps.
     let mut row = Term::new(2 * text.len() + 1, 1);
     row.feed(bytes.as_bytes());
-    (0..row.screen().col).filter_map(|x| row.screen().cell_at(0, x).copied()).collect()
+    (0..row.screen().cursor.col).filter_map(|x| row.screen().cell_at(0, x).copied()).collect()
 }
 
 /// The address of a link of the given number in a frame's table of them.
@@ -1511,7 +1512,7 @@ impl Pane {
         let mut place = || cursor.next().and_then(|n| n.parse::<usize>().ok());
         let at = (place(), place());
         self.screen.cursor_shown = cursor.next() == Some("shown") && at.0.is_some_and(|row| row < self.screen.rows);
-        (self.screen.row, self.screen.col) =
+        (self.screen.cursor.row, self.screen.cursor.col) =
             (at.0.unwrap_or(0).min(self.screen.rows - 1), at.1.unwrap_or(0).min(cols - 1));
         self.screen.cursor_shape =
             cursor.next().and_then(|shape| shape.parse().ok()).filter(|shape| *shape <= 6).unwrap_or(0);

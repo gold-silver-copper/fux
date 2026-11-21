@@ -299,14 +299,16 @@ struct Last {
     cursor: (usize, usize, bool),
 }
 
+/// The cursor: where it is, and what a program saves and brings back with it (DECSC, DECRC).
 #[derive(Clone, Copy, Default)]
-struct Saved {
-    row: usize,
-    col: usize,
+pub struct Cursor {
+    pub row: usize,
+    pub col: usize,
     style: Style,
     origin: bool,
     graphics: [bool; 2],
     shift: bool,
+    /// It waits at the row's end to wrap.
     wrap: bool,
 }
 
@@ -352,8 +354,7 @@ pub struct Screen {
     /// The kitty keyboard protocol: the flags a program asked for on the main screen and on
     /// the alternate one, with the flags it pushed aside on each.
     keys: [(u8, Vec<u8>); 2],
-    pub row: usize,
-    pub col: usize,
+    pub cursor: Cursor,
     pub cursor_shown: bool,
     pub cursor_shape: u8,
     pub app_cursor: bool,
@@ -392,17 +393,12 @@ pub struct Term {
     other: Vec<Vec<Cell>>,
     /// The cursor's row on the main screen while the alternate one is shown.
     main_row: usize,
-    style: Style,
-    wrap_pending: bool,
     top: usize,
     bottom: usize,
-    origin: bool,
     autowrap: bool,
     insert: bool,
     tabs: Vec<bool>,
-    graphics: [bool; 2],
-    shift: bool,
-    saved: [Saved; 2],
+    saved: [Cursor; 2],
     last: char,
     /// The character printed last, and what the next one needs to know to join it.
     cluster: Option<Last>,
@@ -537,17 +533,12 @@ impl Term {
             told: Told { cell: (10, 20), ..Told::default() },
             other: grid,
             main_row: 0,
-            style: Style::default(),
-            wrap_pending: false,
             top: 0,
             bottom: rows - 1,
-            origin: false,
             autowrap: true,
             insert: false,
             tabs: (0..SIZE_MAX).map(|c| c % 8 == 0).collect(),
-            graphics: [false; 2],
-            shift: false,
-            saved: [Saved::default(); 2],
+            saved: [Cursor::default(); 2],
             last: '\0',
             cluster: None,
             gone: 0,
@@ -684,7 +675,7 @@ impl Term {
     #[cfg(test)]
     pub fn lines(&self) -> (String, String, bool) {
         let (main, row) =
-            if self.screen.alt { (&self.other, self.main_row) } else { (&self.screen.grid, self.screen.row) };
+            if self.screen.alt { (&self.other, self.main_row) } else { (&self.screen.grid, self.screen.cursor.row) };
         let (mut all, mut before, mut open) = (String::new(), String::new(), self.tail);
         for (y, (cells, goes_on)) in with_next(main).enumerate() {
             if y == row {
@@ -692,7 +683,7 @@ impl Term {
                 if open.open.is_some() && !continues(cells) {
                     before.push('\n');
                 }
-                let upto = self.screen.col + usize::from(self.wrap_pending);
+                let upto = self.screen.cursor.col + usize::from(self.screen.cursor.wrap);
                 before.extend(cells.iter().take(upto).flat_map(Cell::chars));
             }
             open.joiner = Joiner::default();
@@ -1008,7 +999,7 @@ impl Term {
     // ---- the grid --------------------------------------------------------
 
     fn blank(&self) -> Cell {
-        Cell::blank(self.style)
+        Cell::blank(self.screen.cursor.style)
     }
 
     /// Repairs a row after cells moved: half of a wide character becomes a blank.
@@ -1057,7 +1048,7 @@ impl Term {
         if let Some(cells) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(from..to)) {
             cells.fill(blank);
         }
-        self.wrap_pending = false;
+        self.screen.cursor.wrap = false;
         self.screen
             .pictures
             .retain(|p| !((p.row..p.row + p.rows).contains(&row) && p.col < to && from < p.col + p.cols));
@@ -1171,38 +1162,38 @@ impl Term {
     }
 
     fn linefeed(&mut self) {
-        self.wrap_pending = false;
-        if self.screen.row == self.bottom {
+        self.screen.cursor.wrap = false;
+        if self.screen.cursor.row == self.bottom {
             self.scroll_up(self.top, 1);
-        } else if self.screen.row + 1 < self.screen.rows {
-            self.screen.row += 1;
+        } else if self.screen.cursor.row + 1 < self.screen.rows {
+            self.screen.cursor.row += 1;
         }
     }
 
     fn reverse_linefeed(&mut self) {
-        self.wrap_pending = false;
-        if self.screen.row == self.top {
+        self.screen.cursor.wrap = false;
+        if self.screen.cursor.row == self.top {
             self.scroll_down(self.top, 1);
         } else {
-            self.screen.row = self.screen.row.saturating_sub(1);
+            self.screen.cursor.row = self.screen.cursor.row.saturating_sub(1);
         }
     }
 
     fn move_to(&mut self, row: usize, col: usize) {
-        let (low, high) = if self.origin { (self.top, self.bottom) } else { (0, self.screen.rows - 1) };
-        self.screen.row = (low + row).min(high);
-        self.screen.col = col.min(self.screen.cols - 1);
-        self.wrap_pending = false;
+        let (low, high) = if self.screen.cursor.origin { (self.top, self.bottom) } else { (0, self.screen.rows - 1) };
+        self.screen.cursor.row = (low + row).min(high);
+        self.screen.cursor.col = col.min(self.screen.cols - 1);
+        self.screen.cursor.wrap = false;
     }
 
     fn print(&mut self, mut c: char) {
-        if self.graphics.get(usize::from(self.shift)) == Some(&true) {
+        if self.screen.cursor.graphics.get(usize::from(self.screen.cursor.shift)) == Some(&true) {
             c = line_drawing(c);
         }
         // Text goes on from the character printed last while the cursor is where that left it
         // and its cell is as it left it: a change of style or a title between a letter and its
         // accent moves nothing, a move or an erase does.
-        let here = (self.screen.row, self.screen.col, self.wrap_pending);
+        let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
         let goes_on = self.cluster.is_some_and(|last| {
             last.cursor == here
                 && last.at.is_none_or(|(row, col, cell, _)| self.screen.cell_at(row, col) == Some(&cell))
@@ -1218,11 +1209,11 @@ impl Term {
         } else {
             // Until it is placed it has no cell: what joins a character that found no room goes with it.
             (self.last, self.cluster) = (c, Some(Last { at: None, cursor: here }));
-            let new = Cell { ch: c, more: ['\0'; MORE], style: self.style, link: self.link };
+            let new = Cell { ch: c, more: ['\0'; MORE], style: self.screen.cursor.style, link: self.link };
             self.place(new, width(c, &[]) == 2, self.insert);
         }
         // What the next character must find to go on from this one.
-        let here = (self.screen.row, self.screen.col, self.wrap_pending);
+        let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
         if let Some(last) = &mut self.cluster {
             last.cursor = here;
             last.at =
@@ -1255,7 +1246,7 @@ impl Term {
                 // In insert mode its second column is one more column put in.
                 rest.rotate_right(1);
             }
-            (self.screen.col, self.wrap_pending) = (col, false);
+            (self.screen.cursor.col, self.screen.cursor.wrap) = (col, false);
             self.place(grown, true, false);
             if insert {
                 self.tidy(row);
@@ -1268,19 +1259,19 @@ impl Term {
         if wide && self.screen.cols < 2 {
             return;
         }
-        if self.wrap_pending || (wide && self.screen.col + 2 > self.screen.cols) {
+        if self.screen.cursor.wrap || (wide && self.screen.cursor.col + 2 > self.screen.cols) {
             if self.autowrap {
                 // The text goes on in the next row, whose first cell will say so. A wide
                 // character that had no room in this row's last cell leaves it as no text, if
                 // nothing is in it.
-                let waiting = self.wrap_pending;
-                if let Some(last) = self.screen.grid.get_mut(self.screen.row).and_then(|row| row.last_mut())
+                let waiting = self.screen.cursor.wrap;
+                if let Some(last) = self.screen.grid.get_mut(self.screen.cursor.row).and_then(|row| row.last_mut())
                     && !waiting
                     && *last == Cell::blank(last.style)
                 {
                     last.style.flags |= PAD;
                 }
-                self.screen.col = 0;
+                self.screen.cursor.col = 0;
                 self.wrapping = true;
                 self.linefeed();
                 self.wrapping = false;
@@ -1288,9 +1279,9 @@ impl Term {
             } else if wide {
                 return; // No room and no wrapping: it is dropped, as xterm drops it.
             }
-            self.wrap_pending = false;
+            self.screen.cursor.wrap = false;
         }
-        let (row, col) = (self.screen.row, self.screen.col);
+        let (row, col) = (self.screen.cursor.row, self.screen.cursor.col);
         let cells = 1 + usize::from(wide);
         let blank = self.blank();
         let mut under = blank;
@@ -1329,38 +1320,24 @@ impl Term {
         if let Some(last) = &mut self.cluster {
             last.at = Some((row, col, new, under));
         }
-        self.screen.col += cells;
-        if self.screen.col >= self.screen.cols {
-            self.screen.col = self.screen.cols - 1;
+        self.screen.cursor.col += cells;
+        if self.screen.cursor.col >= self.screen.cols {
+            self.screen.cursor.col = self.screen.cols - 1;
             // The wrap waits even while wrapping is off, as in xterm: turned on again, it is done.
-            self.wrap_pending = true;
+            self.screen.cursor.wrap = true;
         }
     }
 
     fn save_cursor(&mut self) {
-        let saved = Saved {
-            row: self.screen.row,
-            col: self.screen.col,
-            style: self.style,
-            origin: self.origin,
-            graphics: self.graphics,
-            shift: self.shift,
-            wrap: self.wrap_pending,
-        };
         if let Some(slot) = self.saved.get_mut(usize::from(self.screen.alt)) {
-            *slot = saved;
+            *slot = self.screen.cursor;
         }
     }
 
     fn restore_cursor(&mut self) {
         let saved = self.saved.get(usize::from(self.screen.alt)).copied().unwrap_or_default();
-        self.screen.row = saved.row.min(self.screen.rows - 1);
-        self.screen.col = saved.col.min(self.screen.cols - 1);
-        self.style = saved.style;
-        self.origin = saved.origin;
-        self.graphics = saved.graphics;
-        self.shift = saved.shift;
-        self.wrap_pending = saved.wrap && saved.col + 1 == self.screen.cols;
+        let (row, col) = (saved.row.min(self.screen.rows - 1), saved.col.min(self.screen.cols - 1));
+        self.screen.cursor = Cursor { row, col, wrap: saved.wrap && saved.col + 1 == self.screen.cols, ..saved };
     }
 
     fn set_alt(&mut self, alt: bool, clear: bool) {
@@ -1370,7 +1347,7 @@ impl Term {
             self.cluster = None;
             std::mem::swap(&mut self.screen.pictures, &mut self.other_pictures);
             self.screen.alt = alt;
-            self.main_row = self.screen.row;
+            self.main_row = self.screen.cursor.row;
         }
         if alt && clear {
             self.clear();
@@ -1421,7 +1398,11 @@ impl Term {
         // then the saved cursor, the row to come back to, the character printed last, and two
         // corners of each picture (the upper one on the highest of its rows that is kept still).
         let saved = self.saved.first().map_or((0, 0, false), |s| (s.row, s.col + usize::from(s.wrap), s.wrap));
-        let cursor = (self.screen.row, self.screen.col + usize::from(self.wrap_pending), self.wrap_pending);
+        let cursor = (
+            self.screen.cursor.row,
+            self.screen.cursor.col + usize::from(self.screen.cursor.wrap),
+            self.screen.cursor.wrap,
+        );
         let last = self.cluster.and_then(|last| last.at).filter(|_| !self.screen.alt);
         let mut places = vec![if self.screen.alt { saved } else { cursor }, saved, (self.main_row, 0, false)];
         places.push(last.map_or(cursor, |(row, col, ..)| (row, col, false)));
@@ -1447,7 +1428,7 @@ impl Term {
             let first = (1..=command.0).rev().find(|&y| !goes_on(y)).unwrap_or(0);
             let end = (command.0 + 1..main.len()).find(|&y| !goes_on(y)).unwrap_or(main.len());
             let ours = prompt.0 < first || prompt == (first, 0);
-            let here = (self.screen.row, self.screen.col + usize::from(self.wrap_pending));
+            let here = (self.screen.cursor.row, self.screen.cursor.col + usize::from(self.screen.cursor.wrap));
             (ours && here >= command && here.0 < end).then_some(first + held..end + held)
         });
         let keep = typed.unwrap_or(0..0);
@@ -1538,14 +1519,15 @@ impl Term {
         if self.screen.alt {
             (self.screen.grid, self.other, self.screen.pictures, self.other_pictures) = (cut, wrapped, still, kept);
             (self.main_row, self.cluster) = (main_row, None);
-            (self.screen.row, self.screen.col, self.wrap_pending) =
-                (self.screen.row.min(rows - 1), self.screen.col.min(cols - 1), false);
+            (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap) =
+                (self.screen.cursor.row.min(rows - 1), self.screen.cursor.col.min(cols - 1), false);
         } else {
             (self.screen.grid, self.other, self.screen.pictures, self.other_pictures) = (wrapped, cut, kept, still);
             // A cursor past its row's last column is the one that waits to wrap there.
-            (self.screen.row, self.screen.col, self.wrap_pending) = (row, col.min(cols - 1), col >= cols);
+            (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap) =
+                (row, col.min(cols - 1), col >= cols);
             // The character printed last is where it was in the text: what comes next may join it.
-            let here = (self.screen.row, self.screen.col, self.wrap_pending);
+            let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
             let (at_row, at_col) = fit(at(3));
             self.cluster = last.filter(|_| at(3).0 >= up).and_then(|(.., under)| {
                 Some(Last { at: Some((at_row, at_col, *self.screen.cell_at(at_row, at_col)?, under)), cursor: here })
@@ -1689,25 +1671,25 @@ impl Term {
         match byte {
             0x07 => self.notice(""),
             0x08 => {
-                self.screen.col = self.screen.col.saturating_sub(1);
-                self.wrap_pending = false;
+                self.screen.cursor.col = self.screen.cursor.col.saturating_sub(1);
+                self.screen.cursor.wrap = false;
             }
             0x09 => self.tab(1),
             0x0a..=0x0c => self.linefeed(),
             0x0d => {
-                self.screen.col = 0;
-                self.wrap_pending = false;
+                self.screen.cursor.col = 0;
+                self.screen.cursor.wrap = false;
             }
-            0x0e => self.shift = true,
-            0x0f => self.shift = false,
+            0x0e => self.screen.cursor.shift = true,
+            0x0f => self.screen.cursor.shift = false,
             _ => {}
         }
     }
 
     fn tab(&mut self, n: usize) {
         for _ in 0..n {
-            let next = (self.screen.col + 1..self.screen.cols).find(|&c| self.tabs.get(c) == Some(&true));
-            self.screen.col = next.unwrap_or(self.screen.cols - 1);
+            let next = (self.screen.cursor.col + 1..self.screen.cols).find(|&c| self.tabs.get(c) == Some(&true));
+            self.screen.cursor.col = next.unwrap_or(self.screen.cols - 1);
         }
     }
 
@@ -1732,12 +1714,12 @@ impl Term {
             b'8' => self.restore_cursor(),
             b'D' => self.linefeed(),
             b'E' => {
-                self.screen.col = 0;
+                self.screen.cursor.col = 0;
                 self.linefeed();
             }
             b'M' => self.reverse_linefeed(),
             b'H' => {
-                if let Some(stop) = self.tabs.get_mut(self.screen.col) {
+                if let Some(stop) = self.tabs.get_mut(self.screen.cursor.col) {
                     *stop = true;
                 }
             }
@@ -1774,7 +1756,7 @@ impl Term {
         self.state = State::Ground;
         match (first, byte) {
             (b'(' | b')', _) => {
-                if let Some(set) = self.graphics.get_mut(usize::from(first == b')')) {
+                if let Some(set) = self.screen.cursor.graphics.get_mut(usize::from(first == b')')) {
                     *set = byte == b'0';
                 }
             }
@@ -1782,7 +1764,7 @@ impl Term {
                 let fill = Cell { ch: 'E', ..Cell::blank(Style::default()) };
                 self.screen.grid.iter_mut().for_each(|row| row.fill(fill));
                 // And, as in xterm, the whole screen scrolls again and the cursor goes home.
-                (self.top, self.bottom, self.origin) = (0, self.screen.rows - 1, false);
+                (self.top, self.bottom, self.screen.cursor.origin) = (0, self.screen.rows - 1, false);
                 self.move_to(0, 0);
             }
             _ => {}
@@ -1818,7 +1800,7 @@ impl Term {
     fn report_setting(&mut self, selector: &[u8]) {
         let body = match selector {
             b"m" => {
-                let (style, mut body) = (self.style, String::from("0"));
+                let (style, mut body) = (self.screen.cursor.style, String::from("0"));
                 // (In xterm's order: 1, 4, 5, 7, 8, 2, 3, 9.)
                 let looks = [0, 3, 4, 5, 6, 1, 2, 7].iter().filter_map(|at| LOOKS.get(*at));
                 for (code, bit, _) in looks.filter(|look| style.flags & look.1 != 0) {
@@ -1997,13 +1979,15 @@ impl Term {
                     _ => return,
                 };
                 let code = rest.split(';').nth(1).filter(|_| kind == "end").and_then(|code| code.parse::<u8>().ok());
-                let here = At::Screen(self.screen.row, self.screen.col + usize::from(self.wrap_pending));
+                let here =
+                    At::Screen(self.screen.cursor.row, self.screen.cursor.col + usize::from(self.screen.cursor.wrap));
                 // A prompt before a mark says that mark's text is there no more (the prompt was
                 // drawn again higher up): the mark is kept, at the prompt's place, so that what
                 // was marked before is still in its order, with nothing between. Only a prompt
                 // says so: a program that moved up and ended has erased nothing.
                 if kind == "prompt" {
-                    let (row, col) = (self.screen.row, self.screen.col + usize::from(self.wrap_pending));
+                    let (row, col) =
+                        (self.screen.cursor.row, self.screen.cursor.col + usize::from(self.screen.cursor.wrap));
                     self.move_marks(|r, c| if (r, c) > (row, col) { here } else { At::Screen(r, c) });
                     // (A prompt drawn again in its place is one prompt.)
                     while self.marks.last().is_some_and(|last| last.0 == here && matches!(last.1, "prompt" | "command"))
@@ -2065,8 +2049,8 @@ impl Term {
         whole.extend_from_slice(b"\x1b\\");
         self.screen.pictures.push(Picture {
             id: self.next_picture,
-            row: self.screen.row,
-            col: self.screen.col,
+            row: self.screen.cursor.row,
+            col: self.screen.cursor.col,
             cols,
             rows,
             off: 0,
@@ -2077,8 +2061,8 @@ impl Term {
         for _ in 0..rows {
             self.linefeed();
         }
-        self.screen.col = 0;
-        self.wrap_pending = false;
+        self.screen.cursor.col = 0;
+        self.screen.cursor.wrap = false;
     }
 
     fn csi(&mut self, byte: u8) {
@@ -2130,15 +2114,15 @@ impl Term {
 
     fn dispatch(&mut self, last: u8) {
         let n = self.arg(0, 1);
-        let (row, col) = (self.screen.row, self.screen.col);
+        let (row, col) = (self.screen.cursor.row, self.screen.cursor.col);
         // What REP repeats: the character printed just before it, with nothing between (as xterm).
         let printed = self.interrupt();
         match (self.csi.private, self.csi.inter, last) {
             (0, 0, b'A') => self.move_rows(n, false),
             (0, 0, b'B') => self.move_rows(n, true),
             (0, 0, b'e') => {
-                self.screen.row = row.saturating_add(n).min(self.screen.rows - 1);
-                self.wrap_pending = false;
+                self.screen.cursor.row = row.saturating_add(n).min(self.screen.rows - 1);
+                self.screen.cursor.wrap = false;
             }
             (0, 0, b'C' | b'a') => self.move_to_col(col + n),
             (0, 0, b'D') => self.move_to_col(col.saturating_sub(n)),
@@ -2158,10 +2142,10 @@ impl Term {
             (0, 0, b'I') => self.tab(n),
             (0, 0, b'Z') => {
                 for _ in 0..n {
-                    self.screen.col =
-                        (0..self.screen.col).rev().find(|&c| self.tabs.get(c) == Some(&true)).unwrap_or(0);
+                    self.screen.cursor.col =
+                        (0..self.screen.cursor.col).rev().find(|&c| self.tabs.get(c) == Some(&true)).unwrap_or(0);
                 }
-                self.wrap_pending = false;
+                self.screen.cursor.wrap = false;
             }
             // (The marks on what is erased are, in their order, where the erased part begins:
             // what they marked is gone, and they mark nothing of what is written there next.)
@@ -2215,7 +2199,7 @@ impl Term {
                     }
                 }
                 self.tidy(row);
-                self.wrap_pending = false;
+                self.screen.cursor.wrap = false;
             }
             (0, 0, b'L' | b'M') if (self.top..=self.bottom).contains(&row) => {
                 if last == b'L' {
@@ -2223,8 +2207,8 @@ impl Term {
                 } else {
                     self.scroll_up(row, n);
                 }
-                self.screen.col = 0;
-                self.wrap_pending = false;
+                self.screen.cursor.col = 0;
+                self.screen.cursor.wrap = false;
             }
             (0, 0, b'S') => self.scroll_up(self.top, n),
             (0, 0, b'T') => self.scroll_down(self.top, n),
@@ -2265,7 +2249,7 @@ impl Term {
             (0, 0, b'n') => match self.arg(0, 0) {
                 5 => self.respond("\x1b[0n"),
                 6 => {
-                    let row = if self.origin { row.saturating_sub(self.top) } else { row };
+                    let row = if self.screen.cursor.origin { row.saturating_sub(self.top) } else { row };
                     self.respond(&format!("\x1b[{};{}R", row + 1, col + 1));
                 }
                 _ => {}
@@ -2283,12 +2267,18 @@ impl Term {
             }
             (0, b'!', b'p') => {
                 // A soft reset: modes and the scroll region back to how they start.
-                (self.insert, self.origin, self.autowrap, self.screen.cursor_shown) = (false, false, true, true);
-                (self.screen.app_cursor, self.screen.app_keypad, self.graphics, self.shift) =
-                    (false, false, [false; 2], false);
+                (self.insert, self.screen.cursor.origin, self.autowrap, self.screen.cursor_shown) =
+                    (false, false, true, true);
+                (
+                    self.screen.app_cursor,
+                    self.screen.app_keypad,
+                    self.screen.cursor.graphics,
+                    self.screen.cursor.shift,
+                ) = (false, false, [false; 2], false);
                 (self.screen.mouse, self.screen.mouse_sgr) = (0, false);
-                (self.top, self.bottom, self.style, self.link) = (0, self.screen.rows - 1, Style::default(), 0);
-                self.saved = [Saved::default(); 2];
+                (self.top, self.bottom, self.screen.cursor.style, self.link) =
+                    (0, self.screen.rows - 1, Style::default(), 0);
+                self.saved = [Cursor::default(); 2];
             }
             (0, b' ', b'q') if self.arg(0, 0) <= 6 => self.screen.cursor_shape = self.arg(0, 0) as u8,
             (0, 0, b'r') => {
@@ -2364,26 +2354,26 @@ impl Term {
 
     fn move_rows(&mut self, n: usize, down: bool) {
         // The cursor stops at the scroll region's edge, unless it is already past it.
-        self.screen.row = if down {
-            let limit = if self.screen.row <= self.bottom { self.bottom } else { self.screen.rows - 1 };
-            self.screen.row.saturating_add(n).min(limit)
+        self.screen.cursor.row = if down {
+            let limit = if self.screen.cursor.row <= self.bottom { self.bottom } else { self.screen.rows - 1 };
+            self.screen.cursor.row.saturating_add(n).min(limit)
         } else {
-            let limit = if self.screen.row >= self.top { self.top } else { 0 };
-            self.screen.row.saturating_sub(n).max(limit)
+            let limit = if self.screen.cursor.row >= self.top { self.top } else { 0 };
+            self.screen.cursor.row.saturating_sub(n).max(limit)
         };
-        self.wrap_pending = false;
+        self.screen.cursor.wrap = false;
     }
 
     fn move_to_col(&mut self, col: usize) {
-        self.screen.col = col.min(self.screen.cols - 1);
-        self.wrap_pending = false;
+        self.screen.cursor.col = col.min(self.screen.cols - 1);
+        self.screen.cursor.wrap = false;
     }
 
     /// Where a mode that is one switch is kept: what sets it, resets it and answers for it.
     fn switch(&mut self, mode: usize) -> Option<&mut bool> {
         Some(match mode {
             1 => &mut self.screen.app_cursor,
-            6 => &mut self.origin,
+            6 => &mut self.screen.cursor.origin,
             7 => &mut self.autowrap,
             25 => &mut self.screen.cursor_shown,
             1004 => &mut self.screen.focus,
@@ -2427,7 +2417,7 @@ impl Term {
         while let Some(&(code, _)) = self.csi.params.get(i) {
             i += 1;
             let flag = |flags: u16, bit: u16, on: bool| if on { flags | bit } else { flags & !bit };
-            let style = &mut self.style;
+            let style = &mut self.screen.cursor.style;
             match code {
                 0 => *style = Style::default(),
                 4 | 21 => {
@@ -2455,9 +2445,9 @@ impl Term {
                     let (color, used) = self.long_color(i);
                     i += used;
                     match (code, color) {
-                        (38, Some(color)) => self.style.fg = color,
-                        (48, Some(color)) => self.style.bg = color,
-                        (58, Some(color)) => self.style.ul = color,
+                        (38, Some(color)) => self.screen.cursor.style.fg = color,
+                        (48, Some(color)) => self.screen.cursor.style.bg = color,
+                        (58, Some(color)) => self.screen.cursor.style.ul = color,
                         _ => {}
                     }
                 }

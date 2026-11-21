@@ -617,7 +617,7 @@ impl Holder {
             format!("pic-{}.sixel {row} {} {} {}\n", p.id, p.col, p.cols, p.rows + p.off)
         };
         let words = self.term.words();
-        let (term, screen) = (&self.term, self.term.screen());
+        let (term, screen, at) = (&self.term, self.term.screen(), self.term.screen().cursor);
         let shown = if screen.cursor_shown { "shown" } else { "hidden" };
         // (The cursor's colour, if the program set one: a fifth word.)
         let colour = term.cursor_colour().map_or(String::new(), |[r, g, b]| format!(" #{r:02x}{g:02x}{b:02x}"));
@@ -637,7 +637,7 @@ impl Holder {
             ("links", term.links()),
             ("pictures", screen.pictures.iter().map(placed).collect()),
             ("size", format!("{} {}\n", screen.cols, screen.rows)),
-            ("cursor", format!("{} {} {shown} {}{colour}\n", screen.row, screen.col, screen.cursor_shape)),
+            ("cursor", format!("{} {} {shown} {}{colour}\n", at.row, at.col, screen.cursor_shape)),
             ("modes", format!("{}\n", words)),
             ("state", format!("{}\n", self.state)),
             ("status", self.status.clone()),

@@ -500,7 +500,7 @@ fn what_fux_is_and_can_do_is_answered_under_its_own_name_and_no_more() {
 fn a_cursor_waiting_at_the_right_margin_moves_like_any_other() {
     // After a character in the last column the cursor waits there; a back-tab still goes back.
     let term = term(80, 3, "\x1b[1;80Hb\x1b[Z.");
-    assert_eq!((term.screen.row, term.screen.col), (0, 73));
+    assert_eq!((term.screen.cursor.row, term.screen.cursor.col), (0, 73));
 }
 
 #[test]
@@ -547,7 +547,10 @@ fn the_right_margin_is_xterms() {
     assert_eq!(term(5, 3, "abcde\x1b[KZ").plain(), "abcdZ\n\n\n");
     // A repeat runs on through the wrap.
     let repeated = term(5, 4, "X\x1b[11b");
-    assert_eq!((repeated.plain().as_str(), repeated.screen.row, repeated.screen.col), ("XXXXX\nXXXXX\nXX\n\n", 2, 2));
+    assert_eq!(
+        (repeated.plain().as_str(), repeated.screen.cursor.row, repeated.screen.cursor.col),
+        ("XXXXX\nXXXXX\nXX\n\n", 2, 2)
+    );
     // It repeats only a character printed just before it: not across a move, a control or itself.
     assert_eq!(term(8, 2, "A\x1b[2;1H\x1b[3b-\x1b[2b\x1b[2b\rB\r\x1b[b").plain(), "A\nB--\n");
     // With wrapping off a wide character that has no room is dropped; a C1 control as UTF-8 is nothing.
@@ -660,7 +663,7 @@ fn the_command_being_typed_is_not_wrapped_anew_where_the_shell_marks_its_prompt(
     // (The output above is whole, in more rows; the command's two rows are two rows, cut, and
     // one line still.)
     assert_eq!(marked.plain(), "a line of ou\ntput that is\n long\np> echo abcd\ncdefghij\n\n");
-    assert_eq!((marked.screen.row, marked.screen.col, marked.wraps().as_str()), (4, 8, "1 2 4"));
+    assert_eq!((marked.screen.cursor.row, marked.screen.cursor.col, marked.wraps().as_str()), (4, 8, "1 2 4"));
     // What the shell then draws (bash: to the line's start, erase, a row up, erase, the line
     // again) is one command line, once.
     let redraw = |rows: usize| format!("\r\x1b[K{}\r{a}p> {b}echo abcdefghijabcdefghij", "\r\x1b[A\x1b[K".repeat(rows));
@@ -728,7 +731,10 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
             && wide.plain().starts_with(&format!("{}\n{}\n{}\nend\n", &long[..40], &long[40..80], &long[80..]))
     );
     assert!(wide.resize(120, 10));
-    assert_eq!((wide.plain(), wide.screen.row, wide.screen.col), (format!("{long}\nend\n\n\n\n\n\n\n\n\n"), 1, 3));
+    assert_eq!(
+        (wide.plain(), wide.screen.cursor.row, wide.screen.cursor.col),
+        (format!("{long}\nend\n\n\n\n\n\n\n\n\n"), 1, 3)
+    );
     // A row erased from its start, or moved away, is no longer what the row above goes on in:
     // widened, the two do not become one line. And one column is a size like any other.
     let mut parted = term(4, 3, "abcdef\x1b[2;1H\x1b[Kxy");
@@ -753,7 +759,7 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     let mut waits = term(4, 5, "ABCD\x1b7EF");
     assert!(waits.resize(2, 5));
     waits.feed(b"\x1b8");
-    assert_eq!((waits.screen.row, waits.screen.col, waits.plain().as_str()), (1, 1, "AB\nCD\nEF\n\n\n"));
+    assert_eq!((waits.screen.cursor.row, waits.screen.cursor.col, waits.plain().as_str()), (1, 1, "AB\nCD\nEF\n\n\n"));
     let mut beside = term(20, 3, "ab\x1b[1;15H\x1b7\x1b[3;1H");
     assert!(beside.resize(10, 3));
     beside.feed(b"\x1b8X");
@@ -761,7 +767,7 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     let mut hidden = term(8, 5, "A\x1b[1;8H\x1b[?1049h");
     assert!(hidden.resize(3, 5) && hidden.resize(8, 5));
     hidden.feed(b"\x1b[?1049l");
-    assert_eq!((hidden.screen.row, hidden.screen.col), (0, 7));
+    assert_eq!((hidden.screen.cursor.row, hidden.screen.cursor.col), (0, 7));
     let mut later = term(8, 3, "e");
     assert!(later.resize(6, 3));
     later.feed("\u{301}".as_bytes());
@@ -786,7 +792,8 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
         term.feed(format!("\x1b[{};{}H\x1b7", 1 + next(term.screen.rows), 1 + next(term.screen.cols - 1)).as_bytes());
         let saved_before = place(&term);
         term.feed(format!("\x1b[{};{}H", 1 + next(term.screen.rows), 1 + next(term.screen.cols - 1)).as_bytes());
-        let (was, at, history) = (term.plain(), (term.screen.row, term.screen.col), term.peek().history.len());
+        let (was, at, history) =
+            (term.plain(), (term.screen.cursor.row, term.screen.cursor.col), term.peek().history.len());
         let (before, size) = (place(&term), (term.screen.cols, term.screen.rows));
         let (mut there, mut quiet) = (true, true);
         for _ in 0..1 + next(4) {
@@ -806,7 +813,7 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
             assert!(same_lines(&term), "seed {seed}: styled history at {}x{}", term.screen.cols, term.screen.rows);
             // (Unless its own row had to go to history, to make room for text below it: then
             // it is at the top, and on another character from then on.)
-            there &= term.screen.row > 0 || term.peek().history.len() == kept;
+            there &= term.screen.cursor.row > 0 || term.peek().history.len() == kept;
             quiet &= term.peek().history.len() == kept;
             if there {
                 assert_eq!(
@@ -824,7 +831,11 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
         if there {
             assert_eq!(term.peek().history.len(), history, "seed {seed}: history, back at {size:?}");
             assert!(same_lines(&term), "seed {seed}: styled history, back at {size:?}");
-            assert_eq!((term.plain(), (term.screen.row, term.screen.col)), (was, at), "seed {seed}: back at {size:?}");
+            assert_eq!(
+                (term.plain(), (term.screen.cursor.row, term.screen.cursor.col)),
+                (was, at),
+                "seed {seed}: back at {size:?}"
+            );
             // The saved cursor too, if its row never left the screen and it was on a character or
             // right after one (in the blank part of a row or on an empty row it is only kept
             // inside the screen).
@@ -851,8 +862,8 @@ fn a_resize_cuts_the_alternate_screen_and_a_refused_one_changes_nothing() {
         // (6) A size that is refused changes nothing, and says so.
         let state = (
             term.styled(),
-            term.screen.row,
-            term.screen.col,
+            term.screen.cursor.row,
+            term.screen.cursor.col,
             term.screen.cols,
             term.screen.rows,
             term.peek().history.clone(),
@@ -864,8 +875,8 @@ fn a_resize_cuts_the_alternate_screen_and_a_refused_one_changes_nothing() {
             state,
             (
                 term.styled(),
-                term.screen.row,
-                term.screen.col,
+                term.screen.cursor.row,
+                term.screen.cursor.col,
                 term.screen.cols,
                 term.screen.rows,
                 term.peek().history.clone()
@@ -888,7 +899,7 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     assert_eq!((picture.row, picture.col, picture.cols, picture.rows), (0, 2, 3, 1));
     let bytes = term.peek().pictures.first().map(|(id, bytes)| (*id, bytes.as_slice()));
     assert!(bytes.is_some_and(|(id, d)| id == picture.id && d.starts_with(b"\x1bPq") && d.ends_with(b"\x1b\\")));
-    assert_eq!((term.screen.row, term.screen.col), (1, 0));
+    assert_eq!((term.screen.cursor.row, term.screen.cursor.col), (1, 0));
     // It stays through a full-screen program, an erase beside it and a resize that fits it.
     term.feed(b"\x1b[?1049h\x1b[2Jless\x1b[?1049l\x1b[1;10H\x1b[K\x1b[2;1H");
     term.resize(10, 3);
@@ -907,7 +918,7 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
     // of 4 the last 3 stay, with the cursor under them.
     let mut term = self::term(20, 4, "\x1bPq\"1;1;30;100~\x1b\\");
     let placed = |term: &Term| term.screen.pictures.first().map(|p| (p.row, p.cols, p.rows, p.off));
-    assert_eq!((placed(&term), term.screen.row), (Some((0, 3, 3, 2)), 3));
+    assert_eq!((placed(&term), term.screen.cursor.row), (Some((0, 3, 3, 2)), 3));
     term.feed(b"\n\n");
     assert_eq!(placed(&term), Some((0, 3, 1, 4)));
     term.feed(b"\n");
@@ -1156,12 +1167,12 @@ fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
     for (name, text, columns) in named {
         // In `screen`: the text whole, and the next character right after its columns.
         let first = term(12, 2, &format!("a{text}|"));
-        assert_eq!((first.plain(), first.screen.col), (format!("a{text}|\n\n"), columns + 2), "{name}");
+        assert_eq!((first.plain(), first.screen.cursor.col), (format!("a{text}|\n\n"), columns + 2), "{name}");
         assert_eq!(first.screen.cell_at(0, 1).map(|cell| cell.wide()), Some(columns == 2), "{name}");
         // Through `screen.styled`, read back: the same cells.
         let mut second = Term::new(12, 2);
         second.feed(first.styled().lines().next().unwrap().as_bytes());
-        assert_eq!((second.plain(), second.screen.col), (first.plain(), first.screen.col), "{name}");
+        assert_eq!((second.plain(), second.screen.cursor.col), (first.plain(), first.screen.cursor.col), "{name}");
         // At a row's end it wraps whole, a joiner at the very end too.
         let end = term(4, 2, &format!("abc{text}|"));
         let wrapped = if columns == 2 { format!("abc\n{text}|\n") } else { format!("abc{text}\n|\n") };
@@ -1191,17 +1202,17 @@ fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
     // and not its accent). After a move or an erase a mark has no character.
     for between in ["\x7f", "\u{9b}", "\x1b[1?m", "\x1b[31m", "\x1b]2;title\x07", "\x1b[?25l", "\x07"] {
         assert_eq!(term(4, 1, &format!("a{between}\u{301}")).plain(), "a\u{301}\n", "{between:?}");
-        assert_eq!(term(8, 1, &format!("\u{1f468}\u{200d}{between}\u{1f469}|")).screen.col, 3, "{between:?}");
+        assert_eq!(term(8, 1, &format!("\u{1f468}\u{200d}{between}\u{1f469}|")).screen.cursor.col, 3, "{between:?}");
     }
     assert_eq!(term(4, 1, "a\r\x1b[C\u{301}").plain(), "a\u{301}\n");
     assert_eq!(term(4, 1, "a\x1b[C\u{301}").plain(), "a\n");
     assert_eq!(term(4, 1, "a\x08\x1b[X\x1b[C\u{301}|").plain(), " |\n");
     // A wide mark (a voiced mark of kana) takes no column.
-    assert_eq!(term(8, 1, "\u{304b}\u{3099}|").screen.col, 3);
+    assert_eq!(term(8, 1, "\u{304b}\u{3099}|").screen.cursor.col, 3);
     // REP's copies are each a character.
-    assert_eq!(term(12, 1, "\u{1100}\x1b[3b|").screen.col, 9);
+    assert_eq!(term(12, 1, "\u{1100}\x1b[3b|").screen.cursor.col, 9);
     // A mark every terminal gives a column has one here (a halfwidth voiced mark; a skin tone alone).
-    assert_eq!((term(8, 1, "\u{ff76}\u{ff9e}|").screen.col, term(8, 1, "\u{1f3fd}|").screen.col), (3, 3));
+    assert_eq!((term(8, 1, "\u{ff76}\u{ff9e}|").screen.cursor.col, term(8, 1, "\u{1f3fd}|").screen.cursor.col), (3, 3));
     // A program that asks is told clusters are always on.
     assert_eq!(term(8, 1, "\x1b[?2027$p").take().reply, b"\x1b[?2027;3$y");
 }
