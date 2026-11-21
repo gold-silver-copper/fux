@@ -1467,3 +1467,11 @@ fn a_styled_row_longer_than_the_widest_pane_is_cut_off_as_at_any_width() {
         assert_eq!(screen.cell_at(0, wide).map(|cell| cell.ch), Some(' '), "{cols}");
     }
 }
+
+#[test]
+fn a_mark_goes_with_its_cell_when_a_character_is_printed_before_it_in_insert_mode() {
+    // (As CSI @ moves it. One printed at the mark itself is after it, as with insert mode off.)
+    assert_eq!(term(8, 2, "ab\x1b]133;B\x07cd\r\x1b[4hX").marks(), "0 3 command\n");
+    assert_eq!(term(8, 2, "ab\x1b]133;B\x07cd\r\x1b[4h日").marks(), "0 5 command\n");
+    assert_eq!(term(8, 2, "ab\x1b]133;B\x07cd\x1b[1;3H\x1b[4hX").marks(), "0 2 command\n");
+}

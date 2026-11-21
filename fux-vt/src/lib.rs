@@ -1260,7 +1260,7 @@ impl Term {
             self.screen.cursor.wrap = false;
         }
         let (row, col) = (self.screen.cursor.row, self.screen.cursor.col);
-        let cells = 1 + usize::from(wide);
+        let (cells, cols) = (1 + usize::from(wide), self.screen.cols);
         let blank = self.blank();
         let mut under = blank;
         if let Some(line) = self.screen.grid.get_mut(row) {
@@ -1290,6 +1290,8 @@ impl Term {
             }
         }
         if insert {
+            // (The marks after it go with their cells, as when CSI @ makes the room.)
+            self.move_marks(|r, c| (r, if r == row && c > col { (c + cells).min(cols) } else { c }));
             self.tidy(row);
         }
         self.uncover(row, col, col + cells);
