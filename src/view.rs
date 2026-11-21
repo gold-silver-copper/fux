@@ -469,7 +469,7 @@ impl View {
             // While the terminal is being asked what it is like, its answers may come in pieces:
             // nothing is taken for a key until it is whole, and a string is an answer.
             let asking = self.colours.is_some();
-            let Some((length, name)) = keys::next(rest, whole && !asking, asking) else { break };
+            let Some((length, name, event)) = keys::next(rest, whole && !asking, asking) else { break };
             let raw = rest.get(..length).unwrap_or(&[]);
             at += length;
             match name.as_str() {
@@ -509,7 +509,7 @@ impl View {
                     }
                 }
                 name if name.starts_with("mode:") => {}
-                name => self.key(name, raw),
+                name => self.key(name, raw, event),
             }
             if self.waiting.is_some() || std::mem::take(&mut self.pause) {
                 break;
@@ -614,7 +614,7 @@ impl View {
 
     /// One key: a script if the key's file is one, a menu if it is a
     /// directory, and otherwise the key goes to the pane.
-    fn key(&mut self, name: &str, raw: &[u8]) {
+    fn key(&mut self, name: &str, raw: &[u8], event: Option<keys::Event>) {
         // (A key comes from a window that has the keys, whatever it last told of its focus.)
         self.window = true;
         // A program may have asked to be told when keys are let go and held (the kitty
@@ -623,7 +623,6 @@ impl View {
         // release with no press goes nowhere. The viewer's own (the prefix, a key of a menu): its
         // repeats and its release go nowhere. A pane's: they go to that pane, whether a menu is
         // open or not. While a menu is open, a modifier key by itself is nothing.
-        let event = keys::event(raw);
         // (A sign may be told by its own number when pressed and by its key's when let go.)
         let same = |key: &(u32, u8)| event.is_some_and(|(id, sign, ..)| *key == id || Some(*key) == sign);
         if let Some((_, _, kind, modifier)) = event {

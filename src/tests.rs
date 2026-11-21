@@ -6,6 +6,11 @@
 use crate::layout::{Layout, Rect, parse};
 use crate::term::Term;
 
+/// The key at the start of the bytes, as the one parser tells it: how long it is and its name.
+fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)> {
+    crate::keys::next(bytes, whole, answers).map(|(length, name, _)| (length, name))
+}
+
 fn term(cols: usize, rows: usize, bytes: &str) -> Term {
     let mut term = Term::new(cols, rows);
     term.feed(bytes.as_bytes());
@@ -43,7 +48,6 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), "\x1b]11;rgb:fdfd/f6f6/e3e3\x07");
     assert_eq!(told.plain(), "\n\n");
     // The viewer reads its terminal's answers as answers, not as keys.
-    use crate::keys::next;
     assert_eq!(
         next(b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\x", false, true),
         Some((25, "answer:11;rgb:1c1c/1c1c/1c1c".into()))
@@ -53,9 +57,9 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     assert_eq!((next(b"\x1b]11;rgb:1c", false, true), next(b"\x1b]", false, true)), (None, None));
     assert_eq!(next(b"\x1b]x\x07", false, false), Some((2, "M-]".into())));
     // The viewer reads its terminal's answer about a mode as an answer.
-    assert_eq!(crate::keys::next(b"\x1b[?2027;2$y", false, false), Some((11, "mode:2027;2".into())));
+    assert_eq!(next(b"\x1b[?2027;2$y", false, false), Some((11, "mode:2027;2".into())));
     // And its window's gain and loss of the keys as that, not as a key.
-    assert_eq!(crate::keys::next(b"\x1b[Ox", false, false), Some((3, "focus:O".into())));
+    assert_eq!(next(b"\x1b[Ox", false, false), Some((3, "focus:O".into())));
 }
 
 #[test]
@@ -91,7 +95,7 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     assert_eq!(lacking.take(0).reply, b"\x1b[?5u\x1b[?5u");
     // What a key's sequence says beyond its name: which key, pressed, held or let go, and
     // whether it is a modifier by itself. Bytes in the old form say none of it.
-    use crate::keys::event;
+    let event = |raw: &[u8]| crate::keys::next(raw, true, false).and_then(|(.., event)| event);
     assert_eq!(event(b"\x1b[97;1:3u"), Some(((97, b'u'), None, 3, false)));
     assert_eq!(event(b"\x1b[98;5u"), Some(((98, b'u'), None, 1, false)));
     assert_eq!(event(b"\x1b[97:65;2:2;65u"), Some(((97, b'u'), Some((65, b'u')), 2, false)));
@@ -100,8 +104,8 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     assert_eq!(event(b"\x1b[57358u"), Some(((57358, b'u'), None, 1, true)));
     // A key with much text is one key, also when it comes in two pieces.
     let long = format!("\x1b[97;;{}", "97:".repeat(24));
-    assert_eq!(crate::keys::next(long.as_bytes(), false, false), None);
-    assert_eq!(crate::keys::next(format!("{long}97u").as_bytes(), false, false), Some((long.len() + 3, "a".into())));
+    assert_eq!(next(long.as_bytes(), false, false), None);
+    assert_eq!(next(format!("{long}97u").as_bytes(), false, false), Some((long.len() + 3, "a".into())));
     assert_eq!(event(b"\x1b[57441;2u"), Some(((57441, b'u'), None, 1, true)));
     assert_eq!(event(b"\x1b[1;5:3A"), Some(((1, b'A'), None, 3, false)));
     assert_eq!(
@@ -124,7 +128,6 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     }
     assert!(!asked("x").1.contains("keys"));
     // The viewer still finds its keys in that protocol's forms, and tells apart what the old forms cannot.
-    use crate::keys::next;
     let name = |bytes: &str| next(bytes.as_bytes(), true, false).map(|(length, name)| (length == bytes.len(), name));
     for (bytes, key) in [
         ("\x1b[98;5u", "C-b"),
@@ -281,7 +284,7 @@ fn when_the_tab_shown_goes_the_tab_shown_before_it_is_shown() {
 
 #[test]
 fn keys_have_the_names_of_their_files() {
-    let name = |bytes: &[u8]| crate::keys::next(bytes, true, false);
+    let name = |bytes: &[u8]| next(bytes, true, false);
     for (bytes, expected) in [
         (&b"\x02"[..], "C-b"),
         (b"v", "v"),
@@ -305,11 +308,11 @@ fn keys_have_the_names_of_their_files() {
     ] {
         assert_eq!(name(bytes), Some((bytes.len(), expected.to_string())));
     }
-    assert_eq!(crate::keys::next(b"\x1b[20", true, false), None, "half a sequence waits for the rest, however long");
+    assert_eq!(next(b"\x1b[20", true, false), None, "half a sequence waits for the rest, however long");
     // Alt with a character of several bytes, of which not all have come yet, waits for the rest
     // as the character by itself does.
-    assert_eq!(crate::keys::next(b"\x1b\xc3", false, false), None);
-    assert_eq!(crate::keys::next("\x1bé".as_bytes(), false, false), Some((3, "M-é".to_string())));
+    assert_eq!(next(b"\x1b\xc3", false, false), None);
+    assert_eq!(next("\x1bé".as_bytes(), false, false), Some((3, "M-é".to_string())));
 }
 
 #[test]
