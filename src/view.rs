@@ -615,27 +615,17 @@ impl View {
         if self.notices.len() > 4000 {
             self.notices.clear();
         }
-        // (A workspace looked at for the first time: what is there is old, and is not rung. When
-        // that was is kept, as a file's time is.)
-        // (A file's time may be some milliseconds behind the clock's.)
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-        let now = now.saturating_sub(Duration::from_millis(20));
-        let started = (0, now.as_secs() as i64, i64::from(now.subsec_nanos()), 0);
-        let first = !self.notices.contains_key(&key(""));
-        let since = self.notices.entry(key("")).or_insert((Some(started), false)).0;
+        // (A workspace looked at for the first time: what is there is old, and is not rung. One
+        // that appears or changes after that is new, whoever brought it.)
+        let first = self.notices.insert(key(""), (None, false)).is_none();
         for name in layout.tabs.iter().flat_map(|tab| tab.panes()) {
             let file = directory.join(name).join("notice");
             let stamp: Stamp = fs::metadata(&file).ok().filter(|m| m.is_file()).map(stamp);
-            let known = self.notices.get(&key(name)).copied();
-            if known.is_some_and(|(was, _)| was == stamp) {
+            if self.notices.get(&key(name)).is_some_and(|(was, _)| *was == stamp) {
                 continue;
             }
-            // (One that came with its pane is old too, if it was written before the workspace
-            // was first looked at: a pane moved here. A new pane's first is new.)
-            let after = stamp.zip(since).is_some_and(|(stamp, since)| (stamp.1, stamp.2) > (since.1, since.2));
-            let new = stamp.is_some() && !first && (known.is_some() || after);
             self.notices.insert(key(name), (stamp, stamp.is_some() && self.focus.as_deref() != Some(name)));
-            if new {
+            if stamp.is_some() && !first {
                 let text = text(&file, 1200);
                 let words = text.lines().next().unwrap_or_default().split_once(' ').map_or("", |(_, words)| words);
                 let words: String = words.chars().filter(|c| !c.is_control()).take(200).collect();

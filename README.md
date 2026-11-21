@@ -725,6 +725,9 @@ fux adds nothing to stop these. What happens is what Unix does:
 - **Don't run the viewer in a pane of the workspace it shows.** It draws its
   own pane as one of its tiles and asks it to be that small. In a pane of
   another workspace or session it is fine.
+- **Don't move a pane into a workspace a viewer shows and expect silence.**
+  A notice that appears there is a new one, whoever brought it: the pane's
+  last notice is passed on once more.
 - **Don't put other folders in a workspace**: every folder there with a
   pane's kind of name is shown as a pane. Files are fine.
 - **Don't edit `layout` by hand just as panes come or go**: the viewer writes
