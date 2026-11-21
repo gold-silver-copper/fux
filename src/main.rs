@@ -125,6 +125,21 @@ fn read(file: std::io::Result<File>, most: u64) -> (Vec<u8>, std::io::Result<usi
     (bytes, read)
 }
 
+/// The lines that end in what was `read` of a FIFO, after what was `kept` of one that had not ended. A line
+/// of over `most` bytes, as they were read, is None: a byte past the bound says so, and the rest is not kept.
+pub fn lines(kept: &mut Vec<u8>, read: &[u8], most: usize) -> Vec<Option<String>> {
+    let mut lines = Vec::new();
+    for &byte in read {
+        if byte == b'\n' {
+            let line = std::mem::take(kept);
+            lines.push((line.len() <= most).then(|| String::from_utf8_lossy(&line).into_owned()));
+        } else if kept.len() <= most {
+            kept.push(byte);
+        }
+    }
+    lines
+}
+
 /// The same as text, of a file opened without waiting (should the name be a FIFO's).
 fn text(path: &Path, most: u64) -> String {
     String::from_utf8_lossy(&read(sys::open(path, false), most).0).into_owned()

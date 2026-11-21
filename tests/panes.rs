@@ -1683,3 +1683,18 @@ fn rounds_of_writing_that_fail_do_not_leave_their_pictures_for_good() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[test]
+fn a_line_of_ctl_is_measured_in_the_bytes_that_were_written() {
+    // 507 bytes that are no text (each would be three as text) are a line under the bound of
+    // 1,280: the notice is taken, whatever its bytes are shown as.
+    let session = Session::new("ctlbytes");
+    let pane = session.start("p", &["sleep", "600"]);
+    fs::write(pane.join("ctl"), [&b"notify "[..], &[0xff; 500], b"\n"].concat()).unwrap();
+    until("the line is taken or refused", || !fact(&pane, "notice").is_empty() || !read(&pane.join("log")).is_empty());
+    assert!(fact(&pane, "notice").starts_with("1 \u{fffd}"), "{}", read(&pane.join("log")));
+    // A line over the bound is dropped whole, however it arrives, and the next one is taken.
+    fs::write(pane.join("ctl"), [&[b'x'; 3000][..], b"\nnotify next\n"].concat()).unwrap();
+    until("the next line is taken", || fact(&pane, "notice") == "2 next");
+    assert_eq!(read(&pane.join("log")), "ctl: a line over 1280 bytes was dropped\n");
+}

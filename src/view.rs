@@ -337,18 +337,10 @@ impl View {
                 }
             }
             let n = (&*ctl).read(&mut buffer).unwrap_or(0);
-            for &byte in buffer.get(..n).unwrap_or(&[]) {
-                if byte != b'\n' {
-                    // One byte past the bound marks the line as too long; the rest of it is not kept.
-                    if self.ctl_line.len() <= LINE_MAX {
-                        self.ctl_line.push(byte);
-                    }
-                } else if self.ctl_line.len() > LINE_MAX {
-                    self.ctl_line.clear();
-                    self.message = format!("a line over {LINE_MAX} bytes from a key script was dropped");
-                } else {
-                    let line = String::from_utf8_lossy(&std::mem::take(&mut self.ctl_line)).into_owned();
-                    self.command(line.trim());
+            for line in crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), LINE_MAX) {
+                match line {
+                    None => self.message = format!("a line over {LINE_MAX} bytes from a key script was dropped"),
+                    Some(line) => self.command(line.trim()),
                 }
             }
             if self.frame()? || n > 0 {

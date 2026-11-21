@@ -231,7 +231,13 @@ impl Holder {
             let [ended_now, commanded, program, typed] =
                 sys::wait(wanted, wait).map_err(|e| format!("cannot wait: {e}"))?;
             if commanded != 0 {
-                self.commands(ctl, &mut buffer);
+                let n = (&*ctl).read(&mut buffer).unwrap_or(0);
+                for line in crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), CTL_LINE_MAX) {
+                    match line {
+                        None => self.log(&format!("ctl: a line over {CTL_LINE_MAX} bytes was dropped")),
+                        Some(line) => self.command(&line).unwrap_or_else(|e| self.log(&format!("ctl: {line}: {e}"))),
+                    }
+                }
                 dirty.get_or_insert_with(Instant::now);
             }
             if program & !sys::POLLOUT != 0 && budget > 0 {
@@ -340,23 +346,6 @@ impl Holder {
             self.history([("history", &out.history, out.unhistory), ("history.styled", &out.styled, out.unstyled)]);
         }
         out
-    }
-
-    fn commands(&mut self, mut ctl: &File, buffer: &mut [u8]) {
-        let n = ctl.read(buffer).unwrap_or(0);
-        for &byte in buffer.get(..n).unwrap_or(&[]) {
-            if byte != b'\n' {
-                self.ctl_line.push(byte);
-                continue;
-            }
-            let line = String::from_utf8_lossy(&std::mem::take(&mut self.ctl_line)).into_owned();
-            if line.len() > CTL_LINE_MAX {
-                self.log(&format!("ctl: a line over {CTL_LINE_MAX} bytes was dropped"));
-            } else if let Err(why) = self.command(&line) {
-                self.log(&format!("ctl: {line}: {why}"));
-            }
-        }
-        self.ctl_line.truncate(CTL_LINE_MAX + 1);
     }
 
     fn command(&mut self, line: &str) -> Result<(), String> {
