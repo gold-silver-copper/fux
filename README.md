@@ -455,8 +455,7 @@ start their pane at that size, so its program is not drawn twice), and this
 at most), so `C-b t n` and then text types into the new shell; a script that
 takes longer puts its work in the background, as the defaults do.
 What it prints goes to the viewer, a line at a time: `quit` leaves the
-viewer, `workspace NAME` shows another workspace (`workspace -` the one this
-viewer showed before), and anything else (an error
+viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key. A key with no file, pressed in an
 open menu, closes the menu and goes nowhere (in a menu that stays open, as resize and move do, the prefix opens its own menu again: `C-b r l l C-b v` resizes and then splits). Writing the same lines to the FIFO
 `$FUXN_VIEW` does the same from anywhere.

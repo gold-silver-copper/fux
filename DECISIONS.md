@@ -1739,6 +1739,41 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     (risky for 6 to 10 lines); the frame's budget for pictures
     remembering why it refused (rare, and more lines); `.search` opening
     by a line's number after history was put aside meanwhile.
+- **D103. The fourth wave** (three readers, each with one question:
+  what a type would hold, what a script could do, what says the same in
+  fewer lines). Taken:
+  - **D36, in part.** The viewer keeps the workspace it shows and
+    nothing else of workspaces: its memory of the one shown before, and
+    `workspace -`, are gone (no key that comes with fux used it, and
+    since D101 a viewer goes nowhere by itself). `workspace NAME` shows
+    that name; with no folder of it, the viewer says so.
+  - `Term::resize` takes the nearest size a terminal may have, as
+    `Term::new` does, and refuses none: the holder refuses a size on
+    `ctl` in its own words before it asks.
+  - **One source.** Whether bytes are a character is asked of std (the
+    emulator and the viewer's key reader each had a table of lengths and
+    the emulator its own check of the shortest form). A workspace's
+    first frame is the one before its notices were looked at (`greeted`
+    is gone). Whether the terminal joins characters, and by whose doing,
+    is one value. A key's script is told of the layout its key was read
+    against. What the terminal told is taken apart once.
+  - **Bugs**, each with a test that failed first where one could be made:
+    a FIFO named `layout` freezing the viewer; a clipboard set while a
+    workspace with no pane was shown sent on the way back; `.restore`
+    under a relative `FUXN_DIR` starting panes in another session;
+    `CSI @` and `CSI P` leaving a shell's marks behind their text;
+    `.text` opening `screen` twice (no test: it needs the file replaced
+    between two opens of one awk).
+  - **Left out**: REP repeating by the rule a mark joins by (the
+    referee's `rep-after-cancel` would differ from xterm: `A` where
+    xterm has `A`, `AAA` after); the keys installed outside `fux view`
+    (the quick start is one build and `fux view`); a layout settled only
+    in memory and written on edits alone (D71); `fux wait` saying
+    nothing (its two lines are the agents' page's recipes); one try for
+    the pane's lock in `fux start` (a viewer's own look would fail a
+    start); the cursor's waiting wrap kept in its column (fifteen places
+    for five, on the print path); a key's kinds as an enum (written out,
+    3 to 9 lines more).
 
 ## The old fux3's bugs: which classes are gone
 
