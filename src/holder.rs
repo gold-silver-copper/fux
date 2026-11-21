@@ -174,8 +174,17 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     let arguments = command;
     let command = plain(&command.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
     let command: String = command.chars().take(4096).collect();
-    // And as it was given, argument by argument, each ended by a zero byte: what starts it again exactly.
-    let argv: Vec<u8> = arguments.iter().flat_map(|a| a.as_encoded_bytes().iter().copied().chain([0])).collect();
+    // And as it was given, word for word, in the shell's own quoting (each argument between
+    // single quotes, one in it written `'\\''`): what `eval` gives back exactly, in any sh.
+    let mut argv: Vec<u8> = Vec::new();
+    for argument in arguments {
+        argv.extend_from_slice(if argv.is_empty() { b"'" } else { b" '" });
+        for byte in argument.as_encoded_bytes() {
+            argv.extend_from_slice(if *byte == b'\'' { b"'\\''" } else { std::slice::from_ref(byte) });
+        }
+        argv.push(b'\'');
+    }
+    argv.push(b'\n');
     let mut holder = Holder {
         term: Term::new(usize::from(cols), usize::from(rows)),
         master: Some(master),

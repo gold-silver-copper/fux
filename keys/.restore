@@ -4,7 +4,7 @@
 # (`fux` on PATH; FUXN_DIR set if you set it for the viewer). The session
 # directory must be one that outlasts a reboot: see the README, "After a reboot".
 # Each pane is started under its name, with its program and arguments as they
-# were (`argv`: one argument after another, each ended by a zero byte) and in
+# were (`argv`: each argument in single quotes, as sh reads them back) and in
 # the directory its program last said it was in (`cwd`, if it said). What it
 # had printed is kept beside it in `before`: a start in place begins the
 # pane's files anew. The layouts are files, and are as they were.
@@ -16,7 +16,7 @@ for p in "$D"/*/*/; do
   cat "$p/history.1" "$p/history" "$p/screen" > "$p/before.new" 2>/dev/null
   dir=
   IFS= read -r dir 2>/dev/null < "$p/cwd"
-  if (cd "${dir:-$HOME}" 2>/dev/null || cd; xargs -0 fux start "${p#"$D"/}" -- < "$p/argv") > /dev/null 2>&1
+  if (cd "${dir:-$HOME}" 2>/dev/null || cd; eval "set -- $(cat "$p/argv")"; fux start "${p#"$D"/}" -- "$@") > /dev/null 2>&1
   then mv "$p/before.new" "$p/before"; echo "started ${p#"$D"/} again"
   else rm -f "$p/before.new"
   fi

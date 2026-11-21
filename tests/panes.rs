@@ -170,7 +170,7 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     // Two panes with text: one whose line has scrolled into history, one still running. And an
     // editor for the test, which notes the line it is to open at and the line it finds there.
     let old = session.start("w/old", &["sh", "-c", "echo 'a needle in old'; seq 1 60; exec sleep 600"]);
-    let argued = ["sh", "-c", "echo \"$1|$2\"; echo 'the needle again'; sleep 600", "sh", "two words", ""];
+    let argued = ["sh", "-c", "echo \"$1|$2|$#\"; echo 'the needle again'; sleep 600", "sh", "two words", ""];
     let other = session.start("v/other", &argued);
     until("both have printed", || {
         read(&old.join("history")).contains("needle") && read(&other.join("screen")).contains("again")
@@ -201,14 +201,14 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     // A pane whose program has ended is started again by `.restore`: the same arguments, each
     // as it was, and what it had printed kept beside it. The one that runs is left alone.
     let (was, runs) = (read(&other.join("argv")), read(&old.join("status")));
-    assert_eq!(was, "sh\0-c\0echo \"$1|$2\"; echo 'the needle again'; sleep 600\0sh\0two words\0\0");
+    assert_eq!(was, "'sh' '-c' 'echo \"$1|$2|$#\"; echo '\\''the needle again'\\''; sleep 600' 'sh' 'two words' ''\n");
     fs::write(other.join("ctl"), "kill\n").unwrap();
     assert!(session.fux().arg("wait").arg(&other).status().unwrap().success());
     let restored =
         Command::new("sh").arg(keys.join(".restore")).env("PATH", &path).env("FUXN_DIR", &session.0).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started v/other again\n");
     until("it runs again", || {
-        fact(&other, "state") == "running" && read(&other.join("screen")).starts_with("two words|\n")
+        fact(&other, "state") == "running" && read(&other.join("screen")).starts_with("two words||2\n")
     });
     assert!(read(&other.join("before")).contains("the needle again") && read(&other.join("argv")) == was);
     assert_eq!(read(&old.join("status")), runs);
