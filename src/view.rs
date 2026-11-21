@@ -1097,13 +1097,8 @@ impl View {
             // workspace, its tabs, the keys typed so far), and above it, in
             // the corner, the keys that can follow.
             let (bar, panel) = (colour(250, Some(236), 0), colour(255, Some(238), 0));
-            let typed: Vec<String> = directory
-                .strip_prefix(&self.keys)
-                .into_iter()
-                .flat_map(|path| path.iter())
-                .map(|key| key.to_string_lossy().into_owned())
-                .collect();
-            let typed = typed.join(" ");
+            let path = directory.strip_prefix(&self.keys).unwrap_or(Path::new(""));
+            let typed = path.iter().map(|key| key.to_string_lossy()).collect::<Vec<_>>().join(" ");
             let mut left = cells(&format!(" {} ", self.workspace), colour(250, Some(236), BOLD));
             let labels = layout.tabs.iter().enumerate().map(|(i, tab)| {
                 // (A tab with a notice not seen yet has a mark.)
