@@ -163,10 +163,6 @@ fn start(args: &[OsString]) -> Result<(), String> {
             "{name}: a name is letters, digits, '.', '_' and '-', at most 64, not starting with a dot, and none of: {taken}"
         ));
     }
-    let program: Vec<OsString> = match program {
-        [] => vec![std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into())],
-        program => program.to_vec(),
-    };
     let session = session()?;
     let workspace = session.join(workspace);
     let fail = |path: &Path, e: std::io::Error| format!("{}: {e}", path.display());
@@ -190,7 +186,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let lock = std::env::set_current_dir(&dir).and_then(|()| File::open(".")).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
-        Ok(()) => launch(&session, &dir, &cwd, lock, &program),
+        Ok(()) => launch(&session, &dir, &cwd, lock, program),
         Err(_) => Err("a holder already keeps this pane".into()),
     };
     started.map_err(|why| format!("{}: {why}", dir.display()))?;
@@ -203,6 +199,7 @@ fn launch(session: &Path, dir: &Path, cwd: &Path, lock: File, program: &[OsStrin
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let mut holder = Command::new(me);
     holder.arg("hold").arg(cwd).args(program);
+    holder.args(program.is_empty().then(|| std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into())));
     // The pane's directory by the name it was started under (the holder's own working directory may read
     // otherwise, through a link), and the session, if it was named: whole paths, as the program may go anywhere.
     holder.env(name!("PANE"), dir).envs(var(name!("DIR")).map(|_| (name!("DIR"), session)));
