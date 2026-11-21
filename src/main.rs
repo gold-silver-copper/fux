@@ -105,10 +105,6 @@ pub fn replace(name: impl AsRef<Path>, content: &[u8]) -> std::io::Result<()> {
     fs::rename(&new, name)
 }
 
-fn make_dir(path: &Path) -> std::io::Result<()> {
-    DirBuilder::new().mode(0o700).create(path)
-}
-
 /// A line on standard output. A reader that has left is no reason for a word; any other failure is.
 fn say(line: &[u8]) -> Result<(), String> {
     let mut out = std::io::stdout();
@@ -167,7 +163,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let claim =
         File::open(&workspace).and_then(|claim| claim.lock().map(|()| claim)).map_err(|e| fail(&workspace, e))?;
     // Making the directory is what claims a new name.
-    let named = |dir: PathBuf| match make_dir(&dir) {
+    let named = |dir: PathBuf| match DirBuilder::new().mode(0o700).create(&dir) {
         Ok(()) => Ok(Some((dir, true))),
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(fail(&dir, e)),
         Err(_) if pane.is_empty() => Ok(None),
