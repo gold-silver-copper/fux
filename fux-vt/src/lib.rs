@@ -452,9 +452,11 @@ impl Screen {
     /// The screen a `styled` text says, `cols` wide and of as many rows as it has lines (a reader's
     /// side of `Term::styled`): cells and looks, and none of what `set_words` and `set_link` say.
     pub fn read(styled: &str, cols: usize) -> Screen {
-        // (One column more than the pane is said to have, where there is room for one: there a
-        // line that is longer ends, and is cut off.)
+        // (One column more than the pane is said to have, also past the widest a terminal may be:
+        // there a line that is longer ends, and is cut off.)
         let mut term = Term::new((cols + 1).min(SIZE_MAX), styled.lines().count());
+        term.screen.cols = cols.min(SIZE_MAX) + 1;
+        term.screen.grid.iter_mut().for_each(|row| row.resize(term.screen.cols, Cell::blank(Style::default())));
         term.feed(b"\x1b[?7l");
         for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
             // The rows are text and colours, as the holder writes them: anything else in a
@@ -474,9 +476,7 @@ impl Screen {
             }
             text.push_str(rest);
             term.feed(format!("\x1b[{};1H\x1b[m{text}", row + 1).as_bytes());
-            if cols < term.screen.cols {
-                term.feed(format!("\x1b[{};{}H\x1b[m\x1b[K", row + 1, cols + 1).as_bytes());
-            }
+            term.feed(format!("\x1b[{};{}H\x1b[m\x1b[K", row + 1, cols + 1).as_bytes());
         }
         term.screen
     }

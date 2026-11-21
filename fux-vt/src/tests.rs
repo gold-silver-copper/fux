@@ -1457,3 +1457,13 @@ fn a_sequence_with_an_intermediate_byte_too_many_is_none_of_the_ones_known() {
     assert_eq!((term.peek().reply.as_slice(), term.screen().cursor_shape), (&b"\x1b[?25;1$y"[..], 2));
     assert_eq!(term.plain(), "EEEE\nEEEE\n");
 }
+
+#[test]
+fn a_styled_row_longer_than_the_widest_pane_is_cut_off_as_at_any_width() {
+    for cols in [3, 499, 500, 9999] {
+        let wide = cols.min(500);
+        let screen = Screen::read(&format!("{}Z\n", "a".repeat(wide)), cols);
+        assert_eq!(screen.cell_at(0, wide - 1).map(|cell| cell.ch), Some('a'), "{cols}");
+        assert_eq!(screen.cell_at(0, wide).map(|cell| cell.ch), Some(' '), "{cols}");
+    }
+}
