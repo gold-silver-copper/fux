@@ -2093,3 +2093,24 @@ fn a_restore_that_failed_keeps_the_text_and_a_pane_started_again_is_told_the_key
     assert!(!read(&lost.join("history")).contains("\n17\n"), "the start did not get as far as the test means");
     assert!(read(&lost.join("before")).contains("\n17\n"), "before: {:?}", read(&lost.join("before")));
 }
+
+#[test]
+fn a_paste_ends_marked_as_it_began_whatever_the_program_asks_by_then() {
+    // A program that asks for pastes marked, reads the start mark and one letter (seven bytes), asks no
+    // more and reads on: the paste began marked, and its end mark follows the rest of it.
+    let (outer, inner) = (Session::new("p2outer"), Session::new("p2inner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let reads =
+        "stty raw -echo; printf '\\033[?2004h'; dd bs=1 count=7 >/dev/null 2>&1; printf '\\033[?2004l'; exec cat -v";
+    let pane = inner.start("a", &["sh", "-c", reads]);
+    until("the program asks for pastes marked", || fact(&pane, "modes").contains("paste"));
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
+    fs::write(view.join("in"), "\x1b[200~a").unwrap();
+    until("the program asks for them no more", || !fact(&pane, "modes").contains("paste"));
+    fs::write(view.join("in"), "b\x1b[201~Z").unwrap();
+    until("the rest arrives", || read(&pane.join("screen")).contains('Z'));
+    assert_eq!(read(&pane.join("screen")).trim_end(), "b^[[201~Z", "a paste that began marked did not end marked");
+}

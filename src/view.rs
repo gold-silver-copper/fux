@@ -187,7 +187,7 @@ struct View {
     typed: Vec<u8>,
     /// When a key last went to a pane: its echo is looked for often for a moment after.
     keyed: Option<Instant>,
-    pasting: bool,
+    pasting: Option<bool>,
     scripts: Vec<Child>,
     /// The script the keys wait for, and when it started; `scripts` has the others that still run.
     waiting: Option<(Child, Instant)>,
@@ -273,7 +273,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         carry: Vec::new(),
         typed: Vec::new(),
         keyed: None,
-        pasting: false,
+        pasting: None,
         scripts: Vec::new(),
         waiting: None,
         ctl_path,
@@ -419,12 +419,9 @@ impl View {
         // of it now is looked at.)
         let has = self.focus.as_ref().map(|name| self.session.join(&self.workspace).join(name));
         self.leave(has.as_deref());
-        // (Whether its program wants a paste marked is read now, as who it is is for a key: a frame
-        // may be a while behind, when the terminal reads slowly.)
-        let wants_paste = has.as_deref().is_some_and(|pane| asks(pane).paste);
         let mut at = 0;
         while let Some(rest) = bytes.get(at..).filter(|rest| !rest.is_empty()) {
-            if self.pasting {
+            if let Some(marked) = self.pasting {
                 // Pasted text is never keys: it goes to the pane as it is, up to the end mark.
                 const END: &[u8] = b"\x1b[201~";
                 let end = rest.windows(END.len()).position(|window| window == END);
@@ -436,8 +433,8 @@ impl View {
                 if end.is_none() {
                     break;
                 }
-                self.pasting = false;
-                self.typed.extend_from_slice(if wants_paste { END } else { &[] });
+                self.pasting = None;
+                self.typed.extend_from_slice(if marked { END } else { &[] });
                 at += END.len();
                 continue;
             }
@@ -449,8 +446,10 @@ impl View {
             at += length;
             match name.split_once(':').unwrap_or((&name, "")) {
                 ("paste-start", _) => {
-                    self.pasting = true;
-                    self.typed.extend_from_slice(if wants_paste { raw } else { &[] });
+                    // (Whether its program wants a paste marked is read when the paste begins, and kept: it ends as it began.)
+                    let marked = has.as_deref().is_some_and(|pane| asks(pane).paste);
+                    self.pasting = Some(marked);
+                    self.typed.extend_from_slice(if marked { raw } else { &[] });
                 }
                 ("mouse", report) => self.mouse(report),
                 ("terminal", told) => {
