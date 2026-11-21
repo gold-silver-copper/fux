@@ -380,8 +380,8 @@ impl View {
             if self.colours.as_ref().is_some_and(|(since, _)| since.elapsed() > Duration::from_secs(10)) {
                 self.told();
             }
-            if self.waiting.is_none() && !self.carry.is_empty() {
-                // When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
+            if self.waiting.is_none() && !self.carry.is_empty() && !self.quit {
+                // (Not after `quit`.) When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
                 self.keys(heard.elapsed() >= ESCAPE_WAIT);
             }
         }

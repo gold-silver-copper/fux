@@ -1646,6 +1646,29 @@ fn a_workspace_whose_layout_is_a_fifo_is_drawn_and_left_all_the_same() {
 }
 
 #[test]
+fn keys_typed_after_the_key_that_leaves_are_not_typed_into_the_pane() {
+    // The key to leave and a letter after it, in one read. The key's script stops the viewer,
+    // says `quit` and ends, and the viewer goes on a moment later: it finds its script ended and
+    // `quit` said at once. It leaves, and the letter is nobody's.
+    let (outer, inner) = (Session::new("qouter"), Session::new("qinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    let leaves = "#!/bin/sh\nkill -STOP $PPID\n(sleep 0.3; kill -CONT $PPID) > /dev/null 2>&1 &\necho quit\n";
+    fs::write(keys.join("C-b/d"), leaves).unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("C-b/d")).status().unwrap();
+    let one = inner.start("one", &["cat"]);
+    fs::write(one.join("in"), "shown\n").unwrap();
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the pane is shown", || read(&view.join("screen")).contains("shown\nshown"));
+    fs::write(view.join("in"), "\x02dZ").unwrap();
+    until("the viewer has left", || fact(&view, "state").starts_with("exited"));
+    fs::write(one.join("in"), "END\n").unwrap();
+    until("the pane has what was typed", || read(&one.join("screen")).contains("END\n"));
+    assert_eq!(read(&one.join("screen")).trim_end(), "shown\nshown\nEND\nEND");
+}
+
+#[test]
 fn a_clipboard_set_while_a_workspace_with_no_pane_was_shown_is_not_sent_on_the_way_back() {
     // A pane that copies each word typed to it (OSC 52), shown by a viewer whose keys have no
     // `.empty`: a workspace with no pane stays empty.
