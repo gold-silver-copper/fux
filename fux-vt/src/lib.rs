@@ -820,37 +820,26 @@ impl Term {
     /// number as a mark has it; COL counts cells from the start of that line's first row on the
     /// screen, a whole row for each row before; LEN is how many cells, in reading order.
     pub fn links(&self) -> String {
-        let (mut out, mut line, mut base) = (String::new(), self.top(), 0);
-        let mut run: Option<(usize, usize, usize, u16)> = None;
         // (A list that would be longer than a reader reads ends before the run that makes it so.)
-        let mut full = false;
-        let mut put = |(line, start, length, link): (usize, usize, usize, u16)| {
-            let address = usize::from(link).checked_sub(1).and_then(|at| self.links.get(at));
-            let record = format!("{line} {start} {length} {}\n", address.map_or("", String::as_str));
-            full |= out.len() + record.len() > LINKS_LIST_MAX;
-            if address.is_some_and(|address| !address.is_empty()) && !full {
-                out.push_str(&record);
-            }
-        };
+        let (mut out, mut full) = (String::new(), false);
         // (Of the screen shown: a program on the alternate screen has links too. Its lines are
         // numbered on from `top` as the main screen's are, though none of them goes to history.)
-        for (y, row) in self.screen.grid.iter().enumerate() {
-            (line, base) = if y > 0 && !continues(row) { (line + 1, 0) } else { (line, base) };
-            for (x, cell) in row.iter().enumerate() {
-                let at = base + x;
-                run = match run {
-                    Some((l, start, len, link)) if l == line && start + len == at && link == cell.link => {
-                        Some((l, start, len + 1, link))
+        for (line, rows) in (self.top()..).zip(self.screen.grid.chunk_by(|_, next| continues(next))) {
+            // A run is a line's cells of one link, one after the other: no link after the line's
+            // last cell ends the run that reaches it.
+            let (mut start, mut open) = (0, 0);
+            for (at, link) in rows.iter().flatten().map(|cell| cell.link).chain([0]).enumerate() {
+                if link != open && open != 0 {
+                    let address = self.links.get(usize::from(open) - 1);
+                    let record = format!("{line} {start} {} {}\n", at - start, address.map_or("", String::as_str));
+                    full |= out.len() + record.len() > LINKS_LIST_MAX;
+                    if address.is_some_and(|address| !address.is_empty()) && !full {
+                        out.push_str(&record);
                     }
-                    ended => {
-                        ended.into_iter().for_each(&mut put);
-                        (cell.link != 0).then_some((line, at, 1, cell.link))
-                    }
-                };
+                }
+                (start, open) = if link == open { (start, open) } else { (at, link) };
             }
-            base += row.len();
         }
-        run.into_iter().for_each(&mut put);
         out
     }
 
