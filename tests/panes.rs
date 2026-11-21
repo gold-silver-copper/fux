@@ -476,6 +476,30 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
 }
 
 #[test]
+fn what_is_written_to_in_after_a_kill_goes_nowhere_and_its_writer_does_not_wait() {
+    // A program that ignores the hangup lives on with no terminal. What is then written to `in`
+    // is read and dropped: more than a FIFO holds is written at once, by a process of its own.
+    let session = Session::new("afterkill");
+    let pane = session.start("a", &["sh", "-c", "trap '' HUP; echo r''eady; exec sleep 20"]);
+    until("the program ignores the hangup", || read(&pane.join("screen")).contains("ready"));
+    fs::write(pane.join("ctl"), "kill\n").unwrap();
+    until("the pty is closed", || fact(&pane, "state") == "hungup");
+    let mut writer =
+        Command::new("sh").args(["-c", "head -c 100000 /dev/zero > in"]).current_dir(&pane).spawn().unwrap();
+    let start = Instant::now();
+    let done = loop {
+        match writer.try_wait().unwrap() {
+            None if start.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(20)),
+            done => break done,
+        }
+    };
+    let _ = writer.kill();
+    let _ = writer.wait();
+    assert!(done.is_some_and(|status| status.success()), "100,000 bytes to `in` after kill: {done:?} after 5 seconds");
+    assert_eq!(fact(&pane, "state"), "hungup");
+}
+
+#[test]
 fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way() {
     let session = Session::new("resize");
     let lines: Vec<String> = (1..=8).map(|n| format!("line{n}-{}", "abcdefghij".repeat(n % 4 + 1))).collect();
