@@ -253,9 +253,8 @@ fn run(args: &[OsString]) -> Result<(), String> {
             view::view(session()?, workspace, keys.ok_or(concat!("no keys directory: set ", name!("KEYS")))?)
         }
         Some("layout") => {
-            let words: Vec<String> = rest.iter().map(|word| word.to_string_lossy().into_owned()).collect();
-            let layout =
-                layout::command(&session()?.join(workspace()?), &words.iter().map(String::as_str).collect::<Vec<_>>())?;
+            let words = rest.iter().map(|w| w.to_str()).collect::<Option<Vec<_>>>().ok_or("layout edit is not text")?;
+            let layout = layout::command(&session()?.join(workspace()?), &words)?;
             if words.is_empty() { say(layout.print().trim_end().as_bytes()) } else { Ok(()) }
         }
         Some("hold") => match rest.split_first() {
