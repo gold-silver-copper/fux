@@ -13,12 +13,12 @@ D=$(fux dir) && export FUXN_DIR="$D" FUXN_KEYS="${FUXN_KEYS:-$(cd "$(dirname "$0
 for p in "$D"/*/*/; do
   p=${p%/}
   command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)
-  [ -n "$command" ] || continue
-  for f in history.1 history screen; do [ ! -e "$p/$f" ] || cat "$p/$f" || { rm -f "$p/before.$$"; continue 2; }; done > "$p/before.$$"
+  [ -n "$command" ]
+  for f in history.1 history screen; do [ ! -e "$p/$f" ] || cat "$p/$f" || { rm -f "$p/before.$$"; continue 2; }; done > "$p/before.$$" || continue
   dir=
   IFS= read -r dir 2>/dev/null < "$p/cwd"
-  if (cd "${dir:-$HOME}" 2>/dev/null || cd; set -f; set -- $command; fux start "${p#"$D"/}" -- "$@") > /dev/null 2>&1
+  if said=$(cd "${dir:-$HOME}" 2>/dev/null || cd; set -f; set -- $command; fux start "${p#"$D"/}" -- "$@" 2>&1 > /dev/null)
   then mv "$p/before.$$" "$p/before" && echo "started ${p#"$D"/} again"
-  else [ "$p/before.$$" -nt "$p/log" ] && rm -f "$p/before.$$" || mv "$p/before.$$" "$p/before"
+  else case $said in *'a holder already keeps this pane') false ;; esac && [ ! "$p/before.$$" -nt "$p/log" ] && mv "$p/before.$$" "$p/before" || rm -f "$p/before.$$"
   fi
 done

@@ -2261,6 +2261,26 @@ fn a_restore_that_cannot_copy_what_a_pane_printed_does_not_start_it_again() {
 }
 
 #[test]
+fn a_restore_leaves_what_a_pane_that_is_alive_has_kept_as_it_is() {
+    // A pane that runs, with a `before` of its own and a `log` of a later time than the copy's (a holder
+    // that logged a line since has one too): the start is refused, and `before` is as it was.
+    let session = Session::new("leftalone");
+    let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let pane = session.start("w/alive", &["sleep", "600"]);
+    fs::write(pane.join("before"), "saved from earlier\n").unwrap();
+    assert!(Command::new("touch").args(["-t", "203701010000"]).arg(pane.join("log")).status().unwrap().success());
+    let runs = read(&pane.join("status"));
+    let mut restore = Command::new("sh");
+    restore.arg(keys.join(".restore")).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+    restore.env("FUXN_DIR", &session.0).env_remove("FUXN_KEYS").env_remove("FUXN_PANE").env_remove("FUXN_WS");
+    assert!(restore.output().unwrap().stdout.is_empty());
+    assert_eq!(read(&pane.join("before")), "saved from earlier\n");
+    assert_eq!(read(&pane.join("status")), runs);
+    assert!(session.fux().arg("start").arg("w/alive").output().is_ok_and(|o| !o.status.success()), "it still runs");
+}
+
+#[test]
 fn the_focus_goes_to_the_pane_that_is_beside_it_in_the_terminal_a_key_is_pressed_in() {
     // Of `row(col(a b:99) col(c d:9999))` in 80 columns and 24 rows, a and c have the first row
     // each: c is the pane to the right of a, and a key's script is told the terminal's size.
