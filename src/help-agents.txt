@@ -99,11 +99,11 @@ cursor  ROW COL shown|hidden SHAPE, from 0, e.g. `2 8 shown 0`: row 2 is line 3 
 modes   words, or an empty line: paste, appcursor, keypad, focus, mouseN, mousesgr, keysN
 state   running | hungup | exited CODE | killed SIGNAL (lost ERROR: the holder could not wait)
 status  three lines: holder N / pid N (the program's) / command ...
-screen.main, screen.main.styled   only while a full-screen program has the alternate
-        screen: the main screen it covers, as screen and screen.styled would have it
+screen.main, screen.main.styled   while a full-screen program has the alternate screen
+        (kept if the pane ends under it): the main screen it covers, as screen and screen.styled would have it
 lines   two lines: the number, from 0, of the screen's first row among all lines the pane
         printed; then the screen rows (from 0) that continue the row above, `1 2` being one
-        line in 3 rows (empty if none). `{ read -r top; read -r wraps; } < lines`. While
+        line in 3 rows (empty if none; 0: row 0 continues history's last line). `{ read -r top; read -r wraps; } < lines`. While
         screen.main is there a third: its rows that continue (the first line counts its
         lines, the second is of `screen`)
 title   the window title the program set (absent until it does)
