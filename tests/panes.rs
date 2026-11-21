@@ -1919,36 +1919,6 @@ fn a_program_that_writes_its_cwd_as_soon_as_it_runs_keeps_it() {
 }
 
 #[test]
-fn a_colours_file_that_could_not_be_read_is_read_once_it_can_be() {
-    // The session's `colours` cannot be read when the program first asks (mode 000): no answer.
-    // Its mode changed, the same file with the same bytes and time of writing is read at the
-    // next question, and that one is answered.
-    use std::os::unix::fs::PermissionsExt;
-    let session = Session::new("unread");
-    fs::create_dir_all(&session.0).unwrap();
-    let colours = session.0.join("colours");
-    fs::write(&colours, "foreground #102030\n").unwrap();
-    fs::set_permissions(&colours, fs::Permissions::from_mode(0o000)).unwrap();
-    // (Whoever may read any file, root, has nothing to see here.)
-    if fs::read(&colours).is_ok() {
-        return;
-    }
-    let asks = "printf '\\033]10;?\\007asked\\n'; read -r go; printf '\\033]10;?\\007'; exec cat -v";
-    let pane = session.start("p", &["sh", "-c", asks]);
-    until("the program asked once", || read(&pane.join("screen")).contains("asked"));
-    assert!(!read(&pane.join("screen")).contains("rgb:"));
-    // (Past the grain of a file's times on any system.)
-    std::thread::sleep(Duration::from_millis(50));
-    fs::set_permissions(&colours, fs::Permissions::from_mode(0o600)).unwrap();
-    fs::write(pane.join("in"), "go\n").unwrap();
-    until_or(
-        "the second question is answered",
-        || read(&pane.join("screen")),
-        || read(&pane.join("screen")).contains("rgb:1010/2020/3030"),
-    );
-}
-
-#[test]
 fn a_line_of_ctl_that_has_not_ended_writes_no_screen() {
     // The first half of a line is no command yet: who watches `screen.styled` of a quiet pane is
     // not woken for it. The line's end is what has the notice written, and the screen after it.

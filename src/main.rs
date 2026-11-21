@@ -93,10 +93,10 @@ pub fn plain(text: &str) -> String {
     text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
 }
 
-/// What tells one writing of a file from the next: its number, when it last changed (bytes or mode) and its length.
+/// What tells one writing of a file from the next: its number, its time and its length.
 pub type Stamp = Option<(u64, i64, i64, u64)>;
 pub fn stamp(file: fs::Metadata) -> (u64, i64, i64, u64) {
-    (file.ino(), file.ctime(), file.ctime_nsec(), file.len())
+    (file.ino(), file.mtime(), file.mtime_nsec(), file.len())
 }
 
 /// Replaces a file in one step, so a reader sees the old one or the new one.
