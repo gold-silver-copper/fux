@@ -635,11 +635,11 @@ impl Term {
     /// `styled` gets the same row with its looks, and a line's end wherever `out` gets one;
     /// `joiner` is what the open line's last character is to this row's first, `own` the colours
     /// the program set, in which the row is told as it is now: history is not told again later.
-    /// With 4 MiB waiting to be written (`waiting`, and what `out` has) the row is not kept, which
-    /// is what false says: it ends the line it would have gone on, in both texts.
-    fn row_history(row: &[Cell], goes_on: bool, own: &Own, tail: &mut Tail, waiting: usize, out: &mut Out) -> bool {
+    /// With 4 MiB waiting to be written in `out` the row is not kept, which is what false says:
+    /// it ends the line it would have gone on, in both texts.
+    fn row_history(row: &[Cell], goes_on: bool, own: &Own, tail: &mut Tail, out: &mut Out) -> bool {
         let (out, styled) = (&mut out.history, &mut out.styled);
-        let kept = waiting + out.len().max(styled.len()) < HISTORY_PENDING_MAX;
+        let kept = out.len().max(styled.len()) < HISTORY_PENDING_MAX;
         if tail.open.is_some() && !(kept && continues(row)) {
             tail.end(out, styled);
         }
@@ -1093,7 +1093,7 @@ impl Term {
             let used = row.iter().rposition(|cell| *cell != blank).map_or(0, |last| last + 1);
             if kept {
                 let text = row.get(..used.max(1)).filter(|_| cut && !goes_on).unwrap_or(row);
-                full |= !Term::row_history(text, goes_on, &self.own, &mut self.tail, 0, &mut self.out);
+                full |= !Term::row_history(text, goes_on, &self.own, &mut self.tail, &mut self.out);
             }
             row.iter_mut().take(used).for_each(|cell| *cell = blank);
         }
@@ -1402,18 +1402,23 @@ impl Term {
             wrapped.pop();
         }
         let up = wrapped.len().saturating_sub(rows);
-        // History is given the rows above the screen again (what it had of them is taken back);
-        // the last of them, a screen's worth at most, are kept to come back another time.
+        // History is given the rows above the screen again. First what it had of them is taken
+        // back (here what waits still, the rest by whoever took it) and it ends where it did before
+        // them. The last of the rows, a screen's worth at most, are kept to come back another time.
+        let (back, was) = lent.as_ref().map_or(([0, 0], self.tail), |lent| ([lent.bytes, lent.styled], lent.before));
+        let given = [(&mut self.out.history, &mut self.out.unhistory), (&mut self.out.styled, &mut self.out.unstyled)];
+        for ((given, taken), back) in given.into_iter().zip(back) {
+            *taken += back.saturating_sub(given.len());
+            given.truncate(given.floor_char_boundary(given.len().saturating_sub(back)));
+        }
+        self.tail = was;
         let keep = up.saturating_sub(ABOVE_MAX / cols);
-        let mut tail = lent.as_ref().map_or(self.tail, |lent| lent.before);
-        let (mut given, mut before, mut styled_before, mut was) = (Out::default(), 0, 0, tail);
-        let (waiting, mut full) = (self.out.history.len().max(self.out.styled.len()), false);
+        let (mut before, mut full) = ((0, 0, self.tail), false);
         for (y, (row, goes_on)) in with_next(&wrapped).take(up).enumerate() {
             if y == keep {
-                (before, styled_before, was) = (given.history.len(), given.styled.len(), tail);
+                before = (self.out.history.len(), self.out.styled.len(), self.tail);
             }
-            // (The same bound as for rows that scroll off, with what waits from before.)
-            full |= !Term::row_history(row, goes_on, &self.own, &mut tail, waiting, &mut given);
+            full |= !Term::row_history(row, goes_on, &self.own, &mut self.tail, &mut self.out);
         }
         let rows_lent: Vec<Vec<Cell>> = wrapped.drain(..up).skip(keep).collect();
         wrapped.resize(rows, vec![blank; cols]);
@@ -1447,7 +1452,7 @@ impl Term {
         }
         let mut still = other_pictures.clone();
         still.retain(|p| p.row < rows && p.col < cols);
-        // Nothing was changed until here: now the new state takes the old one's place.
+        // Only history was changed until here: now the new screens take the old ones' place.
         let fit = |(row, col): (usize, usize)| (row.saturating_sub(up).min(rows - 1), col);
         let ((row, col), saved_at) = (fit(at(0)), fit(at(1)));
         if let Some(slot) = self.saved.first_mut() {
@@ -1474,22 +1479,12 @@ impl Term {
                 Some(Last { at, cursor: here, ..self.cluster? })
             });
         }
-        // (What history was given of the rows above, and has not yet taken, is taken back here.)
-        let retake = |given: &mut String, taken: &mut usize, back: usize, again: &str| {
-            let waiting = given.len().saturating_sub(back);
-            *taken += back.saturating_sub(given.len());
-            *given = given.get(..waiting).unwrap_or_default().to_string() + again;
-        };
-        let (back, styled_back) = lent.map_or((0, 0), |lent| (lent.bytes, lent.styled));
-        retake(&mut self.out.history, &mut self.out.unhistory, back, &given.history);
-        retake(&mut self.out.styled, &mut self.out.unstyled, styled_back, &given.styled);
         self.lent = (!rows_lent.is_empty()).then(|| Lent {
             rows: rows_lent,
-            bytes: given.history.len() - before,
-            styled: given.styled.len() - styled_before,
-            before: was,
+            bytes: self.out.history.len() - before.0,
+            styled: self.out.styled.len() - before.1,
+            before: before.2,
         });
-        self.tail = tail;
         if full {
             self.refuse(HISTORY_FULL);
         }

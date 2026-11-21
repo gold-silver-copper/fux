@@ -26,7 +26,7 @@ impl Term {
                 before.extend(cells.iter().take(self.screen.cursor.place().1).flat_map(Cell::chars));
             }
             open.joiner = Joiner::default();
-            Term::row_history(cells, goes_on, &self.own, &mut open, 0, &mut all);
+            Term::row_history(cells, goes_on, &self.own, &mut open, &mut all);
         }
         let whole = [&self.screen.grid, &self.other].iter().all(|grid| {
             grid.len() == self.screen.rows
@@ -118,6 +118,11 @@ fn history_waiting_to_be_written_is_bounded_in_both_texts_and_a_row_refused_ends
     // (The rows kept to come back do: what was given of them is taken back, and no more.)
     let sent = term.take(0);
     assert!(term.resize(500, 500) && term.peek().unstyled <= sent.styled.len() && term.plain().starts_with("aaa"));
+    // And what waits of them is counted once: rows of 2.2 MiB that a resize sent there are taken
+    // back and given again by the next, with nothing taken between, and none is refused.
+    let mut term = crate::tests::term(200, 300, &format!("\x1b[48;2;255;255;255m{}", &cells[..cells.len() * 6 / 25]));
+    assert!(term.resize(200, 2) && term.peek().styled.len() > 2 << 20);
+    assert!(term.resize(200, 1) && term.peek().refused.is_empty() && same_lines(&term), "{:?}", term.peek().refused);
 }
 
 #[test]
