@@ -195,30 +195,26 @@ fn tab_of(name: &str) -> Tab {
 }
 
 /// Parses a tree from words, `(` and `)`.
-fn tree(words: &mut std::iter::Peekable<std::vec::IntoIter<String>>, depth: usize) -> Result<(Node, u32), String> {
+fn tree(words: &mut std::iter::Peekable<std::str::SplitWhitespace<'_>>, depth: usize) -> Result<(Node, u32), String> {
     if depth > DEPTH_MAX {
         return Err(format!("rows and columns are nested more than {DEPTH_MAX} deep"));
     }
     let word = words.next().ok_or("a pane's name is missing")?;
-    let node = if (word == "row" || word == "col") && words.next_if(|w| w == "(").is_some() {
+    let (node, share) = if matches!(word, "row" | "col") && words.next_if_eq(&"(").is_some() {
         let mut parts = Vec::new();
-        while words.next_if(|w| w == ")").is_none() {
+        while words.next_if_eq(&")").is_none() {
             parts.push(tree(words, depth + 1)?);
         }
-        Node::Split(word == "row", parts)
+        let share = words.next_if(|w| w.starts_with(':')).map_or("1", |w| w.trim_start_matches(':'));
+        (Node::Split(word == "row", parts), share)
     } else {
-        let name = word.split(':').next().unwrap_or_default();
+        let (name, share) = word.split_once(':').unwrap_or((word, "1"));
         if !is_name(name) {
             return Err(format!("'{word}' is not a pane's name"));
         }
-        Node::Pane(name.into())
+        (Node::Pane(name.into()), share)
     };
-    // A share follows a name as `name:2` and a split as `):2`.
-    let share = match &node {
-        Node::Pane(_) => word.split_once(':').map(|(_, share)| share.to_string()),
-        Node::Split(..) => words.next_if(|w| w.starts_with(':')).map(|w| w.trim_start_matches(':').to_string()),
-    };
-    let share = share.map_or(Some(1), |s| s.parse::<u32>().ok().filter(|n| (1..=10000).contains(n)));
+    let share = share.parse::<u32>().ok().filter(|n| (1..=10000).contains(n));
     Ok((node, share.ok_or("a share is a number from 1 to 10000")?))
 }
 
@@ -226,24 +222,19 @@ pub fn parse(text: &str) -> Result<Layout, String> {
     let mut layout = Layout::default();
     for (number, line) in text.lines().enumerate().filter(|(_, line)| !line.trim().is_empty()) {
         let spaced = line.replace('(', " ( ").replace(')', " ) ");
-        let mut words: Vec<String> = spaced.split_whitespace().map(String::from).collect();
+        let mut words = spaced.split_whitespace().peekable();
         let fail = |why: String| format!("layout line {}: {why}", number + 1);
-        match words.first().map(String::as_str) {
-            Some("*") => layout.current = layout.tabs.len(),
-            Some("-") => layout.before = Some(layout.tabs.len()),
-            _ => words.insert(0, String::new()),
+        if words.next_if_eq(&"*").is_some() {
+            layout.current = layout.tabs.len();
+        } else if words.next_if_eq(&"-").is_some() {
+            layout.before = Some(layout.tabs.len());
         }
-        words.remove(0);
-        let mut words = words.into_iter().peekable();
         let (root, _) = tree(&mut words, 0).map_err(fail)?;
-        let mut tab = Tab { root, focus: String::new() };
+        let mut focus = "";
         for word in words {
-            match word.strip_prefix("focus=") {
-                Some(name) => tab.focus = name.into(),
-                None => return Err(fail(format!("'{word}' is not understood"))),
-            }
+            focus = word.strip_prefix("focus=").ok_or_else(|| fail(format!("'{word}' is not understood")))?;
         }
-        layout.tabs.push(tab);
+        layout.tabs.push(Tab { root, focus: focus.into() });
     }
     Ok(layout)
 }
