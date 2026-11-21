@@ -1034,8 +1034,7 @@ impl Term {
             if let Some(cells) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(start..end)) {
                 cells.fill(blank);
             }
-            let past = |edge: bool, at: usize| if edge { usize::MAX } else { at };
-            self.uncover(row..past(end == cols && row + 1 == self.screen.rows, row + 1), start, past(end == cols, end));
+            self.uncover(row..row + 1, start, if end == cols { usize::MAX } else { end });
         }
         self.screen.cursor.wrap = false;
         // (The marks on what is erased are, in their order, where the erased part begins: what
@@ -1045,7 +1044,7 @@ impl Term {
     }
 
     /// The pictures that lie on cells `from` to `to` of the rows `rows` are written over: they go. (A row erased to its
-    /// end is erased past it, and the last row below it too. Asked first, as in `scroll_pictures`: a flood prints over none.)
+    /// end is erased past it, and the display erased to its end below it too. Asked first, as in `scroll_pictures`: a flood prints over none.)
     fn uncover(&mut self, rows: std::ops::Range<usize>, from: usize, to: usize) {
         let on = |p: &Picture| p.row < rows.end && rows.start < p.row + p.rows && p.col < to && from < p.col + p.cols;
         let Some(_) = self.screen.pictures.iter().position(on) else { return };
@@ -2026,7 +2025,7 @@ impl Term {
             (0, 0, b'd') => self.move_to(n - 1, col),
             (0, 0, b'I' | b'Z') => self.tab(n, last == b'Z'),
             (0 | b'?', 0, b'J' | b'K') => {
-                // (CSI J is the screen's rows, CSI K the cursor's: from the cursor on, up to it, or all.)
+                // (CSI J is the screen's rows, CSI K the cursor's: from the cursor on, up to it, or all; J to the end takes the rows below too.)
                 let (first, end) = if last == b'J' { (0, self.screen.rows - 1) } else { (row, row) };
                 let (first, end) = ((first, 0), (end, self.screen.cols));
                 let (from, to) = match self.arg(0, 0) {
@@ -2036,6 +2035,8 @@ impl Term {
                     _ => return,
                 };
                 self.erase(from, to);
+                let below = if last == b'J' && to == end { usize::MAX } else { 0 };
+                self.uncover(self.screen.rows..below, 0, usize::MAX);
             }
             (0, 0, b'X') => self.erase((row, col), (row, col.saturating_add(n).min(self.screen.cols))),
             (0, 0, b'@' | b'P') => {

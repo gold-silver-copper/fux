@@ -1590,4 +1590,17 @@ fn a_picture_kept_past_the_edge_of_a_smaller_screen_goes_with_what_is_erased_up_
     term.feed(b"\x1b[2J");
     term.resize(10, 6);
     assert_eq!(term.screen.pictures.first().map(|p| p.row), None);
+    // From the last row: the display erased from the cursor on takes it, whatever the cursor's
+    // column (the rows below are whole rows); the line erased leaves it, as the line's end is not the display's.
+    let below = |erase: &str| {
+        let mut term = self::term(10, 6, "\x1b[?1049h\x1b[5;1H\x1bPq~\x1b\\");
+        term.resize(10, 2);
+        term.feed(erase.as_bytes());
+        term.resize(10, 6);
+        term.screen.pictures.first().map(|p| p.row)
+    };
+    assert_eq!(
+        (below("\x1b[2;3H\x1b[J"), below("\x1b[2;1H\x1b[2K"), below("\x1b[2;1H\x1b[99X")),
+        (None, Some(4), Some(4))
+    );
 }
