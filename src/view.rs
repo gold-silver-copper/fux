@@ -858,11 +858,10 @@ impl View {
         // every frame is.)
         let panes: Vec<(Stamp, bool)> = tiles
             .iter()
-            .map(|(name, _)| (directory.join(name), directory.join(name).join("screen.styled")))
-            .map(|(pane, screen)| {
-                let held = sys::open(pane, false)
-                    .is_ok_and(|dir| matches!(dir.try_lock_shared(), Err(fs::TryLockError::WouldBlock)));
-                (fs::metadata(screen).ok().map(stamp), held)
+            .map(|(name, _)| directory.join(name))
+            // (Whether its holder lives is whether anything reads its `in`.)
+            .map(|pane| {
+                (fs::metadata(pane.join("screen.styled")).ok().map(stamp), sys::open(pane.join("in"), true).is_ok())
             })
             .collect();
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());

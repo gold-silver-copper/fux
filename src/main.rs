@@ -34,7 +34,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::time::Duration;
 
 const USAGE: &str = "\
 fux dir                         print the session directory
@@ -173,13 +172,12 @@ fn start(args: &[OsString]) -> Result<(), String> {
     };
     // The lock on the pane's directory is the proof that a holder lives: the
     // kernel drops it when the holder is gone, however it went. We take it
-    // here and the holder inherits it. A `fux wait` or a viewer may hold it for an instant.
+    // here and the holder inherits it.
     let lock = File::open(&dir).map_err(|e| fail(&dir, e))?;
-    let locked = (0..20).any(|i| {
-        std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
-        lock.try_lock().is_ok()
-    });
-    let started = if locked { launch(&dir, lock, &program) } else { Err("a holder already keeps this pane".into()) };
+    let started = match lock.try_lock() {
+        Ok(()) => launch(&dir, lock, &program),
+        Err(_) => Err("a holder already keeps this pane".into()),
+    };
     started.map_err(|why| format!("{}: {why}", dir.display()))?;
     say(dir.as_os_str().as_bytes())
 }
