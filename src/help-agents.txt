@@ -95,7 +95,7 @@ cursor  ROW COL shown|hidden SHAPE, from 0, e.g. `2 8 shown 0`: row 2 is line 3 
         (a fifth word, `#rrggbb`, if the program gave the cursor a colour; a colour a program
         sets for its pane is in `screen.styled` as direct colour: `38;2;R;G;B`, `48;2;R;G;B`
         on every cell of the default background, `58:2::R:G:B` for an underline)
-modes   words, or an empty line: paste, appcursor, keypad, focus, mouseN, mousesgr, keysN
+modes   words, or an empty line: appcursor, keypad, paste, focus, mousesgr, mouseN, keysN
 state   running | hungup | exited CODE | killed SIGNAL (lost ERROR: the holder could not wait)
 status  three lines: holder N / pid N (the program's) / command ...
 screen.main, screen.main.styled   while a full-screen program has the alternate screen
