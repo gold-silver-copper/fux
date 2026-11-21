@@ -1280,9 +1280,13 @@ impl Term {
             self.screen.cursor.wrap = false;
         }
         let (row, col) = (self.screen.cursor.row, self.screen.cursor.col);
-        let (cells, cols) = (1 + usize::from(wide), self.screen.cols);
+        let cells = 1 + usize::from(wide);
         let blank = self.blank();
         let mut under = blank;
+        if insert {
+            // (The marks after it go with their cells, as when CSI @ makes the room.)
+            self.shift(row, col, cells, true, col + 1);
+        }
         if let Some(line) = self.screen.grid.get_mut(row) {
             // What this overwrites or parts may be half of a wide character: blank the other half.
             if line.get(col).is_some_and(|c| c.ch == '\0')
@@ -1291,14 +1295,10 @@ impl Term {
                 *lead = blank;
             }
             let goes_on = col == 0 && continues(line);
-            match line.get_mut(col..) {
-                Some(rest) if insert => rest.rotate_right(cells.min(rest.len())),
-                _ => under = line.get(col).copied().filter(|c| c.ch != '\0').unwrap_or(blank),
-            }
+            under = line.get(col).copied().filter(|c| c.ch != '\0' && !insert).unwrap_or(blank);
             // Written over, a row's first cell still says that the row goes on from the one above (a line
             // editor draws a long line again row by row), and so does one put before it. Erased, it does not.
             new.style.flags |= u16::from(goes_on) * CONT;
-            line.get_mut(col + cells).into_iter().for_each(|moved| moved.style.flags &= !CONT);
             if let Some(half) = line.get_mut(col + cells).filter(|c| c.ch == '\0') {
                 *half = blank;
             }
@@ -1308,11 +1308,6 @@ impl Term {
             if let Some(cell) = line.get_mut(col + 1).filter(|_| wide) {
                 *cell = Cell { ch: '\0', more: ['\0'; MORE], style: new.style, link: new.link };
             }
-        }
-        if insert {
-            // (The marks after it go with their cells, as when CSI @ makes the room.)
-            self.move_marks(|r, c| (r, if r == row && c > col { (c + cells).min(cols) } else { c }));
-            self.tidy(row);
         }
         self.uncover(row, col, col + cells);
         if let Some(last) = &mut self.cluster {
