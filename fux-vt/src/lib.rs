@@ -1001,23 +1001,28 @@ impl Term {
         }
     }
 
-    /// Blanks columns `from..to` of a row.
-    fn erase(&mut self, row: usize, from: usize, to: usize) {
-        let (blank, to) = (self.blank(), to.min(self.screen.cols));
-        if from == 0 && to == self.screen.cols {
-            // A row erased whole is an empty line: the next row does not go on from it.
-            self.parts(row + 1);
-        }
+    /// Blanks the cells from `from` up to `to`, each a row and a column: the rows between whole.
+    fn erase(&mut self, mut from: (usize, usize), mut to: (usize, usize)) {
+        let (blank, cols) = (self.blank(), self.screen.cols);
         // (Half a wide character erased is the character erased: its other cell is of the erased part.)
-        let half = |at: usize| usize::from(self.screen.cell_at(row, at).is_some_and(|cell| cell.ch == '\0'));
-        let (from, to) = (from.saturating_sub(half(from)), to + half(to));
-        if let Some(cells) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(from..to)) {
-            cells.fill(blank);
+        let half = |(row, at)| usize::from(self.screen.cell_at(row, at).is_some_and(|cell| cell.ch == '\0'));
+        (from.1, to.1) = (from.1.saturating_sub(half(from)), to.1 + half(to));
+        for row in from.0..=to.0 {
+            let (start, end) = (if row == from.0 { from.1 } else { 0 }, if row == to.0 { to.1 } else { cols });
+            if start == 0 && end == cols {
+                // A row erased whole is an empty line: the next row does not go on from it.
+                self.parts(row + 1);
+            }
+            if let Some(cells) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(start..end)) {
+                cells.fill(blank);
+            }
+            self.uncover(row, start, end);
         }
         self.screen.cursor.wrap = false;
-        self.uncover(row, from, to);
-        // (Its marks are where the erased part begins; the place right after it is its end too.)
-        self.move_marks(|r, c| (r, if r == row && (from + 1..=to).contains(&c) { from } else { c }));
+        // (The marks on what is erased are, in their order, where the erased part begins: what
+        // they marked is gone, and they mark nothing of what is written there next. The place
+        // right after it is its end too.)
+        self.move_marks(|r, c| if (from..=to).contains(&(r, c)) { from } else { (r, c) });
     }
 
     /// The pictures that lie on cells `from` to `to` of a row are written over: they go.
@@ -2010,36 +2015,24 @@ impl Term {
             (0, 0, b'H' | b'f') => self.move_to(n - 1, self.arg(1, 1) - 1),
             (0, 0, b'd') => self.move_to(n - 1, col),
             (0, 0, b'I' | b'Z') => self.tab(n, last == b'Z'),
-            // (The marks on what is erased are, in their order, where the erased part begins:
-            // what they marked is gone, and they mark nothing of what is written there next.)
-            (0 | b'?', 0, b'J') => match self.arg(0, 0) {
-                0 if (row, col) != (0, 0) => {
-                    self.erase(row, col, self.screen.cols);
-                    (row + 1..self.screen.rows).for_each(|r| self.erase(r, 0, self.screen.cols));
-                    self.move_marks(|r, c| (r.min(row), if (r, c) > (row, col) { col } else { c }));
+            (0 | b'?', 0, b'J' | b'K') => {
+                // (CSI J is the screen's rows, CSI K the cursor's: from the cursor on, up to it, or all.)
+                let (first, end) = if last == b'J' { (0, self.screen.rows - 1) } else { (row, row) };
+                let (first, end) = ((first, 0), (end, self.screen.cols));
+                let (from, to) = match self.arg(0, 0) {
+                    0 => ((row, col), end),
+                    1 => (first, (row, col + 1)),
+                    2 => (first, end),
+                    _ => return,
+                };
+                self.erase(from, to);
+                // A screen that was cleared is not given back what a resize took off its top. (From the
+                // screen's first cell on, or up to its last, is the whole screen, as 2 is.)
+                if last == b'J' && (from, to) == (first, end) && !self.screen.alt {
+                    self.lent = None;
                 }
-                1 if (row + 1, col + 1) != (self.screen.rows, self.screen.cols) => {
-                    (0..row).for_each(|r| self.erase(r, 0, self.screen.cols));
-                    self.erase(row, 0, col + 1);
-                    // (The place right after what was erased is its end too.)
-                    self.move_marks(|r, c| if (r, c) <= (row, col + 1) { (0, 0) } else { (r, c) });
-                }
-                // (From the screen's first cell on, or up to its last, is the whole screen, as 2 is.)
-                0..=2 => {
-                    (0..self.screen.rows).for_each(|r| self.erase(r, 0, self.screen.cols));
-                    self.move_marks(|_, _| (0, 0));
-                    // A screen that was cleared is not given back what a resize took off its top.
-                    self.lent = self.lent.take().filter(|_| self.screen.alt);
-                }
-                _ => {}
-            },
-            (0 | b'?', 0, b'K') => match self.arg(0, 0) {
-                0 => self.erase(row, col, self.screen.cols),
-                1 => self.erase(row, 0, col + 1),
-                2 => self.erase(row, 0, self.screen.cols),
-                _ => {}
-            },
-            (0, 0, b'X') => self.erase(row, col, col.saturating_add(n)),
+            }
+            (0, 0, b'X') => self.erase((row, col), (row, col.saturating_add(n).min(self.screen.cols))),
             (0, 0, b'@' | b'P') => {
                 let goes_on = col == 0 && self.screen.grid.get(row).is_some_and(|cells| continues(cells));
                 self.split(row, col);
