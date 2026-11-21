@@ -52,8 +52,6 @@ struct Holder {
     _slave: File,
     /// The facts as they were written last, each in its file: one is written again only when it changes.
     facts: HashMap<&'static str, Option<Vec<u8>>>,
-    /// The last round of writing failed.
-    failing: bool,
     /// How many rounds of writing had a notice: the number in the `notice` file.
     noticed: u32,
     /// Since when the program has been in the middle of drawing (mode 2026), and how many times
@@ -159,7 +157,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         master: Some(master),
         _slave: slave,
         facts: HashMap::new(),
-        failing: false,
         noticed: 0,
         drawing: None,
         input: Vec::new(),
@@ -229,25 +226,19 @@ impl Holder {
             };
             let left = self.drawing.map_or(Duration::ZERO, |(since, _)| DRAWING_MAX.saturating_sub(since.elapsed()));
             let drawing = !left.is_zero() && self.master.is_some();
-            let every = if quiet && !self.failing { PUBLISH_QUIET } else { PUBLISH_EVERY };
+            let every = if quiet { PUBLISH_QUIET } else { PUBLISH_EVERY };
             // The budget is for what is read between two screens; while a program in the middle
             // of drawing is not shown, for what is read in the time of one.
             if drawing && filled.elapsed() >= PUBLISH_EVERY {
                 (budget, filled) = (READ_BUDGET, Instant::now());
             }
             if since >= every && dirty && !drawing {
-                // What could not be written is tried again in the next round (and said once).
-                let written = self.publish();
-                match &written {
-                    // (A file that is not there means the pane is gone only if its `in` is.)
-                    Err(e) if e.kind() == ErrorKind::NotFound && fs::symlink_metadata("in").is_err() => {
-                        return Ok(());
-                    }
-                    Err(e) if !self.failing => self.log(&format!("cannot write the pane's files: {e}")),
-                    _ => {}
+                // What could not be written waits, or is still changed: the next round writes it,
+                // which the program's next output, a command or its end brings; no timer does.
+                if let Err(e) = self.publish() {
+                    self.log(&format!("cannot write the pane's files: {e}"));
                 }
-                self.failing = written.is_err();
-                (dirty, published) = (self.failing, Instant::now());
+                (dirty, published) = (false, Instant::now());
                 (budget, filled) = (READ_BUDGET, published);
             }
             // The directory is the pane: when it is gone, so is this.
