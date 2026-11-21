@@ -21,20 +21,16 @@ if [ "$1" = --in ]; then
   # that failed first waits for Enter, so that what it said can be read.
   f=$2 n=$3
   shift 3
-  # (A file that could not be moved there is removed by its name when the editor
-  # ends; one that is there is not: the pane may have another name by then, and
-  # this name be another pane's.)
-  if mv "$f" "$FUXN_PANE/text" 2>/dev/null; then f=$FUXN_PANE/text own=; else own=$f; fi
+  # (A file that cannot be moved there stays where it is: mv has said why.)
+  mv "$f" "$FUXN_PANE/text" || { echo "the file stays where it is: Enter closes this"; read -r _; exit; }
+  f=$FUXN_PANE/text
   for word do
     shift
     put "$word" %l "$n"
     put "$word" %f "$f"
     set -- "$@" "$word"
   done
-  "$@"
-  code=$?
-  [ -z "$own" ] || rm -f "$own"
-  [ "$code" -eq 0 ] || { echo "the editor ended with $code: Enter closes this"; read -r _; }
+  "$@" || { echo "the editor ended with $?: Enter closes this"; read -r _; }
   exit 0
 fi
 f=$1 n=${2:-1}

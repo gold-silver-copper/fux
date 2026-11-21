@@ -13,8 +13,9 @@ if [ "$1" = --tab ]; then
 fi
 list=$1; shift
 # (The list is in this pane's own folder from here on: it goes with the pane however that is closed.)
-# (One that could not be moved there is removed by its name at the end.)
-if mv "$list" "$FUXN_PANE/list" 2>/dev/null; then list=$FUXN_PANE/list; else trap 'rm -f "$list"' EXIT; fi
+# (One that cannot be moved there stays where it is: mv has said why.)
+mv "$list" "$FUXN_PANE/list" || { echo "the list stays where it is: Enter closes this"; read -r _; exit; }
+list=$FUXN_PANE/list
 finder=
 for f in fzf sk fzy; do command -v "$f" >/dev/null 2>&1 && { finder=$f; break; }; done
 if [ -n "$finder" ]; then
