@@ -88,15 +88,16 @@ in `FUXN_WS`.
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes, and not there while the program has set none, or an empty one |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
 | `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself: `pwd > "$FUXN_PANE/cwd"` |
-| `notice` | what was last to be noticed: a number that grows each time one is written (several within one round of writing count as one), then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
+| `notice` | what was last to be noticed: a number that grows with each round of writing that had one, then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture that is too large, history it could not write); stops at 64 KiB |
 
 **One fact, one file.** The screens are text and nothing else; everything
 else about a pane is a small file of its own, written when it changes and
 not otherwise, replaced in one step (written as `NAME.new`, then renamed),
 so a reader sees a whole old one or a whole new one (`history` and `history.styled` are added to
-in place, and a picture's file is written before `pictures` names it). A file that could not be written is written in the next round, which the
-program's next output, a line on `ctl` or the program's end brings, and `log`
+in place, and a picture's file is written before `pictures` names it). A screen or a fact that could not be written is written in the next round, which the
+program's next output, a line on `ctl` or the program's end brings; a clipboard, a directory, a
+notice or a picture that a failed round did not write is lost, as history is; `log`
 says so for each round that failed. In each round of
 writing the facts come first and the screens last, `screen.styled` last of
 all, and the screens are written again whenever any fact was: to follow a
@@ -120,7 +121,7 @@ any 25 ms), and past that the program waits, as on any slow terminal. The holder
 reading; past that it stops reading `in`, and once the FIFO's own buffer
 (the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
 cells. A program that says it is in the middle of drawing (mode 2026) is not
-written out until it says it is done, or half a second has passed since it first said so with no end (saying it again does not start the half second again). A screen keeps at most 8 pictures of at most 4 MiB of data each; a ninth drops the
+written out until it says it is done, or the oldest output not yet written is half a second old: nothing a program wrote waits longer, so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data each; a ninth drops the
 oldest, with a line in `log`. At most 4 MiB of history wait to be written,
 counted on the longer of `history` and `history.styled`: rows past that (one
 write of the program or one resize that makes more, with what still waits from before) are not kept, in either
@@ -177,7 +178,7 @@ the signals 1 to 31 at their defaults. Of this program's own `FUXN_…` names
 it gets only `FUXN_PANE` and, if they were set, `FUXN_DIR` and `FUXN_KEYS`;
 and neither `COLUMNS` nor `LINES`, which the holder reads for itself: the
 pane's first size is `COLUMNS`x`LINES` if the starter set them (each 1 to
-500; otherwise `log` says so), else 80x24.
+500; one that is set and is not such a number fails the start, which says so), else 80x24.
 
 What is this terminal, and what can it do? Programs ask, and fux answers as
 itself and for itself, with nobody watching:

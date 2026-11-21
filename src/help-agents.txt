@@ -108,7 +108,8 @@ lines   two lines: the number, from 0, of the screen's first row among all lines
 title   the window title the program set (absent until it does)
 cwd     the program's directory, if it announces it (absent else): a shell must, at each
         prompt. For bash: PROMPT_COMMAND='printf "\033]7;file://%s\007" "$PWD"'
-notice  `N WORDS`: N grows each time a notice is written, WORDS may be none (a bell). E.g.
+notice  `N WORDS`: N grows with each writing of the files that had a notice, WORDS may be
+        none (a bell). E.g.
         `1 the build is done`. Absent until the first.
 marks   `LINE AT KIND`, a line for each prompt mark of a shell that makes them (below)
 links   `LINE COL LEN ADDRESS` for each link (OSC 8) on the screen, e.g. `24 0 4 https://x.y`:

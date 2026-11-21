@@ -354,6 +354,12 @@ fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     );
     assert_eq!(read(&pane.join("env")), expected);
     assert_eq!(fact(&pane, "size"), "90 24");
+    // A size that is set and is none is refused: the pane is not started at a size made up for it.
+    let odd = session.fux().env("COLUMNS", "wide").args(["start", "w2/odd", "--", "sh"]).output().unwrap();
+    assert!(
+        !odd.status.success() && String::from_utf8_lossy(&odd.stderr).contains("COLUMNS is not a number"),
+        "{odd:?}"
+    );
     // A pane named with its workspace is started there, whatever the starter's own is called.
     let named = session.fux().env("FUXN_WS", "none/").args(["start", "w2/q", "--", "sleep", "600"]).output().unwrap();
     assert!(named.status.success(), "{named:?}");
