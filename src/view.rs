@@ -875,7 +875,6 @@ impl View {
                 (fs::metadata(screen).ok().map(stamp), held)
             })
             .collect();
-        let held: Vec<bool> = panes.iter().map(|(_, held)| *held).collect();
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
         let clipboard = clipboard.map(stamp);
         let terminal = (self.sixel, self.joins, self.keyboard, self.window, cell_size);
@@ -885,11 +884,9 @@ impl View {
         let known: Vec<Stamp> = known.map(|(name, file)| picture(directory.join(name).join(file))).collect();
         let message = self.message.clone();
         let from = (layout.print(), wrong.clone(), message, terminal, panes, clipboard, known);
-        let from = self.menu.is_none().then_some(from);
-        if out.is_empty() && from.is_some() && from == self.from {
+        if out.is_empty() && self.menu.is_none() && self.from.as_ref() == Some(&from) {
             return Ok(false);
         }
-        self.from = from;
         let colour = |fg: u8, bg: Option<u8>, flags: u16| Style {
             fg: Color::Indexed(fg),
             bg: bg.map_or(Color::Default, Color::Indexed),
@@ -900,7 +897,6 @@ impl View {
         let line = Cell { ch: '\u{2}', ..Cell::blank(Style::default()) };
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
         self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
-        self.tiles = tiles.clone();
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
         let (mut parts, mut refused, mut bytes) = (Vec::new(), Vec::<String>::new(), 0);
         let mut cursor_colour = None;
@@ -909,16 +905,13 @@ impl View {
         let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
         let mut wants_focus = None;
         let mut keys = 0;
-        for ((name, body), held) in tiles.iter().zip(held) {
+        for ((name, body), &(seen, held)) in tiles.iter().zip(&from.4) {
             // (Before its first screen is read, a pane is one blank cell with the cursor shown on it.)
             let unread = || Pane { screen: Screen::read("", 0), ..Pane::default() };
             let pane = self.panes.entry(name.clone()).or_insert_with(unread);
             let pane_directory = directory.join(name);
-            pane.read(&pane_directory);
+            pane.read(&pane_directory, seen);
             let focused = self.focus.as_ref() == Some(name);
-            if body.w == 0 || body.h == 0 {
-                continue;
-            }
             // Each holder is asked once to take the tile's size, and told the size of a cell in pixels.
             let asked = (pane.pid, body.w, body.h, cell_size);
             if pane.asked != asked {
@@ -1047,7 +1040,7 @@ impl View {
                 parts.push((key, part));
             }
         }
-        self.parts = parts;
+        (self.parts, self.from) = (parts, self.menu.is_none().then_some(from));
         if !refused.is_empty() {
             refused.dedup();
             self.message = refused.join("; ");
@@ -1055,6 +1048,7 @@ impl View {
         // The lines between panes: `│` and `─`, a tee or a cross where they
         // meet, and green where they touch the focused pane.
         let focus = tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name)).map(|(_, body)| *body);
+        self.tiles = tiles;
         let lines: Vec<bool> = back.iter().map(|cell| cell.ch == '\u{2}').collect();
         let is_line = |x: Option<usize>, y: Option<usize>| match (x, y) {
             (Some(x), Some(y)) if x < w => lines.get(y * w + x) == Some(&true),
@@ -1399,12 +1393,11 @@ fn program(directory: &Path) -> (u32, bool) {
 }
 
 impl Pane {
-    /// Reads the pane if its screen's file changed: the holder writes that file last, so every
-    /// fact it wrote before is there by then. A fact may still be a moment ahead of the text
-    /// (or far off, in a folder someone copied): the rows are the lines that are there, and the
-    /// cursor is kept inside them.
-    fn read(&mut self, directory: &Path) {
-        let seen = fs::metadata(directory.join("screen.styled")).ok().map(stamp);
+    /// Reads the pane if its screen's file changed (`seen`: the file as the frame found it): the
+    /// holder writes that file last, so every fact it wrote before is there by then. A fact may
+    /// still be a moment ahead of the text (or far off, in a folder someone copied): the rows are
+    /// the lines that are there, and the cursor is kept inside them.
+    fn read(&mut self, directory: &Path, seen: Stamp) {
         if seen == self.seen {
             return;
         }
