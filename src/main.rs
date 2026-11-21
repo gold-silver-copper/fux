@@ -266,8 +266,7 @@ fn wait(args: &[OsString]) -> Result<(), String> {
     let status = read_some(Path::new("status")).unwrap_or_default();
     drop(lock);
     let pid = status.lines().find(|line| line.starts_with("pid ")).unwrap_or("pid 0");
-    let said = [pid.to_string(), format!("state {}", state.trim_end())];
-    say(said.join("\n").as_bytes())
+    say(format!("{pid}\nstate {}", state.trim_end()).as_bytes())
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
