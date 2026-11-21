@@ -52,8 +52,8 @@ struct Holder {
     pty: Option<(File, Vec<u8>)>,
     /// The files as they were written last (a folder too, with nothing): one is written again only when it changes.
     facts: HashMap<&'static str, Option<Vec<u8>>>,
-    /// The number in `generation`: odd from the first change to the pane's files until a round of
-    /// writing has ended well, even while the files agree.
+    /// The number in `generation`: odd from a round's first change to its end, even while the files
+    /// agree. It goes on from what an earlier holder of this pane left, from the next even number.
     generation: u64,
     /// How many rounds of writing had a notice: the number in the `notice` file.
     noticed: u32,
@@ -128,7 +128,6 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
         term: Term::new(usize::from(cols), usize::from(rows)),
         pty: Some((master, Vec::new())),
         facts: HashMap::new(),
-        // (It goes on from what an earlier holder of this pane left, from the next even number.)
         generation: crate::text(Path::new("generation"), 32).trim().parse().map_or(0, |n: u64| n.saturating_add(n % 2)),
         noticed: 0,
         ctl_line: Vec::new(),
@@ -145,7 +144,7 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
     // never changes, before the first screen (and after `generation` says the files are being written).
     let status = format!("holder {}\npid {pid}\ncommand {command}\n", std::process::id());
     let result =
-        fifos.and_then(|fifos| holder.begin().and_then(|()| replace("status", status.as_bytes())).map(|()| fifos));
+        fifos.and_then(|fifos| holder.turn(true).and_then(|()| replace("status", status.as_bytes())).map(|()| fifos));
     let result = result.map_err(|e| format!("cannot make the FIFOs or the status: {e}"));
     let result = result.and_then(|(input, ctl)| holder.run(&input, &ctl, &mut ended));
     let _ = fs::remove_file("in");
@@ -386,9 +385,7 @@ impl Holder {
     /// Before them, the bytes a resize took back from each file's end go from it (the third of each).
     fn history(&mut self, files: [(&str, &str, usize); 2]) {
         // (The text is ahead of what the screens' files say of it until the next round has ended.)
-        if let Err(e) = self.begin() {
-            self.log(&format!("cannot write generation: {e}"));
-        }
+        self.turn(true).unwrap_or_else(|e| self.log(&format!("cannot write generation: {e}")));
         for (name, _, back) in &files {
             let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(*back as u64));
             let cut = if *back > 0 { OpenOptions::new().write(true).open(name).and_then(cut) } else { Ok(()) };
@@ -404,17 +401,15 @@ impl Holder {
         // A line that never ends is ended when a file is twice its size: after these rows the text has a line's end
         // the program did not print, in both files, and goes on as the next line (the marks count from there).
         let endless = aside && size > 2 * HISTORY_MAX && !files.iter().any(|(_, text, _)| text.contains('\n'));
-        let ended = if endless && self.term.end_line() { "\n" } else { "" };
-        if !ended.is_empty() {
-            self.log("a line that never ends was ended in history, which was twice its size: the pane's text has a line's end there");
-        }
+        let ended = endless && self.term.end_line();
+        ended.then(|| self.log("a line that never ends was ended in history: the text has a line's end there"));
         for (name, text, _) in &files {
-            let end = if ended.is_empty() { text.rfind('\n').map(|end| end + 1) } else { Some(text.len()) };
+            let end = if ended { Some(text.len()) } else { text.rfind('\n').map(|end| end + 1) };
             let (old, new) = text.split_at_checked(end.filter(|_| aside).unwrap_or(text.len())).unwrap_or((text, ""));
             let append =
                 |text: &str| OpenOptions::new().append(true).create(true).open(name)?.write_all(text.as_bytes());
             let turn = || {
-                let aside = append(ended).and_then(|()| fs::rename(name, format!("{name}.1")));
+                let aside = append(if ended { "\n" } else { "" }).and_then(|()| fs::rename(name, format!("{name}.1")));
                 aside.or_else(|e| File::create(name).and(Err(e))).and(append(new))
             };
             if let Err(e) = append(old).and_then(|()| if aside && end.is_some() { turn() } else { Ok(()) }) {
@@ -424,24 +419,19 @@ impl Holder {
         }
     }
 
-    /// Says in `generation` that the pane's files are being written, unless it says so: an odd
-    /// number, until a round of writing has ended well.
-    fn begin(&mut self) -> io::Result<()> {
-        if self.generation.is_multiple_of(2) {
-            replace("generation", format!("{}\n", self.generation.wrapping_add(1)).as_bytes())?;
-            self.generation = self.generation.wrapping_add(1);
-        }
-        Ok(())
+    /// Says in `generation` that the pane's files are being written (`odd`: the next odd number,
+    /// or the one it has), or that they agree again (the next even one).
+    fn turn(&mut self, odd: bool) -> io::Result<()> {
+        self.generation = self.generation.wrapping_add(u64::from(odd == self.generation.is_multiple_of(2)));
+        replace("generation", format!("{}\n", self.generation).as_bytes())
     }
 
-    /// A round of writing: `generation` says the files are being written (an odd number), what
-    /// changed is written, history first, and `generation` says they agree (the next even
-    /// number), last of all. After a round that failed it stays odd: a later round puts it right,
-    /// which the program's next output, a command or its end brings. `ended` is what became of
-    /// the program (`exited CODE`, `killed SIGNAL`), once it has ended: the `state` file, which
-    /// until then says `running`, or `hungup` once the pty is closed.
+    /// A round of writing: `generation` is odd, what changed is written, history first, and
+    /// `generation` is even, last of all (after a round that failed it stays odd until a later
+    /// one ends well). `ended` is what became of the program (`exited CODE`, `killed SIGNAL`), once
+    /// it has ended: the `state` file, which until then says `running`, or `hungup` once the pty is closed.
     fn publish(&mut self, ended: Option<&str>) -> io::Result<()> {
-        let written = self.begin().and_then(|()| self.write(ended));
+        let written = self.turn(true).and_then(|()| self.write(ended));
         // A picture neither screen has any more has no reader left, after a round that failed too.
         self.pictures.retain(|id| {
             let kept = self.term.has_picture(*id);
@@ -450,10 +440,7 @@ impl Holder {
             }
             kept
         });
-        written?;
-        replace("generation", format!("{}\n", self.generation.wrapping_add(1)).as_bytes())?;
-        self.generation = self.generation.wrapping_add(1);
-        Ok(())
+        written.and_then(|()| self.turn(false))
     }
 
     fn write(&mut self, ended: Option<&str>) -> io::Result<()> {
@@ -466,9 +453,8 @@ impl Holder {
                 self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
             }
         }
-        // Every fact has a file of its own, written when it changes; so has each screen's text.
-        // (A picture's rows that went off the top are counted still: its first row is then above row 0.
-        // The last two numbers are the size in pixels of the cells it was laid out in.)
+        // Every file is written when it changes. (A picture's rows that went off the top are counted
+        // still: its first row is then above row 0. Its last two numbers are its cells, in pixels.)
         let placed = |p: &Picture| {
             let row = if p.off > 0 { format!("-{}", p.off) } else { p.row.to_string() };
             format!("pic-{}.sixel {row} {} {} {} {} {}\n", p.id, p.col, p.cols, p.rows + p.off, p.cell.0, p.cell.1)
@@ -489,21 +475,17 @@ impl Holder {
             ("modes", Some(format!("{}\n", words))),
             ("state", Some(format!("{state}\n"))),
         ];
-        // Each screen has a folder, the same five names in each: `main` always, `alt` while a
-        // program has the alternate screen. A name never changes which screen it means.
+        // Each screen has a folder, the same five names in each: `main` always, `alt` while a program
+        // has that screen. (`lines`: how many lines are before the first row, then the rows that go on.)
         let folder = |names: [&'static str; 6], alt: bool| {
             let files = term.files(alt)?;
-            // How the screen's rows are lines: how many lines are before its first row (of the
-            // pane's text, for the main screen), then the rows that go on from the row above.
-            let lines = format!("{}\n{}\n", files.top, files.wraps);
             let pictures = files.pictures.iter().filter(|p| p.row < screen.rows).map(placed).collect();
-            let texts = [String::new(), lines, files.links, pictures, files.screen, files.styled];
+            let texts = [String::new(), files.lines, files.links, pictures, files.screen, files.styled];
             Some(names.into_iter().zip(texts.map(Some)))
         };
         let (main, alt) = (folder(MAIN, false), folder(ALT, true));
-        // `shown` is a link to the folder of the screen that is drawn. A program that takes the
-        // alternate screen has `alt` filled first and `shown` turned to it after; when it leaves,
-        // `shown` is turned back first and `alt` goes after, with all that is in it.
+        // `shown` is a link to the folder of the screen drawn: `alt` is filled before it is
+        // turned there, and goes (with all that is in it) after it is turned back.
         let turn = [("shown", Some(if alt.is_some() { "alt" } else { "main" }.to_string()))];
         let gone = alt.is_none().then_some(("alt", None));
         let files = pane.into_iter().chain(main.into_iter().flatten()).chain(alt.into_iter().flatten());

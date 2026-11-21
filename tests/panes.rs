@@ -289,6 +289,11 @@ fn each_screen_has_a_folder_of_its_own_and_shown_leads_to_the_one_that_is_drawn(
         names
     };
     assert_eq!(folder("alt"), folder("main"), "the same names in each screen's folder");
+    // The pane's text, as the keys make it, is the shell's while the program is open.
+    let text = session.0.join("text");
+    let mut script = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.text"));
+    assert!(script.arg(&text).env("FUXN_PANE", &pane).status().unwrap().success());
+    assert!(read(&text).starts_with("green and a line of forty characters or so\n") && !read(&text).contains("full"));
     assert_eq!(folder("main"), ["lines", "links", "pictures", "screen", "screen.styled"]);
     assert!(!pane.join("screen").exists() && !pane.join("lines").exists() && !pane.join("screen.main").exists());
     // What the program draws meanwhile is not the main screen's: its files are not written again.

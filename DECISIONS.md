@@ -2177,7 +2177,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - **`keys/.text` reads under `generation`, ten tries**, then takes the
     files as they are (a flood, a killed holder): a key must not hang.
   - The emulator tells each screen through one function, `files(alt)`;
-    `covered`, `wraps`, `links` and `top` are gone from its interface.
+    `plain`, `styled`, `covered`, `wraps`, `links` and `top` are gone
+    from its interface (its tests keep the first two and the last
+    three as helpers of their own, for the screen shown).
 
 ## The old fux3's bugs: which classes are gone
 

@@ -99,8 +99,7 @@ struct Pane {
     state: String,
     /// The addresses of the links on the screen: a cell's `link` less one is its place here.
     addresses: Vec<String>,
-    /// Pictures on the screen: file, row, column, and how many rows of its pixels are above the
-    /// screen's first row.
+    /// Pictures on the screen: file, row, column, and how many rows of its pixels are above the screen.
     pictures: Vec<(String, [usize; 3])>,
     /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
     asked: (u32, usize, usize, (u16, u16)),
@@ -852,9 +851,9 @@ impl View {
         let panes: Vec<(Stamp, bool)> = tiles
             .iter()
             .map(|(name, _)| {
-                // (Whether its holder lives is whether anything reads its `in`.)
+                // (Whether its holder lives is whether anything reads its `in`. While it is in the
+                // middle of writing, a pane is as it was last read.)
                 let held = sys::open(directory.join(name).join("in"), true).is_ok();
-                // While its holder is in the middle of writing, a pane is as it was last read.
                 let (now, writing) = generation(&directory.join(name));
                 let last = self.panes.get(name).filter(|_| writing && held).and_then(|pane| pane.seen);
                 (last.unwrap_or(now), held)
@@ -1350,8 +1349,7 @@ fn program(directory: &Path) -> Option<NonZeroU32> {
     NonZeroU32::new(pid(directory)).filter(|_| asks(directory).keys() & 2 != 0)
 }
 
-/// A pane's `generation` as a look finds it: the file (which, and when written), and whether its
-/// number is odd, which says that the pane's holder is in the middle of writing its files.
+/// A pane's `generation` as a look finds it: which file, and whether its number is odd (its holder is writing).
 fn generation(directory: &Path) -> (Stamp, bool) {
     let file = sys::open(directory.join("generation"), false);
     let stamp = file.as_ref().ok().and_then(|file| file.metadata().ok()).filter(fs::Metadata::is_file).map(stamp);
@@ -1360,23 +1358,15 @@ fn generation(directory: &Path) -> (Stamp, bool) {
 }
 
 impl Pane {
-    /// Reads the pane if its `generation` file changed (`seen`: the file as the frame found it):
-    /// the holder writes that file last, so all it wrote in the round is there by then. What was
-    /// read is kept only if the file is the same one afterwards: then every file is of that one
-    /// round, the screen that `shown` leads to and its facts too. (In a folder someone made by
-    /// hand they may still disagree: the rows are the lines that are there, and the cursor is
-    /// kept inside them.)
+    /// Reads the pane if its `generation` file changed (`seen`: the file as the frame found it): the
+    /// holder writes that file last. What was read is kept only if the file is the same one afterwards:
+    /// then every file is of that one round, the screen that `shown` leads to and its facts too. (In a
+    /// folder made by hand they may still disagree: the rows are the lines there are, the cursor is inside.)
     fn read(&mut self, directory: &Path, seen: Stamp) {
-        if self.seen != Some(seen) {
-            let mut now = Pane { seen: Some(seen), asked: self.asked, ..Pane::default() };
-            now.take(directory);
-            if generation(directory).0 == seen {
-                *self = now;
-            }
+        if self.seen == Some(seen) {
+            return;
         }
-    }
-
-    fn take(&mut self, directory: &Path) {
+        let last = std::mem::replace(self, Pane { seen: Some(seen), asked: self.asked, ..Pane::default() });
         let fact = |name: &str, most: u64| text(&directory.join(name), most);
         let numbers = |text: &str| {
             text.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(SIZE_MAX + 1)).collect::<Vec<_>>()
@@ -1402,9 +1392,8 @@ impl Pane {
         self.state = fact("state", 64).trim_end().to_string();
         self.pid = pid(directory);
         // A picture is kept only if it lies on a screen of the largest size there is. A first row
-        // below 0 says how many of its rows are above the screen: the others start at row 0. Those
-        // rows are of cells as high as the line's last number says, the cells the picture was laid
-        // out in, whatever this terminal's are: a line that has rows above and does not say is none.
+        // below 0 says how many of its rows are above the screen, each as high as the line's last
+        // number says (the cells it was laid out in, not this terminal's: a line that does not say is none).
         for line in fact("shown/pictures", 4096).lines() {
             let mut words = line.split_whitespace();
             let Some(name) = words.next().filter(|name| is_name(name)) else { continue };
@@ -1459,6 +1448,9 @@ impl Pane {
         }
         let title = fact("title", 1024);
         self.title = title.lines().next().unwrap_or_default().chars().filter(|c| !c.is_control()).take(256).collect();
+        if generation(directory).0 != seen {
+            *self = last;
+        }
     }
 }
 

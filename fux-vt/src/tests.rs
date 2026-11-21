@@ -7,15 +7,22 @@ use crate::width::Joiner;
 use crate::{Cell, Out, PICTURES_MAX, Screen, Term, continues, with_next};
 
 impl Term {
-    /// For tests: of the screen shown, the rows that go on, the links, and the lines before it.
+    /// For tests: of the screen shown, its text plain and with its looks, the rows that go on, the
+    /// links, and the lines before it.
+    pub fn plain(&self) -> String {
+        self.files(self.screen.alt).map(|files| files.screen).unwrap_or_default()
+    }
+    pub fn styled(&self) -> String {
+        self.files(self.screen.alt).map(|files| files.styled).unwrap_or_default()
+    }
     pub fn wraps(&self) -> String {
-        self.files(self.screen.alt).map(|files| files.wraps).unwrap_or_default()
+        self.files(self.screen.alt).and_then(|files| files.lines.lines().nth(1).map(String::from)).unwrap_or_default()
     }
     pub fn links(&self) -> String {
         self.files(self.screen.alt).map(|files| files.links).unwrap_or_default()
     }
     pub fn top(&self) -> usize {
-        self.files(self.screen.alt).map_or(0, |files| files.top)
+        self.files(self.screen.alt).and_then(|files| files.lines.lines().next()?.parse().ok()).unwrap_or(0)
     }
 
     /// What waits to be taken, for the tests to look at.
@@ -817,14 +824,10 @@ fn each_screen_is_told_by_its_own_name_whichever_is_shown_and_in_its_own_numberi
     // program has it.
     let link = "\x1b]8;;http://m/\x07red\x1b]8;;\x07";
     let mut term = term(8, 4, &format!("0\r\n1\r\n\x1b]10;#102030\x07\x1b[31m{link}\x1b[m\r\na line that wraps"));
-    let told = |term: &Term, alt: bool| {
-        term.files(alt).map(|files| (files.screen, files.styled, files.top, files.wraps, files.links))
-    };
+    let told =
+        |term: &Term, alt: bool| term.files(alt).map(|files| (files.screen, files.styled, files.lines, files.links));
     let before = told(&term, false).expect("the main screen is always told");
-    assert_eq!(
-        (told(&term, true), before.2, before.3.as_str(), before.4.as_str()),
-        (None, 2, "2 3", "2 0 3 http://m/\n")
-    );
+    assert_eq!((told(&term, true), before.2.as_str(), before.3.as_str()), (None, "2\n2 3\n", "2 0 3 http://m/\n"));
     assert_eq!((term.plain(), term.styled()), (before.0.clone(), before.1.clone()));
     term.feed(b"\x1b[?1049h\x1b[Hfull\r\n\x1b]8;;http://a/\x07screen that wraps\x1b]8;;\x07");
     assert_eq!(told(&term, false), Some(before));
@@ -832,12 +835,12 @@ fn each_screen_is_told_by_its_own_name_whichever_is_shown_and_in_its_own_numberi
     // links in them, and the main screen's links are told meanwhile.
     let alt = told(&term, true).expect("a program has it");
     assert!(alt.0.starts_with("full\nscreen t\n") && alt.0 == term.plain() && alt.1 == term.styled());
-    assert_eq!((alt.2, alt.3.as_str(), alt.4.as_str()), (0, "2 3", "1 0 17 http://a/\n"));
+    assert_eq!((alt.2.as_str(), alt.3.as_str()), ("0\n2 3\n", "1 0 17 http://a/\n"));
     // A resize wraps the main screen anew under the program, and it is told anew: as it is
     // shown when the program leaves.
     term.resize(12, 4);
     let wrapped = told(&term, false).expect("the main screen is always told");
-    assert!(wrapped.3 == "2" && wrapped.0.starts_with("red\na line that \nwraps\n"), "{wrapped:?}");
+    assert!(wrapped.2 == "2\n2\n" && wrapped.0.starts_with("red\na line that \nwraps\n"), "{wrapped:?}");
     term.feed(b"\x1b[?1049l");
     assert_eq!((told(&term, true), told(&term, false), term.plain()), (None, Some(wrapped.clone()), wrapped.0));
 }

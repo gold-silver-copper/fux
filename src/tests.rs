@@ -46,7 +46,7 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     told.told().colours = "background #000000\n  background\t#FDF6E3  # paper\r\n".into();
     told.feed(b"\x1b]11;?\x07");
     assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), "\x1b]11;rgb:fdfd/f6f6/e3e3\x07");
-    assert_eq!(told.plain(), "\n\n");
+    assert_eq!(told.files(false).map_or(String::new(), |files| files.screen), "\n\n");
     // The viewer reads its terminal's answers as answers, not as keys.
     assert_eq!(
         next(b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\x", false, true),

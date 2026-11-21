@@ -1,21 +1,18 @@
 #!/bin/sh
-# .text FILE [styled]: writes the focused pane's whole text into FILE (older
-# history, history, then the main screen, whichever screen is shown), and prints
-# the number to add to a line number of `marks` to have that line's number in FILE
-# (sed's kind, from 1). With `styled` it is the same lines with their colours
-# (`history.styled.1`, `history.styled`, `main/screen.styled`).
-# The screen is taken without the blank rows at its end (the rows that are blank
-# in `main/screen`: one that is only a colour is blank), and its rows that go on
-# from the row above (the second line of `main/lines` numbers them from 0) joined to it, as history has
-# them (without the cell a wide character left empty at a row's end, which
-# `screen.styled` tells as U+200B and a blank where it has a colour). The files
-# are of one round of the holder's writing: `generation` is the same even number
-# before and after them, or they are read again, ten times at most (a pane that
-# never stops printing, or whose holder was killed while it wrote, is taken as it is then).
+# .text FILE [styled]: writes the focused pane's whole text into FILE (older history, history, then
+# the main screen, whichever screen is shown), and prints the number to add to a line number of
+# `marks` to have that line's number in FILE (sed's kind, from 1). With `styled` it is the same lines
+# with their colours (`history.styled.1`, `history.styled`, `main/screen.styled`).
+# The screen is taken without the blank rows at its end (the rows that are blank in `main/screen`: one
+# that is only a colour is blank), and its rows that go on from the row above (the second line of
+# `main/lines` numbers them from 0) joined to it, as history has them (without the cell a wide character
+# left empty at a row's end, which `screen.styled` tells as U+200B and a blank where it has a colour).
+# The files are of one round of the holder's writing (`generation` the same even number before and after),
+# or read again, ten times: a pane that never stops printing, or whose holder was killed as it wrote, is taken as it is.
 umask 077
 s=${2:+.$2} m=$FUXN_PANE/main n=0
 generation() { cat "$FUXN_PANE/generation" 2>/dev/null; }
-while g=$(generation); do
+while g=$(generation); :; do
 { read -r top; read -r wraps; } 2>/dev/null < "$m/lines"
 screen=$(awk -v wraps="$wraps" -v gap="$(printf '\342\200\213 \033[m')" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
   NR == FNR && $0 != "" { last = NR } { row[FNR] = $0 }
@@ -27,7 +24,7 @@ screen=$(awk -v wraps="$wraps" -v gap="$(printf '\342\200\213 \033[m')" 'BEGIN {
 open=$(tail -c 1 "$FUXN_PANE/history$s" 2>/dev/null)
 case " $wraps " in *" 0 "*) open= ;; esac
 { cat "$FUXN_PANE/history$s.1" "$FUXN_PANE/history$s" 2>/dev/null; [ -z "$open" ] || echo; } > "$1"
-n=$((n + 1)); [ "$g" != "$(generation)" ] || [ $((g % 2)) = 1 ] && [ $n -lt 10 ] || break; sleep 0.02
+n=$((n + 1)); [ "$g" != "$(generation)" ] || [ $((${g:-0} % 2)) = 1 ] && [ $n -lt 10 ] || break; sleep 0.02
 done
 before=$(($(wc -l < "$1")))
 printf '%s\n' "$screen" >> "$1" || exit
