@@ -462,28 +462,26 @@ impl View {
             let Some((length, name, event)) = keys::next(rest, whole && !asking, asking) else { break };
             let raw = rest.get(..length).unwrap_or(&[]);
             at += length;
-            match name.as_str() {
-                "paste-start" => {
+            match name.split_once(':').unwrap_or((&name, "")) {
+                ("paste-start", _) => {
                     self.pasting = true;
                     self.typed.extend_from_slice(if wants_paste { raw } else { &[] });
                 }
-                name if name.starts_with("mouse:") => self.mouse(name.trim_start_matches("mouse:")),
-                name if name.starts_with("terminal:") => {
-                    self.sixel = name.split([':', '?', ';']).any(|n| n == "4");
+                ("mouse", report) => self.mouse(report),
+                ("terminal", told) => {
+                    self.sixel = told.split([':', '?', ';']).any(|n| n == "4");
                     // It was asked last: the colours the terminal told of before it are all it
                     // will tell. They go into the session's `colours` file, from which every
                     // pane's program is answered; the viewer that wrote last is believed.
                     self.told();
                 }
-                name if name.starts_with("answer:") => self.colour(name.trim_start_matches("answer:")),
+                ("answer", answer) => self.colour(answer),
                 // The terminal takes the kitty keyboard protocol, and these of the flags it was asked for.
-                name if name.starts_with("keyboard:") => {
-                    self.keyboard = name.trim_start_matches("keyboard:").parse::<u8>().unwrap_or(0) & KEYS;
-                }
+                ("keyboard", flags) => self.keyboard = flags.parse::<u8>().unwrap_or(0) & KEYS,
                 // The window's own focus: for the pane that has the keys, if it asked to be told.
-                name if name.starts_with("focus:") => {
+                ("focus", way) => {
                     // (To the pane that was told it has the keys, whichever the layout names by now.)
-                    self.window = name == "focus:I";
+                    self.window = way == "I";
                     if let Some(pane) = self.told_focus.clone() {
                         self.send();
                         let _ = send_to(&pane.join("in"), raw);
@@ -491,15 +489,15 @@ impl View {
                 }
                 // The terminal's answer about joining characters into clusters (mode 2027): set (1,
                 // or 3 for good) or not set but known (2), which is then turned on.
-                name if name.starts_with("mode:2027;") && !self.joins => {
-                    let state = name.trim_start_matches("mode:2027;").parse::<u8>().unwrap_or(0);
+                ("mode", state) if !self.joins => {
+                    let state = state.strip_prefix("2027;").and_then(|state| state.parse::<u8>().ok()).unwrap_or(0);
                     (self.joins, self.joined) = (matches!(state, 1..=3), state == 2);
                     if self.joined {
                         self.write("\x1b[?2027h".into());
                     }
                 }
-                name if name.starts_with("mode:") => {}
-                name => self.key(name, raw, event),
+                ("mode", _) => {}
+                _ => self.key(&name, raw, event),
             }
             if self.waiting.is_some() || std::mem::take(&mut self.pause) {
                 break;
