@@ -69,12 +69,7 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String, 
             }
         };
     }
-    let length = match first {
-        0xc2..=0xdf => 2,
-        0xe0..=0xef => 3,
-        0xf0..=0xf4 => 4,
-        _ => 1,
-    };
+    let length = (first.leading_ones() as usize).clamp(1, 4);
     let Some(text) = bytes.get(..length) else { return whole.then(|| (bytes.len(), String::new(), None)) };
     let name = match first {
         0x0d => "enter".into(),
