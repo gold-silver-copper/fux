@@ -566,13 +566,16 @@ impl View {
         let first = self.notices.insert(key(""), (None, false)).is_none();
         for name in layout.tabs.iter().flat_map(|tab| tab.panes()) {
             let file = directory.join(name).join("notice");
-            let stamp: Stamp = fs::metadata(&file).ok().filter(|m| m.is_file()).map(stamp);
-            if self.notices.get(&key(name)).is_some_and(|(was, _)| *was == stamp) {
+            let named: Stamp = fs::metadata(&file).ok().filter(|m| m.is_file()).map(stamp);
+            if self.notices.get(&key(name)).is_some_and(|(was, _)| *was == named) {
                 continue;
             }
+            // (Which notice it is is asked of the open file its words are read from, as for a copy.)
+            let file = sys::open(&file, false);
+            let stamp = file.as_ref().ok().and_then(|f| f.metadata().ok()).filter(|m| m.is_file()).map(stamp);
             self.notices.insert(key(name), (stamp, stamp.is_some() && self.focus.as_deref() != Some(name)));
             if stamp.is_some() && !first {
-                let text = text(&file, 1200);
+                let text = String::from_utf8_lossy(&crate::read(file, 1200).0).into_owned();
                 let words = text.lines().next().unwrap_or_default().split_once(' ').map_or("", |(_, words)| words);
                 let words: String = words.chars().filter(|c| !c.is_control()).take(200).collect();
                 // (With the pane's name before them, the words cannot be taken for one of the
