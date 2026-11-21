@@ -70,18 +70,17 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> Result<(Part, (u
     for command in body.chunk_by(|_, next| next.is_ascii_digit() || *next == b';') {
         let Some((&byte, numbers)) = command.split_first() else { continue };
         let digit = |n: usize, digit: &u8| n.saturating_mul(10).saturating_add(usize::from(digit - b'0')).min(1 << 20);
-        let mut each = numbers.split(|&b| b == b';').map(|number| number.iter().fold(0, digit));
-        let [n0, n1, n2, n3, n4] = std::array::from_fn(|_| each.next().unwrap_or(0));
+        let mut fields = numbers.splitn(6, |&b| b == b';');
+        let mut next = || fields.next().map(|field| field.iter().fold(0, digit));
+        let [n0, n1, n2, n3] = std::array::from_fn(|_| next().unwrap_or(0));
         let repeat = std::mem::replace(&mut repeat, if byte == b'!' { n0.max(1) } else { 1 });
         match byte {
             b'"' => (size, square) = ((size.0.max(n2), size.1.max(n3)), square && n0 == n1),
             b'#' => {
                 register = n0;
                 // A colour given in hue, lightness and saturation (1) or in red, green and blue (2).
-                if let Some(slot) = registers.get_mut(register)
-                    && numbers.split(|&b| b == b';').count() == 5
-                    && (1..=2).contains(&n1)
-                {
+                let last = next().filter(|_| fields.next().is_none());
+                if let (Some(slot), 1 | 2, Some(n4)) = (registers.get_mut(register), n1, last) {
                     *slot = (Some(if n1 == 1 { hls([n2, n3, n4]) } else { [n2, n3, n4].map(|n| n.min(100) as u8) }), 0);
                 }
             }
