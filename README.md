@@ -88,16 +88,16 @@ in `FUXN_WS`.
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes, and not there while the program has set none, or an empty one |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
 | `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself: `pwd > "$FUXN_PANE/cwd"` |
-| `notice` | what was last to be noticed: a number that grows with each one, then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
+| `notice` | what was last to be noticed: a number that grows each time one is written (several within one round of writing count as one), then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture that is too large, history it could not write); stops at 64 KiB |
 
 **One fact, one file.** The screens are text and nothing else; everything
 else about a pane is a small file of its own, written when it changes and
 not otherwise, replaced in one step (written as `NAME.new`, then renamed),
 so a reader sees a whole old one or a whole new one (`history` and `history.styled` are added to
-in place, and a picture's file is written before `pictures` names it). A
-file that could not be written is tried again in the next round, and `log`
-says so once. In each round of
+in place, and a picture's file is written before `pictures` names it). A file that could not be written is written in the next round, which the
+program's next output, a line on `ctl` or the program's end brings, and `log`
+says so for each round that failed. In each round of
 writing the facts come first and the screens last, `screen.styled` last of
 all, and the screens are written again whenever any fact was: to follow a
 pane, watch `screen.styled` and read what you need when it changes.
