@@ -692,11 +692,13 @@ fux adds nothing to stop these. What happens is what Unix does:
   still says the old one, so a default shell pane that was moved no longer
   removes its folder when its shell ends (it removes a folder only if it is
   still its own).
-- **Don't kill the viewer with a signal, or type `reset` if you do.** It
-  puts your terminal back as it found it (the main screen, the mouse, the
-  keyboard flags) when it leaves by itself; killed, it cannot, and with a
-  program's keyboard flags left on, Ctrl-C reaches your shell as an escape
-  sequence, and the cursor keeps the colour a pane gave it.
+- **Don't kill the viewer** (with any signal: it handles none; `C-b d`
+  leaves it), **or type `reset` if you do.** Killed, it cannot put your
+  terminal back as it found it (the main screen, the mouse, the keyboard
+  flags): the terminal stays raw; with a program's keyboard flags left on,
+  Ctrl-C reaches your shell as an escape sequence; and the cursor keeps the
+  colour a pane gave it. A FIFO `.view.PID` stays in the session directory
+  (`rm` it). The panes do not care.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `state` goes on saying `running` and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
@@ -715,12 +717,9 @@ fux adds nothing to stop these. What happens is what Unix does:
   directory is gone, and it leaves.
 - **Don't expect a pane to drop what its starter had open.** It inherits the
   open files of whoever ran `fux start`, as any child does (`3>&-` closes one).
-- **Don't write more than 512 bytes to `in` in one go if others write too**:
-  larger writes can interleave (4096 on Linux).
-- **Don't kill the viewer** (with any signal: it handles none; `C-b d`
-  leaves it). Your terminal stays raw (`reset`)
-  and a FIFO `.view.PID` stays in the session directory (`rm` it). The panes
-  do not care.
+- **Don't write more to `in` in one go than a FIFO takes whole, if others
+  write too**: a larger write can interleave with theirs (how much that is:
+  "Linux and macOS", below).
 - **Don't run the viewer in a pane of the workspace it shows.** It draws its
   own pane as one of its tiles and asks it to be that small. In a pane of
   another workspace or session it is fine.
@@ -756,8 +755,7 @@ Differences are left as they are:
 
 `ls "$(fux dir)"` lists the workspaces (tmux's sessions); `fux view NAME`
 attaches to one and `C-b d` detaches; a workspace with no pane gets a shell
-each time a viewer comes to show it (`keys/.empty` does that, and is yours to change; two
-viewers that come to it in the same instant start a shell each; a
+each time a viewer comes to show it (`keys/.empty` does that, and is yours to change; a
 keys directory an earlier build wrote has none, and nothing is started), and
 `C-b t n`, in the keys as they come, starts one in a workspace whose last
 pane has ended. Tabs are tmux's windows. The choosers are `C-b f p`, `f t` and
