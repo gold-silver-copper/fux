@@ -126,8 +126,7 @@ counted on the longer of `history` and `history.styled`: rows past that (one
 write of the program or one resize that makes more, with what still waits from before; rows a resize takes back and gives again are counted once) are not kept, in either
 file, with a line in `log`, and the line they were part of ends there in
 both. The holder writes what waits once it is past 512 KiB, so a history file
-is 4 MiB and one such write long at most: about 4.5 MiB as a rule, 12.6 MiB at
-the very most (two such writes of 4 MiB and more past the last one that fitted, or a line that never ends), and the screen's text more
+is 4 MiB and one such write long at most: about 4.5 MiB as a rule, and past 12 MiB in the worst cases (two writes of 4 MiB landing after the last one that fitted, or a line that never ends), and the screen's text more
 while a resize may take its rows back. When the program ends, at most 4 MiB of what
 it wrote last is still read; a `resize` first draws, at the old size, up to
 1 MiB of what the program had already written.
@@ -431,7 +430,7 @@ only a directory: `keys/C-b/v` is "C-b, then v", and `keys/M-left` would be
 Alt-Left with no prefix.
 
 Key names: a character is itself (`v`, `%`, `é`); a capital is `S-` and its small letter, in any alphabet (`S-h` is H, `S-é` is É: file
-names differ by more than case, for macOS; a terminal that tells the key's letter on a US layout names it by that one); `C-b`, `M-x`, `enter`, `tab`,
+names differ by more than case, for macOS; for a letter outside ASCII, a terminal that also tells the key's letter on a US layout names it by that one); `C-b`, `M-x`, `enter`, `tab`,
 `esc`, `space`, `slash`, `dot`, `backspace`, `up` `down` `left` `right`,
 `home` `end` `pgup` `pgdn` `insert` `delete`, `f1`…`f12`, with `C-`, `M-`,
 `S-` before them when held (`C-left`, `S-f5`).

@@ -2001,13 +2001,12 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   first shell starts with 24 or 80 for it, as before D102); the clipboard's stamp and
   bytes are of one open file (a copy could be sent twice); `C-b w n`
   starts the shell before it shows the workspace (D104's change let
-  what was typed next find no pane); a part asked to be narrower is
-  never made wider, in a row of any length (D107 and D110 held for
-  two parts); a picker's or editor's file that cannot be moved leaves
+  what was typed next find no pane); a picker's or editor's file that cannot be moved leaves
   mv's words until Enter. Taken back: D108's reading of a file again
   when its inode's change time moves (a chmod of `clipboard` or
   `notice` sent the copy and the notice again): a `colours` file that
-  could not be read stays unread until it is written, as before D108.
+  could not be read stays unread until its time of writing changes, as
+  before D108.
   Not taken, and why: the earlier `state` of a pane whose start in
   place fails before its program runs stays, with the earlier
   `status` (the two agree; a test says a failed start leaves what the
@@ -2015,7 +2014,15 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   allocations a reader counted on paths nobody measures as slower
   (one small list per line read from a FIFO; a tab's panes listed at
   each load of the layout; UTF-8 by std, D100); an overflow on a
-  machine with a 32-bit `usize`, which `fuxix` does not build for.
+  machine with a 32-bit `usize`, which `fuxix` is not written for.
+  Tried and taken back in the second round: a rule in shares that
+  would keep a part asked to be narrower from ever getting a cell
+  more. Cells are handed out by rounding the running total of the
+  shares, so no rule on one share holds for every row: the one tried
+  still widened a part of one column among four, and refused a shrink
+  that worked. As it stands (D107, D110): `size -N` never grows a
+  share in a row of two, and in a longer row a part at the edge of
+  the rounding can end one cell wider (the base did the same).
 
 ## The old fux3's bugs: which classes are gone
 
