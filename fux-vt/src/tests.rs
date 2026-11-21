@@ -1318,6 +1318,8 @@ fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
     assert_eq!(term(12, 1, "\u{1100}\x1b[3b|").screen.cursor.col, 9);
     // A mark every terminal gives a column has one here (a halfwidth voiced mark; a skin tone alone).
     assert_eq!((term(8, 1, "\u{ff76}\u{ff9e}|").screen.cursor.col, term(8, 1, "\u{1f3fd}|").screen.cursor.col), (3, 3));
+    // A cluster ends at its first empty place, for U+FE0F as for the columns added up.
+    assert_eq!(crate::width::width('1', &['\0', '\u{fe0f}']), 1);
     // A program that asks is told clusters are always on.
     assert_eq!(term(8, 1, "\x1b[?2027$p").take(0).reply, b"\x1b[?2027;3$y");
 }

@@ -113,10 +113,10 @@ pub fn width(first: char, rest: &[char]) -> usize {
     let class = class(first);
     if matches!(class & KIND, CR | LF | CONTROL) || (matches!(class & KIND, EXTEND | JOINER) && columns(first) == 0) {
         0
-    } else if class & EMOJI != 0 && rest.contains(&'\u{fe0f}') {
+    // (The rest ends at its first empty place: the others are not looked at.)
+    } else if class & EMOJI != 0 && rest.iter().take_while(|&&c| c != '\0').any(|&c| c == '\u{fe0f}') {
         2
     } else {
-        // (The rest ends at its first empty place: the others are not looked at.)
         (columns(first) + rest.iter().take_while(|&&c| c != '\0').map(|&c| columns(c)).sum::<usize>()).clamp(1, 2)
     }
 }
