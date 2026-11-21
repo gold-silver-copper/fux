@@ -1804,3 +1804,23 @@ fn view_fifo(session: &Path) -> PathBuf {
     let files = fs::read_dir(session).unwrap().flatten().map(|entry| entry.path());
     files.into_iter().find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".view.")).unwrap()
 }
+
+#[test]
+fn a_name_that_is_a_number_of_no_line_is_chosen_without_a_word_of_complaint() {
+    // With no finder, the list is numbered and a number or a name is asked for. `0` is no line's
+    // number: it is the name of the second line here, and that is all that is said.
+    let folder = Session::new("pickzero");
+    let (bin, pane, list) = (folder.0.join("bin"), folder.0.join("pane"), folder.0.join("list"));
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&pane).unwrap();
+    let links = "for tool in mv awk head; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
+    assert!(Command::new("sh").arg("-c").arg(links).arg(&bin).status().unwrap().success());
+    fs::write(&list, "one\tthe first\n0\tnought\n").unwrap();
+    fs::write(folder.0.join("typed"), "0\n").unwrap();
+    let mut pick = Command::new("/bin/sh");
+    pick.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.pick")).arg(&list).args(["echo", "chose"]);
+    pick.env("PATH", &bin).env("FUXN_PANE", &pane).stdin(fs::File::open(folder.0.join("typed")).unwrap());
+    let out = pick.output().unwrap();
+    let (said, wrong) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(said.ends_with("chose 0\n") && wrong.is_empty(), "{said:?} {wrong:?}");
+}

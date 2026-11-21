@@ -27,7 +27,7 @@ else
   case $n in
     '') exit ;;
     *[!0-9]*) line= ;;
-    *) line=$(sed -n "${n}p" "$list") ;;
+    *) line=$(awk "NR == $n" "$list") ;;
   esac
   [ -n "$line" ] || line=$(name=$n awk -F '\t' '$1 "" == ENVIRON["name"] ""' "$list" | head -n 1)
 fi
