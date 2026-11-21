@@ -147,24 +147,18 @@ fn sequence(parameters: &str, last: u8) -> (String, Option<Event>) {
             let key = sign.or(standard.filter(|_| plain.is_some_and(|c| !c.is_ascii()))).or(plain);
             modifier |= u8::from(key.is_some_and(|c| c.is_uppercase()));
             match key.map(|c| c.to_lowercase().next().unwrap_or(c)) {
-                Some('\r' | '\u{e046}') => "enter".into(),
+                Some('\r') => "enter".into(),
                 Some('\t') => "tab".into(),
                 Some('\u{1b}') => "esc".into(),
                 Some('\u{7f}') => "backspace".into(),
                 Some(' ') => "space".into(),
-                Some('/' | '\u{e042}') => "slash".into(),
-                Some('.' | '\u{e041}') => "dot".into(),
-                Some('\u{e043}') => "*".into(),
-                Some('\u{e044}') => "-".into(),
-                Some('\u{e045}') => "+".into(),
-                Some('\u{e047}') => "=".into(),
-                Some('\u{e048}') => ",".into(),
+                Some('/') => "slash".into(),
+                Some('.') => "dot".into(),
                 // The keypad's keys have numbers of their own (57399 to 57426): they are named as
                 // the keys they double, as they are in the old form.
-                Some(c @ '\u{e037}'..='\u{e040}') => char::from(b'0' + (u32::from(c) - 0xe037) as u8).to_string(),
-                Some(c @ '\u{e049}'..='\u{e052}') => {
-                    let named = ["left", "right", "up", "down", "pgup", "pgdn", "home", "end", "insert", "delete"];
-                    named.get((u32::from(c) - 0xe049) as usize).copied().unwrap_or_default().to_string()
+                Some(c @ '\u{e037}'..='\u{e052}') => {
+                    let named = "0 1 2 3 4 5 6 7 8 9 dot slash * - + enter = , left right up down pgup pgdn home end insert delete";
+                    named.split(' ').nth((u32::from(c) - 0xe037) as usize).unwrap_or_default().to_string()
                 }
                 // (The other keys with no character, the modifiers themselves among them, are numbered from U+E000.)
                 Some(c) if !c.is_control() && !('\u{e000}'..='\u{f8ff}').contains(&c) => c.to_string(),
