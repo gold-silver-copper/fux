@@ -1750,6 +1750,7 @@ impl Term {
             (b'#', b'8') => {
                 let fill = Cell { ch: 'E', ..Cell::blank(Style::default()) };
                 self.screen.grid.iter_mut().for_each(|row| row.fill(fill));
+                self.screen.pictures.clear();
                 // And, as in xterm, the whole screen scrolls again and the cursor goes home.
                 (self.top, self.bottom, self.screen.cursor.origin) = (0, self.screen.rows - 1, false);
                 self.move_to(0, 0);

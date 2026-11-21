@@ -948,6 +948,9 @@ fn a_picture_is_placed_in_cells_and_leaves_when_it_scrolls_off_or_is_written_ove
         term.resize(cols, 4);
         assert_eq!(term.screen.pictures.first().map(|p| (p.row, p.col, p.cols)), Some((0, 7, 2)), "{cols} columns");
     }
+    // A screen filled with E's (ESC # 8) is written over whole, as by any other fill: the picture goes.
+    term.feed(b"\x1b#8");
+    assert!(term.plain().starts_with("EEEEE") && term.screen.pictures.is_empty(), "{:?}", term.screen.pictures);
 }
 
 fn drawn(w: usize, h: usize, colours: &[&str], rule: impl Fn(usize, usize) -> Option<usize>) -> String {
