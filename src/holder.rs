@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Seek, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -94,7 +94,7 @@ fn fifo(name: &str) -> io::Result<(File, File)> {
         let _ = fs::remove_file(name);
         sys::make_fifo(name.as_ref())?;
     }
-    let reader = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(name)?;
+    let reader = sys::open(name, false)?;
     let writer = OpenOptions::new().write(true).open(name)?;
     Ok((reader, writer))
 }

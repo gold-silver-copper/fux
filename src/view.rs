@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -241,9 +241,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // (One of that name is a dead viewer's, whose number this process has now.)
     let _ = fs::remove_file(&ctl_path);
     sys::make_fifo(&ctl_path).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
-    let open = |write: bool| OpenOptions::new().read(!write).write(write).custom_flags(sys::O_NONBLOCK).open(&ctl_path);
-    let ctl = open(false).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
-    let ctl_writer = open(true).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
+    let ctl = sys::open(&ctl_path, false).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
+    let ctl_writer = sys::open(&ctl_path, true).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
     let saved = sys::raw_mode(&tty).map_err(|e| format!("cannot set the terminal: {e}"))?;
     let restore = Restore(tty.try_clone().map_err(|e| e.to_string())?, saved);
     size.rows = 0; // the first frame sees a new size and draws everything
@@ -941,10 +940,7 @@ impl View {
             .iter()
             .map(|(name, _)| (directory.join(name), directory.join(name).join("screen.styled")))
             .map(|(pane, screen)| {
-                let held = OpenOptions::new()
-                    .read(true)
-                    .custom_flags(sys::O_NONBLOCK)
-                    .open(pane)
+                let held = sys::open(pane, false)
                     .is_ok_and(|dir| matches!(dir.try_lock_shared(), Err(fs::TryLockError::WouldBlock)));
                 (fs::metadata(screen).ok().map(stamp), held)
             })
@@ -1043,8 +1039,7 @@ impl View {
             // once: when its `clipboard` file is another than at the last look, the pane
             // having had the focus then too. Coming to a pane only notes what is there.
             if focused {
-                let file =
-                    OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(pane_directory.join("clipboard"));
+                let file = sys::open(pane_directory.join("clipboard"), false);
                 let stamp: Stamp = file.as_ref().ok().and_then(|file| file.metadata().ok()).map(stamp);
                 let seen = self.copied.replace((pane_directory.clone(), stamp));
                 if let (Ok(file), Some((before, old))) = (file, seen)
@@ -1444,7 +1439,7 @@ fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Ce
 
 /// Writes to a pane's FIFO (`in`, `ctl`) without waiting.
 fn send_to(path: &Path, bytes: &[u8]) -> io::Result<usize> {
-    OpenOptions::new().write(true).custom_flags(sys::O_NONBLOCK).open(path)?.write(bytes)
+    sys::open(path, true)?.write(bytes)
 }
 
 /// What tells one writing of a file from the next.

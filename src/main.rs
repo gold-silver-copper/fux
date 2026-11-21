@@ -28,10 +28,10 @@ use fux_vt::{self as term, sixel, width};
 use fuxix as sys;
 
 use std::ffi::OsString;
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, DirBuilder, File};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
@@ -122,8 +122,7 @@ fn say(line: &[u8]) -> Result<(), String> {
 /// FIFO's): what could be read of it, and whether that went well.
 fn read(path: &Path, most: u64) -> (Vec<u8>, std::io::Result<usize>) {
     let mut bytes = Vec::new();
-    let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path);
-    let read = file.and_then(|file| file.take(most).read_to_end(&mut bytes));
+    let read = sys::open(path, false).and_then(|file| file.take(most).read_to_end(&mut bytes));
     (bytes, read)
 }
 

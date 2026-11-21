@@ -3,10 +3,11 @@
 //! are Linux's and macOS's own and differ where the two systems differ.
 
 use std::ffi::{CString, c_char, c_int, c_ulong, c_void};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Error};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -31,8 +32,6 @@ mod os {
     pub const TIOCSWINSZ: c_ulong = 0x8008_7467;
     pub type Nfds = c_uint;
 }
-/// For `OpenOptions::custom_flags`: an open that never waits.
-pub const O_NONBLOCK: i32 = os::O_NONBLOCK;
 const F_SETFD: c_int = 2;
 const F_GETFL: c_int = 3;
 const F_SETFL: c_int = 4;
@@ -191,6 +190,12 @@ pub fn host() -> Option<String> {
     check(unsafe { gethostname(name.as_mut_ptr().cast(), name.len() - 1) }).ok()?;
     let end = name.iter().position(|byte| *byte == 0)?;
     String::from_utf8(name.get(..end)?.to_vec()).ok()
+}
+
+/// Opens a file to read, or to write, without waiting: a FIFO with nobody at its other end
+/// holds no caller (to read it is to find it empty; to write it is an error at once).
+pub fn open(path: impl AsRef<Path>, write: bool) -> io::Result<File> {
+    OpenOptions::new().read(!write).write(write).custom_flags(os::O_NONBLOCK).open(path)
 }
 
 pub fn make_fifo(path: &Path) -> io::Result<()> {
