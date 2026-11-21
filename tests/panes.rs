@@ -1631,6 +1631,27 @@ fn a_press_after_the_program_asked_for_no_mouse_for_a_while_is_a_new_click() {
 }
 
 #[test]
+fn a_menu_on_a_terminal_of_one_row_leaves_the_bar_to_be_read() {
+    // One row is the bar's while the prefix is in use: the keys that can follow have no row above
+    // it, and are not drawn over it.
+    let (outer, inner) = (Session::new("oouter"), Session::new("oinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    fs::write(keys.join("C-b/v"), "#!/bin/sh\n# says\necho said\n").unwrap();
+    inner.start("one", &["sleep", "600"]);
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let mut start = outer.fux();
+    start.env("COLUMNS", "80").env("LINES", "1").args(["start", "view", "--"]).args(command);
+    start.args([env!("CARGO_BIN_EXE_fux"), "view"]);
+    let view = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let screen = || read(&view.join("screen"));
+    until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
+    fs::write(view.join("in"), "\x02").unwrap();
+    until_or("the bar is shown", screen, || screen().starts_with(" main "));
+    assert!(screen().contains("C-b …") && !screen().contains("says"), "{:?}", screen());
+}
+
+#[test]
 fn a_menu_opens_whatever_kind_of_file_a_key_is() {
     // A FIFO where a key's script would be, and one where a menu's caption would be: nobody
     // writes to either, and the menu opens all the same.

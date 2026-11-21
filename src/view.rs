@@ -1130,7 +1130,7 @@ impl View {
             let (mut right, mut boxes) = (w, Vec::new());
             for part in lines.chunks(last.max(1)) {
                 let width = (part.iter().map(Vec::len).max().unwrap_or(0) + 1).min(w);
-                let Some(rest) = right.checked_sub(width) else { break };
+                let Some(rest) = right.checked_sub(width).filter(|_| last > 0) else { break };
                 boxes.push((part, width, w - right));
                 right = rest;
             }
