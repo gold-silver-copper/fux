@@ -205,7 +205,7 @@ const LEAVING: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l
 
 pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), String> {
     let tty = io::stdin().as_fd().try_clone_to_owned().map(File::from).map_err(|e| format!("standard input: {e}"))?;
-    let mut size = sys::winsize(&tty).map_err(|_| "the viewer needs a terminal on its standard input")?;
+    sys::winsize(&tty).map_err(|_| "the viewer needs a terminal on its standard input")?;
     // What is made is the owner's alone; what is there already is left as it is.
     let made = fs::DirBuilder::new().mode(0o700).recursive(true).create(session.join(&workspace));
     made.map_err(|e| format!("{}: {e}", session.display()))?;
@@ -224,7 +224,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     let ctl = sys::fifo(&ctl_path).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
     let restore = sys::raw_mode(tty.try_clone().map_err(|e| e.to_string())?, LEAVING);
     let restore = restore.map_err(|e| format!("cannot set the terminal: {e}"))?;
-    size.rows = 0; // the first frame sees a new size and draws everything
     let (out, queue) = mpsc::channel::<String>();
     // (The writer says so on a pipe when it has written, or cannot: the loop waits on that as on
     // the keys, and looks no more often for a terminal that reads slowly.)
@@ -248,7 +247,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         tty,
         out,
         unwritten: 0,
-        size,
+        size: Winsize::default(), // the first frame sees a new size and draws everything
         front: Vec::new(),
         from: None,
         panes: HashMap::new(),
@@ -960,25 +959,17 @@ impl View {
             // having had the focus then too. Coming to a pane only notes what is there.
             if focused {
                 let seen = self.copied.replace((pane_directory.clone(), clipboard));
-                if let (Ok(file), Some((before, old))) = (sys::open(pane_directory.join("clipboard"), false), seen)
-                    && before == pane_directory
-                    && old != clipboard
+                if seen.is_some_and(|(before, old)| before == pane_directory && old != clipboard)
+                    && let (bytes, Ok(_)) = crate::read(sys::open(pane_directory.join("clipboard"), false), 1 << 20)
                 {
-                    let mut bytes = Vec::new();
-                    let _ = file.take(1 << 20).read_to_end(&mut bytes);
                     out.push_str(&format!("\x1b]52;c;{}\x07", base64_encode(&bytes)));
                 }
-            }
-            if focused && !pane.title.is_empty() {
-                title = Some(pane.title.clone());
-            }
-            if focused && pane.screen.cursor_shown && pane.screen.cursor.row < body.h && pane.screen.cursor.col < body.w
-            {
-                let (row, col) = (body.y + pane.screen.cursor.row + 1, body.x + pane.screen.cursor.col + 1);
-                cursor = format!("\x1b[{row};{col}H\x1b[{} q\x1b[?25h", pane.screen.cursor_shape);
-            }
-            // The outer terminal sends cursor and keypad keys the way the focused program asked for.
-            if focused {
+                title = Some(pane.title.clone()).filter(|title| !title.is_empty());
+                if pane.screen.cursor_shown && pane.screen.cursor.row < body.h && pane.screen.cursor.col < body.w {
+                    let (row, col) = (body.y + pane.screen.cursor.row + 1, body.x + pane.screen.cursor.col + 1);
+                    cursor = format!("\x1b[{row};{col}H\x1b[{} q\x1b[?25h", pane.screen.cursor_shape);
+                }
+                // The outer terminal sends cursor and keypad keys the way the focused program asked for.
                 // (The cursor's colour is a living program's, as the cursor is.)
                 cursor_colour = pane.cursor_colour.filter(|_| live);
                 let (cursor_keys, keypad) = (pane.screen.app_cursor, pane.screen.app_keypad);
@@ -1170,9 +1161,6 @@ impl View {
                 }
             }
             (cursor, cursor_colour, covered) = (String::new(), None, Some((right, last.saturating_sub(height))));
-        }
-        if cursor.is_empty() {
-            cursor.push_str("\x1b[?25l");
         }
         modes.push_str(if wants_focus.is_some() { "\x1b[?1004h" } else { "\x1b[?1004l" });
         self.tell(wants_focus);
