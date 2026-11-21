@@ -302,6 +302,10 @@ fn keys_have_the_names_of_their_files() {
         assert_eq!(name(bytes), Some((bytes.len(), expected.to_string())));
     }
     assert_eq!(crate::keys::next(b"\x1b[20", true, false), None, "half a sequence waits for the rest, however long");
+    // Alt with a character of several bytes, of which not all have come yet, waits for the rest
+    // as the character by itself does.
+    assert_eq!(crate::keys::next(b"\x1b\xc3", false, false), None);
+    assert_eq!(crate::keys::next("\x1bé".as_bytes(), false, false), Some((3, "M-é".to_string())));
 }
 
 #[test]

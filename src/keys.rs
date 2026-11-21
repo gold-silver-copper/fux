@@ -56,7 +56,7 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)>
                 Some(_) => Some((3, String::new())),
             },
             Some(_) => {
-                let (length, name) = next(bytes.get(1..)?, true, false)?;
+                let (length, name) = next(bytes.get(1..)?, whole, false)?;
                 // (Held keys are named in one order, Ctrl, Alt, Shift, whatever form a key came in.)
                 let named = match name.strip_prefix("C-") {
                     _ if name.is_empty() => name,
