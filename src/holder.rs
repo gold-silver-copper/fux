@@ -71,18 +71,12 @@ struct Holder {
 pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // The first size is COLUMNS x LINES when the starter set them (the viewer
     // does, for key scripts), and 80x24 otherwise. `resize` changes it later.
-    let mut odd = Vec::new();
-    let mut number = |name: &'static str, or: u16| match std::env::var_os(name) {
-        None => or,
-        Some(value) => match value.to_str().and_then(|n| n.parse::<u16>().ok()) {
-            Some(n) if (1..=SIZE_MAX).contains(&usize::from(n)) => n,
-            _ => {
-                odd.push(name);
-                or
-            }
-        },
+    let number = |name: &str, or: u16| {
+        let Some(value) = std::env::var_os(name) else { return Ok(or) };
+        let size = value.to_str().and_then(|n| n.parse().ok()).filter(|n| (1..=SIZE_MAX).contains(&usize::from(*n)));
+        size.ok_or(format!("{name} is not a number from 1 to {SIZE_MAX}"))
     };
-    let (cols, rows) = (number("COLUMNS", 80), number("LINES", 24));
+    let (cols, rows) = (number("COLUMNS", 80)?, number("LINES", 24)?);
     let size = Winsize { cols, rows, xpixel: cols * 10, ypixel: rows * 20 };
     let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
     let (program, args) = command.split_first().ok_or("no program to run")?;
@@ -150,9 +144,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         logged: 0,
     };
     holder.term.told().name = format!("{} {}", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION"));
-    for name in odd {
-        holder.log(&format!("{name} is not a number from 1 to {SIZE_MAX}: the pane starts at {cols}x{rows}"));
-    }
     // The FIFOs are there for as long as this function runs, and not after (what an earlier
     // holder left of those names goes).
     let fifos = sys::fifo("in").and_then(|input| Ok((input, sys::fifo("ctl")?)));
