@@ -77,14 +77,15 @@ const DASHED: u16 = 8192;
 const KIND: [u16; 4] = [DOUBLE, CURLY, DOTTED, DASHED];
 const KINDS: u16 = DOUBLE | CURLY | DOTTED | DASHED;
 /// The looks that are one bit each: the SGR code that sets it, the bit, the code that takes it away.
+/// (In the order a style's codes are written in, which is xterm's: 1, 4, 5, 7, 8, 2, 3, 9.)
 const LOOKS: [(u16, u16, u16); 8] = [
     (1, BOLD, 22),
-    (2, DIM, 22),
-    (3, ITALIC, 23),
     (4, UNDERLINE, 24),
     (5, BLINK, 25),
     (7, REVERSE, 27),
     (8, HIDDEN, 28),
+    (2, DIM, 22),
+    (3, ITALIC, 23),
     (9, STRIKE, 29),
 ];
 /// Not looks, but marks. `CONT` on a row's first cell: the row goes on from
@@ -124,14 +125,20 @@ impl Style {
         };
     }
 
+    /// The SGR codes of its looks and of its two colours, each after a `;`: with `colons`, an underline with its kind.
+    fn codes(self, out: &mut String, colons: bool) {
+        for (code, bit, _) in LOOKS.iter().filter(|look| self.flags & look.1 != 0) {
+            let kind = if colons && *bit == UNDERLINE { self.kind() } else { None };
+            let _ = if let Some(kind) = kind { write!(out, ";4:{kind}") } else { write!(out, ";{code}") };
+        }
+        Style::colour(out, 30, self.fg, colons);
+        Style::colour(out, 40, self.bg, colons);
+    }
+
     /// The escape code that sets exactly this style.
     pub fn sgr(self, out: &mut String) {
         out.push_str("\x1b[0");
-        for (code, _, _) in LOOKS.iter().filter(|look| self.flags & look.1 != 0) {
-            let _ = write!(out, ";{code}");
-        }
-        Style::colour(out, 30, self.fg, false);
-        Style::colour(out, 40, self.bg, false);
+        self.codes(out, false);
         out.push('m');
         // An underline's kind and colour come in a code of their own, in the form with colons:
         // a terminal that does not know that form passes the whole code over, and has the
@@ -1711,17 +1718,8 @@ impl Term {
         let body = match selector {
             b"m" => {
                 let (style, mut body) = (self.screen.cursor.style, String::from("0"));
-                // (In xterm's order: 1, 4, 5, 7, 8, 2, 3, 9.)
-                let looks = [0, 3, 4, 5, 6, 1, 2, 7].iter().filter_map(|at| LOOKS.get(*at));
-                for (code, bit, _) in looks.filter(|look| style.flags & look.1 != 0) {
-                    let _ = match style.kind().filter(|_| *bit == UNDERLINE) {
-                        Some(kind) => write!(body, ";4:{kind}"),
-                        None => write!(body, ";{code}"),
-                    };
-                }
-                for (base, color) in [(30, style.fg), (40, style.bg), (50, style.ul)] {
-                    Style::colour(&mut body, base, color, true);
-                }
+                style.codes(&mut body, true);
+                Style::colour(&mut body, 50, style.ul, true);
                 body + "m"
             }
             b"r" => format!("{};{}r", self.top + 1, self.bottom + 1),
