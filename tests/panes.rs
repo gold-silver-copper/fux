@@ -2194,3 +2194,31 @@ fn the_focus_goes_to_the_pane_that_is_beside_it_in_the_terminal_a_key_is_pressed
     assert!(edit.status().unwrap().success());
     assert_eq!(read(&session.0.join("main/layout")), "* row(col(a b:99) col(c d:9999)) focus=c\n");
 }
+
+#[test]
+fn a_new_workspace_key_that_another_got_ahead_of_takes_the_next_name() {
+    // Two viewers' `C-b w n` at once: the name one found free is the other's by the time it makes
+    // the folder. The folder made is the claim, so it takes the next. (The other key is a `mkdir`
+    // put first on PATH here, which makes the folder asked for just before, once.)
+    let session = Session::new("nwrace");
+    let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
+    let shim = session.0.join(".bin");
+    fs::create_dir_all(&shim).unwrap();
+    let real = String::from_utf8(Command::new("sh").args(["-c", "command -v mkdir"]).output().unwrap().stdout).unwrap();
+    let ahead =
+        format!("#!/bin/sh\n[ -e \"$0.done\" ] || {{ : > \"$0.done\"; {0} \"$1\"; }}\nexec {0} \"$@\"\n", real.trim());
+    fs::write(shim.join("mkdir"), ahead).unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(shim.join("mkdir")).status().unwrap().success());
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let mut script = Command::new(keys.join("C-b/w/n"));
+    script.env("PATH", format!("{}:{bin}:{}", shim.display(), std::env::var("PATH").unwrap()));
+    script.env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main").env("FUXN_PANE", "");
+    let said = script.env("SHELL", "/bin/sh").env_remove("COLUMNS").env_remove("LINES").output().unwrap();
+    let (out, wrong) = (String::from_utf8_lossy(&said.stdout), String::from_utf8_lossy(&said.stderr));
+    assert_eq!(
+        (out.as_ref(), fact(&session.0.join("w2/1"), "state").as_str()),
+        ("workspace w2\n", "running"),
+        "{wrong}"
+    );
+    assert!(!session.0.join("w1/1").exists(), "the other key's workspace is the other's");
+}
