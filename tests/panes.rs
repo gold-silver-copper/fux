@@ -945,16 +945,22 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     assert_eq!(read(&pane.join("lines")), "13\n0\n", "the number of the first row's line, then the rows that go on");
     assert!(!pane.join("top").exists() && !pane.join("wraps").exists());
     // An editor for the test: it is called `vim`, so it is given a line number; it notes that
-    // and copies the file it was to open.
+    // and copies the file it was to open. (The copy has its name only when it is whole, and the
+    // note is written before it: a result that is there is all there, and of this key.)
     let out = session.0.join("out");
-    fs::write(
-        session.0.join("vim"),
-        "#!/bin/sh\nfor a; do f=$a; done\necho \"$1\" > \"$OUT.at\"\ncp \"$f\" \"$OUT\"\n",
-    )
-    .unwrap();
+    let fake = |words: &str| {
+        format!(
+            "#!/bin/sh\nfor a; do f=$a; done\necho \"{words}\" > \"$OUT.at\"\ncp \"$f\" \"$OUT.new\" && mv \"$OUT.new\" \"$OUT\"\n"
+        )
+    };
+    fs::write(session.0.join("vim"), fake("$1")).unwrap();
     Command::new("chmod").arg("+x").arg(session.0.join("vim")).status().unwrap();
-    let key = |name: &str| {
+    let clear = || {
         let _ = fs::remove_file(&out);
+        let _ = fs::remove_file(session.0.join("out.at"));
+    };
+    let key = |name: &str| {
+        clear();
         let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
         let mut script = Command::new(keys.join("C-b").join(name));
         script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("EDITOR", session.0.join("vim"));
@@ -980,10 +986,9 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     assert_eq!((text.lines().count(), text.lines().last()), (line, Some("$")));
     // History in colour is the same text with its colours, in `less -R` at its end (a `less`
     // for the test: the same script).
-    let less = "#!/bin/sh\nfor a; do f=$a; done\necho \"$*\" > \"$OUT.at\"\ncp \"$f\" \"$OUT\"\n";
-    fs::write(session.0.join("less"), less).unwrap();
+    fs::write(session.0.join("less"), fake("$*")).unwrap();
     Command::new("chmod").arg("+x").arg(session.0.join("less")).status().unwrap();
-    let _ = fs::remove_file(&out);
+    clear();
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
     let mut script = Command::new(keys.join("C-b").join("M-c"));
     script.env("PATH", format!("{}:{bin}:{}", session.0.display(), std::env::var("PATH").unwrap()));
@@ -1018,7 +1023,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
         String::from_utf8(script.env("FUXN_PANE", pane).output().unwrap().stdout).unwrap()
     };
     let run = |name: &str| run_in(name, &pane, format!("{} line-%l %f", session.0.join("vim").display()));
-    let _ = fs::remove_file(&out);
+    clear();
     assert_eq!(run("S-c"), "");
     until("the editor was given the output", || read(&out) == "e\u{301}界\n");
     assert_eq!(read(&session.0.join("out.at")), "line-1\n");
