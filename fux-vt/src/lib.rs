@@ -1158,11 +1158,11 @@ impl Term {
         // and its cell is as it left it: a change of style or a title between a letter and its
         // accent moves nothing, a move or an erase does.
         let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
-        let goes_on = self.cluster.is_some_and(|last| {
+        let goes_on = self.cluster.as_ref().is_some_and(|last| {
             last.cursor == here
-                && last.at.is_none_or(|(row, col, cell, _)| self.screen.cell_at(row, col) == Some(&cell))
+                && last.at.as_ref().is_none_or(|(row, col, cell, _)| self.screen.cell_at(*row, *col) == Some(cell))
         });
-        let mut joiner = self.cluster.filter(|_| goes_on).map_or(Joiner::default(), |last| last.joiner);
+        let mut joiner = self.cluster.as_ref().filter(|_| goes_on).map_or(Joiner::default(), |last| last.joiner);
         if joiner.joins(c) {
             self.join(c);
         } else if width(c, &[]) == 0 {
