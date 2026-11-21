@@ -366,10 +366,8 @@ impl View {
             // (What the writer said is taken: the frame that waited for it is next.)
             if written != 0 {
                 // (The pipe's end is the writer's: it ends only when the terminal cannot be written to.)
-                self.unwritten -= match (&*wrote).read(&mut buffer)? {
-                    0 => return Ok(()),
-                    n => n,
-                };
+                let n @ 1.. = (&*wrote).read(&mut buffer)? else { return Ok(()) };
+                self.unwritten = self.unwritten.saturating_sub(n);
                 active = Instant::now();
             }
             // The terminal is given ten seconds (a slow line) to say what it is like: after
