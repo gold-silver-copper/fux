@@ -1894,6 +1894,35 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   the PR: the findings whose fix costs more lines than the case is
   worth (a history file that cannot be appended to, `FUXN_PANE` after a
   move during a start, `fux layout` resolving its path twice).
+- **D108. The eighth wave** (three readers, one each for the emulator,
+  the holder and commands, the viewer with layout and keys; each said
+  its part is near its least and named a handful of lines). Taken, the
+  bugs each with a test that failed first: half a wide character
+  erased is the character erased, for marks and pictures too; text
+  that wraps on the last row below the scroll region joins no other
+  line; a sequence with an intermediate byte too many is none of the
+  ones known (`ESC # # 8` filled the screen); a styled row longer than
+  500 columns is cut as at any width; a pane started again that never
+  came up leaves no `state` of the run before (`fux wait` printed the
+  new pid with the old end); the old `cwd` is removed before the
+  program runs (a program that wrote its own at once lost it); a file
+  is read again when its inode's change time moves (a `colours` that
+  could not be read stayed unread for good; a chmod alone now costs
+  one more read); the window's focus is told only to a program that
+  still asks; a picker's number `0` is a name, with no word from sed;
+  the bar leaves out whole a wide character it has no room for. Cuts:
+  a control string is matched whole, once, and one function says what
+  a sixel picture is, for the emulator and the viewer; marks are moved
+  once per erase; the pty's ends are closed-on-exec by std (one unsafe
+  block fewer); one place charges a read to its budget; the program's
+  words are passed on as given; no field for the pty's slave; lines
+  after `quit` in one read are not done. Left: tab stops and saved
+  slots as arrays (every line saved is an index the lints refuse); a
+  drag that goes on after another viewer moved the focus goes to the
+  newly focused pane (6 to 8 lines to pin it); a SIGINT blocked by
+  whoever ran `fux start` stays blocked in the pane (4 lines of FFI;
+  the README's "Don't" list says so); a FIFO put where a
+  workspace's folder is makes `fux layout` wait (not guarded: D100).
 
 ## The old fux3's bugs: which classes are gone
 

@@ -49,7 +49,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 |---|---|
 | `fux dir` | prints the session directory |
 | `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE`, `WORKSPACE/PANE`, or `WORKSPACE/` or nothing for the first free number, 1 to 9999 (no workspace named: below). No program: `$SHELL`, else `/bin/sh`. A pane whose holder is gone is started again in place; a start that fails leaves the folder, with a `log` that says why |
-| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. Wait with this, not by watching `state`, before you read a program's last screen |
+| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. A pane started again whose holder could not write its first screen has no `state`: `fux wait` says so and fails. Wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout as the folders make it (and writes it, if they changed it), or edits it (below) |
 | `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type, read, wait, get a command's exit code, tell a live pane from a dead one and clean up, in plain sh, with the hazards said. It is `src/help-agents.txt`, in the binary; its indented lines are run, in order, as one sh session by `tools/help-agents.sh` (CI, both systems; the perl section where perl is) |
@@ -703,6 +703,8 @@ fux adds nothing to stop these. What happens is what Unix does:
   directory is gone, and it leaves.
 - **Don't expect a pane to drop what its starter had open.** Past 0, 1 and 2, its
   terminal, it inherits the open files of whoever ran `fux start` (`3>&-` closes one).
+- **Don't start a pane from a program that blocks signals.** A pane's program gets the
+  signals its starter had blocked, blocked: Ctrl-C then does nothing there.
 - **Don't write more to `in` in one go than a FIFO takes whole, if others
   write too**: a larger write can interleave with theirs (how much that is:
   "Linux and macOS", below).
