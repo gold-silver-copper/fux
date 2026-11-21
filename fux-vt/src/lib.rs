@@ -2192,11 +2192,7 @@ impl Term {
                 3 => self.tabs.fill(false),
                 _ => {}
             },
-            (0, 0, b'h' | b'l') => {
-                if self.csi.params.iter().any(|p| p.0 == 4) {
-                    self.insert = last == b'h';
-                }
-            }
+            (0, 0, b'h' | b'l') if self.csi.params.iter().any(|p| p.0 == 4) => self.insert = last == b'h',
             (b'?', 0, b'h' | b'l') => {
                 for i in 0..self.csi.params.len() {
                     self.private_mode(self.arg(i, 0), last == b'h');
