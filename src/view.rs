@@ -1103,17 +1103,17 @@ impl View {
             } else {
                 cells(&format!(" {note} "), style)
             };
-            let right: Vec<Cell> = right.into_iter().take(w * 3 / 4).collect();
+            let said = right.len().min(w * 3 / 4);
             put(&mut back, w, 0, last, w, &vec![Cell::blank(bar); w]);
             // As many tabs as fit, the one shown among them.
-            let room = w.saturating_sub(right.len() + 2);
+            let room = w.saturating_sub(said + 2);
             let fits = |first: usize| {
                 left.len() + labels.iter().take(layout.current + 1).skip(first).map(Vec::len).sum::<usize>() <= room
             };
             let first = (0..=layout.current).find(|first| fits(*first)).unwrap_or(layout.current);
             left.extend(labels.iter().skip(first).flatten());
             put(&mut back, w, 0, last, room, &left);
-            put(&mut back, w, w.saturating_sub(right.len() + 1), last, right.len(), &right);
+            put(&mut back, w, w.saturating_sub(said + 1), last, said, &right);
             // The keys, under their headings; what does not fit above the bar is counted, not shown.
             let key_width = entries.iter().map(|(key, ..)| key.chars().count()).max().unwrap_or(0);
             let (mut lines, mut heading) = (vec![(typed, BOLD)], "");
