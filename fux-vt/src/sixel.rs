@@ -40,22 +40,22 @@ pub fn cut(data: &[u8], rectangle: [usize; 4], max: usize) -> Result<String, &'s
 /// what it paints and the colours it paints with are no part of the rectangle's bounds, and
 /// reading it is one step for each byte.
 pub fn read(data: &[u8], rectangle: [usize; 4]) -> Result<Part, &'static str> {
-    scan(data, rectangle).1
+    scan(data, rectangle).map(|(part, _)| part)
 }
 
 /// The size of a picture in pixels: the larger of what its raster attributes say and what its
 /// data paints. And whether its pixels are square: whether its raster attributes, if it has
 /// any, give a pixel's height and width as the same number.
 pub fn size(data: &[u8]) -> (usize, usize, bool) {
-    scan(data, [0; 4]).0
+    // (A part of no pixels is refused nothing.)
+    scan(data, [0; 4]).map_or((0, 0, true), |(_, size)| size)
 }
 
-/// One pass over a picture: its size and squareness, and the pixels of one rectangle of it (or
-/// why they are not read: from there on the picture is only measured).
-fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, bool), Result<Part, &'static str>) {
+/// One pass over a picture: the pixels of one rectangle of it, and its size and squareness. Or
+/// why the pixels are not read: the pass ends there, and nobody asks how large the picture is.
+fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> Result<(Part, (usize, usize, bool)), &'static str> {
     let area = width.checked_mul(height).filter(|area| *area <= PIXELS_MAX);
-    let mut wrong = area.is_none().then_some("its part in the tile is over 8 million pixels");
-    let area = area.unwrap_or(0);
+    let area = area.ok_or("its part in the tile is over 8 million pixels")?;
     let (right, bottom) = (left.saturating_add(width), top.saturating_add(height));
     let mut pixels = vec![0u16; area];
     let mut paints = area.saturating_mul(PAINTED_MAX);
@@ -94,18 +94,11 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
                 let rows = (0..6).filter(|k| bits >> k & 1 == 1).map(|k| band.saturating_mul(6).saturating_add(k));
                 let rows = rows.filter(|row| (top..bottom).contains(row));
                 let painted = (to.saturating_sub(from)).saturating_mul(rows.clone().count());
-                if painted == 0 || wrong.is_some() {
+                if painted == 0 {
                     continue;
                 }
-                let Some((colour, pen)) = registers.get_mut(register) else {
-                    wrong = Some("it names a colour register over 255");
-                    continue;
-                };
-                let Some(left_to_paint) = paints.checked_sub(painted) else {
-                    wrong = Some("it paints its part in the tile over too many times");
-                    continue;
-                };
-                paints = left_to_paint;
+                let (colour, pen) = registers.get_mut(register).ok_or("it names a colour register over 255")?;
+                paints = paints.checked_sub(painted).ok_or("it paints its part in the tile over too many times")?;
                 if *pen == 0 {
                     let colour = colour.map_or(Colour::Register(register as u8), Colour::Rgb);
                     let known = colours.iter().position(|c| *c == colour);
@@ -114,8 +107,7 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
                         colours.len() - 1
                     });
                     if place >= COLOURS_MAX {
-                        wrong = Some("its part in the tile has more than 256 colours");
-                        continue;
+                        return Err("its part in the tile has more than 256 colours");
                     }
                     *pen = place as u16 + 1;
                 }
@@ -131,7 +123,7 @@ fn scan(data: &[u8], [left, top, width, height]: [usize; 4]) -> ((usize, usize, 
     }
     // The picture is as large as the larger of what it says and what it paints.
     let (w, h) = (size.0.min(right).saturating_sub(left), size.1.min(bottom).saturating_sub(top));
-    ((size.0, size.1, square), wrong.map_or(Ok(Part { w, h, stride: width, colours, pixels }), Err))
+    Ok((Part { w, h, stride: width, colours, pixels }, (size.0, size.1, square)))
 }
 
 /// Sixel's hue, lightness and saturation as red, green and blue: its hue starts at blue, and red
