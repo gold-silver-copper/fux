@@ -179,18 +179,15 @@ fn start(args: &[OsString]) -> Result<(), String> {
     // kernel drops it when the holder is gone, however it went. We take it
     // here and the holder inherits it. A `fux wait` may hold it for an instant.
     let lock = File::open(&dir);
-    let started = match &lock {
-        Err(e) => Err(e.to_string()),
-        Ok(lock) => {
-            let locked = (0..20).any(|i| {
-                std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
-                lock.try_lock().is_ok()
-            });
-            // The workspace is let go while the holder starts, and taken again to tidy up if it does not.
-            let _ = claim.unlock();
-            if locked { launch(&dir, lock, &program) } else { Err("a holder already keeps this pane".into()) }
-        }
-    };
+    let started = lock.as_ref().map_err(ToString::to_string).and_then(|lock| {
+        let locked = (0..20).any(|i| {
+            std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
+            lock.try_lock().is_ok()
+        });
+        // The workspace is let go while the holder starts, and taken again to tidy up if it does not.
+        let _ = claim.unlock();
+        if locked { launch(&dir, lock, &program) } else { Err("a holder already keeps this pane".into()) }
+    });
     match started {
         Ok(()) => {
             // Our copy of the lock goes before anything that could wait.
