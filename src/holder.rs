@@ -7,6 +7,7 @@
 use crate::sys::{self, Winsize};
 use crate::term::{Out, SIZE_MAX, Term};
 use crate::{plain, replace};
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Seek, Write};
@@ -43,7 +44,6 @@ const DRAWING_MAX: Duration = Duration::from_millis(500);
 
 /// A holder looks this often whether its directory is still there.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
-const GONE: &str = "the pane's directory is gone";
 
 /// What tells a file from the one read before: when it was written, its length, its number.
 type Stamp = (std::time::SystemTime, u64, u64);
@@ -54,9 +54,8 @@ struct Holder {
     /// Kept open so that output a program wrote just before it ended is not
     /// thrown away (macOS drops it when the last slave closes).
     _slave: File,
-    pid: u32,
     /// The facts as they were written last, each in its file: one is written again only when it changes.
-    facts: Vec<(&'static str, Option<Vec<u8>>)>,
+    facts: HashMap<&'static str, Option<Vec<u8>>>,
     /// What the program said last of its title, clipboard, directory and what to notice: facts
     /// as the others, each in its file, or (the directory of another machine) no file.
     said: Vec<(&'static str, Option<Vec<u8>>)>,
@@ -72,7 +71,7 @@ struct Holder {
     input: Vec<u8>,
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
-    pictures: Vec<u32>,
+    pictures: BTreeSet<u32>,
     /// `running`, `hungup`, `exited CODE` or `killed SIGNAL`: the `state` file.
     state: String,
     /// What the emulator produced and the next publish writes: history, pictures, a title, a clipboard.
@@ -177,17 +176,18 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         term: Term::new(usize::from(cols), usize::from(rows)),
         master: Some(master),
         _slave: slave,
-        pid,
-        facts: Vec::new(),
+        facts: HashMap::new(),
         said: Vec::new(),
-        status: String::new(),
+        // Who holds the pane, the program's own number, and what it runs: a fact as the others
+        // are, written once (it never changes), with them and before the first screen.
+        status: format!("holder {}\npid {pid}\ncommand {command}\n", std::process::id()),
         failing: false,
         noticed: 0,
         drawing: None,
         syncs: 0,
         input: Vec::new(),
         ctl_line: Vec::new(),
-        pictures: Vec::new(),
+        pictures: BTreeSet::new(),
         state: "running".into(),
         pending: Out::default(),
         session,
@@ -203,19 +203,14 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // The FIFOs are there for as long as this function runs, and not after.
     let fifos = fifo("in").and_then(|input| Ok((input, fifo("ctl")?)));
     let result = fifos.map_err(|e| format!("cannot make the FIFOs: {e}"));
-    let result =
-        result.and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended, &command));
+    let result = result.and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended));
     let _ = fs::remove_file("in");
     let _ = fs::remove_file("ctl");
-    // A directory that is gone is how a pane is closed: no failure, and nothing to say.
-    result.or_else(|why| if why == GONE { Ok(()) } else { Err(why) })
+    result
 }
 
 impl Holder {
-    fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader, command: &str) -> Result<(), String> {
-        // Who holds the pane, the program's own number, and what it runs: a fact as the others
-        // are, written once (it never changes), with them and before the first screen.
-        self.status = format!("holder {}\npid {}\ncommand {command}\n", std::process::id(), self.pid);
+    fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
         // What an earlier holder of this pane left goes before this one's first
         // screen is there: its title and clipboard, its history and its pictures.
         for old in ["title", "clipboard", "cwd", "notice"] {
@@ -265,7 +260,7 @@ impl Holder {
                 match &written {
                     // (A file that is not there means the pane is gone only if its `in` is.)
                     Err(e) if e.kind() == ErrorKind::NotFound && fs::symlink_metadata("in").is_err() => {
-                        return Err(GONE.into());
+                        return Ok(());
                     }
                     Err(e) if !self.failing => self.log(&format!("cannot write the pane's files: {e}")),
                     _ => {}
@@ -278,7 +273,7 @@ impl Holder {
             if looked.elapsed() >= LOOK_EVERY {
                 looked = Instant::now();
                 if fs::symlink_metadata("in").is_err() {
-                    return Err(GONE.into());
+                    return Ok(());
                 }
             }
             let mut wanted = vec![(ended.as_raw_fd(), sys::POLLIN), (ctl.as_raw_fd(), sys::POLLIN)];
@@ -604,7 +599,7 @@ impl Holder {
             if !self.term.pictures.iter().chain(&self.term.other_pictures).any(|p| p.id == id) {
                 continue;
             }
-            self.pictures.push(id);
+            self.pictures.insert(id);
             if let Err(e) = fs::write(&name, data) {
                 let _ = fs::remove_file(&name);
                 self.term.pictures.retain(|p| p.id != id);
@@ -631,8 +626,7 @@ impl Holder {
             Some((plain, styled, wraps)) => (Some(plain.into_bytes()), Some(styled.into_bytes()), wraps + "\n"),
             None => (None, None, String::new()),
         };
-        let mut facts: Vec<(&'static str, Option<Vec<u8>>)> =
-            vec![("screen.main", main), ("screen.main.styled", looks)];
+        let covered = [("screen.main", main), ("screen.main.styled", looks)];
         let texts = [
             // How the screen's rows are lines of the pane's text: the number of the first row's
             // line, then the rows that go on from the row above.
@@ -646,13 +640,13 @@ impl Holder {
             ("state", format!("{}\n", self.state)),
             ("status", self.status.clone()),
         ];
-        facts.extend(texts.into_iter().map(|(name, text)| (name, Some(text.into_bytes()))));
+        let facts = covered.into_iter().chain(texts.into_iter().map(|(name, text)| (name, Some(text.into_bytes()))));
         // What the program said: the title is one line; the clipboard is the bytes it set, and
         // set again is written again (what is on the terminal's clipboard may be another's by now).
         let mut said = Vec::new();
         said.extend(self.pending.title.take().map(|title| ("title", Some(format!("{title}\n").into_bytes()))));
         if let Some(bytes) = self.pending.clipboard.take() {
-            self.facts.retain(|(fact, _)| *fact != "clipboard");
+            self.facts.remove("clipboard");
             said.push(("clipboard", Some(bytes)));
         }
         // The directory the program says it is in: kept if it is one of this machine (no host
@@ -660,7 +654,7 @@ impl Holder {
         // shell at the far end of ssh): a path of there means nothing here.
         if let Some((host, path)) = self.pending.cwd.take() {
             // (The file is the program's to write too: what it says is written, whatever was written last.)
-            self.facts.retain(|(fact, _)| *fact != "cwd");
+            self.facts.remove("cwd");
             let same = |name: &str| name.eq_ignore_ascii_case(&host);
             let here = host.is_empty()
                 || ["localhost", "127.0.0.1", "[::1]"].into_iter().any(same)
@@ -682,17 +676,15 @@ impl Holder {
             self.said.retain(|(fact, _)| *fact != name);
             self.said.push((name, bytes));
         }
-        facts.extend(self.said.iter().cloned());
         // (One that cannot be written fails the round, which is tried again: the newest of each.)
-        for (name, bytes) in facts {
-            if !self.facts.iter().any(|(fact, was)| *fact == name && *was == bytes) {
+        for (name, bytes) in facts.chain(self.said.iter().cloned()) {
+            if self.facts.get(name) != Some(&bytes) {
                 match &bytes {
                     Some(bytes) => replace(name, bytes)?,
                     None => fs::remove_file(name)
                         .or_else(|e| if e.kind() == ErrorKind::NotFound { Ok(()) } else { Err(e) })?,
                 }
-                self.facts.retain(|(fact, _)| *fact != name);
-                self.facts.push((name, bytes));
+                self.facts.insert(name, bytes);
             }
         }
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
@@ -701,8 +693,6 @@ impl Holder {
         replace("screen", term.plain().as_bytes())?;
         replace("screen.styled", term.styled().as_bytes())?;
         // A picture neither screen has any more (the one shown, the one behind) has no reader left.
-        self.pictures.sort_unstable();
-        self.pictures.dedup();
         self.pictures.retain(|id| {
             let kept = self.term.pictures.iter().chain(&self.term.other_pictures).any(|p| p.id == *id);
             if !kept {
