@@ -373,7 +373,7 @@ impl Holder {
     /// The rest is taken once `over` bytes of history wait there: the history is written, and
     /// what else there is waits for the next publish.
     fn collect(&mut self, over: usize) {
-        let mut out = self.term.take_past(over);
+        let mut out = self.term.take(over);
         if self.input.len() + out.reply.len() <= INPUT_MAX {
             self.input.extend_from_slice(&out.reply);
         } else {

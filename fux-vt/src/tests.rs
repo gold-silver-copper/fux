@@ -75,7 +75,7 @@ fn styled_history_has_historys_lines_with_their_looks() {
     let colours = "\x1b[35mab\x1b[36mcdefgh\x1b[m";
     let mut wide = crate::tests::term(8, 2, colours);
     assert!(wide.resize(2, 2) && same_lines(&wide) && wide.peek().history == "abcd");
-    let sent = wide.take();
+    let sent = wide.take(0);
     assert_eq!(sent.styled, "\x1b[0;35mab\x1b[m\x1b[0;36mcd\x1b[m");
     assert!(wide.resize(8, 2) && wide.peek().history.is_empty() && wide.peek().styled.is_empty());
     assert_eq!((wide.peek().unhistory, wide.peek().unstyled), (4, sent.styled.len()));
@@ -105,7 +105,7 @@ fn history_waiting_to_be_written_is_bounded_in_both_texts_and_a_row_refused_ends
     // the rows are refused, the line is ended in both texts, and the next line is its own.
     let looks = "\x1b[1;2;3;4:3;5;7;8;9;38;2;255;255;255;48;2;255;255;255;58;2;255;255;255m";
     let mut term = term(1, 1, &format!("{looks}x\x1b[65535b\r\n"));
-    let first = term.take();
+    let first = term.take(0);
     assert!(first.styled.len() < (4 << 20) + 100 && first.history.ends_with("x\n") && first.refused.len() == 1);
     assert_eq!(first.history.matches('\n').count(), 1);
     term.feed(b"\x1b[mY\r\n");
@@ -116,7 +116,7 @@ fn history_waiting_to_be_written_is_bounded_in_both_texts_and_a_row_refused_ends
     assert!(term.resize(500, 1) && same_lines(&term) && term.peek().refused.len() == 1);
     assert!(term.peek().styled.len() < (4 << 20) + (64 << 10), "{}", term.peek().styled.len());
     // (The rows kept to come back do: what was given of them is taken back, and no more.)
-    let sent = term.take();
+    let sent = term.take(0);
     assert!(term.resize(500, 500) && term.peek().unstyled <= sent.styled.len() && term.plain().starts_with("aaa"));
 }
 
@@ -170,7 +170,7 @@ fn a_colour_a_program_sets_is_its_panes_until_it_gives_it_back() {
     pane.told.colours = "foreground #d0d0d0\nbackground #1c1c1c\n1 #cc0000\n".into();
     let answers = |pane: &mut Term, asks: &str| {
         pane.feed(asks.as_bytes());
-        String::from_utf8(pane.take().reply).unwrap().replace("\x1b]", " ").replace('\x07', "")
+        String::from_utf8(pane.take(0).reply).unwrap().replace("\x1b]", " ").replace('\x07', "")
     };
     // Text in palette colour 1 on colour 2, an underline in colour 3, and text in the defaults.
     pane.feed(b"\x1b[31;42;4;58:5:3ma\x1b[mb\r\n\x1b[7mc");
@@ -206,11 +206,11 @@ fn a_colour_a_program_sets_is_its_panes_until_it_gives_it_back() {
     let slashes = format!("rgb:{}", "/".repeat(1 << 20));
     for bad in ["red", "rgbi:1/0/0", "rgb:12345/0/0", "rgb:0/0", "rgb:1/2/3/4", "#12345", "#+1+2+3", "", &slashes] {
         pane.feed(format!("\x1b]4;3;{bad}\x07\x1b]11;{bad}\x07").as_bytes());
-        assert_eq!(pane.take().refused, [no_colour], "{bad}");
+        assert_eq!(pane.take(0).refused, [no_colour], "{bad}");
     }
     for bad in ["256", "x", "-1", ""] {
         pane.feed(format!("\x1b]4;{bad};#000000;{bad};?\x07").as_bytes());
-        assert_eq!(pane.take().refused, [no_number], "{bad}");
+        assert_eq!(pane.take(0).refused, [no_number], "{bad}");
     }
     assert_eq!(answers(&mut pane, "\x1b]4;1;red;1;?;3;?\x07\x1b]10;?;?\x07").split(' ').count(), 5);
     // One string may set more colours than a counter of 16 bits counts, and ask more than is
@@ -219,7 +219,7 @@ fn a_colour_a_program_sets_is_its_panes_until_it_gives_it_back() {
     pane.feed(format!("\x1b]4;{}7;#070707\x07", "0;#000;".repeat(1 << 16)).as_bytes());
     // (Here 646 answers of 25 bytes and 8 of 26; a ninth would have filled the 16 KiB to the byte.)
     pane.feed(format!("\x1b]4;10;#000;{}{}8;#080808\x07", "0;?;".repeat(646), "10;?;".repeat(9)).as_bytes());
-    let (out, dropped) = (pane.take(), "an answer to the program was dropped: 16 KiB of answers were waiting");
+    let (out, dropped) = (pane.take(0), "an answer to the program was dropped: 16 KiB of answers were waiting");
     assert_eq!((out.reply.len(), out.refused), (646 * 25 + 8 * 26, vec![dropped]));
     let told = answers(&mut pane, "\x1b]4;7;?;8;?\x07\x1b]104;0;7;8;10\x07");
     assert_eq!(told, " 4;7;rgb:0707/0707/0707 4;8;rgb:0808/0808/0808");
@@ -278,14 +278,14 @@ fn a_colour_a_program_sets_is_its_panes_until_it_gives_it_back() {
 fn a_program_says_where_it_is_what_to_notice_and_how_it_draws() {
     // The directory it is in (OSC 7), with the host it names; a path's odd bytes come as %XX.
     let mut term = term(20, 2, "\x1b]7;file://box/tmp/a%20b\x07");
-    assert_eq!(term.take().cwd, Some(("box".to_string(), "/tmp/a b".to_string())));
+    assert_eq!(term.take(0).cwd, Some(("box".to_string(), "/tmp/a b".to_string())));
     term.feed(b"\x1b]7;file:///home\x1b\\\x1b]7;nonsense\x07\x1b]7;file:///a%00b\x07");
-    assert_eq!(term.take().cwd, Some((String::new(), "/home".to_string())));
+    assert_eq!(term.take(0).cwd, Some((String::new(), "/home".to_string())));
     // A path that is no path (a control character, bytes that are no text, too long) is not
     // told: only the machine named is.
     for path in ["/a%00b".to_string(), "/a\u{fffd}".to_string(), "/".repeat(5000)] {
         term.feed(format!("\x1b]7;file://far{path}\x07").as_bytes());
-        assert_eq!(term.take().cwd, Some(("far".to_string(), String::new())));
+        assert_eq!(term.take(0).cwd, Some(("far".to_string(), String::new())));
     }
     // What it wants noticed: the bell (no words), and words in three forms; each one counts.
     term.feed(b"\x07");
@@ -294,12 +294,12 @@ fn a_program_says_where_it_is_what_to_notice_and_how_it_draws() {
     term.feed(b"\x1b]9;4;1;50\x07\x1b]9;9;/tmp\x07\x1b]99;i=1:p=?;\x07\x1b]99;i=1:e=1;aGk=\x07");
     assert_eq!(term.peek().notices, 1);
     term.feed(b"\x1b]9;done\x07\x1b]99;i=1;hello\x1b\\\x1b]777;notify;make;all\x01 built\x07");
-    assert_eq!((term.take().notice.as_deref(), term.plain().as_str()), (Some("make: all built"), "\n\n"));
+    assert_eq!((term.take(0).notice.as_deref(), term.plain().as_str()), (Some("make: all built"), "\n\n"));
     // That it wants to be told when its pane gains the keys is a word among the modes; that it
     // is in the middle of drawing is the holder's to know. Both are told when asked.
     term.feed(b"\x1b[?1004h\x1b[?2026h\x1b[?1004$p\x1b[?2026$p");
     assert_eq!((term.words().as_str(), term.screen.sync), ("focus", true));
-    assert_eq!(term.take().reply, b"\x1b[?1004;1$y\x1b[?2026;1$y");
+    assert_eq!(term.take(0).reply, b"\x1b[?1004;1$y\x1b[?2026;1$y");
     term.feed(b"\x1b[?2026l\x1b[?2026h\x1b[?2026l\x1bc");
     assert!(!term.screen.sync && term.words().is_empty());
     // An underline has a kind and a colour of its own, and both read back from `styled`.
@@ -502,13 +502,13 @@ fn what_fux_is_and_can_do_is_answered_under_its_own_name_and_no_more() {
     // until 16 KiB of answers wait, as for every answer: the rest are dropped, and that is said.
     let each = format!("{}\x1bP0+r\x1b\\", "\x1bP0+r41\x1b\\".repeat(40));
     assert_eq!(said(&format!("\x1bP+q{}\x1b\\", "41;".repeat(40))), each);
-    let out = term(20, 5, &format!("\x1bP+q{}\x1b\\", "41;".repeat(3000))).take();
+    let out = term(20, 5, &format!("\x1bP+q{}\x1b\\", "41;".repeat(3000))).take(0);
     assert!(out.reply.len() > 16000 && out.reply.len() <= 16 << 10 && out.refused == [crate::DROPPED]);
     // What DECRQSS says of the looks in force, fed back, gives the same looks; and the table's
     // own sequences are ones the emulator takes (the curly underline, its colour, the shape).
     for looks in ["1;2;3", "4:2;58:5:9", "4:5;58:2::1:2:3;7", "31;42", "95;107;9", "38;5;200;48;2;9;8;7;5;8", "21"] {
         let mut first = term(20, 5, &format!("\x1b[{looks}mx\x1bP$qm\x1b\\"));
-        let answer = String::from_utf8_lossy(&first.take().reply).into_owned();
+        let answer = String::from_utf8_lossy(&first.take(0).reply).into_owned();
         let body = answer.trim_start_matches("\x1bP1$r").trim_end_matches("\x1b\\");
         let again = term(20, 5, &format!("\x1b[{body}x"));
         assert_eq!(again.styled(), first.styled(), "{looks}: {answer:?}");
@@ -551,7 +551,7 @@ fn a_title_and_a_clipboard_leave_as_text_and_bytes_and_a_string_has_one_bound() 
     use crate::{base64_decode, base64_encode};
     // The title loses its control characters; the clipboard is what the base64 says; text goes on after both.
     let mut term = term(40, 2, "\x1b]2;my \u{9b}title\x07\x1b]52;c;aGVsbG8sIHdvcmxk\x1b\\after");
-    let out = term.take();
+    let out = term.take(0);
     assert_eq!((term.title(), out.clipboard.as_deref()), ("my title", Some(&b"hello, world"[..])));
     assert_eq!(term.plain(), "after\n\n");
     // A title put aside comes back, as a program that borrows the title for a while expects.
@@ -559,22 +559,22 @@ fn a_title_and_a_clipboard_leave_as_text_and_bytes_and_a_string_has_one_bound() 
     assert_eq!(term.title(), "my title");
     // A program is never told what is on the clipboard, and is refused in words.
     term.feed(b"\x1b]52;c;?\x07\x1b]52;c;not base64!\x07");
-    let out = term.take();
+    let out = term.take(0);
     assert!(out.reply.is_empty() && out.clipboard.is_none() && out.refused.len() == 2);
     // Neither is padding in the middle base64, nor a command with nothing to set; a pop with nothing put aside changes nothing.
     term.feed(b"\x1b]52;c;QU=JD\x07\x1b]52;c\x07\x1b[23;2t\x1b[23;2t");
-    let out = term.take();
+    let out = term.take(0);
     assert!(out.clipboard.is_none() && term.title() == "my title");
     // A string of any kind that never ends is dropped at its bound, and said; what follows is text again.
     term.feed(b"\x1b]0;");
     term.feed(&vec![b'x'; (4 << 20) + 2]);
     term.feed(b"\x07ok");
-    let out = term.take();
+    let out = term.take(0);
     assert!(term.title() == "my title" && out.refused.len() == 1 && term.plain().contains("afterok"));
     // A string that never ends is still said to be dropped, when it passes its bound.
     term.feed(b"\x1b]0;");
     term.feed(&vec![b'x'; (4 << 20) + 2]);
-    assert_eq!(term.take().refused.len(), 1);
+    assert_eq!(term.take(0).refused.len(), 1);
     // What is encoded decodes to itself, whatever its length.
     for bytes in [&b""[..], b"a", b"ab", b"abc", &[0, 255, 128, 7]] {
         assert_eq!(base64_decode(&base64_encode(bytes)).as_deref(), Some(bytes));
@@ -792,7 +792,7 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     // A line whose first rows are in history, and whose rest is then cleared away, ends there:
     // what is printed next is a line of its own.
     let mut cleared = term(10, 2, "x\r\naaaaaaaaaabbbbb\r\n\x1b[H\x1b[2J$ ls\r\nfile\r\n");
-    assert_eq!(cleared.take().history, "x\naaaaaaaaaa\n$ ls\n");
+    assert_eq!(cleared.take(0).history, "x\naaaaaaaaaa\n$ ls\n");
     // A line editor draws a long line again row by row: written over, it is one line still.
     let mut drawn = term(5, 2, "abcdefg\x1b[1;5HX\x1b[2;1Hfg");
     assert!(drawn.resize(10, 2) && drawn.plain() == "abcdXfg\n\n", "{:?}", drawn.plain());
@@ -1156,7 +1156,7 @@ fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_
     let mut flags = Term::new(4, 1);
     flags.told.keyboard = crate::KEYS;
     flags.feed(b"\x1b[=65536u\x1b[?u\x1b[=65535u\x1b[?u");
-    assert_eq!(flags.take().reply, b"\x1b[?0u\x1b[?31u");
+    assert_eq!(flags.take(0).reply, b"\x1b[?0u\x1b[?31u");
     // A row that goes on in the next keeps the blank at its end, in both screens; when what a
     // line of history went on in is erased, history's line ends there and then, and the screen's
     // first row is the next line, and not listed.
@@ -1164,7 +1164,7 @@ fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_
     let mut spaced = crate::tests::term(3, 2, "ab cd");
     assert_eq!((spaced.plain().as_str(), spaced.wraps().as_str()), ("ab \ncd\n", "1"));
     spaced.feed(b"efg\x1b[1;1H\x1b[2KXYZ");
-    assert_eq!((spaced.take().history.as_str(), spaced.plain().as_str()), ("ab \n", "XYZ\nfg\n"));
+    assert_eq!((spaced.take(0).history.as_str(), spaced.plain().as_str()), ("ab \n", "XYZ\nfg\n"));
     assert_eq!((spaced.wraps().as_str(), spaced.top()), ("", 1));
 }
 
@@ -1240,7 +1240,7 @@ fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
     );
     let mut long = term(8, 1, &format!("e{}", "\u{301}".repeat(12)));
     assert_eq!(long.plain().chars().count(), 10 + 1);
-    assert_eq!(long.take().refused.len(), 1);
+    assert_eq!(long.take(0).refused.len(), 1);
     // What joins a character that found no room goes with it, and joins nothing else.
     assert_eq!(term(1, 2, "A\u{754c}\u{301}").plain(), "A\n\n");
     assert_eq!(term(4, 2, "\x1b[?7lABC\u{1f468}\u{200d}\u{1f469}").plain(), "ABC\n\n");
@@ -1270,7 +1270,7 @@ fn a_character_takes_the_columns_the_width_rule_gives_it_and_one_cell() {
     // A mark every terminal gives a column has one here (a halfwidth voiced mark; a skin tone alone).
     assert_eq!((term(8, 1, "\u{ff76}\u{ff9e}|").screen.cursor.col, term(8, 1, "\u{1f3fd}|").screen.cursor.col), (3, 3));
     // A program that asks is told clusters are always on.
-    assert_eq!(term(8, 1, "\x1b[?2027$p").take().reply, b"\x1b[?2027;3$y");
+    assert_eq!(term(8, 1, "\x1b[?2027$p").take(0).reply, b"\x1b[?2027;3$y");
 }
 
 #[test]
