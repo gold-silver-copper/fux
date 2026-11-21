@@ -1875,6 +1875,25 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   6. The words of `modes` in one table's order, and one writer for a
      style's codes in xterm's order: **taken, 10 of 10** (the order of
      bytes in two files changes, their meaning does not).
+- **D107. The seventh wave: a hunt for bugs by reading** (three readers,
+  one each for the emulator, the holder and commands, the viewer and
+  layout; each finding a traced input). Fixed, each with a test that
+  failed first: text inserted in insert mode kept the marks where they
+  were; a screen cleared with `CSI H CSI J` (what `clear` sends) or
+  `CSI 1 J` from its last cell is a cleared screen, as with `CSI 2 J`,
+  and a resize gives it no rows back; a mark scrolled off the bottom of
+  a scroll region is at the end of its last row (it had a column no
+  other path understood, and `CSI @` there overflowed); a workspace
+  name in `FUXN_WS` that is no text is refused (it meant `main`);
+  `size -N` never grows a share; a history file that cannot be put
+  aside begins anew (it erased the other's archive each round);
+  `fux start` enters the pane's folder before it locks it (a folder
+  moved between the two was held under the wrong name); keys typed
+  after the key that leaves are not typed into the pane; half a
+  character waits for its rest however late that comes. Left, listed in
+  the PR: the findings whose fix costs more lines than the case is
+  worth (a history file that cannot be appended to, `FUXN_PANE` after a
+  move during a start, `fux layout` resolving its path twice).
 
 ## The old fux3's bugs: which classes are gone
 

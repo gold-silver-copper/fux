@@ -41,7 +41,8 @@ Three crates in one workspace; the two beside the program name nothing of it, an
 ## How it works
 
 **Starting.** `fux start` makes the pane's folder (`mkdir` is the claim of
-a new name), locks it, and starts `fux hold` in a new session with the
+a new name), enters it, locks it as the directory it stands in, and
+starts `fux hold` there in a new session with the
 pane's lock as its standard input: the lock lives exactly as long as the
 holder, and of two starts of one name the one that locks it runs. The start
 is done when the holder says, on a pipe, that its first screen is written.
