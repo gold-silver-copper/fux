@@ -150,17 +150,14 @@ impl Node {
         }
         // Shares become parts of a hundred, so that a step of 5 is a small one.
         let total: u32 = parts.iter().map(|p| p.1.max(1)).sum();
-        let hundredths = |share: u32| (share.max(1) * 100 / total).max(1);
-        let (was, all) = (parts.get(at).map_or(1, |p| p.1.max(1)), parts.iter().map(|p| hundredths(p.1)).sum::<u32>());
-        let least = 5.min(i64::from(hundredths(was)));
-        let now = i64::from(hundredths(was)).saturating_add(change).clamp(least, 10000) as u32;
-        // (Asked to shrink, a part that would be no smaller a part of the whole by that is left as it is: one
-        // at the least a step leaves, or under a hundredth, would be rounded up, and grow.)
-        if change < 0 && u64::from(now) * u64::from(total) >= u64::from(was) * u64::from(all + now - hundredths(was)) {
+        // (A part under a hundredth would be made one by that, and grow: asked to shrink, it is left.)
+        if change < 0 && parts.get(at).is_some_and(|p| p.1.max(1) * 100 < total) {
             return true;
         }
-        parts.iter_mut().for_each(|p| p.1 = hundredths(p.1));
-        parts.get_mut(at).into_iter().for_each(|p| p.1 = now);
+        parts.iter_mut().for_each(|p| p.1 = (p.1.max(1) * 100 / total).max(1));
+        if let Some((_, share)) = parts.get_mut(at) {
+            *share = i64::from(*share).saturating_add(change).clamp(5.min(i64::from(*share)), 10000) as u32;
+        }
         true
     }
 }
