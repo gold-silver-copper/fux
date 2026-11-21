@@ -1931,6 +1931,15 @@ fn a_name_that_is_a_number_of_no_line_is_chosen_without_a_word_of_complaint() {
 }
 
 #[test]
+fn a_shell_named_by_nothing_is_no_shell_named() {
+    // `SHELL=` (set, and empty) is as if it were not set: `/bin/sh`. So is `FUXN_WS=`: `main`.
+    let session = Session::new("noshell");
+    let out = session.fux().env("SHELL", "").env("FUXN_WS", "").args(["start", "e"]).output().unwrap();
+    assert!(out.status.success(), "start with SHELL and FUXN_WS empty: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(read(&session.0.join("main/e/status")).ends_with("command /bin/sh\n"));
+}
+
+#[test]
 fn a_pane_started_again_that_never_came_up_leaves_no_state_of_the_run_before() {
     // A pane whose program ended with 37 is started again, and the new holder cannot write its
     // first screen (`marks.new` is a directory). Its `status` has the new program's number by

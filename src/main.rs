@@ -70,8 +70,8 @@ fn session() -> Result<PathBuf, String> {
 /// The workspace meant when none is named: `$FUXN_WS` (a key script's); else,
 /// in a pane, the folder that holds the pane; else `main`. One that is no name is refused.
 fn workspace() -> Result<String, String> {
-    let from_pane = || here()?.parent()?.file_name().map(OsString::from);
-    let name = std::env::var_os(name!("WS")).or_else(from_pane).unwrap_or("main".into()).to_string_lossy().into_owned();
+    let from_pane = || here()?.parent()?.file_name().map(PathBuf::from);
+    let name = var(name!("WS")).or_else(from_pane).unwrap_or("main".into()).to_string_lossy().into_owned();
     if is_name(&name) { Ok(name) } else { Err(format!("{name}: not a workspace's name")) }
 }
 
@@ -195,7 +195,7 @@ fn launch(session: &Path, dir: &Path, cwd: &Path, lock: File, program: &[OsStrin
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let mut holder = Command::new(me);
     holder.arg("hold").arg(cwd).args(program);
-    holder.args(program.is_empty().then(|| std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into())));
+    holder.args(program.is_empty().then(|| var("SHELL").unwrap_or_else(|| "/bin/sh".into())));
     // The pane's directory by the name it was started under (the holder's own working directory may read
     // otherwise, through a link), and the session, if it was named: whole paths, as the program may go anywhere.
     holder.env(name!("PANE"), dir).envs(var(name!("DIR")).map(|_| (name!("DIR"), session)));
