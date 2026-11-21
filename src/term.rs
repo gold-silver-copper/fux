@@ -74,7 +74,19 @@ pub const DOUBLE: u16 = 1024;
 pub const CURLY: u16 = 2048;
 pub const DOTTED: u16 = 4096;
 pub const DASHED: u16 = 8192;
+const KIND: [u16; 4] = [DOUBLE, CURLY, DOTTED, DASHED];
 const KINDS: u16 = DOUBLE | CURLY | DOTTED | DASHED;
+/// The looks that are one bit each: the SGR code that sets it, the bit, the code that takes it away.
+const LOOKS: [(u16, u16, u16); 8] = [
+    (1, BOLD, 22),
+    (2, DIM, 22),
+    (3, ITALIC, 23),
+    (4, UNDERLINE, 24),
+    (5, BLINK, 25),
+    (7, REVERSE, 27),
+    (8, HIDDEN, 28),
+    (9, STRIKE, 29),
+];
 /// Not looks, but marks. `CONT` on a row's first cell: the row goes on from
 /// the one above (the text wrapped into it). `PAD` on a row's last cell: the
 /// cell is no text (a wide character had no room in it and went to the next
@@ -93,39 +105,41 @@ pub struct Style {
 }
 
 impl Style {
+    /// Which of the kinds of underline that are not one plain line it has: 2 to 5, as SGR `4:N` counts them.
+    fn kind(self) -> Option<usize> {
+        KIND.iter().position(|kind| self.flags & kind != 0).map(|kind| kind + 2)
+    }
+
+    /// The SGR codes of a colour, each after a `;`: `base` is 30 for the text's, 40 for the
+    /// background's, 50 for the underline's (which has the long form only).
+    fn colour(out: &mut String, base: u16, color: Color, colons: bool) {
+        let _ = match color {
+            Color::Default => Ok(()),
+            Color::Indexed(n @ 0..8) if base != 50 => write!(out, ";{}", base + u16::from(n)),
+            Color::Indexed(n @ 8..16) if base != 50 => write!(out, ";{}", base + 52 + u16::from(n)),
+            Color::Indexed(n) if colons => write!(out, ";{}:5:{n}", base + 8),
+            Color::Indexed(n) => write!(out, ";{};5;{n}", base + 8),
+            Color::Rgb(r, g, b) if colons => write!(out, ";{}:2::{r}:{g}:{b}", base + 8),
+            Color::Rgb(r, g, b) => write!(out, ";{};2;{r};{g};{b}", base + 8),
+        };
+    }
+
     /// The escape code that sets exactly this style.
     pub fn sgr(self, out: &mut String) {
         out.push_str("\x1b[0");
-        for (bit, code) in
-            [BOLD, DIM, ITALIC, UNDERLINE, BLINK, REVERSE, HIDDEN, STRIKE].iter().zip([1, 2, 3, 4, 5, 7, 8, 9])
-        {
-            if self.flags & bit != 0 {
-                let _ = write!(out, ";{code}");
-            }
+        for (code, _, _) in LOOKS.iter().filter(|look| self.flags & look.1 != 0) {
+            let _ = write!(out, ";{code}");
         }
-        for (color, base) in [(self.fg, 30), (self.bg, 40)] {
-            let _ = match color {
-                Color::Default => Ok(()),
-                Color::Indexed(n @ 0..8) => write!(out, ";{}", base + u16::from(n)),
-                Color::Indexed(n @ 8..16) => write!(out, ";{}", base + 52 + u16::from(n)),
-                Color::Indexed(n) => write!(out, ";{};5;{n}", base + 8),
-                Color::Rgb(r, g, b) => write!(out, ";{};2;{r};{g};{b}", base + 8),
-            };
-        }
+        Style::colour(out, 30, self.fg, false);
+        Style::colour(out, 40, self.bg, false);
         out.push('m');
         // An underline's kind and colour come in a code of their own, in the form with colons:
         // a terminal that does not know that form passes the whole code over, and has the
         // plain underline and the colours from the one before.
-        let kind = [DOUBLE, CURLY, DOTTED, DASHED].iter().position(|kind| self.flags & kind != 0);
-        let kind = kind.map(|kind| format!("4:{}", kind + 2));
-        let colour = match self.ul {
-            Color::Default => None,
-            Color::Indexed(n) => Some(format!("58:5:{n}")),
-            Color::Rgb(r, g, b) => Some(format!("58:2::{r}:{g}:{b}")),
-        };
-        let parts: Vec<String> = kind.into_iter().chain(colour).collect();
-        if !parts.is_empty() {
-            let _ = write!(out, "\x1b[{}m", parts.join(";"));
+        let mut own = self.kind().map_or(String::new(), |kind| format!(";4:{kind}"));
+        Style::colour(&mut own, 50, self.ul, true);
+        if let Some(own) = own.strip_prefix(';') {
+            let _ = write!(out, "\x1b[{own}m");
         }
     }
 }
@@ -270,11 +284,29 @@ struct Saved {
     wrap: bool,
 }
 
+/// A control sequence (CSI) as far as it has been read: each one starts as a new one of these.
+#[derive(Default)]
+struct Csi {
+    /// Its numbers, each with whether a `:` came before it; the number being read, and whether a `:` came before that.
+    params: Vec<(u16, bool)>,
+    param: Option<u16>,
+    sub: bool,
+    private: u8,
+    inter: u8,
+    /// The sequence's first number was left out.
+    bare: bool,
+    /// One of the sequence's numbers was too large to keep.
+    huge: bool,
+    /// It is malformed or has more parameters than are kept: it will be ignored.
+    too_long: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
     Ground,
     Escape,
-    EscapeInter,
+    /// With the byte that came after ESC.
+    EscapeInter(u8),
     Csi,
     /// A string (OSC, DCS, APC, SOS, PM), kept in `string` up to its ST (or, for
     /// OSC alone, a BEL): a title, a clipboard or a sixel picture if it says so.
@@ -355,21 +387,11 @@ pub struct Term {
     wrapping: bool,
     joiner: Joiner,
     state: State,
-    params: Vec<(u16, bool)>,
-    param: Option<u16>,
-    sub: bool,
-    private: u8,
-    /// The sequence's first number was left out.
-    bare: bool,
-    /// One of the sequence's numbers was too large to keep.
-    huge: bool,
-    inter: u8,
+    csi: Csi,
     utf8: u32,
     utf8_left: u8,
     /// The smallest character this many bytes may encode: a longer spelling of a smaller one is refused.
     utf8_min: u32,
-    /// The sequence being read is malformed or has more parameters than are kept: it will be ignored.
-    too_long: bool,
     /// The string being read, after the byte that began it (`]` for OSC, `P` for DCS…); and whether it outgrew its bound.
     string: Vec<u8>,
     string_over: bool,
@@ -394,8 +416,6 @@ pub struct Term {
     /// its cells are shown in them and a question is answered with them, until the program
     /// gives them back (OSC 104, 110 to 112, a full reset). The cells stay as they were written.
     own: Own,
-    /// The string being ended ended with BEL, not ESC `\`: an answer to it ends the same way.
-    bel: bool,
 }
 
 impl Term {
@@ -452,17 +472,10 @@ impl Term {
             wrapping: false,
             joiner: Joiner::default(),
             state: State::Ground,
-            params: Vec::new(),
-            param: None,
-            sub: false,
-            private: 0,
-            bare: false,
-            huge: false,
-            inter: 0,
+            csi: Csi::default(),
             utf8: 0,
             utf8_left: 0,
             utf8_min: 0,
-            too_long: false,
             string: Vec::new(),
             string_over: false,
             string_holed: false,
@@ -475,7 +488,6 @@ impl Term {
             cell: (10, 20),
             colours: String::new(),
             own: BTreeMap::new(),
-            bel: false,
         }
     }
 
@@ -830,20 +842,9 @@ impl Term {
 
     /// Where in the pane's text a place on the main screen is: its line's number, and how many
     /// bytes of the line's text are before it (those history has of it among them).
-    fn text_place(&self, row: usize, col: usize) -> (usize, usize) {
-        let main = self.main();
-        let row = row.min(main.len().saturating_sub(1));
-        let goes_on = |y: usize| main.get(y).is_some_and(|cells| continues(cells));
-        let first = (1..=row).rev().find(|&y| !goes_on(y)).unwrap_or(0);
-        let line = self.top() + (1..=first).filter(|&y| !goes_on(y)).count();
-        let mut bytes = if first == 0 && goes_on(0) { self.history_open.unwrap_or(0) } else { 0 };
-        for (y, cells) in main.iter().enumerate().take(row + 1).skip(first) {
-            // (A row that goes on is in the text whole, but for the gap a wide character left.)
-            let gap = cells.last().is_some_and(|cell| cell.style.flags & PAD != 0);
-            let upto = if y < row { cells.len() } else { col }.min(cells.len() - usize::from(gap));
-            bytes += cells.iter().take(upto).map(Cell::bytes).sum::<usize>();
-        }
-        (line, bytes)
+    fn text_place(&self, row: usize, col: usize) -> At {
+        let (line, bytes) = self.text_places(std::iter::once((row, col))).pop().unwrap_or_default();
+        At::Text(line, bytes)
     }
 
     /// The same for many places at once: each row's line and the bytes of the line before the
@@ -925,14 +926,17 @@ impl Term {
     /// What is done to rows `from..=to` of the main screen is done to the marks on them: `to`
     /// says where a mark at a row and column goes.
     fn move_marks(&mut self, to: impl Fn(&Term, usize, usize) -> At) {
-        if self.alt {
-            return;
+        if !self.alt {
+            self.remark(|term, at| match at {
+                At::Screen(row, col) => to(term, row, col),
+                text => text,
+            });
         }
-        let moved = self.marks.iter().map(|mark| match mark.0 {
-            At::Screen(row, col) => to(self, row, col),
-            text => text,
-        });
-        let moved: Vec<At> = moved.collect();
+    }
+
+    /// Every mark is put where `to` says it is now.
+    fn remark(&mut self, to: impl Fn(&Term, At) -> At) {
+        let moved: Vec<At> = self.marks.iter().map(|mark| to(self, mark.0)).collect();
         self.marks.iter_mut().zip(moved).for_each(|(mark, at)| mark.0 = at);
     }
 
@@ -1052,10 +1056,7 @@ impl Term {
         self.move_marks(|term, row, col| match row {
             row if row < from || row > bottom => At::Screen(row, col),
             row if row >= from + n => At::Screen(row - n, col),
-            _ if kept => {
-                let (line, bytes) = term.text_place(row, col);
-                At::Text(line, bytes)
-            }
+            _ if kept => term.text_place(row, col),
             _ => At::Screen(from, 0),
         });
         if kept {
@@ -1359,15 +1360,10 @@ impl Term {
             _ => None,
         };
         // (The marks on the screen are places in the text while it is wrapped anew.)
-        let texts = self.marks.iter().map(|mark| match mark.0 {
-            At::Screen(row, col) => {
-                let (line, bytes) = self.text_place(row, col);
-                At::Text(line, bytes)
-            }
+        self.remark(|term, at| match at {
+            At::Screen(row, col) => term.text_place(row, col),
             text => text,
         });
-        let texts: Vec<At> = texts.collect();
-        self.marks.iter_mut().zip(texts).for_each(|(mark, at)| mark.0 = at);
         let blank = Cell::blank(Style::default());
         let (main, other) = if self.alt { (&self.other, &self.grid) } else { (&self.grid, &self.other) };
         let (main_pictures, other_pictures) =
@@ -1528,12 +1524,10 @@ impl Term {
         (self.cols, self.rows) = (cols, rows);
         (self.top, self.bottom) = (0, rows - 1);
         self.settle();
-        let places = self.marks.iter().map(|mark| match mark.0 {
-            At::Text(line, bytes) => self.screen_place(line, bytes).map_or(mark.0, |(row, col)| At::Screen(row, col)),
+        self.remark(|term, at| match at {
+            At::Text(line, bytes) => term.screen_place(line, bytes).map_or(at, |(row, col)| At::Screen(row, col)),
             screen => screen,
         });
-        let places: Vec<At> = places.collect();
-        self.marks.iter_mut().zip(places).for_each(|(mark, at)| mark.0 = at);
         true
     }
 
@@ -1566,12 +1560,8 @@ impl Term {
             State::Ground => self.ground(byte),
             State::Str => match byte {
                 0x1b => self.state = State::StrEscape,
-                0x07 if self.string.first() == Some(&b']') => {
-                    self.bel = true;
-                    self.end_string(true);
-                    self.bel = false;
-                }
-                0x18 | 0x1a => self.end_string(false),
+                0x07 if self.string.first() == Some(&b']') => self.end_string(Some("\x07")),
+                0x18 | 0x1a => self.end_string(None),
                 0x00..=0x1f | 0x7f => self.string_holed = true,
                 _ if self.string.len() <= PICTURE_MAX => self.string.push(byte),
                 // Past its bound a string is dropped, and said so at once: it may never end.
@@ -1582,7 +1572,7 @@ impl Term {
                 }
             },
             State::StrEscape => {
-                self.end_string(byte == b'\\');
+                self.end_string((byte == b'\\').then_some("\x1b\\"));
                 if byte != b'\\' {
                     self.state = State::Escape;
                     self.byte(byte);
@@ -1598,7 +1588,7 @@ impl Term {
                 0x7f => {}
                 _ => match self.state {
                     State::Escape => self.escape(byte),
-                    State::EscapeInter => self.escape_inter(byte),
+                    State::EscapeInter(first) => self.escape_inter(first, byte),
                     _ => self.csi(byte),
                 },
             },
@@ -1674,19 +1664,16 @@ impl Term {
         }
         match byte {
             b'[' => {
-                self.params.clear();
-                (self.param, self.sub, self.private, self.inter, self.too_long) = (None, false, 0, 0, false);
-                self.huge = false;
-                self.state = State::Csi;
+                // (The room for its numbers is the last one's.)
+                let mut params = std::mem::take(&mut self.csi.params);
+                params.clear();
+                (self.csi, self.state) = (Csi { params, ..Csi::default() }, State::Csi);
             }
             b']' | b'P' | b'X' | b'^' | b'_' => {
                 (self.string, self.string_over, self.string_holed) = (vec![byte], false, false);
                 self.state = State::Str;
             }
-            0x20..=0x2f => {
-                self.inter = byte;
-                self.state = State::EscapeInter;
-            }
+            0x20..=0x2f => self.state = State::EscapeInter(byte),
             b'7' => self.save_cursor(),
             b'8' => self.restore_cursor(),
             b'D' => self.linefeed(),
@@ -1728,14 +1715,14 @@ impl Term {
         }
     }
 
-    fn escape_inter(&mut self, byte: u8) {
+    fn escape_inter(&mut self, first: u8, byte: u8) {
         if (0x20..=0x2f).contains(&byte) {
             return;
         }
         self.state = State::Ground;
-        match (self.inter, byte) {
+        match (first, byte) {
             (b'(' | b')', _) => {
-                if let Some(set) = self.graphics.get_mut(usize::from(self.inter == b')')) {
+                if let Some(set) = self.graphics.get_mut(usize::from(first == b')')) {
                     *set = byte == b'0';
                 }
             }
@@ -1750,27 +1737,27 @@ impl Term {
         }
     }
 
-    /// The end of a string: whole (it reached its BEL or ST) or broken off.
-    fn end_string(&mut self, whole: bool) {
+    /// The end of a string: the BEL or ST it reached (an answer to it ends the same way), or none: it was broken off.
+    fn end_string(&mut self, end: Option<&str>) {
         self.state = State::Ground;
         let string = std::mem::take(&mut self.string);
         if std::mem::take(&mut self.string_over) {
             return;
         }
-        match string.split_first().filter(|_| whole) {
-            Some((b'P', data)) if data.starts_with(b"$q") && !self.string_holed => {
+        match string.split_first().zip(end) {
+            Some(((b'P', data), _)) if data.starts_with(b"$q") && !self.string_holed => {
                 self.report_setting(data.get(2..).unwrap_or_default());
             }
-            Some((b'P', data)) if data.starts_with(b"+q") && !self.string_holed => {
+            Some(((b'P', data), _)) if data.starts_with(b"+q") && !self.string_holed => {
                 self.report_caps(data.get(2..).unwrap_or_default());
             }
-            Some((b'P', data)) => {
+            Some(((b'P', data), _)) => {
                 let header = data.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
                 if data.get(header) == Some(&b'q') && data.iter().all(|b| (0x20..=0x7e).contains(b)) {
                     self.picture(data);
                 }
             }
-            Some((b']', data)) => self.command(&String::from_utf8_lossy(data)),
+            Some(((b']', data), end)) => self.command(&String::from_utf8_lossy(data), end),
             _ => {}
         }
     }
@@ -1779,40 +1766,17 @@ impl Term {
     fn report_setting(&mut self, selector: &[u8]) {
         let body = match selector {
             b"m" => {
-                let style = self.style;
-                let mut body = String::from("0");
-                for (bit, code) in [
-                    (BOLD, 1),
-                    (UNDERLINE, 4),
-                    (BLINK, 5),
-                    (REVERSE, 7),
-                    (HIDDEN, 8),
-                    (DIM, 2),
-                    (ITALIC, 3),
-                    (STRIKE, 9),
-                ] {
-                    if style.flags & bit == 0 {
-                        continue;
-                    }
-                    if bit == UNDERLINE
-                        && let Some(k) = [DOUBLE, CURLY, DOTTED, DASHED].iter().position(|k| style.flags & k != 0)
-                    {
-                        let _ = write!(body, ";4:{}", k + 2);
-                    } else {
-                        let _ = write!(body, ";{code}");
-                    }
-                }
-                for (color, code) in [(style.fg, 38u16), (style.bg, 48), (style.ul, 58)] {
-                    let _ = match color {
-                        Color::Default => Ok(()),
-                        Color::Indexed(n @ 0..8) if code != 58 => write!(body, ";{}", code - 8 + u16::from(n)),
-                        Color::Indexed(n @ 8..16) if code != 58 => write!(body, ";{}", code + 44 + u16::from(n)),
-                        Color::Indexed(n) => write!(body, ";{code}:5:{n}"),
-                        Color::Rgb(r, g, b) => write!(body, ";{code}:2::{r}:{g}:{b}"),
+                let (style, mut body) = (self.style, String::from("0"));
+                for (code, bit, _) in LOOKS.iter().filter(|look| style.flags & look.1 != 0) {
+                    let _ = match style.kind().filter(|_| *bit == UNDERLINE) {
+                        Some(kind) => write!(body, ";4:{kind}"),
+                        None => write!(body, ";{code}"),
                     };
                 }
-                body.push('m');
-                body
+                for (base, color) in [(30, style.fg), (40, style.bg), (50, style.ul)] {
+                    Style::colour(&mut body, base, color, true);
+                }
+                body + "m"
             }
             b"r" => format!("{};{}r", self.top + 1, self.bottom + 1),
             b" q" => format!("{} q", self.cursor_shape),
@@ -1833,41 +1797,17 @@ impl Term {
             return;
         }
         for name in request.split(|&b| b == b';') {
-            if name.is_empty()
-                || name.len() > 64
-                || !name.len().is_multiple_of(2)
-                || !name.iter().all(u8::is_ascii_hexdigit)
-            {
-                self.respond("\x1bP0+r\x1b\\");
-                continue;
-            }
-            let name = std::str::from_utf8(name).unwrap_or_default();
-            let decoded: Vec<u8> = name
-                .as_bytes()
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .filter_map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
-                .collect();
-            let known = std::str::from_utf8(&decoded).ok().and_then(|asked| CAPS.iter().find(|(cap, _)| *cap == asked));
-            let value = match known {
-                // (A capability that is a yes with no value.)
-                Some((_, "")) => {
-                    self.respond(&format!("\x1bP1+r{name}\x1b\\"));
-                    continue;
-                }
-                Some((_, value)) => *value,
-                None => {
-                    self.respond(&format!("\x1bP0+r{name}\x1b\\"));
-                    continue;
-                }
-            };
-            let mut reply = format!("\x1bP1+r{name}=");
-            for b in value.bytes() {
-                let _ = write!(reply, "{b:02X}");
-            }
-            reply.push_str("\x1b\\");
-            self.respond(&reply);
+            let hex = (1..=64).contains(&name.len()) && name.len().is_multiple_of(2);
+            let name = std::str::from_utf8(name).ok().filter(|name| hex && name.bytes().all(|b| b.is_ascii_hexdigit()));
+            let name = name.unwrap_or_default();
+            let pair = |at: usize| u8::from_str_radix(name.get(at..at + 2)?, 16).ok();
+            let asked: Vec<u8> = (0..name.len()).step_by(2).filter_map(pair).collect();
+            // (A name that is no name is "not valid" with nothing after; a capability that is
+            // a yes has no value.)
+            let known = CAPS.iter().find(|(cap, _)| cap.as_bytes() == asked);
+            let value: String = known.iter().flat_map(|(_, value)| value.bytes()).map(|b| format!("{b:02X}")).collect();
+            let (valid, is) = (u8::from(known.is_some()), if value.is_empty() { "" } else { "=" });
+            self.respond(&format!("\x1bP{valid}+r{name}{is}{value}\x1b\\"));
         }
     }
 
@@ -1880,7 +1820,7 @@ impl Term {
 
     /// An operating system command: a title (0, 2), the clipboard (52), or a question about a
     /// colour (4, 10, 11, 12 with `?`) or a colour set for this pane (the same with a value).
-    fn command(&mut self, text: &str) {
+    fn command(&mut self, text: &str, end: &str) {
         let (number, rest) = text.split_once(';').unwrap_or((text, ""));
         match number {
             "0" | "2" => {
@@ -1926,7 +1866,6 @@ impl Term {
                             };
                             let told = || self.colours.lines().rev().find_map(line).flatten();
                             if let Some([r, g, b]) = self.own.get(&slot).copied().or_else(told) {
-                                let end = if self.bel { "\x07" } else { "\x1b\\" };
                                 let answer = format!("rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}");
                                 self.respond(&format!("\x1b]{which};{answer}{end}"));
                             }
@@ -2084,26 +2023,26 @@ impl Term {
     fn csi(&mut self, byte: u8) {
         match byte {
             // After an intermediate byte only the last byte may come: anything else spoils the sequence.
-            b'0'..=b'?' if self.inter != 0 => self.too_long = true,
+            b'0'..=b'?' if self.csi.inter != 0 => self.csi.too_long = true,
             b'0'..=b'9' => {
                 // (A number past what is kept is the largest kept, and remembered as too large.)
-                let more = u32::from(self.param.unwrap_or(0)) * 10 + u32::from(byte - b'0');
-                self.huge |= more > u32::from(u16::MAX);
-                self.param = Some(u16::try_from(more).unwrap_or(u16::MAX));
+                let more = u32::from(self.csi.param.unwrap_or(0)) * 10 + u32::from(byte - b'0');
+                self.csi.huge |= more > u32::from(u16::MAX);
+                self.csi.param = Some(u16::try_from(more).unwrap_or(u16::MAX));
             }
             b';' | b':' | 0x40..=0x7e => {
                 // More parameters than are kept: the whole sequence is ignored, and said so.
-                self.too_long |= self.params.len() >= PARAMS_MAX;
-                if !self.too_long {
+                self.csi.too_long |= self.csi.params.len() >= PARAMS_MAX;
+                if !self.csi.too_long {
                     // (A first number that was not given is 0 here; one sequence tells them apart.)
-                    self.bare = if self.params.is_empty() { self.param.is_none() } else { self.bare };
-                    self.params.push((self.param.unwrap_or(0), self.sub));
+                    self.csi.bare = if self.csi.params.is_empty() { self.csi.param.is_none() } else { self.csi.bare };
+                    self.csi.params.push((self.csi.param.unwrap_or(0), self.csi.sub));
                 }
-                self.param = None;
-                self.sub = byte == b':';
+                self.csi.param = None;
+                self.csi.sub = byte == b':';
                 if byte >= 0x40 {
                     self.state = State::Ground;
-                    if self.too_long {
+                    if self.csi.too_long {
                         self.refuse("a control sequence that was malformed or had more than 32 parameters was ignored");
                     } else {
                         self.dispatch(byte);
@@ -2111,16 +2050,18 @@ impl Term {
                 }
             }
             // `?` and its like count only before the parameters; elsewhere the sequence means nothing.
-            b'<'..=b'?' if self.params.is_empty() && self.param.is_none() && self.private == 0 => self.private = byte,
-            b'<'..=b'?' => self.too_long = true,
-            0x20..=0x2f => self.inter = byte,
+            b'<'..=b'?' if self.csi.params.is_empty() && self.csi.param.is_none() && self.csi.private == 0 => {
+                self.csi.private = byte
+            }
+            b'<'..=b'?' => self.csi.too_long = true,
+            0x20..=0x2f => self.csi.inter = byte,
             _ => self.state = State::Ground,
         }
     }
 
     /// Parameter `i`, or `default` when it is missing or zero.
     fn arg(&self, i: usize, default: usize) -> usize {
-        match self.params.get(i) {
+        match self.csi.params.get(i) {
             Some(&(value, _)) if value != 0 => usize::from(value),
             _ => default,
         }
@@ -2131,7 +2072,7 @@ impl Term {
         let (row, col) = (self.row, self.col);
         // What REP repeats: the character printed just before it, with nothing between (as xterm).
         let printed = self.interrupt();
-        match (self.private, self.inter, last) {
+        match (self.csi.private, self.csi.inter, last) {
             (0, 0, b'A') => self.move_rows(n, false),
             (0, 0, b'B') => self.move_rows(n, true),
             (0, 0, b'e') => {
@@ -2236,11 +2177,11 @@ impl Term {
                 self.interrupt();
             }
             (0, 0, b'c') => self.respond("\x1b[?62;4;22c"),
-            (b'>', 0, b'q') if self.params.len() == 1 && self.arg(0, 0) == 0 => {
+            (b'>', 0, b'q') if self.csi.params.len() == 1 && self.arg(0, 0) == 0 => {
                 let answer = format!("\x1bP>|{}\x1b\\", self.name);
                 self.respond(&answer);
             }
-            (b'>', 0, b'c') if self.params.len() == 1 && self.arg(0, 0) == 0 => self.respond("\x1b[>70;0;0c"),
+            (b'>', 0, b'c') if self.csi.params.len() == 1 && self.arg(0, 0) == 0 => self.respond("\x1b[>70;0;0c"),
             (0, 0, b'g') => match self.arg(0, 0) {
                 0 => {
                     if let Some(stop) = self.tabs.get_mut(col) {
@@ -2251,12 +2192,12 @@ impl Term {
                 _ => {}
             },
             (0, 0, b'h' | b'l') => {
-                if self.params.iter().any(|p| p.0 == 4) {
+                if self.csi.params.iter().any(|p| p.0 == 4) {
                     self.insert = last == b'h';
                 }
             }
             (b'?', 0, b'h' | b'l') => {
-                for i in 0..self.params.len() {
+                for i in 0..self.csi.params.len() {
                     self.private_mode(self.arg(i, 0), last == b'h');
                 }
             }
@@ -2314,12 +2255,12 @@ impl Term {
             (b'=' | b'>' | b'<' | b'?', 0, b'u') => {
                 let alt = usize::from(self.alt);
                 // (A number too large to be flags is no flags, not the largest number kept.)
-                let given = if self.huge { 0 } else { self.arg(0, 0) };
+                let given = if self.csi.huge { 0 } else { self.arg(0, 0) };
                 let (asked, how) = ((given & usize::from(KEYS & self.keyboard)) as u8, self.arg(1, 1));
                 // (A flag in force may be put out of force whatever the terminal takes by now.)
                 let out = (given & usize::from(KEYS)) as u8;
                 // (Going back takes a count: one if none is given, none if it is 0.)
-                let (back, which) = (if self.bare { 1 } else { self.arg(0, 0) }, self.private);
+                let (back, which) = (if self.csi.bare { 1 } else { self.arg(0, 0) }, self.csi.private);
                 let Some((flags, kept)) = self.keys.get_mut(alt) else { return };
                 match which {
                     b'=' => {
@@ -2423,34 +2364,27 @@ impl Term {
 
     fn sgr(&mut self) {
         let mut i = 0;
-        while let Some(&(code, _)) = self.params.get(i) {
+        while let Some(&(code, _)) = self.csi.params.get(i) {
             i += 1;
             let flag = |flags: u16, bit: u16, on: bool| if on { flags | bit } else { flags & !bit };
             let style = &mut self.style;
             match code {
                 0 => *style = Style::default(),
-                1 => style.flags |= BOLD,
-                2 => style.flags |= DIM,
-                3 => style.flags |= ITALIC,
                 4 | 21 => {
                     // `4:0` is "no underline"; `4:2` to `4:5` (and 21) are double, curly, dotted, dashed.
-                    let kind = self.params.get(i).filter(|p| p.1).map_or(if code == 21 { 2 } else { 1 }, |p| p.0);
+                    let kind = self.csi.params.get(i).filter(|p| p.1).map_or(if code == 21 { 2 } else { 1 }, |p| p.0);
                     style.flags = flag(style.flags & !KINDS, UNDERLINE, kind != 0);
-                    style.flags |=
-                        [DOUBLE, CURLY, DOTTED, DASHED].get(usize::from(kind).wrapping_sub(2)).copied().unwrap_or(0);
+                    style.flags |= KIND.get(usize::from(kind).wrapping_sub(2)).copied().unwrap_or(0);
                 }
-                5 | 6 => style.flags |= BLINK,
-                7 => style.flags |= REVERSE,
-                8 => style.flags |= HIDDEN,
-                9 => style.flags |= STRIKE,
-                22 => style.flags &= !(BOLD | DIM),
-                23 => style.flags &= !ITALIC,
                 24 => style.flags &= !(UNDERLINE | KINDS),
+                // (6 blinks as 5 does.)
+                1..=9 | 22..=29 => {
+                    for (set, bit, reset) in LOOKS {
+                        let on = style.flags & bit != 0 || code == set || (code, set) == (6, 5);
+                        style.flags = flag(style.flags, bit, on && code != reset);
+                    }
+                }
                 59 => style.ul = Color::Default,
-                25 => style.flags &= !BLINK,
-                27 => style.flags &= !REVERSE,
-                28 => style.flags &= !HIDDEN,
-                29 => style.flags &= !STRIKE,
                 30..=37 => style.fg = Color::Indexed((code - 30) as u8),
                 39 => style.fg = Color::Default,
                 40..=47 => style.bg = Color::Indexed((code - 40) as u8),
@@ -2470,7 +2404,7 @@ impl Term {
                 _ => {}
             }
             // Skip what is left of this code's own `:` parameters.
-            while matches!(self.params.get(i), Some(&(_, true))) {
+            while matches!(self.csi.params.get(i), Some(&(_, true))) {
                 i += 1;
             }
         }
@@ -2479,13 +2413,13 @@ impl Term {
     /// The colour after a 38 or 48 at `i`, and how many parameters it used:
     /// `5;N`, `2;R;G;B`, or the same with `:` (where a colour space may come first).
     fn long_color(&self, i: usize) -> (Option<Color>, usize) {
-        let value = |k: usize| self.params.get(i + k).and_then(|p| u8::try_from(p.0).ok());
+        let value = |k: usize| self.csi.params.get(i + k).and_then(|p| u8::try_from(p.0).ok());
         let rgb = |at: usize| Some(Color::Rgb(value(at)?, value(at + 1)?, value(at + 2)?));
-        let colons = self.params.get(i).is_some_and(|p| p.1);
-        let count = self.params.iter().skip(i).take_while(|p| p.1).count();
-        let left = self.params.len().saturating_sub(i);
+        let colons = self.csi.params.get(i).is_some_and(|p| p.1);
+        let count = self.csi.params.iter().skip(i).take_while(|p| p.1).count();
+        let left = self.csi.params.len().saturating_sub(i);
         // A colour with a part missing or over 255 sets nothing.
-        match self.params.get(i).map(|p| p.0) {
+        match self.csi.params.get(i).map(|p| p.0) {
             Some(5) if colons => (value(1).filter(|_| count >= 2).map(Color::Indexed), count),
             Some(5) => (value(1).map(Color::Indexed), left.min(2)),
             Some(2) if colons => {
