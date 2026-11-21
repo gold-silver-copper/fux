@@ -9,8 +9,8 @@ if [ "$1" = --in ]; then
   # In the tab's pane. The file is in the pane's own folder from here on, so it
   # goes with the pane however that is closed (`.shell` removes the folder when
   # the editor ends; the close key removes it under a running one).
-  # (One that cannot be moved there has gone, or the pane is going: mv has said why.)
-  mv "$2" "$FUXN_PANE/text" || exit
+  # (One that cannot be moved there has gone, or the pane is going: mv has said why, and Enter closes the pane.)
+  mv "$2" "$FUXN_PANE/text" || { read -r _; exit; }
   f=$FUXN_PANE/text n=$3
   set -f; set -- ${EDITOR:-${PAGER:-less}}
   if [ -n "$FUXN_EDIT" ]; then sh -c "$FUXN_EDIT" sh "$f" "$n"
