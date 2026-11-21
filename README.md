@@ -659,8 +659,8 @@ For that to be of use after a reboot, the session directory must outlast
 one. The default is not such a one on Linux ("Linux and macOS", below); set `FUXN_DIR` to a directory on disk, in your shell's
 profile so that every `fux` agrees: `export FUXN_DIR=~/.local/state/fux-next`.
 On disk a busy pane costs writes (see "Bounds"). Then run the script at
-login, or put its line first in `keys/.empty`, so the first `fux view` after
-a reboot brings the panes back before it shows them.
+login, before the first `fux view`. (`keys/.empty` is no place for it: that script runs only in a
+workspace with no pane folders, and the panes to bring back are folders.)
 
 ## Don't
 
