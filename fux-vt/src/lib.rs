@@ -1113,10 +1113,10 @@ impl Term {
     fn scroll_down(&mut self, from: usize, n: usize) {
         let n = n.min(self.bottom + 1 - from.min(self.bottom));
         let blank = self.blank();
-        let bottom = self.bottom;
+        let (bottom, cols) = (self.bottom, self.screen.cols);
         self.move_marks(|row, col| match row {
             row if row < from || row > bottom => (row, col),
-            row if row + n > bottom => (bottom, usize::MAX),
+            row if row + n > bottom => (bottom, cols),
             row => (row + n, col),
         });
         let Some(region) = self.screen.grid.get_mut(from..=self.bottom) else {

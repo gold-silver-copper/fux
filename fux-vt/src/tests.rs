@@ -1377,6 +1377,21 @@ fn a_row_that_goes_on_from_the_one_above_still_does_when_a_character_is_printed_
 }
 
 #[test]
+fn a_mark_scrolled_off_the_bottom_of_the_scroll_region_is_at_the_end_of_its_last_row_as_any_mark_there() {
+    // (ESC M on the first row scrolls the rows down: the row of the prompt's mark leaves at the bottom.)
+    let pushed = "x\r\ny\r\n\x1b]133;A\x07z\x1b[H\x1bM\x1b[3;1H";
+    let marks = |then: &str| term(8, 3, &format!("{pushed}{then}")).marks();
+    assert_eq!(marks(""), "2 8 prompt\n");
+    // The row erased takes the mark to its start, and one erased from the cursor on to the cursor.
+    assert_eq!((marks("\x1b[2K"), marks("\x1b[3G\x1b[K")), ("2 0 prompt\n".into(), "2 2 prompt\n".into()));
+    // Characters put in before it leave it at the row's end, and ones taken out take it along.
+    assert_eq!(
+        (marks("\x1b[@"), marks("\x1b[3@"), marks("\x1b[2P")),
+        ("2 8 prompt\n".into(), "2 8 prompt\n".into(), "2 6 prompt\n".into())
+    );
+}
+
+#[test]
 fn the_test_pattern_leaves_the_shells_marks_at_the_screens_start_and_the_rows_a_resize_lent_in_history() {
     // (ESC # 8 writes over the whole screen, as CSI 2 J erases it: what the marks marked is gone. CSI J from
     // the screen's first cell, which many a `clear` sends, and CSI 1 J up to its last erase it whole too.)
