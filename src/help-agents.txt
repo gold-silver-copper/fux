@@ -69,12 +69,11 @@ A plain write (`> "$P/in"`) waits for ever if the pane's holder was killed outri
 (kill -9, a crash): the FIFOs stay with no reader, and `state` stays as it was (running). Opened
 for reading and writing at once (`1<>`), a FIFO never makes the opener wait:
     [ -p "$P/in" ] && printf 'echo sent\r' 1<>"$P/in"; seen '^sent$' "$P/screen"
-What that gives and does not: a short write (one the FIFO has room for) cannot hang on a
-dead pane, but there the bytes are lost without a word. (The `-p` test is because on a pane that ended normally `in` is gone, and
-`1<>` would make a plain file of that name.) Under a program that has stopped reading
-keys it can still wait, as said above. So when the answer matters, ask first whether the pane is
-alive, and after typing wait, with a limit, for what you expect. Alive is not what `state`
-says: it is the holder's process, there and not a zombie:
+What that gives and does not: a short write (one the FIFO has room for) cannot hang on a dead
+pane, but there the bytes are lost without a word. (The `-p` test is because on a pane that ended
+normally `in` is gone, and `1<>` would make a plain file of that name.) Under a program that has
+stopped reading keys it can still wait, as said above. So when the answer matters, ask first whether
+the pane is alive. Alive is not what `state` says: it is the holder's process, there and not a zombie:
     alive() { s=$(ps -o state= -p "$(sed -n 's/^holder //p' "$1/status")" 2>/dev/null) && case $s in ''|Z*) false ;; esac; }
     X=$(fux start agent-demo/crash -- sleep 600); kill -9 "$(sed -n 's/^holder //p' "$X/status")"   # a crash, to show it
     seen . "$X/state"; sleep 0.2; alive "$P"; alive "$X" || echo "crash is dead, though its state says $(cat "$X/state")"
@@ -82,7 +81,7 @@ says: it is the holder's process, there and not a zombie:
 Its one limit: long after a crash the holder's number may be another process's. Exact,
 where there is flock(1) (Linux): the holder holds a lock on the pane's directory while it
 lives, so `flock -sn "$X" true` FAILS for a live pane and succeeds for a dead one (without
--s it also fails in the instant a viewer or a `fux wait` looks at the pane).
+-s it also fails in the instant a `fux wait` reads a dead one).
 
 READ IT
     cat "$P/screen"                           # the screen now, one line a row
@@ -129,7 +128,7 @@ RUN A COMMAND, GET ITS OUTPUT AND EXIT CODE
 Surest: make the command the pane's program. `fux wait DIR` returns when the pane's holder
 is gone, and prints `pid N` and `state ...` as the files have them: the exit code is in that
 line (fux wait itself exits 0). A holder whose program ended wrote the last screen first; one
-that was killed did not, and `state running` is what you get. The pane stays, to be read.
+that was killed did not, and `state running` is what you get. The pane stays.
     J=$(fux start agent-demo/ls -- sh -c 'ls /; exit 3')
     code=$(fux wait "$J" | sed -n 's/^state exited //p'); echo "exit code $code"
     whole "$J"                                # all it printed
@@ -225,10 +224,9 @@ $XDG_CONFIG_HOME/fux-next/keys, else ~/.config/fux-next/keys), and while it runs
 `.view.PID` in the session.
 
 IF YOU HAVE PERL (optional: nothing else on this page needs it)
-The sh forms above have three risks: a write to a dead pane is lost without a word, a
-write can wait under a program that stopped reading, and `alive` can be wrong long after
-a crash. With perl (Linux and macOS ship it) there are surer forms. A write that never waits
-and fails at once, saying why (512 bytes at most: of more, a part may be taken without a word):
+The sh forms above can lose a write to a dead pane without a word, wait under a program that
+stopped reading, and take a long-dead pane for alive. With perl (Linux and macOS ship it) there are surer
+forms. A write that never waits and fails at once, saying why (512 bytes at most: of more, a part may go):
     send() { perl -e 'use Fcntl; -p $ARGV[0] or die "$ARGV[0]: not a FIFO\n"; sysopen(F, $ARGV[0], O_WRONLY|O_NONBLOCK) or die "$ARGV[0]: $!\n"; local $/; defined syswrite(F, <STDIN>) or die "$ARGV[0]: $!\n"' "$1"; }
     printf 'x' | send "$W/in"; printf 'x' | send "$X/in" || echo "refused at once"
 "not a FIFO", "No such file": the pane ended or is gone; "No such device or address": no

@@ -52,7 +52,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. Wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout as the folders make it (and writes it, if they changed it), or edits it (below) |
-| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it, read it, wait, get a command's output and exit code, tell a live pane from a dead one, end and clean up, in plain sh, with the hazards said. It is `src/help-agents.txt`, in the binary; its indented lines are run, in order, as one sh session by `tools/help-agents.sh` (CI, both systems; the perl section where perl is) |
+| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type, read, wait, get a command's exit code, tell a live pane from a dead one and clean up, in plain sh, with the hazards said. It is `src/help-agents.txt`, in the binary; its indented lines are run, in order, as one sh session by `tools/help-agents.sh` (CI, both systems; the perl section where perl is) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot, and not `-` alone, `layout`, `layout.new`, `colours` or `keyboard`
@@ -71,18 +71,18 @@ example above, typed in a pane of another workspace, starts `build` there and no
 | `ctl` | FIFO, one command a line (a line over 1,280 bytes is dropped, with a line in `log`): `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]`, `notify TEXT` (have something noticed, as a program does: `printf 'notify %s\n' 'the build is done' > ctl`) |
 | `screen` | the screen as plain text: one line per row, and nothing else |
 | `screen.styled` | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them. The cell a wide character left empty at a row's end, having no room there, is no text; where it has a colour it is told all the same, as U+200B and a blank at the row's end, so that the row is coloured to its last cell |
-| `screen.main`, `screen.main.styled` | there while a program has the alternate screen (and after a pane ended under one), and that they are there is what says it has: the main screen it covers, as `screen` and `screen.styled` would have it (the same rows, with the same colours of the pane's own), so that what was on the terminal before an editor or a pager was opened can be read without leaving it (`[ -e screen.main ]` asks). They are written with the facts, before the screens; written again only when the covered screen changes (a resize wraps it anew under the program; a colour the program sets for its pane is one in `screen.main.styled` too), not when the program draws; and removed when the program leaves the alternate screen. Meanwhile `marks` and the first line of `lines` are the main screen's still (that line is the first row of `screen.main`), `links` and the second line of `lines` are of `screen`, the screen shown, and a third line of `lines` says which rows of `screen.main` go on from the row above |
+| `screen.main`, `screen.main.styled` | there while a program has the alternate screen (and after a pane ended under one), and that they are there is what says it has: the main screen it covers, as `screen` and `screen.styled` would have it (the same rows, with the same colours of the pane's own), so that what was on the terminal before an editor or a pager was opened can be read without leaving it (`[ -e screen.main ]` asks). They are written with the facts, before the screens; written again only when the covered screen changes (a resize wraps it anew under the program; a colour the program sets for its pane is one in `screen.main.styled` too), not when the program draws; and removed when the program leaves the alternate screen. Meanwhile `marks` are the main screen's still and `links` the shown screen's; `lines` has a line for each (its row says which) |
 | `size` | `COLS ROWS` (`read cols rows < size`) |
 | `cursor` | `ROW COL shown\|hidden SHAPE`: row and column from 0, and the shape's number as a program sets it (0 to 6); then, if the program gave the cursor a colour (OSC 12), a fifth word, `#` and six hex digits |
 | `modes` | one line of words, empty when none: how input is to be sent to the program. `appcursor`, `keypad`, `paste`, `focus` (it asked to be told when its pane gains and loses the keys), `mouse9`, `mouse1000`, `mouse1002` or `mouse1003` (the mouse reports the program asked for), `mousesgr` (their newer form), `keysN` (the keyboard flags in force for it, below) |
 | `state` | what became of the program: `running`, `hungup`, `exited CODE` or `killed SIGNAL` (`lost ERROR` if the holder could not wait for it) |
 | `status` | `holder N`, `pid N` (the program's number) and `command …` (its first 4,096 characters): written once, when the pane starts |
-| `lines` | how the rows of `screen` are lines of the pane's text, a fact a line (`{ read -r top; read -r wraps; } < lines`, or `sed -n 2p lines`). The first line: how many lines of the pane's text are before the screen's first row, counted since the pane began, which is the number, from 0, of the line that row is part of (after `history` has become `history.1` twice, the oldest of them are in neither file). The second: the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them; row 0, from the last line of `history`), as numbers with a blank between, empty when none. While a program has the alternate screen there is a third: the rows of `screen.main` that go on, in the same form; the first line counts the main screen's lines then too, and the second is of the screen shown. Written with the other facts when any of its lines changes. A row that goes on in the next keeps the blanks at its end in `screen` and in `screen.styled`, so joining the two gives the line as it was printed (of `screen.styled`, once the U+200B and the blank of a cell a wide character left empty are taken from the row's end, as `keys/.text` does; a line feed onto a row that goes on does not end the line above, as in tmux: a shell moves down a wrapped command with one. A program that writes two lines over a wrapped one without erasing it leaves them one line): with it a script can copy a wrapped line whole (the files are read one after another: of a pane that is busy, such a copy is as good as that moment) |
+| `lines` | how the rows of `screen` are lines of the pane's text, a fact a line (`{ read -r top; read -r wraps; } < lines`, or `sed -n 2p lines`). The first line: how many lines of the pane's text are before the screen's first row, counted since the pane began, which is the number, from 0, of the line that row is part of (after `history` has become `history.1` twice, the oldest of them are in neither file). The second: the rows of `screen`, numbered from 0, that go on from the row above (the text wrapped into them; row 0, from the last line of `history`), as numbers with a blank between, empty when none. While a program has the alternate screen there is a third: the rows of `screen.main` that go on, in the same form; the first line counts the main screen's lines then too, and the second is of the screen shown. Written with the other facts when any of its lines changes. A row that goes on in the next keeps the blanks at its end in `screen` and in `screen.styled`, so joining the two gives the line as it was printed (of `screen.styled`, once the U+200B and the blank of a cell a wide character left empty are taken from the row's end, as `keys/.text` does; a line feed onto a row that goes on does not end the line above, as in tmux: a shell moves down a wrapped command with one. A program that writes two lines over a wrapped one without erasing it leaves them one line): with it a script can copy a wrapped line whole |
 | `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE AT KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it, if the shell gave one from 0 to 255). LINE is counted from the pane's first line, as the first line of `lines` is, a line being what was printed up to its line break however many rows it takes: the line of that number is the screen's first, a smaller number is in `history`, in `history.1` or older than both. AT is how many bytes of the line's text are before the mark, as `history` and `screen` (its rows joined as `lines` says) have that text (and the blanks `screen` cuts from a row's end, for a mark that stands past them): `cut -b` and `LC_ALL=C awk` cut there, and never inside a character. A mark stays on its text: when lines are scrolled, inserted, deleted or wrapped anew its numbers follow. What is erased takes its marks to where the erased part begins, in their order (so does a prompt drawn again higher up, for the marks after it): an output that was cleared away is a pair of marks at one place, and nothing. The alternate screen has no marks, and `marks` are the shell's while it is shown. The last thousand; empty when the shell marks nothing |
-| `links` | the links on the screen (a program makes one with OSC 8, as `ls --hyperlink` does), a line each: `LINE COL LEN ADDRESS`. LINE is the line's number as in `marks`, COL how many cells from the start of the line's first row on the screen the link begins (a whole row for each row the line has above it there), LEN how many cells it has, in reading order (a row counts as many cells as `size` says, also where a wide character that did not fit left its last cell empty, which `screen` does not show; a wide character is two cells); a link that goes over a line break is a line for each line. ADDRESS is printable ASCII without blanks, 2,048 bytes at most: anything else is no link, an address with a control byte in it among them. A cell keeps its link when it scrolls on the screen and when the text is wrapped anew, and loses it when it is erased or written over; text in `history` has none. At most a thousand different addresses at a time (one more is no link, with a line in `log`), and a list of 256 KiB at most (the runs past that are left out); empty when there are none. The files are read one after another: a reader that reads `links` of one moment and `screen` of the next has, until the next change, a link on the text that was there before |
+| `links` | the links on the screen (a program makes one with OSC 8, as `ls --hyperlink` does), a line each: `LINE COL LEN ADDRESS`. LINE is the line's number as in `marks`, COL how many cells from the start of the line's first row on the screen the link begins (a whole row for each row the line has above it there), LEN how many cells it has, in reading order (a row counts as many cells as `size` says, also where a wide character that did not fit left its last cell empty, which `screen` does not show; a wide character is two cells); a link that goes over a line break is a line for each line. ADDRESS is printable ASCII without blanks, 2,048 bytes at most: anything else is no link, an address with a control byte in it among them. A cell keeps its link when it scrolls on the screen and when the text is wrapped anew, and loses it when it is erased or written over; text in `history` has none. At most a thousand different addresses at a time (one more is no link, with a line in `log`), and a list of 256 KiB at most (the runs past that are left out); empty when there are none |
 | `pictures` | a line `pic-N.sixel ROW COL COLS ROWS` for each picture that has a row on the screen: the file, where its first row and column are, its size in cells. COLS and ROWS are the whole picture's, also where it goes past the screen's right edge or its last row; ROW is below 0 when rows of it have scrolled off the top (`-2`: its third row is on the screen's first) |
 | `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts, where a line ends (a line that never ends is cut at 8 MiB). That is looked at when lines are written, so a file gets longer than that (Bounds says by how much), and not while its last rows are those a resize sent there and may take back. When what the last line went on in is erased from the screen, the line is ended in `history` too |
-| `history.styled` | the same lines in the same order with their colours: text and SGR codes only, as `screen.styled` is beside `screen` (each row a line was wrapped in starts and ends in the default style; a blank that has a colour is kept at a line's end; U+200B where two characters that were two cells would read as one, as in `screen.styled`, also where two rows are joined; no links). Without the codes, those U+200B and the blanks at line ends it is `history`: `marks` count bytes in `history`, not in this one. It becomes `history.styled.1` when `history` becomes `history.1`, at the same line, which is when either file is past 4 MiB: lines full of colour codes are put aside sooner. A colour the program set is the pane's here too: a row is told as `screen.styled` had it when it left the screen (with a background of the program's own it is as wide as the pane was), and it is a record, not told again when a colour is set or given back later; only what a resize takes back is told anew, in the colours of then. What a resize takes back from `history` is taken back from it too. What cannot be written to one of the two files is lost to that file and `log` says so: the other has those lines all the same, and what a resize sent to history just before is then not taken back from it. A line without colours is its text a second time (`seq 1 2000000` writes 14 MiB to each file, and takes 5% longer for it) |
+| `history.styled` | the same lines in the same order with their colours: text and SGR codes only, as `screen.styled` is beside `screen` (each row a line was wrapped in starts and ends in the default style; a blank that has a colour is kept at a line's end; U+200B where two characters that were two cells would read as one, as in `screen.styled`, also where two rows are joined; no links). Without the codes, those U+200B and the blanks at line ends it is `history`: `marks` count bytes in `history`, not in this one. It becomes `history.styled.1` when `history` becomes `history.1`, at the same line, which is when either file is past 4 MiB: lines full of colour codes are put aside sooner. A colour the program set is the pane's here too: a row is told as `screen.styled` had it when it left the screen (with a background of the program's own it is as wide as the pane was), and it is a record, not told again when a colour is set or given back later; only what a resize takes back is told anew, in the colours of then. What a resize takes back from `history` is taken back from it too. What cannot be written to one of the two files is lost to that file and `log` says so: the other has those lines all the same, and what a resize sent to history just before is then not taken back from it. A line without colours is its text a second time (`seq 1 2000000` writes 14 MiB to each file) |
 | `pic-N.sixel` | a picture the program drew, whole: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes, and not there while the program has set none, or an empty one |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
@@ -108,7 +108,7 @@ copied while its pane was busy. So keep the cursor inside the rows you have,
 and take the rows that are there over what `size` says. The viewer does.
 When a pane is still, or ended, its files agree, unless `log` says its last round failed.
 
-**Bounds.** Each round replaces a pane's two screens (a pair: `screen` first, a rename each), with the facts that changed (once
+**Bounds.** Each round replaces a pane's two screens (a pair), with the facts that changed (once
 a program scrolls, `lines` with every pair) and an append to `history`.
 While a program keeps writing (never a millisecond without output) that is at most
 40 pairs a second: a flood (`yes`) costs 80 replacements of screens a second. What a program
@@ -120,7 +120,7 @@ any 25 ms), and past that the program waits, as on any slow terminal. The holder
 reading; past that it stops reading `in`, and once the FIFO's own buffer
 (the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
 cells. A program that says it is in the middle of drawing (mode 2026) is not
-written out until it says it is done, or what is not yet written (its output, a line on `ctl`) has waited half a second in the holder (history may be added to meanwhile): so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data and 500 cells each way; a ninth drops the
+written out until it says it is done, or what is not yet written (output, or a line on `ctl`) has waited half a second (history may be added to meanwhile): so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data and 500 cells each way; a ninth drops the
 oldest, with a line in `log`. At most 4 MiB of history and one row wait to be written,
 counted on the longer of `history` and `history.styled`: rows past that (one
 write of the program or one resize that makes more, with what still waits from before; rows a resize takes back and gives again are counted once) are not kept, in either
@@ -128,8 +128,7 @@ file, with a line in `log`, and the line they were part of ends there in
 both. The holder writes what waits once it is past 512 KiB, so a history file
 is 4 MiB and one such write long at most: about 4.5 MiB as a rule, 8.6 MiB at
 the very most (12.6 for a line that never ends), and the screen's text more
-while a resize may take its rows back. History that cannot be written (a full disk)
-is lost, with a line in `log`. When the program ends, at most 4 MiB of what
+while a resize may take its rows back. When the program ends, at most 4 MiB of what
 it wrote last is still read; a `resize` first draws, at the old size, up to
 1 MiB of what the program had already written.
 
@@ -160,14 +159,10 @@ for (at 21cf936b4) and after them. fux has changed since: the script gives today
 (The middle and right columns are that run; the left column is the same steps on the
 binary built at 21cf936b4. CPU is the time the scheduler says all of a process's threads
 ran, from `/proc/PID/task/*/schedstat` (the script takes `ps`'s where there is none); the
-left column's is that of each process's first thread only, which in that binary did all
-the work: its viewer had one thread, its holder a second that only waits for the program's
-end. tmux's server writes to the terminal itself, so its client does nothing; and
+left column's is that of each process's first thread, which in that binary did all
+the work. tmux's server writes to the terminal itself, so its client does nothing; and
 fux's holder reads only so much between two screens (Bounds), which is what bounds
-the frames a program can write. A key's four milliseconds were the holder
-waiting a millisecond to see that the program is done, the viewer's look at
-the files every millisecond after a key that went to a pane, and its putting the frame
-together. From run to run the key rows move by a millisecond and the flood by a few
+the frames a program can write. From run to run the key rows move by a millisecond and the flood by a few
 hundredths of a second.)
 
 The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux-next`,
@@ -204,11 +199,11 @@ itself and for itself, with nobody watching:
 | `Ss` | `\E[%p1%d q` |
 | `Se` | `\E[0 q` |
 
-That is all of it: true colour, the kinds and the colour of an underline, the
+That is all fux answers by name: true colour, the kinds and the colour of an underline, the
 cursor's shape (`Se` gives it back to your terminal's own). Setting the
 clipboard works (OSC 52 with `c`) and is not in the table: the capability's
 name, `Ms`, promises a choice of clipboard and a way to read it, and fux has
-neither. These are the names fux answers; all it does is under "Whose rules it
+neither. All it does is under "Whose rules it
 follows". What it leaves out (left and right margins among them: `CSI ? 69 $ p` is
 answered "not known") a program that asks first does not turn on. A pane's program also has
 `COLORTERM=truecolor` in its environment, which is what many read instead of
@@ -306,11 +301,9 @@ for it: with no file, or `0`, it is told that no flag is in force and gets
 keys the old way, also after a viewer on a better terminal has come (start
 the program again to have them). While a pane has the keys, the viewer asks
 its terminal for that pane's flags, and takes them back when the focus moves
-or the viewer leaves. The keys go to the program as the terminal sends them.
-A flag the terminal lacks is not in force, and the program is told so. (What
+or the viewer leaves. The keys go to the program as the terminal sends them. (What
 a program was told stays what `modes` says, also when a viewer on a lesser
-terminal comes later: that terminal sends what it can, and the program
-finds out when it asks again.)
+terminal comes later: that terminal sends what it can.)
 
 With flag 2 the terminal tells of keys held and let go, and the viewer sees
 those too. A key belongs, until it is let go, to whoever got its press. A key
@@ -519,18 +512,15 @@ what it said can be read.
 `C-b M-c` (Alt-c) is the same with its colours: the text of the styled files,
 in `less -R` at its end, whatever `$EDITOR` is (an editor shows the codes, not
 the colours). Its tab and its file go when you leave less (`q`), as an editor's
-do, and a text shorter than the screen stays open whatever `$LESS` says (`-+F`)
-(`keys/C-b/M-c` is four commands, and yours to change).
+do, and a text shorter than the screen stays open whatever `$LESS` says (`-+F`).
 
 There is no zoom either: a pane shown alone is a tab with one pane. If you
 want the key, these two scripts are it (`keys/C-b/z` and `keys/C-b/S-z`).
 The first takes the focused pane to a tab of its own and keeps its old tab's
-line in the pane's folder; the second writes that line back. (`fux layout`
-is the way to change a layout that needs nothing else and loses no edit. The
+line in the pane's folder; the second writes that line back. (The
 second script edits the file by hand, which `fux layout` has no edit for, and
 so takes the same lock itself: sh has no way to, and it uses perl for that
-one line. Without perl, leave the line out: the edit is then as safe as any
-hand edit, lost if a pane comes or goes in the same instant.)
+one line. Without perl, leave the line out: the edit is then a hand edit ("Don't" says what that risks).)
 
 ```sh
 #!/bin/sh
@@ -585,17 +575,16 @@ prefix is in use, the last row shows the workspace, its tabs and the keys
 typed so far (or a message), and the corner above it the keys that can follow. A message
 (a script's words, what is wrong with `layout`) sits in the bottom right
 corner until the next key. A pane whose program ended, or whose holder is
-gone, says so in the corner of its own last row (`exited 0`, `lost`).
+gone, says so in the corner of its own last row (`exited 0`; `lost` where `state` still says `running`).
 
 **Titles and the clipboard.** The viewer gives your terminal the focused
 pane's title (and its own back when no pane has one, and when it leaves);
 no row is taken for it. What the focused pane's program copies (OSC 52)
 is passed to your terminal once, when its `clipboard` file changes: looking at a pane, or
-coming back to it, never sends an old clipboard again. Without a viewer the
-`clipboard` file is still there to read.
+coming back to it, never sends an old clipboard again.
 
 **The mouse** passes through. When the focused pane's program asks for mouse
-reports, the viewer asks your terminal for the same in the SGR form (and for releases too when the program asked for presses alone, mode 9: a click on another tile ends with its release, and the program is still told of presses only) and forwards each one over
+reports, the viewer asks your terminal for the same in the SGR form (and for releases too when the program asked for presses alone, mode 9, which is told of presses only) and forwards each one over
 that pane's tile to it, in the form it asked for, counted from the tile's corner; a drag that leaves the tile is
 reported at its edge until the button is let go. A click on another tile
 gives that tile the keys and is not passed on. The viewer uses the mouse for nothing else, and when the
@@ -697,7 +686,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   (`rm` it). The panes do not care.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `state` stays as it was (`running`, as a rule) and the
-  FIFOs stay, with no reader: the viewer says `lost` in the corner of a pane that says `running`, and a plain
+  FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
   `printf > in` then waits for ever, as on any FIFO nobody reads. `fux start`
   with the same name starts it again in place, with FIFOs of its own: who
   still waits on the old ones waits on. (A holder that ends normally
@@ -897,8 +886,7 @@ editor on the pane's text, `C-b M-c` is `less` on it in colour); Windows. `clear
 `history` file (`CSI 3 J` is ignored).
 
 Pictures: a pixel shape other than square (sixel can ask for pixels twice
-as high as wide) is not kept: cells are counted as if pixels were square,
-and such a picture is always written anew, with square ones. Text
+as high as wide) is not kept: cells are counted as if pixels were square. Text
 written over any cell of a picture takes the whole picture away, in the pane
 and in the viewer (a sixel terminal keeps the pixels the text did not
 cover): a pane's picture is one rectangle of cells, not pixels. A picture
