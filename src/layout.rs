@@ -341,7 +341,7 @@ impl Layout {
             })
             .collect();
         let [same, back] = [Some(self.current), self.before].map(|old| kept.iter().position(|at| Some(*at) == old));
-        self.current = same.or(back).unwrap_or(kept.partition_point(|at| *at < self.current));
+        self.current = same.or(back).unwrap_or_else(|| kept.partition_point(|at| *at < self.current));
         self.before = back.filter(|back| *back != self.current);
         [same, back]
     }
