@@ -810,8 +810,7 @@ impl Term {
     /// How many lines are before the main screen's first row: those gone into history whole,
     /// and one more that history has the start of, if what it went on in was erased.
     pub fn top(&self) -> usize {
-        let first = if self.screen.alt { self.other.first() } else { self.screen.grid.first() };
-        self.gone + usize::from(self.tail.open.is_some() && !first.is_some_and(|row| continues(row)))
+        self.gone + usize::from(self.tail.open.is_some() && !self.main().first().is_some_and(|row| continues(row)))
     }
 
     /// The number of a link's address in the table, which keeps at most `LINKS_MAX`: when it is
@@ -2089,10 +2088,7 @@ impl Term {
 
     /// Parameter `i`, or `default` when it is missing or zero.
     fn arg(&self, i: usize, default: usize) -> usize {
-        match self.csi.params.get(i) {
-            Some(&(value, _)) if value != 0 => usize::from(value),
-            _ => default,
-        }
+        self.csi.params.get(i).filter(|p| p.0 != 0).map_or(default, |p| usize::from(p.0))
     }
 
     fn dispatch(&mut self, last: u8) {
