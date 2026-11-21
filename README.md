@@ -727,6 +727,8 @@ fux adds nothing to stop these. What happens is what Unix does:
 - **Don't move a pane into a workspace a viewer shows and expect silence.**
   A notice that appears there is a new one, whoever brought it: the pane's
   last notice is passed on once more.
+- **Don't expect one shell from two viewers that find a workspace empty at
+  once.** Each starts one, as each would on its own: close one.
 - **Don't put other folders in a workspace**: every folder there with a
   pane's kind of name is shown as a pane. Files are fine.
 - **Don't edit `layout` by hand just as panes come or go**: the viewer writes
@@ -754,7 +756,8 @@ Differences are left as they are:
 
 `ls "$(fux dir)"` lists the workspaces (tmux's sessions); `fux view NAME`
 attaches to one and `C-b d` detaches; a workspace with no pane gets a shell
-each time a viewer comes to show it (`keys/.empty` does that, and is yours to change; a
+each time a viewer comes to show it (`keys/.empty` does that, and is yours to change; two
+viewers that come to it in the same instant start a shell each; a
 keys directory an earlier build wrote has none, and nothing is started), and
 `C-b t n`, in the keys as they come, starts one in a workspace whose last
 pane has ended. Tabs are tmux's windows. The choosers are `C-b f p`, `f t` and
