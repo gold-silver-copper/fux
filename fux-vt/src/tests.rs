@@ -1423,3 +1423,16 @@ fn the_test_pattern_leaves_the_shells_marks_at_the_screens_start_and_the_rows_a_
         assert!(lent.lent(), "{part:?}");
     }
 }
+
+#[test]
+fn erasing_half_a_wide_character_erases_it_whole_for_the_marks_and_the_pictures_too() {
+    // (Both cells of the character are blanked: the mark after it and the picture on its first cell
+    // are on what was erased, as its cells are.)
+    let term = term(8, 3, "\x1b]133;C\x07日\x1b]133;D\x07x\x1b[H\x1bPq~\x1b\\\x1b[1;2H\x1b[X");
+    assert_eq!((term.plain().as_str(), term.marks().as_str()), ("  x\n\n\n", "0 0 output\n0 0 end\n"));
+    assert!(term.screen().pictures.is_empty());
+    // And from the other side: erased up to its first cell, the mark right after its second is at the start.
+    let term = self::term(8, 3, "ab日\x1b]133;D\x07x\x1b[1;4H\x1bPq~\x1b\\\x1b[1;3H\x1b[1K");
+    assert_eq!((term.plain().as_str(), term.marks().as_str()), ("    x\n\n\n", "0 0 end\n"));
+    assert!(term.screen().pictures.is_empty());
+}

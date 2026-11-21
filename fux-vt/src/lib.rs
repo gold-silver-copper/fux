@@ -1008,8 +1008,9 @@ impl Term {
             // A row erased whole is an empty line: the next row does not go on from it.
             self.parts(row + 1);
         }
-        self.split(row, from);
-        self.split(row, to);
+        // (Half a wide character erased is the character erased: its other cell is of the erased part.)
+        let half = |at: usize| usize::from(self.screen.cell_at(row, at).is_some_and(|cell| cell.ch == '\0'));
+        let (from, to) = (from.saturating_sub(half(from)), to + half(to));
         if let Some(cells) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(from..to)) {
             cells.fill(blank);
         }
