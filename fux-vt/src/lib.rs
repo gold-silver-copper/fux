@@ -988,6 +988,28 @@ impl Term {
         }
     }
 
+    /// The cells of a row from `col` on go `n` columns on, blanks coming in at `col` (`on`), or back
+    /// over the `n` at `col`, blanks coming in at the row's end. The marks at `marks` and after go
+    /// with their cells (one on a cell taken out, to where that part begins), half a wide character
+    /// becomes a blank, and the row's first cell, whichever that is now, says if the row goes on.
+    fn shift(&mut self, row: usize, col: usize, n: usize, on: bool, marks: usize) {
+        let (blank, cols) = (self.blank(), self.screen.cols);
+        let goes_on = col == 0 && self.screen.grid.get(row).is_some_and(|cells| continues(cells));
+        self.split(row, col);
+        self.split(row, if on { col } else { col.saturating_add(n) });
+        let to = |c: usize| if on { (c + n).min(cols) } else { c.saturating_sub(n).max(col) };
+        self.move_marks(|r, c| (r, if r == row && c >= marks { to(c) } else { c }));
+        if let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
+            let n = n.min(rest.len());
+            let keep = rest.len() - n;
+            rest.rotate_left(if on { keep } else { n });
+            rest.get_mut(if on { 0..n } else { keep..keep + n }).into_iter().for_each(|gone| gone.fill(blank));
+            rest.iter_mut().for_each(|cell| cell.style.flags &= !CONT);
+            rest.first_mut().into_iter().for_each(|first| first.style.flags |= u16::from(goes_on) * CONT);
+        }
+        self.tidy(row);
+    }
+
     /// Row `row` no longer goes on from the one above it: its neighbour is another now.
     fn parts(&mut self, row: usize) {
         if let Some(first) = self.screen.grid.get_mut(row).and_then(|cells| cells.first_mut()) {
@@ -2029,30 +2051,7 @@ impl Term {
             }
             (0, 0, b'X') => self.erase((row, col), (row, col.saturating_add(n).min(self.screen.cols))),
             (0, 0, b'@' | b'P') => {
-                let goes_on = col == 0 && self.screen.grid.get(row).is_some_and(|cells| continues(cells));
-                self.split(row, col);
-                if last == b'P' {
-                    self.split(row, col.saturating_add(n));
-                }
-                let (blank, cols) = (self.blank(), self.screen.cols);
-                // (The marks from there on go with their cells: one on a cell taken out, to where that part begins.)
-                let to = |c: usize| if last == b'@' { (c + n).min(cols) } else { c.saturating_sub(n).max(col) };
-                self.move_marks(|r, c| (r, if r == row && c >= col { to(c) } else { c }));
-                if let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
-                    let n = n.min(rest.len());
-                    let keep = rest.len() - n;
-                    if last == b'@' {
-                        rest.copy_within(..keep, n);
-                        rest.split_at_mut(n).0.fill(blank);
-                    } else {
-                        rest.copy_within(n.., 0);
-                        rest.split_at_mut(keep).1.fill(blank);
-                    }
-                    // (That the row goes on from the one above is said by its first cell, whichever that is now.)
-                    rest.iter_mut().for_each(|cell| cell.style.flags &= !CONT);
-                    rest.first_mut().into_iter().for_each(|first| first.style.flags |= u16::from(goes_on) * CONT);
-                }
-                self.tidy(row);
+                self.shift(row, col, n, last == b'@', col);
                 self.screen.cursor.wrap = false;
             }
             (0, 0, b'L' | b'M') if (self.top..=self.bottom).contains(&row) => {
