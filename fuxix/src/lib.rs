@@ -165,8 +165,11 @@ pub fn winsize(tty: &File) -> io::Result<Winsize> {
 /// same order. An interrupted wait is an answer with no events.
 pub fn wait<const N: usize>(wanted: [(Option<BorrowedFd<'_>>, i16); N], timeout: i32) -> io::Result<[i16; N]> {
     let mut fds = wanted.map(|(fd, events)| PollFd { fd: fd.map_or(-1, |fd| fd.as_raw_fd()), events, revents: 0 });
-    // SAFETY: the pointer and length describe `fds`, whose descriptors are borrowed for the call.
-    match check(unsafe { poll(fds.as_mut_ptr(), N as os::Nfds, timeout) }) {
+    // (Linux refuses a count over the limit of open files, also for entries that are no file:
+    // those at the end are not passed.)
+    let count = fds.iter().rposition(|fd| fd.fd >= 0).map_or(0, |last| last + 1);
+    // SAFETY: the pointer and count describe the start of `fds`, whose descriptors are borrowed for the call.
+    match check(unsafe { poll(fds.as_mut_ptr(), count as os::Nfds, timeout) }) {
         Err(error) if error.kind() != io::ErrorKind::Interrupted => Err(error),
         Err(_) => Ok([0; N]),
         Ok(_) => Ok(fds.map(|fd| fd.revents)),

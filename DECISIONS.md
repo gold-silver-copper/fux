@@ -1489,6 +1489,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     said so before the work: the lines come from the simplifications.
   - Not done here: `Term`'s fields private behind a `Screen` and one
     `Out` (8 of 8, a change of its own).
+- **D99. The simplifying run changes no behaviour: what its fix checks
+  found was put back** (message 29's rule). Two readers for each series
+  asked only "did behaviour change". Put back as it was at `525e2c8b9`:
+  - the answer to `DECRQSS m` lists the looks as 1, 4, 5, 7, 8, 2, 3, 9
+    (one table of looks had made it 1, 2, 3, ...; a test holds it now);
+  - `layout` and a key script's caption are opened by a plain open, which
+    waits on a FIFO, and a picture whose read ends in an error is not
+    drawn (one bounded reader had made all three "what could be read");
+  - only a screen's stamp has its length; a notice's, a picture's and
+    the clipboard's are inode and time (one stamp had given all a length);
+  - a frame numbers a link's address when a cell with it is drawn, and an
+    address once (laying every tile's list end to end ran out of the
+    65,535 numbers with 66 tiles of a thousand addresses each);
+  - a wait passes the system only the files up to the last one that is
+    there (four entries with two absent failed on Linux under a limit of
+    three open files, where the old two entries did not).
+  - Kept, and so the two changes of this run: a split or new-tab script
+    reads `keys/.new-shell`, which is written with them, as `.shell` is
+    (a keys folder put together by hand needs both files); and a viewer
+    whose terminal cannot be duplicated at its start now leaves the
+    terminal's mode alone (it was left raw: raw mode is a value that owns
+    the duplicate, D97, so the duplicate is made first).
 
 ## The old fux3's bugs: which classes are gone
 

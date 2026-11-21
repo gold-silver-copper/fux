@@ -118,22 +118,22 @@ fn say(line: &[u8]) -> Result<(), String> {
     }
 }
 
-/// Up to `most` bytes of a file as it is now, opened without waiting (should the name be a
-/// FIFO's): what could be read of it, and whether that went well.
-fn read(path: &Path, most: u64) -> (Vec<u8>, std::io::Result<usize>) {
+/// Up to `most` bytes of an opened file as it is now: what could be read of it, and whether
+/// that went well.
+fn read(file: std::io::Result<File>, most: u64) -> (Vec<u8>, std::io::Result<usize>) {
     let mut bytes = Vec::new();
-    let read = sys::open(path, false).and_then(|file| file.take(most).read_to_end(&mut bytes));
+    let read = file.and_then(|file| file.take(most).read_to_end(&mut bytes));
     (bytes, read)
 }
 
-/// The same, as text.
+/// The same as text, of a file opened without waiting (should the name be a FIFO's).
 fn text(path: &Path, most: u64) -> String {
-    String::from_utf8_lossy(&read(path, most).0).into_owned()
+    String::from_utf8_lossy(&read(sys::open(path, false), most).0).into_owned()
 }
 
 /// At most 64 KiB of a small file of ours, as text, or why it cannot be read.
 fn read_some(path: &Path) -> std::io::Result<String> {
-    let (bytes, read) = read(path, 64 << 10);
+    let (bytes, read) = read(sys::open(path, false), 64 << 10);
     read.map(|_| String::from_utf8_lossy(&bytes).into_owned())
 }
 

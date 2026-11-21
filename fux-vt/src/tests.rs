@@ -457,6 +457,8 @@ fn what_fux_is_and_can_do_is_answered_under_its_own_name_and_no_more() {
     // What the emulator keeps is told (DECRQSS): the colours and the underline in force, the
     // scroll region, the cursor's shape; anything else is "not valid".
     assert_eq!(said("\x1b[4:3;38;2;1;2;3m\x1bP$qm\x1b\\"), "\x1bP1$r0;4:3;38:2::1:2:3m\x1b\\");
+    // (The looks in xterm's order, not the screen file's.)
+    assert_eq!(said("\x1b[2;3;4;7m\x1bP$qm\x1b\\"), "\x1bP1$r0;4;7;2;3m\x1b\\");
     assert_eq!(
         said("\x1b[2;4r\x1b[5 q\x1bP$qr\x1b\\\x1bP$q q\x1b\\\x1bP$qs\x1b\\"),
         "\x1bP1$r2;4r\x1b\\\x1bP1$r5 q\x1b\\\x1bP0$r\x1b\\"

@@ -1759,7 +1759,9 @@ impl Term {
         let body = match selector {
             b"m" => {
                 let (style, mut body) = (self.style, String::from("0"));
-                for (code, bit, _) in LOOKS.iter().filter(|look| style.flags & look.1 != 0) {
+                // (In xterm's order: 1, 4, 5, 7, 8, 2, 3, 9.)
+                let looks = [0, 3, 4, 5, 6, 1, 2, 7].iter().filter_map(|at| LOOKS.get(*at));
+                for (code, bit, _) in looks.filter(|look| style.flags & look.1 != 0) {
                     let _ = match style.kind().filter(|_| *bit == UNDERLINE) {
                         Some(kind) => write!(body, ";4:{kind}"),
                         None => write!(body, ";{code}"),
