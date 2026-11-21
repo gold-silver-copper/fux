@@ -705,7 +705,8 @@ fux adds nothing to stop these. What happens is what Unix does:
   kernel hangs up its program. `state` goes on saying `running` and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
   `printf > in` then waits for ever, as on any FIFO nobody reads. `fux start`
-  with the same name starts it again in place. (A holder that ends normally
+  with the same name starts it again in place, with FIFOs of its own: who
+  still waits on the old ones waits on. (A holder that ends normally
   removes its FIFOs, so a late `echo kill > ctl` only leaves a small file.)
 - **Don't count on `kill`, or `rm -r`, killing.** They hang up the terminal.
   A program that ignores SIGHUP lives on (after `kill`, with `state hungup`,

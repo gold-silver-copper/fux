@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsFd;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -56,9 +56,6 @@ struct Holder {
     _slave: File,
     /// The facts as they were written last, each in its file: one is written again only when it changes.
     facts: HashMap<&'static str, Option<Vec<u8>>>,
-    /// What the program said last of its title, clipboard, directory and what to notice: facts
-    /// as the others, each in its file, or (the directory of another machine) no file.
-    said: Vec<(&'static str, Option<Vec<u8>>)>,
     /// What the `status` file says.
     status: String,
     /// The last round of writing failed.
@@ -83,16 +80,12 @@ struct Holder {
     logged: usize,
 }
 
-/// A FIFO of ours: made if missing, opened to read without waiting, and with
-/// a writer of our own so that a writer leaving is never the end of the file.
+/// A FIFO of ours, made anew (what an earlier holder left of that name goes), opened to read
+/// without waiting, and with a writer of our own so that a writer leaving is never the end of the file.
 fn fifo(name: &str) -> io::Result<(File, File)> {
-    if !fs::symlink_metadata(name).is_ok_and(|m| m.file_type().is_fifo()) {
-        let _ = fs::remove_file(name);
-        sys::make_fifo(name.as_ref())?;
-    }
-    let reader = sys::open(name, false)?;
-    let writer = OpenOptions::new().write(true).open(name)?;
-    Ok((reader, writer))
+    let _ = fs::remove_file(name);
+    sys::make_fifo(name.as_ref())?;
+    Ok((sys::open(name, false)?, sys::open(name, true)?))
 }
 
 /// Keeps the pane whose directory is the working directory until its program
@@ -171,7 +164,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         master: Some(master),
         _slave: slave,
         facts: HashMap::new(),
-        said: Vec::new(),
         // Who holds the pane, the program's own number, and what it runs: a fact as the others
         // are, written once (it never changes), with them and before the first screen.
         status: format!("holder {}\npid {pid}\ncommand {command}\n", std::process::id()),
@@ -579,21 +571,22 @@ impl Holder {
             ("status", self.status.clone()),
         ];
         let facts = covered.into_iter().chain(texts.into_iter().map(|(name, text)| (name, Some(text.into_bytes()))));
-        // What the program said: the title is one line; the clipboard is the bytes it set, and
-        // set again is written again (what is on the terminal's clipboard may be another's by now).
+        // What the program said, facts as the others, each waiting until this round has written
+        // it: the title is one line; the clipboard is the bytes it set, and set again is written
+        // again (what is on the terminal's clipboard may be another's by now).
         let mut said = Vec::new();
-        said.extend(self.pending.title.take().map(|title| ("title", Some(format!("{title}\n").into_bytes()))));
-        if let Some(bytes) = self.pending.clipboard.take() {
+        said.extend(self.pending.title.iter().map(|title| ("title", Some(format!("{title}\n").into_bytes()))));
+        if let Some(bytes) = &self.pending.clipboard {
             self.facts.remove("clipboard");
-            said.push(("clipboard", Some(bytes)));
+            said.push(("clipboard", Some(bytes.clone())));
         }
         // The directory the program says it is in: kept if it is one of this machine (no host
         // named, or this one's name or address), and forgotten if it is another machine's (a
         // shell at the far end of ssh): a path of there means nothing here.
-        if let Some((host, path)) = self.pending.cwd.take() {
+        if let Some((host, path)) = &self.pending.cwd {
             // (The file is the program's to write too: what it says is written, whatever was written last.)
             self.facts.remove("cwd");
-            let same = |name: &str| name.eq_ignore_ascii_case(&host);
+            let same = |name: &str| name.eq_ignore_ascii_case(host);
             let here = host.is_empty()
                 || ["localhost", "127.0.0.1", "[::1]"].into_iter().any(same)
                 || sys::host().is_some_and(|name| same(&name));
@@ -605,17 +598,13 @@ impl Holder {
         }
         // What the program wanted noticed last: a number that grows with each one (so that the
         // same words twice are two), then the words; the number alone is the bell.
-        if let Some(text) = self.pending.notice.take() {
-            self.noticed = self.noticed.wrapping_add(std::mem::take(&mut self.pending.notices).max(1));
-            let line = format!("{} {text}", self.noticed).trim_end().to_string() + "\n";
+        let noticed = self.noticed.wrapping_add(self.pending.notices.max(1));
+        if let Some(text) = &self.pending.notice {
+            let line = format!("{noticed} {text}").trim_end().to_string() + "\n";
             said.push(("notice", Some(line.into_bytes())));
         }
-        for (name, bytes) in said {
-            self.said.retain(|(fact, _)| *fact != name);
-            self.said.push((name, bytes));
-        }
         // (One that cannot be written fails the round, which is tried again: the newest of each.)
-        for (name, bytes) in facts.chain(self.said.iter().cloned()) {
+        for (name, bytes) in facts.chain(said) {
             if self.facts.get(name) != Some(&bytes) {
                 match &bytes {
                     Some(bytes) => replace(name, bytes)?,
@@ -625,6 +614,9 @@ impl Holder {
                 self.facts.insert(name, bytes);
             }
         }
+        self.noticed = if self.pending.notice.is_some() { noticed } else { self.noticed };
+        (self.pending.title, self.pending.clipboard, self.pending.cwd) = (None, None, None);
+        (self.pending.notice, self.pending.notices) = (None, 0);
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
         // end: who watches a pane watches that one file, and finds every fact already there.
         replace("screen", self.term.plain().as_bytes())?;
