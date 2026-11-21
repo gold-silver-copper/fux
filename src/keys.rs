@@ -117,7 +117,8 @@ fn sequence(parameters: &str, last: u8) -> (String, Option<Event>) {
     let kind = second.next().and_then(|n| n.parse::<u8>().ok()).unwrap_or(1);
     let alone = last == b'u' && matches!(code, Some(57358..=57360 | 57441..=57454));
     let event = ((code.unwrap_or(1), last), sign.map(|sign| (sign, last)), kind, alone);
-    let event = matches!(last, b'u' | b'~' | b'A'..=b'H' | b'P'..=b'S').then_some(event);
+    // (Number 0 is text with no key: nothing that is pressed, held or let go.)
+    let event = (code != Some(0) && matches!(last, b'u' | b'~' | b'A'..=b'H' | b'P'..=b'S')).then_some(event);
     // Caps Lock and Num Lock (64, 128) are no part of a key's name.
     let mut modifier = (held & 7) as u8;
     let f = |n: u8| format!("f{n}");

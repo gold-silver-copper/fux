@@ -112,6 +112,8 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
         (event(b"A"), event(b"\x1b[<0;1;1M"), event(b"\x1ba")),
         (Some(((97, b'u'), None, 1, false)), None, None)
     );
+    // Text with no key (number 0, the text after it) is no key: nothing is down, nothing to let go.
+    assert_eq!((event(b"\x1b[0;;229u"), next(b"\x1b[0;;229u", true, false)), (None, Some((9, String::new()))));
     // Going back takes a count: none given is one, 0 is none.
     assert_eq!(asked("\x1b[=4u\x1b[>1u\x1b[<0u\x1b[?u\x1b[<u\x1b[?u").0, "\x1b[?1u\x1b[?4u");
     // What is kept aside is bounded at 16: of 17, the oldest (4) is gone, and the 16 come back in turn.

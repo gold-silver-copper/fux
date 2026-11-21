@@ -1277,8 +1277,10 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     fs::write(view.join("in"), "\x1b[119;1:2u\x1b[119;1:3u!\x1b[49:33;2:3u").unwrap();
     let held = format!("{held}^[[98;1:1u^[[98;1:3u!^[[49:33;2:3u");
     until("the sign went down and up", || shown(&asks) == held);
-    // The viewer leaves with a key down in the pane: the pane is told that it is let go.
-    fs::write(view.join("in"), "\x1b[99;1:1u").unwrap();
+    // The viewer leaves with a key down in the pane: the pane is told that it is let go. Text
+    // with no key (number 0) was passed on before it, and is no key that is let go.
+    fs::write(view.join("in"), "\x1b[0;;229u\x1b[99;1:1u").unwrap();
+    let held = format!("{held}^[[0;;229u");
     until("c is down", || shown(&asks) == format!("{held}^[[99;1:1u"));
     let ctl = fs::read_dir(&inner.0)
         .unwrap()
