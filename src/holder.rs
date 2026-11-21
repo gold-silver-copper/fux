@@ -394,10 +394,10 @@ impl Holder {
             let kept = cut.err().map(|e| format!("{name} keeps bytes that are on the screen again: {e}"));
             kept.into_iter().for_each(|kept| self.log(&kept));
         }
-        // Once either file is past its size both are put aside, where the last of these lines
-        // ends: no line is in two files, and the two have the same lines. (A line that never
-        // ends is cut when a file is twice its size.) Neither while their last rows are a
-        // resize's to take back, which it takes from these files.
+        // Once either file is past its size both are put aside, where the last of these lines ends: no line is in
+        // two files, and the two have the same lines. (A line that never ends is cut when a file is twice its size.)
+        // Neither while their last rows are a resize's to take back, which it takes from these files. One that cannot
+        // be put aside begins anew, its lines lost: still past its size, it would have the other put aside every round.
         let size = files.iter().filter_map(|(name, ..)| fs::metadata(name).ok()).map(|m| m.len()).max().unwrap_or(0);
         let aside = size > HISTORY_MAX && !self.term.lent();
         for (name, text, _) in &files {
@@ -405,7 +405,8 @@ impl Holder {
             let (old, new) = text.split_at_checked(end.filter(|_| aside).unwrap_or(text.len())).unwrap_or((text, ""));
             let append =
                 |text: &str| OpenOptions::new().append(true).create(true).open(name)?.write_all(text.as_bytes());
-            let turn = || fs::rename(name, format!("{name}.1")).and_then(|()| append(new));
+            let turn =
+                || fs::rename(name, format!("{name}.1")).or_else(|e| File::create(name).and(Err(e))).and(append(new));
             if let Err(e) = append(old).and_then(|()| if aside && end.is_some() { turn() } else { Ok(()) }) {
                 self.log(&format!("{name} was lost (some or all of {} bytes): {e}", text.len()));
                 self.term.keep_lent();

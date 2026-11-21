@@ -152,6 +152,23 @@ fn the_two_histories_keep_their_bounds_and_the_same_lines() {
 }
 
 #[test]
+fn a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines() {
+    // `history.styled.1` is a directory: `history.styled` cannot be put aside when the two are
+    // past their size. It begins anew, and the log says so; left as it was, it would be past its
+    // size at every later round, and `history` put aside each time, over the lines it kept.
+    // (56,000 lines of 80 bytes: past 4 MiB once, and not twice.)
+    let session = Session::new("aside");
+    let prints = "mkdir \"$FUXN_PANE/history.styled.1\"; awk 'BEGIN { for (i = 0; i < 56000; i++) printf \"%079d\\n\", i }'; printf done; sleep 600";
+    let pane = session.start("p", &["sh", "-c", prints]);
+    until("the lines are printed", || read(&pane.join("screen")).contains("done"));
+    let (aside, history) = (read(&pane.join("history.1")), read(&pane.join("history")));
+    let lines = aside.lines().count() + history.lines().count();
+    assert!(aside.starts_with("0000") && lines == 56000 - 23, "{lines} lines, {} put aside", aside.len());
+    let (styled, log) = (fs::metadata(pane.join("history.styled")).unwrap().len(), read(&pane.join("log")));
+    assert!(styled < 4 << 20 && log.contains("history.styled was lost"), "{styled} {log}");
+}
+
+#[test]
 fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were() {
     let session = Session::new("recipes");
     fs::create_dir_all(&session.0).unwrap();
