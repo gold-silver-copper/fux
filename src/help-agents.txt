@@ -22,8 +22,8 @@ A second start of a live pane's name fails ("a holder already keeps this pane");
 name of a pane whose program has ended is started again in place, its files replaced.
 
 WAIT FOR WHAT YOU EXPECT
-`screen` is the screen now, as plain text: a frame, not a log, replaced up to 125 times a
-second (40 while output never pauses), a millisecond or more after the program prints. So never read once and conclude, and
+`screen` is the screen now, as plain text: a frame, not a log, replaced many times a
+second, a few milliseconds after the program prints. So never read once and conclude, and
 never sleep and hope: wait for a text, or for the frame to change, always with a limit.
     seen() { n=0; until grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
     unseen() { n=0; while grep -q -- "$1" "$2" 2>/dev/null; do n=$((n+1)); [ $n -lt "${3:-100}" ] || return 1; sleep 0.1; done; }
@@ -120,7 +120,7 @@ pane, oldest first, wrapped rows joined into the lines that were printed:
     whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(sed -n 2p "$1/lines")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/screen"; }
     whole "$P" | tail -n 5
 It is exact for a pane that is still or ended, but for: colours, blanks at a line's end,
-empty lines at the very end, and text older than the two history files keep (4 to 8 MiB).
+empty lines at the very end, and text older than the two history files keep (4 MiB or more).
 
 RUN A COMMAND, GET ITS OUTPUT AND EXIT CODE
 Surest: make the command the pane's program. `fux wait DIR` returns when the pane's holder
@@ -150,10 +150,9 @@ So never wait for "an end": wait for one MORE than there were before you typed.
     grep ' end' "$S/marks" | tail -n 1; cat "$S/cwd"       # LINE AT end 1, and /
 
 FULL-SCREEN PROGRAMS (vim, less, htop)
-`screen.main` is there while one is on the alternate screen, and gone when it leaves:
-`screen` is then the program's screen, and `screen.main` the main screen it covers, what
-the shell showed before the program opened, read without leaving it. Send keys as bytes;
-after each, wait for a changed frame or for the text you expect.
+While one has the alternate screen, `screen` is the program's own and `screen.main` (under
+READ IT) what the shell showed before it opened, read without leaving it. Send keys as
+bytes; after each, wait for a changed frame or for the text you expect.
     printf 'less "%s/status"\r' "$P" > "$P/in"; seen '^' "$P/screen.main"
     grep '<<t1' "$P/screen.main"              # under less: the shell's screen, with the tag printed above
     f=$(frame "$P"); printf '/pid\r' > "$P/in"; changed "$P" "$f"      # search; vim: printf '\033:wq\r'
@@ -216,7 +215,8 @@ and its tab is marked; a viewer in a pane has that in its own pane's `notice`, a
 From inside a pane: printf 'notify %s\n' 'done' > "$FUXN_PANE/ctl".
 A viewer writes in the session `keyboard` and, only if its terminal answered, `colours`
 (what its terminal can do; harmless, left behind), its key scripts in $FUXN_KEYS (else
-~/.config/fux-next/keys), and while it runs a FIFO `.view.PID` in the session.
+$XDG_CONFIG_HOME/fux-next/keys, else ~/.config/fux-next/keys), and while it runs a FIFO
+`.view.PID` in the session.
 
 IF YOU HAVE PERL (optional: nothing else on this page needs it)
 The sh forms above have three risks: a write to a dead pane is lost without a word, a
