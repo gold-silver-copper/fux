@@ -20,7 +20,6 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// The most key scripts running at once; one more is refused with a message.
@@ -229,12 +228,10 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     let writer = {
         let mut tty = tty.try_clone().map_err(|e| e.to_string())?;
         std::thread::Builder::new().spawn(move || {
-            let written = queue.into_iter().try_for_each(|text| {
+            queue.into_iter().try_for_each(|text| {
                 tty.write_all(text.as_bytes())?;
                 done.write_all(b"w")
-            });
-            let _ = done.write_all(b"w");
-            written
+            })
         })
     };
     let writer = writer.map_err(|e| format!("cannot start a thread: {e}"))?;
@@ -290,7 +287,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     view.write(START.to_string() + &asked + "\x1b[c");
-    let result = view.run(&ctl, &wrote, &writer);
+    let result = view.run(&ctl, &wrote);
     // The keys leave with the viewer: a key that is down in a pane is let go there.
     view.leave(None);
     // The pane that was told it has the keys is told that it has them no more.
@@ -313,12 +310,11 @@ impl View {
         let _ = self.out.send(text);
     }
 
-    fn run(&mut self, ctl: &File, wrote: &io::PipeReader, writer: &JoinHandle<io::Result<()>>) -> io::Result<()> {
+    fn run(&mut self, ctl: &File, wrote: &io::PipeReader) -> io::Result<()> {
         let mut buffer = vec![0u8; 16 << 10];
         // When something last happened, and when the terminal last sent anything.
         let (mut active, mut heard) = (Instant::now(), Instant::now());
-        // (The writer ends only when the terminal cannot be written to.)
-        while !writer.is_finished() {
+        loop {
             // A key's script runs before the keys typed after it, as a command
             // in a shell does: they wait until it ends (and what it printed is
             // read, and what it changed is drawn). One that takes longer than
@@ -369,7 +365,11 @@ impl View {
             }
             // (What the writer said is taken: the frame that waited for it is next.)
             if written != 0 {
-                self.unwritten = self.unwritten.saturating_sub((&*wrote).read(&mut buffer)?);
+                // (The pipe's end is the writer's: it ends only when the terminal cannot be written to.)
+                self.unwritten -= match (&*wrote).read(&mut buffer)? {
+                    0 => return Ok(()),
+                    n => n,
+                };
                 active = Instant::now();
             }
             // The terminal is given ten seconds (a slow line) to say what it is like: after
@@ -382,7 +382,6 @@ impl View {
                 self.keys(heard.elapsed() >= ESCAPE_WAIT);
             }
         }
-        Ok(())
     }
 
     /// Another workspace is shown: what was read of the panes is forgotten, and with it what the
