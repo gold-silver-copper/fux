@@ -237,9 +237,6 @@ enum At {
     Text(usize, usize),
 }
 
-/// A mark a shell put at its prompt: where, its kind, a command's exit code.
-type Mark = (At, &'static str, Option<u8>);
-
 /// Where history's text ends: how many whole lines it has (the number of the line the screen's
 /// first row is of); if its last row was not ended (its line goes on in the screen's first row),
 /// how many bytes of that line it has; and what its last character is to the next (in
@@ -412,8 +409,8 @@ pub struct Term {
     /// the link that what is printed now is part of.
     links: Vec<String>,
     link: u16,
-    /// The marks a shell put at its prompts (OSC 133), the last thousand.
-    marks: Vec<Mark>,
+    /// The marks a shell put at its prompts (OSC 133): where, kind, exit code. The last thousand.
+    marks: Vec<(At, &'static str, Option<u8>)>,
     /// Where history ends.
     tail: Tail,
     /// The rows the last resize sent to history, while they are still its last lines.
@@ -843,24 +840,55 @@ impl Term {
         if self.screen.alt { &self.other } else { &self.screen.grid }
     }
 
+    /// The place on the main screen of a line of the pane's text and so many bytes into it, if
+    /// that is on the screen (and not in history, or nowhere).
+    fn screen_place(&self, line: usize, bytes: usize) -> Option<(usize, usize)> {
+        let main = self.main();
+        let goes_on = |y: usize| main.get(y).is_some_and(|cells| continues(cells));
+        let mut number = self.top();
+        let first = (0..main.len()).find(|&y| {
+            number += usize::from(y > 0 && !goes_on(y));
+            number == line && (y > 0 || !goes_on(0) || self.tail.open.is_some())
+        })?;
+        let before = if first == 0 && goes_on(0) { self.tail.open.unwrap_or(0) } else { 0 };
+        let mut left = bytes.checked_sub(before)?;
+        let mut last = (first, 0);
+        for (y, cells) in main.iter().enumerate().skip(first).take_while(|(y, _)| *y == first || goes_on(*y)) {
+            let gap = goes_on(y + 1) && cells.last().is_some_and(|cell| cell.style.flags & PAD != 0);
+            for (x, cell) in cells.iter().enumerate().take(cells.len() - usize::from(gap)) {
+                if left < cell.bytes() || (left == 0 && cell.ch != '\0') {
+                    return Some((y, x));
+                }
+                left -= cell.bytes();
+            }
+            last = (y, cells.len());
+            // (At a row's end rather than at the start of the row the line goes on in: where
+            // the cursor waits to wrap, which is where a mark is put.)
+            if left == 0 {
+                break;
+            }
+        }
+        Some(last)
+    }
+
     /// Where each mark is, those on rows `rows` of the main screen told as places in the pane's
     /// text: the line's number, and how many bytes of the line's text are before the mark (those
     /// history has of it among them). Each row's line and the bytes of the line before the row
     /// are counted once, and only as far down as a mark is: a thousand marks cost one walk over
-    /// the screen, and a scroll with no mark on its rows costs none. `main` are the main screen's
-    /// rows and `tail` where history ends before them.
-    fn texts(main: &[Vec<Cell>], marks: &[Mark], tail: Tail, rows: std::ops::Range<usize>) -> Vec<At> {
+    /// the screen, and a scroll with no mark on its rows costs none.
+    fn texts(&self, rows: std::ops::Range<usize>) -> Vec<At> {
+        let main = self.main();
         let text = |cells: &[Cell], upto: usize| text_cells(cells).iter().take(upto).map(Cell::bytes).sum::<usize>();
         let last = main.len().saturating_sub(1);
         let on = |at: At| match at {
             At::Screen(row, col) if rows.contains(&row) => Some((row.min(last), col)),
             _ => None,
         };
-        let down = marks.iter().filter_map(|mark| on(mark.0)).map(|(row, _)| row + 1).max().unwrap_or(0);
-        let (mut line, mut bytes, mut starts) = (tail.lines, 0, Vec::with_capacity(down));
+        let down = self.marks.iter().filter_map(|mark| on(mark.0)).map(|(row, _)| row + 1).max().unwrap_or(0);
+        let (mut line, mut bytes, mut starts) = (self.top(), 0, Vec::with_capacity(down));
         for (y, cells) in main.iter().enumerate().take(down) {
             match (y, continues(cells)) {
-                (0, true) => bytes = tail.open.unwrap_or(0),
+                (0, true) => bytes = self.tail.open.unwrap_or(0),
                 (0, false) | (_, true) => {}
                 (_, false) => (line, bytes) = (line + 1, 0),
             }
@@ -868,17 +896,22 @@ impl Term {
             bytes += text(cells, cells.len());
         }
         let place = |(row, col): (usize, usize)| {
-            let (line, before) = starts.get(row).copied().unwrap_or((tail.lines, 0));
+            let (line, before) = starts.get(row).copied().unwrap_or((self.top(), 0));
             At::Text(line, before + main.get(row).map_or(0, |cells| text(cells, col)))
         };
-        marks.iter().map(|mark| on(mark.0).map_or(mark.0, place)).collect()
+        self.marks.iter().map(|mark| on(mark.0).map_or(mark.0, place)).collect()
+    }
+
+    /// The marks on rows `rows` of the main screen become places in the text.
+    fn mark_texts(&mut self, rows: std::ops::Range<usize>) {
+        let texts = self.texts(rows);
+        self.marks.iter_mut().zip(texts).for_each(|(mark, at)| mark.0 = at);
     }
 
     /// The shell's marks, a line each: `LINE AT KIND`, and the command's exit code after `end`.
     pub fn marks(&self) -> String {
         let mut out = String::new();
-        let texts = Term::texts(self.main(), &self.marks, self.tail, 0..usize::MAX);
-        for ((_, kind, code), at) in self.marks.iter().zip(texts) {
+        for ((_, kind, code), at) in self.marks.iter().zip(self.texts(0..usize::MAX)) {
             let At::Text(line, bytes) = at else { continue };
             let _ = write!(out, "{line} {bytes} {kind}");
             let _ = writeln!(out, "{}", code.map_or(String::new(), |code| format!(" {code}")));
@@ -1022,8 +1055,7 @@ impl Term {
             self.settle();
             // (Asked first: a flood scrolls two million times past no mark.)
             if !self.marks.is_empty() {
-                let texts = Term::texts(self.main(), &self.marks, self.tail, 0..n);
-                self.marks.iter_mut().zip(texts).for_each(|(mark, at)| mark.0 = at);
+                self.mark_texts(0..n);
             }
             // What comes after them in history makes the rows a resize sent there stay there.
             self.lent = None;
@@ -1292,13 +1324,16 @@ impl Term {
             return;
         }
         // A command is being typed if the shell's last two marks are a prompt and where its
-        // command begins, in that order and still on the screen.
+        // command begins, in that order and still on the screen (where each is, noted before
+        // the marks become places in the text).
         let pending = match self.marks.as_slice() {
             [.., (At::Screen(ar, ac), "prompt", _), (At::Screen(br, bc), "command", _)] if (br, bc) > (ar, ac) => {
                 Some(((*ar, *ac), (*br, *bc)))
             }
             _ => None,
         };
+        // (The marks on the screen are places in the text while it is wrapped anew.)
+        self.mark_texts(0..usize::MAX);
         let blank = Cell::blank(Style::default());
         let last = self.going_on().and_then(|last| last.at).filter(|_| !self.screen.alt);
         let shown = (&mut self.screen.grid, &mut self.screen.pictures);
@@ -1307,9 +1342,8 @@ impl Term {
         // Places on the main screen that stay on their character, each with whether it waits to
         // wrap at its row's end. First the cursor, whose line is taken to reach as far as it
         // stands (behind the alternate screen, the saved cursor is the one that will come back);
-        // then the saved cursor, the character printed last, two corners of each picture (the
-        // upper one on the highest of its rows that is kept still), and the marks on the screen:
-        // each in its row's text, and at a row's end rather than where the next row starts.
+        // then the saved cursor, the character printed last, and two corners of each picture (the
+        // upper one on the highest of its rows that is kept still).
         let waits = |cursor: Cursor| (cursor.place().0, cursor.place().1, cursor.wrap);
         let (saved, cursor) = (waits(self.saved.first().copied().unwrap_or_default()), waits(self.screen.cursor));
         let mut places = vec![if self.screen.alt { saved } else { cursor }, saved];
@@ -1317,11 +1351,6 @@ impl Term {
         // (A picture's rows below the screen's last are counted on from the last.)
         let low = |p: &Picture| (p.row + p.rows - 1).min(main.len().saturating_sub(1));
         places.extend(main_pictures.iter().flat_map(|p| [(p.row, p.col, false), (low(p), p.col, false)]));
-        let text = |row: usize| main.get(row).map_or(0, |cells| text_cells(cells).len());
-        places.extend(self.marks.iter().filter_map(|mark| match mark.0 {
-            At::Screen(row, col) => Some((row, col.min(text(row)), true)),
-            At::Text(..) => None,
-        }));
         // The rows the last resize sent to history are wrapped along: they come back if there is room.
         let lent = self.lent.take();
         let held = lent.as_ref().map_or(0, |lent| lent.rows.len());
@@ -1356,16 +1385,6 @@ impl Term {
             wrapped.pop();
         }
         let up = wrapped.len().saturating_sub(rows);
-        // The marks are where their text is now: on the screen, or with the rows above it a
-        // place in the text, as history will have them.
-        let mut moved = places.iter().skip(3 + 2 * main_pictures.len());
-        for mark in &mut self.marks {
-            if let At::Screen(row, col) = &mut mark.0
-                && let Some(place) = moved.next()
-            {
-                (*row, *col) = (place.0, place.1.min(cols));
-            }
-        }
         // History is given the rows above the screen again. First what it had of them is taken
         // back (here what waits still, the rest by whoever took it) and it ends where it did before
         // them. The last of the rows, a screen's worth at most, are kept to come back another time.
@@ -1376,13 +1395,6 @@ impl Term {
             given.truncate(given.floor_char_boundary(given.len().saturating_sub(back)));
         }
         self.tail = was;
-        let texts = Term::texts(&wrapped, &self.marks, self.tail, 0..up);
-        for (mark, at) in self.marks.iter_mut().zip(texts) {
-            mark.0 = match at {
-                At::Screen(row, col) => At::Screen(row.saturating_sub(up).min(rows - 1), col),
-                text => text,
-            };
-        }
         let keep = up.saturating_sub(ABOVE_MAX / cols);
         let (mut before, mut full) = ((0, 0, self.tail), false);
         for (y, (row, goes_on)) in with_next(&wrapped).take(up).enumerate() {
@@ -1454,6 +1466,12 @@ impl Term {
         (self.screen.cols, self.screen.rows) = (cols, rows);
         (self.top, self.bottom) = (0, rows - 1);
         self.settle();
+        let screen = |at: At| match at {
+            At::Text(line, bytes) => self.screen_place(line, bytes).map_or(at, |(row, col)| At::Screen(row, col)),
+            screen => screen,
+        };
+        let screens: Vec<At> = self.marks.iter().map(|mark| screen(mark.0)).collect();
+        self.marks.iter_mut().zip(screens).for_each(|(mark, at)| mark.0 = at);
     }
 
     /// Notes a refusal for the log, once until the holder has taken it.
