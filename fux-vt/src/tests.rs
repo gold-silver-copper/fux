@@ -1362,6 +1362,15 @@ fn a_row_that_goes_on_from_the_one_above_still_does_when_characters_are_put_in_o
 }
 
 #[test]
+fn in_insert_mode_a_character_that_wraps_is_put_in_before_what_is_on_the_next_row_however_it_came_to_be_wide() {
+    // (An emoji wide from the start, and one that U+FE0F widens in the row's last column.)
+    for emoji in ["\u{1f600}", "\u{2764}\u{fe0f}"] {
+        let term = term(8, 2, &format!("\x1b[2;1HAB\x1b[1;8H\x1b[4h{emoji}"));
+        assert_eq!(term.plain(), format!("       \n{emoji}AB\n"), "{emoji}");
+    }
+}
+
+#[test]
 fn a_row_that_goes_on_from_the_one_above_still_does_when_a_character_is_printed_into_its_start_in_insert_mode() {
     // (CSI 4 h: what is printed pushes the rest of the row along, as CSI @ does before a character is written.)
     let narrow = term(10, 3, "aaaaaaaaaaabcde\x1b[2;1H\x1b[4hX");

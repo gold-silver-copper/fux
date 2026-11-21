@@ -1205,7 +1205,7 @@ impl Term {
             // Until it is placed it has no cell: what joins a character that found no room goes with it.
             (self.last, self.cluster) = (c, Some(Last { at: None, cursor: here, joiner }));
             let new = Cell { ch: c, more: ['\0'; MORE], style: self.screen.cursor.style, link: self.link };
-            self.place(new, width(c, &[]) == 2, self.insert);
+            self.place(new, width(c, &[]) == 2, 0);
         }
         // What the next character must find to go on from this one.
         let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
@@ -1219,7 +1219,6 @@ impl Term {
     /// Adds `c` to the character printed last: it is the same cluster (UAX #29).
     fn join(&mut self, c: char) {
         let Some((row, col, _, under)) = self.cluster.and_then(|last| last.at) else { return };
-        let insert = self.insert;
         let Some(cell) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col)) else { return };
         let (whole, was_wide) = (*cell, cell.wide());
         let Some(slot) = cell.more.iter_mut().find(|m| **m == '\0') else {
@@ -1237,17 +1236,15 @@ impl Term {
             if col + 2 > self.screen.cols {
                 // It leaves the row's last cell as it found it.
                 *cell = under;
-            } else if insert {
-                // In insert mode its second column is one more column put in: the marks after it go with their cells.
-                self.shift(row, col + 1, 1, true, col + 1);
             }
             (self.screen.cursor.col, self.screen.cursor.wrap) = (col, false);
-            self.place(grown, true, false);
+            self.place(grown, true, 1);
         }
     }
 
-    /// Puts a character at the cursor, on the next row if this one has no room, and moves on.
-    fn place(&mut self, mut new: Cell, wide: bool, insert: bool) {
+    /// Puts a character at the cursor, on the next row if this one has no room, and moves on. In insert
+    /// mode it puts in the columns it takes but the `has` it has there already (none, where it wraps).
+    fn place(&mut self, mut new: Cell, wide: bool, mut has: usize) {
         if wide && self.screen.cols < 2 {
             return;
         }
@@ -1265,7 +1262,7 @@ impl Term {
                 {
                     last.style.flags |= PAD;
                 }
-                self.screen.cursor.col = 0;
+                (self.screen.cursor.col, has) = (0, 0);
                 self.linefeed(true);
                 new.style.flags |= u16::from(row == self.bottom || row + 1 < self.screen.rows) * CONT;
             } else if wide {
@@ -1277,9 +1274,9 @@ impl Term {
         let cells = 1 + usize::from(wide);
         let blank = self.blank();
         let mut under = blank;
-        if insert {
+        if self.insert {
             // (The marks after it go with their cells, as when CSI @ makes the room.)
-            self.shift(row, col, cells, true, col + 1);
+            self.shift(row, col + has, cells.saturating_sub(has), true, col + 1);
         }
         if let Some(line) = self.screen.grid.get_mut(row) {
             // What this overwrites or parts may be half of a wide character: blank the other half.
@@ -1289,7 +1286,7 @@ impl Term {
                 *lead = blank;
             }
             let goes_on = col == 0 && continues(line);
-            under = line.get(col).copied().filter(|c| c.ch != '\0' && !insert).unwrap_or(blank);
+            under = line.get(col).copied().filter(|c| c.ch != '\0' && !self.insert).unwrap_or(blank);
             // Written over, a row's first cell still says that the row goes on from the one above (a line
             // editor draws a long line again row by row), and so does one put before it. Erased, it does not.
             new.style.flags |= u16::from(goes_on) * CONT;
