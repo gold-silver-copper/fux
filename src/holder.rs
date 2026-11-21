@@ -304,9 +304,9 @@ impl Holder {
                 let mut state = String::new();
                 let _ = ended.read_to_string(&mut state);
                 // What the program wrote last is still in the pty: read it, up to 4 MiB.
-                let mut left = 4 << 20;
+                let mut left: usize = 4 << 20;
                 while left > 0 {
-                    match self.read_program(&mut buffer) {
+                    match self.read_program(buffer.get_mut(..left.min(64 << 10)).unwrap_or(&mut [])) {
                         0 => break,
                         n => left -= n.min(left),
                     }
