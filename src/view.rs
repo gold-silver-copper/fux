@@ -10,12 +10,12 @@ use crate::term::{
     BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Screen, Style, Term, base64_encode,
 };
 use crate::width::Joiner;
-use crate::{is_name, keys, sixel, text};
+use crate::{Stamp, is_name, keys, sixel, stamp, text};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -39,9 +39,6 @@ const ECHO_WAIT: Duration = Duration::from_millis(40);
 
 /// A key of a menu: its name, what it does, and the heading it is listed under (or none).
 type Entry = (String, String, String);
-
-/// What tells one writing of a file from the next: its inode, its time and, of a screen, its length.
-type Stamp = Option<(u64, i64, i64, u64)>;
 
 /// The most bytes of pictures in one frame, and so in a viewer's memory.
 const FRAME_PICTURES_MAX: usize = 4 * PICTURE_MAX;
@@ -911,13 +908,12 @@ impl View {
             .map(|(pane, screen)| {
                 let held = sys::open(pane, false)
                     .is_ok_and(|dir| matches!(dir.try_lock_shared(), Err(fs::TryLockError::WouldBlock)));
-                (fs::metadata(screen).ok().map(screen_stamp), held)
+                (fs::metadata(screen).ok().map(stamp), held)
             })
             .collect();
         let held: Vec<bool> = panes.iter().map(|(_, held)| *held).collect();
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
-        // (By when the file last changed in any way: one that could not be read may be readable now.)
-        let clipboard = clipboard.map(|m| (m.ino(), m.ctime(), m.ctime_nsec(), 0));
+        let clipboard = clipboard.map(stamp);
         let terminal = (self.sixel, self.joins, self.keyboard, self.window, cell_size);
         let picture = |file: PathBuf| fs::metadata(file).ok().map(stamp);
         let known = tiles.iter().filter_map(|(name, _)| Some((name, self.panes.get(name)?)));
@@ -1420,14 +1416,6 @@ fn send_to(path: &Path, bytes: &[u8]) -> io::Result<usize> {
     sys::open(path, true)?.write(bytes)
 }
 
-/// What tells one writing of a file from the next; of a screen, with its length.
-fn stamp(m: fs::Metadata) -> (u64, i64, i64, u64) {
-    (m.ino(), m.mtime(), m.mtime_nsec(), 0)
-}
-fn screen_stamp(m: fs::Metadata) -> (u64, i64, i64, u64) {
-    (m.ino(), m.mtime(), m.mtime_nsec(), m.len())
-}
-
 /// How a pane's program asks for its input (pastes marked, the mouse, the focus, keys), as its
 /// `modes` file says now: what is typed is sent by this, not by what was last drawn.
 fn asks(directory: &Path) -> Screen {
@@ -1453,7 +1441,7 @@ impl Pane {
     /// (or far off, in a folder someone copied): the rows are the lines that are there, and the
     /// cursor is kept inside them.
     fn read(&mut self, directory: &Path) {
-        let seen = fs::metadata(directory.join("screen.styled")).ok().map(screen_stamp);
+        let seen = fs::metadata(directory.join("screen.styled")).ok().map(stamp);
         if seen == self.seen {
             return;
         }

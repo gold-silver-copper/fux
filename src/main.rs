@@ -31,7 +31,7 @@ use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
@@ -93,6 +93,12 @@ fn is_name(name: &str) -> bool {
 /// Text for a file a person reads with `cat`: control characters become `?`.
 pub fn plain(text: &str) -> String {
     text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
+}
+
+/// What tells one writing of a file from the next: its number, its time and its length.
+pub type Stamp = Option<(u64, i64, i64, u64)>;
+pub fn stamp(file: fs::Metadata) -> (u64, i64, i64, u64) {
+    (file.ino(), file.mtime(), file.mtime_nsec(), file.len())
 }
 
 /// Replaces a file in one step, so a reader sees the old one or the new one.

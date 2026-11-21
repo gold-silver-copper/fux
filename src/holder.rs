@@ -12,7 +12,6 @@ use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsFd;
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -45,9 +44,6 @@ const DRAWING_MAX: Duration = Duration::from_millis(500);
 /// A holder looks this often whether its directory is still there.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
 
-/// What tells a file from the one read before: when it was written, its length, its number.
-type Stamp = (std::time::SystemTime, u64, u64);
-
 struct Holder {
     term: Term,
     master: Option<File>,
@@ -76,7 +72,7 @@ struct Holder {
     /// The session's folder, where the files are that say what the terminal outside is like, and
     /// which `colours` and `keyboard` were read last.
     session: PathBuf,
-    told: (Option<Stamp>, Option<Stamp>),
+    told: (crate::Stamp, crate::Stamp),
     logged: usize,
 }
 
@@ -347,11 +343,9 @@ impl Holder {
     /// the kitty protocol that terminal takes, a number). 16 KiB of each at most.
     fn told(&mut self) {
         for (name, known) in [("colours", &mut self.told.0), ("keyboard", &mut self.told.1)] {
-            // (A file, not something that only has a file's name; told apart from the one read
-            // last by when it was written, how long it is and which file it is.)
+            // (A file, not something that only has a file's name.)
             let file = self.session.join(name);
-            let stamp = fs::metadata(&file).ok().filter(|file| file.is_file());
-            let stamp = stamp.and_then(|file| Some((file.modified().ok()?, file.len(), file.ino())));
+            let stamp = fs::metadata(&file).ok().filter(|file| file.is_file()).map(crate::stamp);
             if stamp != *known {
                 let text = stamp.map_or_else(String::new, |_| crate::text(&file, 16 << 10));
                 *known = stamp;
