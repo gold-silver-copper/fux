@@ -686,9 +686,8 @@ impl Holder {
         }
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
         // end: who watches a pane watches that one file, and finds every fact already there.
-        let term = &self.term;
-        replace("screen", term.plain().as_bytes())?;
-        replace("screen.styled", term.styled().as_bytes())?;
+        replace("screen", self.term.plain().as_bytes())?;
+        replace("screen.styled", self.term.styled().as_bytes())?;
         // A picture neither screen has any more (the one shown, the one behind) has no reader left.
         self.pictures.retain(|id| {
             let kept = self.term.has_picture(*id);
