@@ -219,13 +219,13 @@ impl Holder {
             if commanded != 0 {
                 let n = (&*ctl).read(&mut buffer).unwrap_or(0);
                 let lines = crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), CTL_LINE_MAX);
-                for line in &lines {
+                dirty = dirty.or(lines.first().map(|_| Instant::now()));
+                for line in lines {
                     match line {
                         None => self.log(&format!("ctl: a line over {CTL_LINE_MAX} bytes was dropped")),
-                        Some(line) => self.command(line).unwrap_or_else(|e| self.log(&format!("ctl: {line}: {e}"))),
+                        Some(line) => self.command(&line).unwrap_or_else(|e| self.log(&format!("ctl: {line}: {e}"))),
                     }
                 }
-                dirty = dirty.or(lines.first().map(|_| Instant::now()));
             }
             if program & !sys::POLLOUT != 0 && budget > 0 && self.read_program(&mut buffer, &mut budget) {
                 heard = Instant::now();
