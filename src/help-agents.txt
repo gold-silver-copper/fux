@@ -206,7 +206,7 @@ FUXN_WS (in a pane: that pane's own). Two panes above and one below, across:
     FUXN_WS=agent-demo fux layout pane ls                   # ls gets the keys
     FUXN_WS=agent-demo fux layout                           # print it: * marks the tab shown
 Edits: split row|col PANE [beside PANE] · pane PANE · focus left|right|up|down|next|prev ·
-tab next|prev|N|- (N from 1; and break, swap, size, rotate, arrange).
+tab next|prev|- (and break, swap, size, rotate, arrange).
 To see what a person would, run the viewer in a pane of ANOTHER workspace and read it:
     V=$(COLUMNS=100 LINES=30 fux start agent-view/v -- fux view agent-demo); seen '│' "$V/screen"
     printf 'notify %s\n' 'look here' > "$W/ctl"; seen ' broad: look here$' "$V/notice"

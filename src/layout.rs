@@ -408,10 +408,6 @@ impl Layout {
             }
             ["tab", way @ ("next" | "prev")] => self.current = step(self.current, count, *way == "prev"),
             ["tab", "-"] => self.current = self.before.ok_or("no tab was shown before this one")?,
-            ["tab", number] => {
-                let number = number.parse::<usize>().ok().filter(|n| (1..=count).contains(n));
-                self.current = number.ok_or(format!("tabs are numbered 1 to {count}"))? - 1;
-            }
             ["break"] if self.tab().is_some_and(|tab| tab.panes().len() < 2) => {}
             ["break"] => {
                 let name = self.tab_mut()?.focus.clone();

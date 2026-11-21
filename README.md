@@ -368,7 +368,7 @@ then. A workspace shows at most 1,000 panes. `fux layout EDIT` makes
 one edit:
 
 `split row|col PANE [beside ANCHOR]` (put PANE beside or below ANCHOR, defaulting to the focused pane) ·
-`pane PANE` (give it the keys, and show its tab) · `focus left|right|up|down|next|prev` · `tab next|prev|N|-` (N from 1; `-`: the tab shown before) · `break`
+`pane PANE` (give it the keys, and show its tab) · `focus left|right|up|down|next|prev` · `tab next|prev|-` (`-`: the tab shown before) · `break`
 (the focused pane to its own tab) · `swap next|prev` · `size row|col +N|-N` ·
 `rotate` · `arrange row|col|grid|main`
 
