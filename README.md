@@ -34,8 +34,8 @@ scripts" says where that is).
 
 ## While fux 1 is the one you use daily
 
-This is the fux that is to replace fux 1, on the branch `next`. Until fux 1
-is retired its names are temporary, so that the two never meet: the
+This is the fux that is to replace fux 1: the branch `next` (the one CI runs
+for), and `next-minimal` until it is merged there. Until fux 1 is retired its names are temporary, so that the two never meet: the
 variables are `FUXN_…` (to become `FUX_…`), the session is
 `$FUXN_DIR`, else `$XDG_RUNTIME_DIR/fux-next`, else `~/.cache/fux-next`, the
 keys directory is a `fux-next/keys` too, and a pane's program sees `TERM_PROGRAM=fux-next`.
@@ -48,7 +48,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 | | |
 |---|---|
 | `fux dir` | prints the session directory |
-| `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`, or typed in a pane, that pane's), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place; a start that fails leaves the folder, with a `log` that says why |
+| `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE`, `WORKSPACE/PANE`, or `WORKSPACE/` or nothing for the first free number, 1 to 9999 (no workspace named: below). No program: `$SHELL`, else `/bin/sh`. A pane whose holder is gone is started again in place; a start that fails leaves the folder, with a `log` that says why |
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. Wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
@@ -58,11 +58,10 @@ Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot, and not `-` alone, `layout`, `layout.new`, `colours` or `keyboard`
 (a workspace and a session have files of those names).
 
-Typed in a pane, a command means "here": with no workspace named, it is the
-workspace that pane is in (and that pane's session, unless `FUXN_DIR` says
-otherwise). Elsewhere it is `main`. So the example above, typed in a pane of
-another workspace, starts `build` there and not in `main`. A key script is told the workspace shown
-in `FUXN_WS`.
+With no workspace named, a command means the one in `FUXN_WS` (a key script is
+told the workspace shown there); else, typed in a pane, "here": the workspace that pane
+is in (and that pane's session, unless `FUXN_DIR` says otherwise); else `main`. So the
+example above, typed in a pane of another workspace, starts `build` there and not in `main`.
 
 ## A pane's files
 
@@ -175,10 +174,10 @@ The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux-next`,
 `TERM_PROGRAM_VERSION`, `COLORTERM=truecolor` and `FUXN_PANE` (its pane's directory, whole path), in
 the directory `fux start` was run in, with the rest of that environment and
 the signals 1 to 31 at their defaults. Of this program's own `FUXN_…` names
-it gets only `FUXN_PANE` and, if they were set, `FUXN_DIR` and `FUXN_KEYS`;
+it gets only `FUXN_PANE` and, if they were set, `FUXN_DIR`, `FUXN_KEYS` and `FUXN_EDIT`;
 and neither `COLUMNS` nor `LINES`, which the holder reads for itself: the
-pane's first size is `COLUMNS`x`LINES` if the starter set them (each 1 to
-500; one that is set and is not such a number fails the start, which says so), else 80x24.
+pane's first size is 80x24, or the `COLUMNS` and the `LINES` the starter set (each 1 to
+500; one that is set and is not such a number fails the start, which says so).
 
 What is this terminal, and what can it do? Programs ask, and fux answers as
 itself and for itself, with nobody watching:
@@ -216,7 +215,7 @@ and a program that asks first does not turn it on. A pane's program also has
 asking. `TERM` stays `xterm-256color`: fux has no terminal description of
 its own to install, and claims no other terminal's. Three things follow.
 The viewer passes 24-bit colours on as they are, so on a terminal that has
-none of them (few are left) set `COLORTERM=` for the program yourself. A
+none of them (few are left) run the program as `env COLORTERM= PROGRAM` (the holder sets it: before `fux start` is too early). A
 program that goes by `TERM` alone may use what an xterm has and fux has not:
 a nested tmux needs
 `set -as terminal-features 'xterm-256color:usstyle'` to pass curly
@@ -445,15 +444,15 @@ names differ by more than case, for macOS); `C-b`, `M-x`, `enter`, `tab`,
 `S-` before them when held (`C-left`, `S-f5`).
 
 A script gets `FUXN_DIR` (the session), `FUXN_WS` (the workspace shown),
-`FUXN_PANE` (the focused pane's directory), `FUXN_KEYS`, `FUXN_VIEW`,
+`FUXN_PANE` (the focused pane's directory, empty with no pane), `FUXN_KEYS`, `FUXN_VIEW`,
 `COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has),
 `FUXN_ROW` and `FUXN_COL` (the size, as `COLSxROWS`, of the tile a split of the
 focused pane would make: `FUXN_ROW` side by side, as `C-b v` splits, `FUXN_COL`
 one above the other, as `C-b s` does; the split keys
 start their pane at that size, so its program is not drawn twice), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
-at most), so `C-b t n` and then text types into the new shell; a script that
-takes longer puts its work in the background, as the defaults do.
+at most), so `C-b t n` and then text types into the new shell; one that
+takes longer runs on while keys are taken again (the defaults put such work in the background).
 What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key. A key with no file, pressed in an
@@ -509,7 +508,7 @@ keys at their line); any other editor
 gets the file alone, as not every editor reads `+LINE`. An editor behind a
 launcher of another name is one of those: say how yours is run in
 `FUXN_EDIT`, a command in which `%f` is the file and `%l` the line, set where
-the viewer is started (a viewer started in a pane has it too: `FUXN_EDIT` is passed on to a pane's program, as `FUXN_DIR` and `FUXN_KEYS` are; `export FUXN_EDIT='hx %f:%l'`, or your launcher in
+the viewer is started (a viewer started in a pane has it too; `export FUXN_EDIT='hx %f:%l'`, or your launcher in
 `hx`'s place; `keys/.edit` reads it and is yours to change). The file is in the editor pane's own folder and is removed
 when the editor ends, or with the pane if that is closed first. Its tab goes too (the
 pane removes its own folder, as a shell pane does), and the

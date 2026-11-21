@@ -38,11 +38,10 @@ use std::process::{Command, ExitCode, Stdio};
 const USAGE: &str = "\
 fux dir                         print the session directory
 fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/
-fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and last state
-fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: in a pane its own, else main)
-fux layout [EDIT…]              print the layout of the workspace (in a pane: its own; else main), or edit it
-fux help agents                 one page for a program that drives panes: start, type, read, wait, end
-Start with `fux help agents`: the files of a pane, and how to start, type, read, wait and end, on one page.";
+fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and the state it left
+fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: $FUXN_WS; else in a pane its own; else main)
+fux layout [EDIT…]              print the layout of the workspace (the same default), or edit it
+fux help agents                 start here: the files of a pane, and how to start, type, read, wait and end, on one page";
 /// The page for agents: complete by itself, and every command on it is run by `tools/help-agents.sh`.
 const AGENTS: &str = include_str!("help-agents.txt");
 
