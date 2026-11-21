@@ -49,7 +49,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 | | |
 |---|---|
 | `fux dir` | prints the session directory |
-| `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`, or typed in a pane, that pane's), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place |
+| `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE` (in workspace `main`, or typed in a pane, that pane's), `WORKSPACE/PANE`, or `WORKSPACE/` for the first free number. No program: `$SHELL`. A pane whose holder is gone is started again in place; a start that fails leaves the folder, with a `log` that says why |
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` (from `status` and `state`). When it returns, every file of the pane is the last there will be: wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
@@ -711,6 +711,9 @@ fux adds nothing to stop these. What happens is what Unix does:
   A program that ignores SIGHUP lives on (after `kill`, with `state hungup`,
   and what is then written to `in` goes nowhere), and so does anything it
   started in a session of its own. Its number is `pid` in `status`.
+- **Don't expect a start that failed to tidy up.** `fux start` makes a
+  folder and never removes one: a program that could not be run leaves its
+  pane's folder with a `log` that says why. Start the name again, or `rm -r` it.
 - **Don't remove a live pane's `in`**: that is how its holder knows the
   directory is gone, and it leaves.
 - **Don't expect a pane to drop what its starter had open.** It inherits the

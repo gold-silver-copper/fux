@@ -157,12 +157,13 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let fail = |path: &Path, e: std::io::Error| format!("{}: {e}", path.display());
     DirBuilder::new().mode(0o700).recursive(true).create(&workspace).map_err(|e| fail(&workspace, e))?;
     // Making the directory is what claims a new name; a name that is taken is a pane to start
-    // again in place, and a number that is taken is not free.
+    // again in place, and a number that is taken is not free. A folder that was made stays,
+    // also when the start fails: its `log` says why.
     let named = |dir: PathBuf| match DirBuilder::new().mode(0o700).create(&dir) {
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(fail(&dir, e)),
-        made => Ok((made.is_ok() || !pane.is_empty()).then_some((dir, made.is_ok()))),
+        made => Ok((made.is_ok() || !pane.is_empty()).then_some(dir)),
     };
-    let (dir, made) = if pane.is_empty() {
+    let dir = if pane.is_empty() {
         let mut numbers = (1..10000).map(|n| named(workspace.join(n.to_string())));
         numbers.find_map(Result::transpose).ok_or("no free number for a pane")??
     } else {
@@ -176,29 +177,25 @@ fn start(args: &[OsString]) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
         lock.try_lock().is_ok()
     });
-    let started = if locked { launch(&dir, &lock, &program) } else { Err("a holder already keeps this pane".into()) };
-    // A folder made for a pane that never was is not left behind: under its lock, nobody has
-    // started anything in it.
-    if started.is_err() && locked && made {
-        let _ = fs::remove_dir_all(&dir);
-    }
-    // Our copy of the lock goes before anything that could wait.
-    drop(lock);
+    let started = if locked { launch(&dir, lock, &program) } else { Err("a holder already keeps this pane".into()) };
     started.map_err(|why| format!("{}: {why}", dir.display()))?;
     say(dir.as_os_str().as_bytes())
 }
 
 /// Starts the holder of a pane we hold the lock of, and waits until it is up.
-fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
+fn launch(dir: &Path, lock: File, program: &[OsString]) -> Result<(), String> {
     let log = File::create(dir.join("log")).map_err(|e| format!("cannot make the log: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
-    let lock = lock.try_clone().map_err(|e| format!("cannot copy the lock: {e}"))?;
     let mut holder = Command::new(me);
     holder.arg("hold").arg(cwd).args(program).current_dir(dir);
     // The pane's directory by the name it was started under (the holder's
     // own working directory may read otherwise, through a link).
     holder.env(name!("PANE"), std::path::absolute(dir).unwrap_or(dir.to_path_buf()));
+    // (And the session, if it was named, by its whole path: the pane's program may go anywhere.)
+    if var(name!("DIR")).is_some() {
+        holder.env(name!("DIR"), session()?);
+    }
     holder.stdin(Stdio::from(lock)).stdout(Stdio::piped()).stderr(log);
     sys::new_session(&mut holder, false);
     let mut holder = holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?;
