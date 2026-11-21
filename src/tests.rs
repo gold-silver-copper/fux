@@ -368,6 +368,13 @@ fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour(
     thin.edit(&["size", "row", "+5"]).expect("size");
     thin.edit(&["size", "row", "-3"]).expect("size");
     assert_eq!(thin.print(), "* row(a:5 b:94) focus=a\n");
+    // Nor does its tile: a share under a hundredth of its row is left as it is (made 1 of 100, it
+    // had five columns of 500 where it had one).
+    let mut sliver = parse("* row(a:1 b:9999) focus=a\n").expect("sliver");
+    let area = Rect { x: 0, y: 0, w: 500, h: 3 };
+    let before = sliver.tabs.first().expect("a tab").tiles(area).first().expect("a tile").1.w;
+    sliver.edit(&["size", "row", "-5"]).expect("size");
+    assert_eq!((before, sliver.tabs.first().expect("a tab").tiles(area).first().expect("a tile").1.w), (1, 1));
     // The focus is on d by now; the new pane still goes beside the pane it was asked for.
     let mut layout = parse("* row(a b) focus=b\n  d focus=d\n  n focus=n\n").expect("a layout");
     layout.edit(&["split", "col", "n", "beside", "a"]).expect("split");

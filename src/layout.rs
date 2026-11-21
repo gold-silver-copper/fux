@@ -150,6 +150,10 @@ impl Node {
         }
         // Shares become parts of a hundred, so that a step of 5 is a small one.
         let total: u32 = parts.iter().map(|p| p.1.max(1)).sum();
+        // (A part under a hundredth would be made one by that, and grow: asked to shrink, it is left.)
+        if change < 0 && parts.get(at).is_some_and(|p| p.1.max(1) * 100 < total) {
+            return true;
+        }
         parts.iter_mut().for_each(|p| p.1 = (p.1.max(1) * 100 / total).max(1));
         if let Some((_, share)) = parts.get_mut(at) {
             *share = i64::from(*share).saturating_add(change).clamp(5.min(i64::from(*share)), 10000) as u32;
