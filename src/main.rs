@@ -164,6 +164,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
         return Err(wrong);
     }
     let session = session()?;
+    let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let workspace = session.join(workspace);
     let fail = |path: &Path, e: std::io::Error| format!("{}: {e}", path.display());
     DirBuilder::new().mode(0o700).recursive(true).create(&workspace).map_err(|e| fail(&workspace, e))?;
@@ -180,7 +181,6 @@ fn start(args: &[OsString]) -> Result<(), String> {
     // The lock on the pane's directory is the proof that a holder lives: the kernel drops it when the holder is
     // gone, however it went. We take it here and the holder inherits it, and the directory with it: entered
     // first, it is the one that is locked and the one the holder works in, even if it is renamed meanwhile.
-    let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let lock = std::env::set_current_dir(&dir).and_then(|()| sys::open(".", false)).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
         Ok(()) => launch(&session, &dir, &cwd, lock, sections.next().unwrap_or_default()),

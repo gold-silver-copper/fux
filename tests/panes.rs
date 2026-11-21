@@ -2293,3 +2293,21 @@ fn a_text_or_a_list_that_cannot_be_moved_into_its_pane_is_removed() {
     }
     assert!(!text.exists() && !list.exists(), "left behind: text {} list {}", text.exists(), list.exists());
 }
+
+#[test]
+fn a_start_from_a_directory_that_is_gone_claims_no_name() {
+    // What can refuse a start before a folder is made refuses it before: no name is taken for nothing.
+    let session = Session::new("nowhere");
+    let gone = session.0.join("gone");
+    fs::create_dir_all(&gone).unwrap();
+    let mut start = Command::new("sh");
+    start.args(["-c", r#"rmdir "$PWD" && exec "$0" start w/ -- true"#, env!("CARGO_BIN_EXE_fux")]);
+    let out = start
+        .env("FUXN_DIR", &session.0)
+        .env_remove("FUXN_PANE")
+        .env_remove("FUXN_WS")
+        .current_dir(&gone)
+        .output()
+        .unwrap();
+    assert!(!out.status.success() && !session.0.join("w/1").exists(), "{out:?}");
+}
