@@ -1474,6 +1474,8 @@ fn a_mark_goes_with_its_cell_when_a_character_is_printed_before_it_in_insert_mod
     assert_eq!(term(8, 2, "ab\x1b]133;B\x07cd\r\x1b[4hX").marks(), "0 3 command\n");
     assert_eq!(term(8, 2, "ab\x1b]133;B\x07cd\r\x1b[4h日").marks(), "0 5 command\n");
     assert_eq!(term(8, 2, "ab\x1b]133;B\x07cd\x1b[1;3H\x1b[4hX").marks(), "0 2 command\n");
+    // (And when what comes next makes that character a column wider.)
+    assert_eq!(term(8, 2, "ab\x1b]133;B\x07cd\r\x1b[4h\u{2764}\u{fe0f}").marks(), "0 8 command\n");
 }
 
 #[test]

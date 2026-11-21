@@ -1222,6 +1222,9 @@ impl Term {
             (self.screen.cursor.col, self.screen.cursor.wrap) = (col, false);
             self.place(grown, true, false);
             if insert {
+                // (The marks after it go one column on with their cells.)
+                let cols = self.screen.cols;
+                self.move_marks(|r, c| (r, if r == row && c > col { (c + 1).min(cols) } else { c }));
                 self.tidy(row);
             }
         }
