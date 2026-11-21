@@ -681,8 +681,7 @@ impl Term {
     /// before the cursor; and whether every wide character on both screens has both its cells.
     #[cfg(test)]
     pub fn lines(&self) -> (String, String, bool) {
-        let (main, row) =
-            if self.screen.alt { (&self.other, self.main_row) } else { (&self.screen.grid, self.screen.cursor.row) };
+        let (main, row) = (self.main(), if self.screen.alt { self.main_row } else { self.screen.cursor.row });
         let (mut all, mut before, mut open) = (String::new(), String::new(), self.tail);
         for (y, (cells, goes_on)) in with_next(main).enumerate() {
             if y == row {
@@ -1392,13 +1391,9 @@ impl Term {
         // (The marks on the screen are places in the text while it is wrapped anew.)
         self.mark_texts(0..usize::MAX);
         let blank = Cell::blank(Style::default());
-        let (main, other) =
-            if self.screen.alt { (&self.other, &self.screen.grid) } else { (&self.screen.grid, &self.other) };
-        let (main_pictures, other_pictures) = if self.screen.alt {
-            (&self.other_pictures, &self.screen.pictures)
-        } else {
-            (&self.screen.pictures, &self.other_pictures)
-        };
+        let (shown, hidden) = ((&self.screen.grid, &self.screen.pictures), (&self.other, &self.other_pictures));
+        let ((main, main_pictures), (other, other_pictures)) =
+            if self.screen.alt { (hidden, shown) } else { (shown, hidden) };
         // Places on the main screen that stay on their character, each with whether it waits to
         // wrap at its row's end. First the cursor, whose line is taken to reach as far as it
         // stands (behind the alternate screen, the saved cursor is the one that will come back);
