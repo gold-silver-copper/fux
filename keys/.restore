@@ -7,14 +7,14 @@
 # line's blanks, nothing expanded, no shell) and in the directory its program last said it was in (`cwd`,
 # if it said). What it had printed is kept beside it in `before` if a holder was started (a start in place
 # begins the pane's files anew, also one that then fails; a start that was refused, as that of a pane that
-# is alive, made no new `log` and changed nothing). Which panes that starts wrongly, and how a session
+# is alive, made no new `log` and changed nothing; one whose text cannot be copied is not started). Which panes that starts wrongly, and how a session
 # outlasts a reboot: the README, "Search every pane, and after a reboot".
 D=$(fux dir) && export FUXN_DIR="$D" FUXN_KEYS="${FUXN_KEYS:-$(cd "$(dirname "$0")" && pwd)}" || exit
 for p in "$D"/*/*/; do
   p=${p%/}
   command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)
   [ -n "$command" ] || continue
-  cat "$p/history.1" "$p/history" "$p/screen" > "$p/before.$$" 2>/dev/null
+  for f in history.1 history screen; do [ ! -e "$p/$f" ] || cat "$p/$f" || { rm -f "$p/before.$$"; continue 2; }; done > "$p/before.$$"
   dir=
   IFS= read -r dir 2>/dev/null < "$p/cwd"
   if (cd "${dir:-$HOME}" 2>/dev/null || cd; set -f; set -- $command; fux start "${p#"$D"/}" -- "$@") > /dev/null 2>&1

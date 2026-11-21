@@ -2155,3 +2155,29 @@ fn what_is_typed_before_a_workspace_with_no_pane_is_first_drawn_goes_to_its_shel
         || format!(": the shell shows {:?}, the viewer {:?}", read(&shell.join("screen")), read(&view.join("screen")));
     until_or("the letter is typed to the shell", seen, || read(&shell.join("screen")).contains('Z'));
 }
+
+#[test]
+fn a_restore_that_cannot_copy_what_a_pane_printed_does_not_start_it_again() {
+    // `.restore` starts a pane in place, which begins its files anew: what it had printed is copied
+    // first, and a pane whose text cannot be copied (a `screen` that cannot be read) is left as it is.
+    let session = Session::new("unreadable");
+    let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let pane = session.start("w/kept", &["echo", "KEEP"]);
+    assert!(session.fux().arg("wait").arg(&pane).status().unwrap().success());
+    let mode =
+        |mode: &str| assert!(Command::new("chmod").arg(mode).arg(pane.join("screen")).status().unwrap().success());
+    mode("000");
+    if fs::read(pane.join("screen")).is_ok() {
+        return; // (Whoever may read every file, root, has no file that cannot be copied.)
+    }
+    let mut restore = Command::new("sh");
+    restore.arg(keys.join(".restore")).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+    restore.env("FUXN_DIR", &session.0).env_remove("FUXN_KEYS").env_remove("FUXN_PANE").env_remove("FUXN_WS");
+    let restored = restore.output().unwrap();
+    mode("600");
+    let (said, kept) = (String::from_utf8_lossy(&restored.stdout).into_owned(), read(&pane.join("screen")));
+    let before = fs::read_to_string(pane.join("before")).ok();
+    assert!(said.is_empty() && kept.contains("KEEP") && before.is_none(), "{said:?} {kept:?} {before:?}");
+    assert!(String::from_utf8_lossy(&restored.stderr).contains("screen"), "cat says which file it could not read");
+}
