@@ -1426,3 +1426,26 @@ fn a_click_gives_a_tile_the_keys_also_between_programs_that_ask_for_presses_only
     until("the presses arrive", || read(&b.join("screen")).contains("^[[M )#^[[M *$"));
     assert_eq!((read(&b.join("screen")).trim_end(), read(&a.join("screen")).trim_end()), ("^[[M )#^[[M *$", ""));
 }
+
+#[test]
+fn a_menu_opens_whatever_kind_of_file_a_key_is() {
+    // A FIFO where a key's script would be, and one where a menu's caption would be: nobody
+    // writes to either, and the menu opens all the same.
+    let (outer, inner) = (Session::new("fouter"), Session::new("finner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b/sub")).unwrap();
+    assert!(
+        Command::new("mkfifo").arg(keys.join("C-b/f")).arg(keys.join("C-b/sub/.about")).status().unwrap().success()
+    );
+    fs::write(keys.join("C-b/v"), "#!/bin/sh\n# says\necho said\n").unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("C-b/v")).status().unwrap();
+    inner.start("one", &["sh"]);
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    let screen = || read(&view.join("screen"));
+    until("the pane is shown", || screen().contains('$') || screen().contains('#'));
+    fs::write(view.join("in"), "\x02").unwrap();
+    until_or("the menu shows", screen, || screen().contains("v  says") && screen().contains("sub  …"));
+    fs::write(view.join("in"), "v").unwrap();
+    until_or("the viewer still answers", screen, || screen().contains(" said"));
+}

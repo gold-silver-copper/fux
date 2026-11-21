@@ -1506,12 +1506,11 @@ fn menu_entries(directory: &Path) -> Vec<Entry> {
     let mut names: Vec<String> = names.take(MENU_MAX + 1).collect();
     let more = names.len() > MENU_MAX;
     names.truncate(MENU_MAX);
-    let head = |path: &Path| String::from_utf8_lossy(&crate::read(File::open(path), 1024).0).into_owned();
     let described = names.into_iter().map(|name| {
         let path = directory.join(&name);
         // A script's lines after `#!`: `# caption`, `# group: NAME`. A directory's `.about`: `caption`, `# group: NAME`.
-        let (text, menu) =
-            if path.is_dir() { (format!("\n# {}", head(&path.join(".about"))), "…") } else { (head(&path), "") };
+        let (file, before, menu) = if path.is_dir() { (path.join(".about"), "\n# ", "…") } else { (path, "", "") };
+        let text = format!("{before}{}", text(&file, 1024));
         let mut lines = text.lines().skip(1).map(|line| line.strip_prefix("# ").unwrap_or_default());
         let about = format!("{}{menu}", lines.next().unwrap_or_default());
         (name, about, lines.next().and_then(|line| line.strip_prefix("group: ")).unwrap_or_default().to_string())
