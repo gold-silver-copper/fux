@@ -47,9 +47,6 @@ const LOOK_EVERY: Duration = Duration::from_secs(2);
 struct Holder {
     term: Term,
     master: Option<File>,
-    /// Kept open so that output a program wrote just before it ended is not
-    /// thrown away (macOS drops it when the last slave closes).
-    _slave: File,
     /// The facts as they were written last, each in its file: one is written again only when it changes.
     facts: HashMap<&'static str, Option<Vec<u8>>>,
     /// How many rounds of writing had a notice: the number in the `notice` file.
@@ -78,6 +75,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     };
     let (cols, rows) = (number("COLUMNS", 80)?, number("LINES", 24)?);
     let size = Winsize { cols, rows, xpixel: cols * 10, ypixel: rows * 20 };
+    // The slave stays open until this function ends, so that output a program wrote just before it
+    // ended is not thrown away (macOS drops it when the last slave closes).
     let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
     let (program, args) = command.split_first().ok_or("no program to run")?;
     // `fux start` says under what name the pane's directory was started, and its program is told
@@ -128,7 +127,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     let mut holder = Holder {
         term: Term::new(usize::from(cols), usize::from(rows)),
         master: Some(master),
-        _slave: slave,
         facts: HashMap::new(),
         noticed: 0,
         input: Vec::new(),
