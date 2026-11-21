@@ -2,7 +2,7 @@
 //! Every `extern` is declared by hand from the C prototypes; the constants
 //! are Linux's and macOS's own and differ where the two systems differ.
 
-use std::ffi::{CString, c_char, c_int, c_ulong};
+use std::ffi::{CStr, CString, c_char, c_int, c_ulong};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Error, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -181,8 +181,7 @@ pub fn host() -> Option<String> {
     let mut name = [0u8; 256];
     // SAFETY: gethostname writes at most the length given into a buffer of that length.
     check(unsafe { gethostname(name.as_mut_ptr().cast(), name.len() - 1) }).ok()?;
-    let end = name.iter().position(|byte| *byte == 0)?;
-    String::from_utf8(name.get(..end)?.to_vec()).ok()
+    CStr::from_bytes_until_nul(&name).ok()?.to_str().ok().map(String::from)
 }
 
 /// Opens a file to read, or to write, without waiting: a FIFO with nobody at its other end
