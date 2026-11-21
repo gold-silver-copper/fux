@@ -295,16 +295,14 @@ impl Holder {
     /// them from that; says whether there were any.
     fn read_program(&mut self, buffer: &mut [u8], left: &mut usize) -> bool {
         let buffer = buffer.get_mut(..(*left).min(buffer.len())).unwrap_or_default();
-        let Some(n) = self.master.as_ref().and_then(|mut m| m.read(buffer).ok()) else {
-            return false;
-        };
+        let Some(n @ 1..) = self.master.as_ref().and_then(|mut m| m.read(buffer).ok()) else { return false };
         // What the colours are is in the session's `colours` file, two folders up, if a viewer
         // (or a person) wrote one: read again when it has changed, 16 KiB of it at most.
         self.told();
         self.term.feed(buffer.get(..n).unwrap_or(&[]));
         self.collect(READ_BUDGET);
-        *left = left.saturating_sub(n);
-        n != 0
+        *left -= n;
+        true
     }
 
     /// Reads what the program has written and was not read yet, `most` bytes of it at most.
