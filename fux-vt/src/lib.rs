@@ -1807,10 +1807,7 @@ impl Term {
             }
             b"r" => format!("{};{}r", self.top + 1, self.bottom + 1),
             b" q" => format!("{} q", self.screen.cursor_shape),
-            _ => {
-                self.respond("\x1bP0$r\x1b\\");
-                return;
-            }
+            _ => return self.respond("\x1bP0$r\x1b\\"),
         };
         self.respond(&format!("\x1bP1$r{body}\x1b\\"));
     }
@@ -2024,8 +2021,7 @@ impl Term {
         let cols = width.div_ceil(self.told.cell.0.max(1)).max(1);
         let rows = height.div_ceil(self.told.cell.1.max(1)).max(1);
         if cols > SIZE_MAX || rows > SIZE_MAX {
-            self.refuse("a picture over 500 cells wide or high was dropped");
-            return;
+            return self.refuse("a picture over 500 cells wide or high was dropped");
         }
         if self.screen.pictures.len() >= PICTURES_MAX {
             let oldest = self.screen.pictures.remove(0).id;
