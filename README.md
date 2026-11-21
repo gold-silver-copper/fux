@@ -120,7 +120,7 @@ any 25 ms), and past that the program waits, as on any slow terminal. The holder
 reading; past that it stops reading `in`, and once the FIFO's own buffer
 (the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
 cells. A program that says it is in the middle of drawing (mode 2026) is not
-written out until it says it is done, or what is not yet written (its output, a line on `ctl`) has waited half a second in the holder (history may be added to meanwhile): so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data each; a ninth drops the
+written out until it says it is done, or what is not yet written (its output, a line on `ctl`) has waited half a second in the holder (history may be added to meanwhile): so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data and 500 cells each way; a ninth drops the
 oldest, with a line in `log`. At most 4 MiB of history and one row wait to be written,
 counted on the longer of `history` and `history.styled`: rows past that (one
 write of the program or one resize that makes more, with what still waits from before; rows a resize takes back and gives again are counted once) are not kept, in either
@@ -413,8 +413,8 @@ other shows what fits.
 A resize wraps the main screen's text anew: a line that was wrapped is one
 line again at any width, and no character is cut in two (on a screen one
 column wide, a wide character becomes a blank). Rows that no longer fit go
-to `history` from the top, and come back from it at the next resize that has
-room for them, if nothing has scrolled off in between: a tile made narrow
+to `history` from the top, and come back from it (the last 100,000 cells of them) at the next resize that has
+room for them, if nothing has scrolled off and the screen was not cleared in between: a tile made narrow
 for a moment is as it was when it is wide again, and `history` is then that
 much shorter at its end. What scrolled off stays in `history`: a screen made
 taller later gets blank rows at its bottom. The cursor stays on its
@@ -607,7 +607,7 @@ own size (the larger of what it says and what it paints) against the pixels
 its tile has for it, counted in your terminal's cells (the cells a pane
 counted it in are only where it starts). One whose pixels are square and
 all in the tile is passed on as the program wrote it. Of any other (wider or
-taller than the tile, with rows scrolled off the pane's top, or asking for
+taller than the tile, with rows scrolled off the pane's top, or asking in its raster attributes for
 pixels that are not square) the part inside the tile is drawn, at its place
 and never over the line between tiles or a neighbour: the viewer reads the
 picture (`fux-vt/src/sixel.rs`: raster attributes, colours in RGB and HLS,
@@ -629,12 +629,12 @@ have, a step for each byte) and counts for nothing else. The part is at most
 8,388,608 pixels (a screen of 3840 by 2160 has fewer); what is painted in it
 may name colour registers 0 to 255 and 256 different colours, and may paint
 each of its pixels 16 times over on average; 4 MiB of sixel are written for
-it. All the pictures on the terminal are 16 MiB together at most. A picture
+it. All the pictures on the terminal are 16 MiB together at most (counted as the panes are drawn, under a menu too). A picture
 past one of these is not drawn (no stand-in is), and the viewer's corner
 says which, until the next key: once for each part, and every one of a
 frame. So is every picture in a terminal that does not say how many pixels a
 cell has: nothing then tells whether one stays in its tile. One that was
-refused is looked at again when its file or its tile changes.
+refused is looked at again when its file or its tile changes, or it was not shown for a frame.
 Another protocol later is another file extension beside `.sixel` and a few
 lines in the viewer.
 
@@ -878,7 +878,7 @@ being typed, its line is not wrapped anew when the width changes (its rows
 are cut or padded where they are, as kitty and Ghostty do), and the shell's
 own redraw lands on it clean. That is done only where the line is surely the
 shell's: its last two marks are a prompt and where the command begins, the
-cursor is there, and the prompt began the line. In every other case (output
+cursor is at or after that on its line, and the prompt began the line or stands above it. In every other case (output
 that did not end its line with the prompt after it, a shell that marks only
 its prompts, a command that runs) every line is wrapped anew as always, and
 no text is ever cut that the shell would not draw again.
@@ -904,7 +904,8 @@ and in the viewer (a sixel terminal keeps the pixels the text did not
 cover): a pane's picture is one rectangle of cells, not pixels. A picture
 keeps its place through a resize where the text beside it does: one on rows
 that wrap anew at the new width goes; one past the right edge or the last
-row of a smaller screen is kept, and shown again on a larger one.
+row of a smaller screen is kept, and shown again on a larger one; a resize
+that tells of cells of another size in pixels takes every picture away.
 After a picture
 the cursor goes to the start of the line below it (a VT340 and xterm leave it on the
 picture's last row), so that a prompt does not write over it; a picture
