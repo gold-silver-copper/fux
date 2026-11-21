@@ -188,9 +188,8 @@ struct View {
     /// When a key last went to a pane: its echo is looked for often for a moment after.
     keyed: Option<Instant>,
     pasting: Option<bool>,
-    scripts: Vec<Child>,
-    /// The script the keys wait for, the last one started, and when; `scripts` has the others that still run.
-    waiting: Option<(Child, Instant)>,
+    /// The key scripts that still run, each with when it started while the keys wait for it (two seconds).
+    scripts: Vec<(Child, Option<Instant>)>,
     ctl_path: PathBuf,
     ctl_line: Vec<u8>,
 }
@@ -274,7 +273,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         keyed: None,
         pasting: None,
         scripts: Vec::new(),
-        waiting: None,
         ctl_path,
         ctl_line: Vec::new(),
     };
@@ -319,14 +317,12 @@ impl View {
             // in a shell does: they wait until it ends (and what it printed is
             // read, and what it changed is drawn). One that takes longer than
             // two seconds is left running and the keys go on.
-            self.scripts.retain_mut(|script| !matches!(script.try_wait(), Ok(Some(_))));
-            if let Some((child, since)) = &mut self.waiting {
-                if matches!(child.try_wait(), Ok(Some(_))) {
-                    self.waiting = None;
-                } else if since.elapsed() > SCRIPT_WAIT {
-                    self.message = "a key script is still running: keys no longer wait for it".into();
-                    self.scripts.extend(self.waiting.take().map(|(child, _)| child));
-                }
+            self.scripts.retain_mut(|(script, _)| !matches!(script.try_wait(), Ok(Some(_))));
+            for (_, since) in
+                self.scripts.iter_mut().filter(|(_, since)| since.is_some_and(|at| at.elapsed() > SCRIPT_WAIT))
+            {
+                self.message = "a key script is still running: keys no longer wait for it".into();
+                *since = None;
             }
             let n = (&*ctl).read(&mut buffer).unwrap_or(0);
             for line in crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), LINE_MAX) {
@@ -341,7 +337,7 @@ impl View {
             }
             // Files are looked at often just after something happened and seldom at rest.
             let timeout = match active.elapsed().as_millis() {
-                _ if self.waiting.is_some() => 2,
+                _ if self.waiting() => 2,
                 // (A key's echo is a millisecond or two away.)
                 _ if self.keyed.is_some_and(|at| at.elapsed() < ECHO_WAIT) => 1,
                 0..300 => 4,
@@ -376,11 +372,16 @@ impl View {
                 self.told();
             }
             // (Keys wait for the first look at a workspace: one with no pane gets its shell there, and they are its.)
-            if self.waiting.is_none() && !self.carry.is_empty() && self.looked.is_some() {
+            if !self.waiting() && !self.carry.is_empty() && self.looked.is_some() {
                 // When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
                 self.keys(heard.elapsed() >= ESCAPE_WAIT);
             }
         }
+    }
+
+    /// Whether the keys wait: for every script started that neither ended nor ran two seconds.
+    fn waiting(&self) -> bool {
+        self.scripts.iter().any(|(_, since)| since.is_some())
     }
 
     /// Another workspace is shown: what was read of the panes is forgotten, and with it what the
@@ -483,7 +484,7 @@ impl View {
                 ("mode", _) => {}
                 _ => self.key(&name, raw, event, &layout),
             }
-            if self.waiting.is_some() || std::mem::take(&mut self.pause) {
+            if self.waiting() || std::mem::take(&mut self.pause) {
                 break;
             }
         }
@@ -742,7 +743,7 @@ impl View {
 
     fn script(&mut self, file: &Path, layout: &Layout) {
         self.send();
-        if self.scripts.len() + usize::from(self.waiting.is_some()) >= SCRIPTS_MAX {
+        if self.scripts.len() >= SCRIPTS_MAX {
             self.message = format!("{SCRIPTS_MAX} key scripts are still running: {} was not started", file.display());
             return;
         }
@@ -782,7 +783,7 @@ impl View {
             script.env(name, format!("{}x{}", tile.w, tile.h));
         }
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
-            Ok(child) => self.scripts.extend(self.waiting.replace((child, Instant::now())).map(|(child, _)| child)),
+            Ok(child) => self.scripts.push((child, Some(Instant::now()))),
             Err(e) => self.message = format!("{}: {e}", file.file_name().unwrap_or_default().to_string_lossy()),
         }
     }
@@ -1057,7 +1058,7 @@ impl View {
         // `.empty` is run (a new shell, by default). One whose last pane ends while it is
         // shown stays empty, and says how to go on.
         // (No pane is what the layout says, not what there was room to draw. The keys typed after
-        // a script that chose this workspace wait for `.empty` now: they are its workspace's.)
+        // a script that chose this workspace wait for `.empty` too: they are its workspace's.)
         if first_look {
             let first = self.keys.join(".empty");
             if layout.tabs.is_empty() && wrong.is_none() && first.is_file() {

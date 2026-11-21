@@ -2185,6 +2185,33 @@ fn what_is_typed_after_a_key_that_shows_a_workspace_with_no_pane_goes_to_its_she
 }
 
 #[test]
+fn what_is_typed_after_a_key_whose_script_makes_the_pane_waits_for_it_though_empty_has_ended() {
+    // The key's script names a workspace with no pane and starts its pane a second later; `.empty`,
+    // started for that workspace meanwhile, ends at once: the letter typed after the key waits for
+    // every script started before it, the key's own among them, and not only for the last.
+    let (outer, inner) = (Session::new("wkouter"), Session::new("wkinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b/w")).unwrap();
+    let key = "#!/bin/sh\necho workspace other\nsleep 1\nexec fux start other/1 -- cat >/dev/null\n";
+    fs::write(keys.join("C-b/w/l"), key).unwrap();
+    fs::write(keys.join(".empty"), "#!/bin/sh\nexit 0\n").unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("C-b/w/l")).arg(keys.join(".empty")).status().unwrap();
+    inner.start("one", &["sh", "-c", "echo READY; exec cat"]);
+    fs::create_dir_all(inner.0.join("other")).unwrap();
+    let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &viewer[..]].concat());
+    until("the viewer shows the first workspace", || read(&view.join("screen")).contains("READY"));
+    fs::write(view.join("in"), "\x02wlZ").unwrap();
+    let shell = inner.0.join("other/1");
+    until("the workspace has its pane", || fact(&shell, "state") == "running");
+    until("the viewer shows it", || read(&inner.0.join("other/layout")).contains("focus=1"));
+    // (A letter the viewer had dropped before the pane was there never comes: a second is given.)
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(read(&shell.join("screen")).contains('Z'), "the pane shows {:?}", read(&shell.join("screen")));
+}
+
+#[test]
 fn a_restore_that_cannot_copy_what_a_pane_printed_does_not_start_it_again() {
     // `.restore` starts a pane in place, which begins its files anew: what it had printed is copied
     // first, and a pane whose text cannot be copied (a `screen` that cannot be read) is left as it is.
