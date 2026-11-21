@@ -80,10 +80,11 @@ fn workspace() -> String {
 
 /// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot, and not `-` alone
 /// (which marks a tab in the layout and means "the one before" to the viewer), nor the name of
-/// the session's files of what the terminal is like (its colours, its keyboard).
+/// the session's files of what the terminal is like (its colours, its keyboard) or of a
+/// workspace's layout.
 fn is_name(name: &str) -> bool {
     !name.is_empty()
-        && !["-", "colours", "keyboard"].contains(&name)
+        && !["-", "colours", "keyboard", "layout", "layout.new"].contains(&name)
         && !name.starts_with('.')
         && name.len() <= 64
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
@@ -142,11 +143,8 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let (workspace, pane) = name.split_once('/').unwrap_or((&default, &name));
     if !is_name(workspace) || !(pane.is_empty() || is_name(pane)) {
         return Err(format!(
-            "{name}: a name is letters, digits, '.', '_' and '-', at most 64, not starting with a dot"
+            "{name}: a name is letters, digits, '.', '_' and '-', at most 64, not starting with a dot, and not layout, colours or keyboard"
         ));
-    }
-    if ["layout", "layout.new"].iter().any(|taken| pane.eq_ignore_ascii_case(taken)) {
-        return Err(format!("{name}: a workspace keeps its layout in a file of that name"));
     }
     let program: Vec<OsString> = match program {
         [] => vec![std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into())],
@@ -155,18 +153,13 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let workspace = session()?.join(workspace);
     let fail = |path: &Path, e: std::io::Error| format!("{}: {e}", path.display());
     DirBuilder::new().mode(0o700).recursive(true).create(&workspace).map_err(|e| fail(&workspace, e))?;
-    // The claim is made under a lock on the workspace, so that two starts of
-    // one name, or a start and the tidying after a failed one, never mix.
-    let claim =
-        File::open(&workspace).and_then(|claim| claim.lock().map(|()| claim)).map_err(|e| fail(&workspace, e))?;
-    // Making the directory is what claims a new name.
+    // Making the directory is what claims a new name; a name that is taken is a pane to start
+    // again in place, and a number that is taken is not free.
     let named = |dir: PathBuf| match DirBuilder::new().mode(0o700).create(&dir) {
-        Ok(()) => Ok(Some((dir, true))),
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(fail(&dir, e)),
-        Err(_) if pane.is_empty() => Ok(None),
-        Err(_) => Ok(Some((dir, false))),
+        made => Ok((made.is_ok() || !pane.is_empty()).then_some(dir)),
     };
-    let (dir, made) = if pane.is_empty() {
+    let dir = if pane.is_empty() {
         let mut numbers = (1..10000).map(|n| named(workspace.join(n.to_string())));
         numbers.find_map(Result::transpose).ok_or("no free number for a pane")??
     } else {
@@ -174,32 +167,18 @@ fn start(args: &[OsString]) -> Result<(), String> {
     };
     // The lock on the pane's directory is the proof that a holder lives: the
     // kernel drops it when the holder is gone, however it went. We take it
-    // here and the holder inherits it. A `fux wait` may hold it for an instant.
-    let lock = File::open(&dir);
-    let started = lock.as_ref().map_err(ToString::to_string).and_then(|lock| {
-        let locked = (0..20).any(|i| {
-            std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
-            lock.try_lock().is_ok()
-        });
-        // The workspace is let go while the holder starts, and taken again to tidy up if it does not.
-        let _ = claim.unlock();
-        if locked { launch(&dir, lock, &program) } else { Err("a holder already keeps this pane".into()) }
+    // here and the holder inherits it. A `fux wait` or a viewer may hold it for an instant.
+    let lock = File::open(&dir).map_err(|e| fail(&dir, e))?;
+    let locked = (0..20).any(|i| {
+        std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
+        lock.try_lock().is_ok()
     });
-    match started {
-        Ok(()) => {
-            // Our copy of the lock goes before anything that could wait.
-            drop(lock);
-            say(dir.as_os_str().as_bytes())
-        }
-        Err(why) => {
-            // A folder made for a pane that never was is not left behind. We
-            // still hold its lock, so nobody has started anything in it.
-            if made && claim.lock().is_ok() {
-                let _ = fs::remove_dir_all(&dir).or_else(|_| fs::remove_dir(&dir));
-            }
-            Err(format!("{}: {why}", dir.display()))
-        }
-    }
+    // (A start that fails leaves the folder, with a `log` that says why.)
+    let started = if locked { launch(&dir, &lock, &program) } else { Err("a holder already keeps this pane".into()) };
+    // Our copy of the lock goes before anything that could wait.
+    drop(lock);
+    started.map_err(|why| format!("{}: {why}", dir.display()))?;
+    say(dir.as_os_str().as_bytes())
 }
 
 /// Starts the holder of a pane we hold the lock of, and waits until it is up.
@@ -207,37 +186,26 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
     let log = File::create(dir.join("log")).map_err(|e| format!("cannot make the log: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
-    let mut holder = {
-        let lock = lock.try_clone().map_err(|e| format!("cannot copy the lock: {e}"))?;
-        let mut holder = Command::new(me);
-        holder.arg("hold").arg(cwd).args(program).current_dir(dir);
-        // The pane's directory by the name it was started under (the holder's
-        // own working directory may read otherwise, through a link).
-        holder.env(name!("PANE"), std::path::absolute(dir).unwrap_or(dir.to_path_buf()));
-        holder.stdin(Stdio::from(lock)).stdout(Stdio::null()).stderr(log);
-        sys::new_session(&mut holder, false);
-        holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?
-    };
-    // The holder is up when `status` names it. A status left by an earlier
-    // program stays until then, and for good if this start fails.
-    let ours = format!("holder {}\n", holder.id());
-    loop {
-        // An error here is the end too: there is nothing left to wait for.
-        let ended = !matches!(holder.try_wait(), Ok(None));
-        // (Its status comes with its first facts, a moment before its first screen.)
-        let up = read_some(&dir.join("status")).is_ok_and(|status| status.contains(&ours));
-        // A pane may remove its own folder when its program is done (the default
-        // shell panes do): gone with its holder, it started, ran and ended.
-        if (up && dir.join("screen.styled").exists()) || (ended && !dir.exists()) {
-            return Ok(());
-        }
-        if ended {
-            let log = read_some(&dir.join("log")).unwrap_or_default();
-            let why = log.lines().last().unwrap_or("the holder ended without a word");
-            return Err(why.trim_start_matches("fux: ").to_string());
-        }
-        std::thread::sleep(Duration::from_millis(2));
+    let lock = lock.try_clone().map_err(|e| format!("cannot copy the lock: {e}"))?;
+    let mut holder = Command::new(me);
+    holder.arg("hold").arg(cwd).args(program).current_dir(dir);
+    // The pane's directory by the name it was started under (the holder's
+    // own working directory may read otherwise, through a link).
+    holder.env(name!("PANE"), std::path::absolute(dir).unwrap_or(dir.to_path_buf()));
+    holder.stdin(Stdio::from(lock)).stdout(Stdio::piped()).stderr(log);
+    sys::new_session(&mut holder, false);
+    let mut holder = holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?;
+    // The holder says a line when its first screen is written: it is up. With no line it has ended.
+    // A pane may remove its own folder when its program is done (the default
+    // shell panes do): gone with its holder, it started, ran and ended.
+    let up = holder.stdout.take().map(|mut line| line.read(&mut [0]));
+    if matches!(up, Some(Ok(1))) || !dir.exists() {
+        return Ok(());
     }
+    let _ = holder.wait();
+    let log = read_some(&dir.join("log")).unwrap_or_default();
+    let why = log.lines().last().unwrap_or("the holder ended without a word");
+    Err(why.trim_start_matches("fux: ").to_string())
 }
 
 fn wait(args: &[OsString]) -> Result<(), String> {

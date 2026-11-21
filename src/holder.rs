@@ -219,6 +219,8 @@ impl Holder {
             }
         }
         self.publish().map_err(|e| format!("cannot write the screen: {e}"))?;
+        // (The pane is up: `fux start` waits for this line.)
+        let _ = crate::say(b"");
 
         let mut buffer = vec![0u8; 64 << 10];
         let (mut dirty, mut published, mut looked, mut budget) = (false, Instant::now(), Instant::now(), READ_BUDGET);
