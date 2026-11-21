@@ -1091,7 +1091,10 @@ impl Term {
         // that is dropped, it is where the rows that stay begin; on a row that moves, it moves.
         let bottom = self.bottom;
         if kept {
-            self.mark_texts(0..n);
+            // (Asked first: a flood scrolls two million times past no mark.)
+            if !self.marks.is_empty() {
+                self.mark_texts(0..n);
+            }
             // What comes after them in history makes the rows a resize sent there stay there.
             self.lent = None;
         }

@@ -1555,6 +1555,22 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     whose terminal cannot be duplicated at its start now leaves the
     terminal's mode alone (it was left raw: raw mode is a value that owns
     the duplicate, D97, so the duplicate is made first).
+  - The last series (what was dead or said twice, 32 commits) was read
+    the same way though the message asked it only of the first three:
+    no change found. (Two things no user can see: `fux layout` reads
+    `FUXN_DIR` before `FUXN_WS`, and a resize after a hang-up is refused
+    one step later.)
+  - **Speed, measured at the end** (`tools/perf.py`, both builds back to
+    back). The flood is 3% slower: 1.58 s where it was 1.53 s. It came
+    with "History's tail and the rows a resize lent are two types"
+    (`e25d9653d`, found by building each commit). One cause is put right:
+    every scroll asked where the marks are, also with no mark (a scroll
+    now asks only if there is one). The emulator alone is then 1.45 s for
+    the two million lines where it was 1.42 s; the rest did not answer to
+    four trials (inlining, the drop of the lent rows) and is not found.
+    The key rows land on 2, 3, 4, 5 or 6 ms from run to run with one
+    build, so they say nothing at this size; the others are inside
+    their spread.
 
 ## The old fux3's bugs: which classes are gone
 
