@@ -431,12 +431,11 @@ impl Layout {
             }
             // `pane NAME` is `focus NAME` for a pane whose name is a direction's word.
             ["focus" | "pane", name] => {
-                let at = self
+                self.current = self
                     .tabs
                     .iter()
                     .position(|tab| tab.panes().contains(name))
                     .ok_or(format!("no pane {name} here"))?;
-                self.current = at;
                 self.tab_mut()?.focus = name.to_string();
             }
             ["tab", way @ ("next" | "prev")] => self.current = step(self.current, count, *way == "prev"),
