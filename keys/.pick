@@ -2,7 +2,7 @@
 # What a find key runs is `.pick --tab LIST [COMMAND…]`: that starts `.pick LIST COMMAND…` in a pane of its own.
 # LIST is a file of lines `KEY<tab>WORDS`. One is chosen, with fzf, sk or fzy if
 # one is installed and from a numbered list if none is, and COMMAND is run
-# with its KEY as the last argument. The file is removed.
+# with its KEY as the last argument. The file is moved into the pane's folder, and goes with it.
 if [ "$1" = --tab ]; then
   # (With no COMMAND the pane chosen is shown, and the tab shown before the list's
   # own first, so that `fux layout tab -` goes back to that one.)

@@ -1,7 +1,8 @@
 #!/bin/sh
 # history in the editor
 # group: Panes
-# `.text` makes the file (the pane's whole text), `.edit` opens it, at its end.
+# `.text` makes the file (the pane's text), `.edit` opens it, at its last line
+# (in an editor whose way to a line it knows, or that `FUXN_EDIT` tells it).
 [ -n "$FUXN_PANE" ] || exit 0
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
 "$FUXN_KEYS/.text" "$f" > /dev/null

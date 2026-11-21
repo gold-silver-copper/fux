@@ -1,7 +1,7 @@
 #!/bin/sh
 # find a pane
 # group: Find
-# A list of this workspace's panes (name, title, the row its cursor is on) in a
+# A list of this workspace's panes that have a screen (name, title, the row its cursor is on) in a
 # pane of its own; the one chosen gets the keys. `.pick` does the choosing.
 list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
 for p in "$FUXN_DIR/$FUXN_WS"/*/; do

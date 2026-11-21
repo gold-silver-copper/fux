@@ -1,12 +1,13 @@
 #!/bin/sh
 # Starts again every pane of the session whose program is not running: after a
 # reboot, say. Run it by hand or from your login: sh "$FUXN_KEYS/.restore"
-# (`fux` on PATH; FUXN_DIR set if you set it for the viewer). The session
+# (`fux` on PATH; FUXN_KEYS as a login may not have it, FUXN_DIR set if you set it
+# for the viewer). It tries every pane that has a command in `status`. The session
 # directory must be one that outlasts a reboot.
 # Each pane is started under its name, with the words of its command line
 # (`status`: those between the line's blanks, nothing expanded, no shell) and
 # in the directory its program last said it was in (`cwd`, if it said). What it
-# had printed is kept beside it in `before`: a start in place begins the pane's
+# had printed is kept beside it in `before` (if the start went well): a start in place begins the pane's
 # files anew. A pane that is alive is left alone: `fux start` refuses a name a
 # holder keeps. Which panes that starts wrongly, and how a session outlasts a
 # reboot: the README, "Search every pane, and after a reboot".

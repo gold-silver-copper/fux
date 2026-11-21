@@ -1,7 +1,7 @@
 #!/bin/sh
 # find a workspace
 # group: Find
-# A list of the session's workspaces (name, panes) in a pane of its own; the
+# A list of the session's folders (name, and what is in each but its layout) in a pane of its own; the
 # viewer is told to show the one chosen.
 list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
 for w in "$FUXN_DIR"/*/; do

@@ -1,8 +1,8 @@
 #!/bin/sh
 # What the search key runs in a pane of its own: asks for words, lists every line
-# of every pane of the session that has them (history and screen, wrapped lines
-# whole, letters of either case), and opens the one chosen in the editor: that
-# pane's whole text, at that line. `.text` makes the text, `.pick` does the
+# of every other pane of the session that has them as they are (history and screen,
+# wrapped lines whole, ASCII letters of either case), and opens the one chosen in the
+# editor: that pane's text, made anew, at that line's number. `.text` makes the text, `.pick` does the
 # choosing, `.edit` the opening.
 if [ "$1" = --open ]; then
   # KEY is WORKSPACE/PANE:LINE.

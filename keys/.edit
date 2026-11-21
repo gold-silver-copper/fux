@@ -1,8 +1,8 @@
 #!/bin/sh
 # .edit FILE [LINE]: opens FILE in a tab of its own, in the editor, at LINE; FILE
-# is removed when that ends.
+# is removed when that ends. LINE is 1 if not given.
 # How the editor is run is `$FUXN_EDIT` if that is set (`%f` is the file, `%l`
-# the line; split at spaces, nothing else expanded; without `%f` the file is put
+# the line, which it may leave out; split at spaces, nothing else expanded; without `%f` the file is put
 # last), else `$EDITOR`, `$PAGER` or less, with the line as the `case` below
 # knows that editor to take it. The README has it in full ("Keys are scripts").
 put() {

@@ -464,10 +464,10 @@ The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `x` then `y` close the pane (remove its directory), `h j k l` focus,
 `o` next pane, `n` `b` next and previous tab, `d` detach, `c` the pane's text
 in the editor, `M-c` (Alt-c) the same text in colour in `less`, `C` (Shift-c) the last command's output in the editor (from
-where it began to where it ended, so without the prompt that
+the last `output` mark to the `end` after it, or to the text's end, so without the prompt that
 follows an output with no line break; it says so if the command printed
 nothing or its output was cleared away; of a long output that Ctrl-L or `clear` cut in two,
-the part that had scrolled into history is all there is, and it opens that) and `p` the editor at the prompt before this one, or at the only one
+the part that had scrolled into history is all there is, and it opens that) and `p` the editor at the last marked prompt but one, or at the only one
 (both for a shell that marks its prompts, and neither while the pane shows a
 program's own screen: for bash from 4.4 on, `PS1='\[\e]133;A\a\]'$PS1'\[\e]133;B\a\]'; PS0='\e]133;C\a';
 PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'`, the `printf` put first in a
@@ -507,7 +507,7 @@ arguments, split at spaces), else `$PAGER`, else `less`, in a new tab. `vi`, `vi
 keys at their line); any other editor
 gets the file alone, as not every editor reads `+LINE`. An editor behind a
 launcher of another name is one of those: say how yours is run in
-`FUXN_EDIT`, a command in which `%f` is the file and `%l` the line, set where
+`FUXN_EDIT` (it comes before `$EDITOR`), a command in which `%f` is the file and `%l` the line, set where
 the viewer is started (a viewer started in a pane has it too; `export FUXN_EDIT='hx %f:%l'`, or your launcher in
 `hx`'s place; `keys/.edit` reads it and is yours to change). The file is in the editor pane's own folder and is removed
 when the editor ends, or with the pane if that is closed first. Its tab goes too (the
@@ -643,16 +643,16 @@ lines in the viewer.
 Both are scripts over the files, and yours to change.
 
 **`C-b f s` searches every pane of the session.** It asks for words in a pane
-of its own, lists every line that has them (each pane's `history.1`,
-`history` and screen, wrapped lines whole, letters of either case; ended
-panes too), and opens the pane's text at the line you choose, in the editor.
+of its own, lists every line that has them as they are (no pattern; each pane's `history.1`,
+`history` and screen, wrapped lines whole, ASCII letters of either case; ended
+panes too), and opens the pane's text, made anew, at the number of the line you choose, in the editor.
 `keys/.search` does it: `.text` for a pane's text, `grep`, `.pick` for the
 choice, `.edit` to open.
 
-**`sh "$FUXN_KEYS/.restore"` starts every ended pane again**, under its name,
+**`sh ~/.config/fux-next/keys/.restore` (in your keys directory) starts every pane with no holder again**, under its name,
 with the words of its command line (`status`) and in the directory the
 program last said it was in (`cwd`: a shell that announces it; else your home
-directory). What the pane had printed is kept beside it in `before`, since a
+directory). What the pane had printed is kept beside it in `before` (`history.1`, `history` and `screen`, one after another), since a
 start in place begins a pane's files anew. A pane that is alive is left
 alone, and the layouts are files, so tiles and tabs are as they were. It
 starts programs, it does not bring them back: a shell starts fresh in its
@@ -668,8 +668,7 @@ shell, by `keys/.shell`) and programs with plain arguments start as they
 were. A project that needs its panes back exactly keeps a start script of
 its own, which is a few lines of `fux start`.
 For that to be of use after a reboot, the session directory must outlast
-one. The default (`$XDG_RUNTIME_DIR/fux-next`) is in memory on Linux and
-gone at logout; set `FUXN_DIR` to a directory on disk, in your shell's
+one. The default is not such a one on Linux ("Linux and macOS", below); set `FUXN_DIR` to a directory on disk, in your shell's
 profile so that every `fux` agrees: `export FUXN_DIR=~/.local/state/fux-next`.
 On disk a busy pane costs writes (see "Bounds"). Then run the script at
 login, or put its line first in `keys/.empty`, so the first `fux view` after
