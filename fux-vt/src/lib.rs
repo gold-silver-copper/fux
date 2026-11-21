@@ -2294,22 +2294,18 @@ impl Term {
     /// The colour after a 38 or 48 at `i`, and how many parameters it used:
     /// `5;N`, `2;R;G;B`, or the same with `:` (where a colour space may come first).
     fn long_color(&self, i: usize) -> (Option<Color>, usize) {
-        let value = |k: usize| self.csi.params.get(i + k).and_then(|p| u8::try_from(p.0).ok());
-        let rgb = |at: usize| Some(Color::Rgb(value(at)?, value(at + 1)?, value(at + 2)?));
-        let colons = self.csi.params.get(i).is_some_and(|p| p.1);
-        let count = self.csi.params.iter().skip(i).take_while(|p| p.1).count();
-        let left = self.csi.params.len().saturating_sub(i);
+        let parts = self.csi.params.get(i..).unwrap_or_default();
+        let subs = parts.iter().take_while(|p| p.1).count();
+        let parts = if subs == 0 { parts } else { parts.split_at(subs).0 };
+        let value = |k: usize| u8::try_from(parts.get(k)?.0).ok();
+        let rgb = |k: usize| Some(Color::Rgb(value(k)?, value(k + 1)?, value(k + 2)?));
         // A colour with a part missing or over 255 sets nothing.
-        match self.csi.params.get(i).map(|p| p.0) {
-            Some(5) if colons => (value(1).filter(|_| count >= 2).map(Color::Indexed), count),
-            Some(5) => (value(1).map(Color::Indexed), left.min(2)),
-            Some(2) if colons => {
-                let at = if count >= 5 { 2 } else { 1 };
-                (rgb(at).filter(|_| at + 2 < count), count)
-            }
-            Some(2) => (rgb(1), left.min(4)),
-            _ => (None, if colons { count } else { 0 }),
-        }
+        let (color, used) = match parts.first().map(|p| p.0) {
+            Some(5) => (value(1).map(Color::Indexed), 2usize),
+            Some(2) => (rgb(1 + usize::from(subs >= 5)), 4),
+            _ => (None, 0),
+        };
+        (color, if subs == 0 { used.min(parts.len()) } else { subs })
     }
 }
 
