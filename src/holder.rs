@@ -66,7 +66,7 @@ struct Holder {
     /// What became of the program once it ended (`exited CODE`, `killed SIGNAL`): the `state`
     /// file, which until then says `running`, or `hungup` once the pty is closed.
     ended: Option<String>,
-    /// What the emulator produced and the next publish writes: history, pictures, a clipboard.
+    /// What the emulator produced and the next publish writes: pictures, a clipboard, a directory, a notice.
     pending: Out,
     /// The session's folder, where the files are that say what the terminal outside is like, and
     /// which `colours` and `keyboard` were read last.
@@ -365,14 +365,15 @@ impl Holder {
         // (or a person) wrote one: read again when it has changed, 16 KiB of it at most.
         self.told();
         self.term.feed(buffer.get(..n).unwrap_or(&[]));
-        self.collect();
+        self.collect(READ_BUDGET);
         n
     }
 
-    /// Takes what the emulator produced: answers go to the program and
-    /// refusals to the log now; the rest waits for the next publish.
-    fn collect(&mut self) {
-        let mut out = self.term.take();
+    /// Takes what the emulator produced: answers go to the program and refusals to the log now.
+    /// The rest is taken once `over` bytes of history wait there: the history is written, and
+    /// what else there is waits for the next publish.
+    fn collect(&mut self, over: usize) {
+        let mut out = self.term.take_past(over);
         if self.input.len() + out.reply.len() <= INPUT_MAX {
             self.input.extend_from_slice(&out.reply);
         } else {
@@ -380,33 +381,13 @@ impl Holder {
                 .push("an answer to the program was dropped: as many typed bytes as are kept were waiting for it");
         }
         out.refused.into_iter().for_each(|refused| self.log(refused));
-        // A resize took rows back from history's end: from what waits to be written, then from the file.
-        let files = [
-            ("history", &mut self.pending.history, out.unhistory),
-            ("history.styled", &mut self.pending.styled, out.unstyled),
-        ];
-        let kept = files.map(|(name, waiting, back)| {
-            let keep = waiting.len().saturating_sub(back);
-            let written = (back - (waiting.len() - keep)) as u64;
-            if waiting.is_char_boundary(keep) {
-                waiting.truncate(keep);
-            }
-            // (Only then: the files are not opened for every read of the program's output.)
-            let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(written));
-            let cut = if written > 0 { OpenOptions::new().write(true).open(name).and_then(cut) } else { Ok(()) };
-            cut.err().map(|e| format!("{name} keeps bytes that are on the screen again: {e}"))
-        });
-        kept.into_iter().flatten().for_each(|kept| self.log(&kept));
-        self.pending.styled.push_str(&out.styled);
-        self.pending.history.push_str(&out.history);
         self.pending.pictures.append(&mut out.pictures);
         self.pending.clipboard = out.clipboard.or(self.pending.clipboard.take());
         self.pending.cwd = out.cwd.or(self.pending.cwd.take());
         self.pending.notice = out.notice.or(self.pending.notice.take());
         self.pending.notices += out.notices;
-        // (Of what waits to be written, the longer text is the one that counts.)
-        if self.pending.history.len().max(self.pending.styled.len()) > READ_BUDGET {
-            self.history();
+        if !out.history.is_empty() || !out.styled.is_empty() || out.unhistory.max(out.unstyled) > 0 {
+            self.history([("history", out.history, out.unhistory), ("history.styled", out.styled, out.unstyled)]);
         }
     }
 
@@ -433,7 +414,7 @@ impl Holder {
             // Anyone may have something noticed: the words after `notify`, as a program's own notice.
             Some("notify") => {
                 self.term.notice(line.trim_start().strip_prefix("notify").unwrap_or_default().trim());
-                self.collect();
+                self.collect(READ_BUDGET);
                 Ok(())
             }
             Some("kill") if words.next().is_none() => {
@@ -471,7 +452,7 @@ impl Holder {
                     self.term.told().cell = (usize::from(cell.0), usize::from(cell.1));
                 }
                 self.term.resize(usize::from(cols), usize::from(rows));
-                self.collect();
+                self.collect(READ_BUDGET);
                 Ok(())
             }
             _ => Err("not a command (kill, resize COLS ROWS, notify TEXT)".into()),
@@ -481,18 +462,21 @@ impl Holder {
     /// Appends the lines that scrolled off to `history`, and the same lines with their looks to
     /// `history.styled`. What cannot be written to a file is lost to that file, and the log says
     /// so: it is not kept to try again, and what a resize sent there is no longer taken back.
-    fn history(&mut self) {
-        let files = [
-            ("history", std::mem::take(&mut self.pending.history)),
-            ("history.styled", std::mem::take(&mut self.pending.styled)),
-        ];
+    /// Before them, the bytes a resize took back from each file's end go from it (the third of each).
+    fn history(&mut self, files: [(&str, String, usize); 2]) {
+        for (name, _, back) in &files {
+            let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(*back as u64));
+            let cut = if *back > 0 { OpenOptions::new().write(true).open(name).and_then(cut) } else { Ok(()) };
+            let kept = cut.err().map(|e| format!("{name} keeps bytes that are on the screen again: {e}"));
+            kept.into_iter().for_each(|kept| self.log(&kept));
+        }
         // Once either file is past its size both are put aside, where the last of these lines
         // ends: no line is in two files, and the two have the same lines. (A line that never
         // ends is cut when a file is twice its size.) Neither while their last rows are a
         // resize's to take back, which it takes from these files.
-        let size = files.iter().filter_map(|(name, _)| fs::metadata(name).ok()).map(|m| m.len()).max().unwrap_or(0);
+        let size = files.iter().filter_map(|(name, ..)| fs::metadata(name).ok()).map(|m| m.len()).max().unwrap_or(0);
         let aside = size > HISTORY_MAX && !self.term.lent();
-        for (name, text) in &files {
+        for (name, text, _) in &files {
             let end = text.rfind('\n').map(|end| end + 1).or((size > 2 * HISTORY_MAX).then_some(0));
             let (old, new) = text.split_at_checked(end.filter(|_| aside).unwrap_or(text.len())).unwrap_or((text, ""));
             let append =
@@ -509,9 +493,7 @@ impl Holder {
     /// clipboard, then both screens; so nothing a screen names is missing and
     /// no line is in neither file.
     fn publish(&mut self) -> io::Result<()> {
-        if !self.pending.history.is_empty() || !self.pending.styled.is_empty() {
-            self.history();
-        }
+        self.collect(0);
         for (id, data) in std::mem::take(&mut self.pending.pictures) {
             // One that left the screen before it was written has no reader. One that
             // cannot be written is not on the screen either: it goes, and the log says why.

@@ -266,7 +266,7 @@ struct Lent {
     before: Tail,
 }
 
-/// What the emulator produces besides the screen, for the holder to take all at once.
+/// What the emulator produces besides the screen, for the holder to take: history when enough waits, or all at once.
 #[derive(Default)]
 pub struct Out {
     /// Answers to the program's queries, to be written to it.
@@ -610,6 +610,13 @@ impl Term {
     /// Everything produced since the last time this was asked.
     pub fn take(&mut self) -> Out {
         std::mem::take(&mut self.out)
+    }
+
+    /// The same once `over` bytes of history wait; until then the answers and refusals alone: the rest waits here.
+    pub fn take_past(&mut self, over: usize) -> Out {
+        let (reply, refused) = (std::mem::take(&mut self.out.reply), std::mem::take(&mut self.out.refused));
+        let all = self.out.history.len().max(self.out.styled.len()) >= over;
+        Out { reply, refused, ..if all { std::mem::take(&mut self.out) } else { Out::default() } }
     }
 
     // ---- files -----------------------------------------------------------
