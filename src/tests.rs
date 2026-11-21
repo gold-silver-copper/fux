@@ -321,6 +321,25 @@ fn keys_have_the_names_of_their_files() {
 }
 
 #[test]
+fn a_run_of_esc_bytes_is_the_escape_key_again_and_again_and_no_key_of_a_long_name() {
+    // Many ESC at once (a paste on a terminal that does not mark pastes): each is the key `esc`,
+    // told at once, until two are left, which are Alt with Escape if nothing more comes.
+    let run = [0x1b; 2000];
+    for whole in [true, false] {
+        assert_eq!(next(&run, whole, false), Some((1, "esc".to_string())));
+    }
+    let (mut at, mut longest) = (0, 0);
+    while let Some((length, name)) = next(&run[at..], true, false) {
+        (at, longest) = (at + length, longest.max(name.len()));
+    }
+    assert_eq!((at, longest), (run.len(), "M-esc".len()));
+    assert_eq!((next(b"\x1b\x1b", true, false), next(b"\x1b\x1b", false, false)), (Some((2, "M-esc".into())), None));
+    // Alt with a key that is a sequence is still that.
+    assert_eq!(next(b"\x1b\x1b[A", false, false), Some((4, "M-up".into())));
+    assert_eq!(next(b"\x1b\x1b\x1b[A", false, false), Some((1, "esc".into())));
+}
+
+#[test]
 fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour() {
     let (mut flat, mut deep) =
         (parse("* row(a b c:4) focus=a\n").expect("flat"), parse("* col(d row(a b c:4)) focus=a\n").expect("deep"));

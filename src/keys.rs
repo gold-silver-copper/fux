@@ -56,6 +56,8 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String, 
                 Some(last @ (b'A'..=b'D' | b'H' | b'F' | b'P'..=b'S')) => Some((3, sequence("", *last).0, None)),
                 Some(_) => Some((3, String::new(), None)),
             },
+            // (Of three ESC the first is Escape by itself: a run of them is never one key of a long name.)
+            Some(0x1b) if bytes.get(2) == Some(&0x1b) => Some((1, "esc".into(), None)),
             // (With Alt a key is in the old form, of which no more than its name is told.)
             Some(_) => {
                 let (length, name, _) = next(bytes.get(1..)?, whole, false)?;
