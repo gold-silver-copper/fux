@@ -398,10 +398,11 @@ impl View {
     }
 
     /// Another workspace is shown: what was read of the panes is forgotten, and with it what the
-    /// last frame was drawn from, so the next one is drawn (and the panes read) whatever it finds.
+    /// last frame was drawn from, so the next one is drawn (and the panes read) whatever it finds,
+    /// and where its tiles were, so a click before that frame is not one on a pane of this name there.
     fn forget(&mut self) {
         self.panes.clear();
-        (self.from, self.looked) = (None, None);
+        (self.from, self.looked, self.tiles) = (None, None, Vec::new());
     }
 
     /// A line a script printed: a command of the viewer's, or else a message to show.
