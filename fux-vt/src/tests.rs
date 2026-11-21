@@ -1378,8 +1378,9 @@ fn a_row_that_goes_on_from_the_one_above_still_does_when_a_character_is_printed_
 
 #[test]
 fn the_test_pattern_leaves_the_shells_marks_at_the_screens_start_and_the_rows_a_resize_lent_in_history() {
-    // (ESC # 8 writes over the whole screen, as CSI 2 J erases it: what the marks marked is gone.)
-    for whole in ["\x1b#8", "\x1b[2J"] {
+    // (ESC # 8 writes over the whole screen, as CSI 2 J erases it: what the marks marked is gone. CSI J from
+    // the screen's first cell, which many a `clear` sends, and CSI 1 J up to its last erase it whole too.)
+    for whole in ["\x1b#8", "\x1b[2J", "\x1b[H\x1b[J", "\x1b[99;99H\x1b[1J"] {
         let mut marked = term(10, 4, "one\r\n\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n");
         assert_eq!(marked.marks(), "1 0 prompt\n1 2 command\n2 0 output\n");
         marked.feed(whole.as_bytes());
@@ -1398,5 +1399,12 @@ fn the_test_pattern_leaves_the_shells_marks_at_the_screens_start_and_the_rows_a_
         let marks = under.marks();
         under.feed(format!("\x1b[?1049h{whole}").as_bytes());
         assert!(under.lent() && under.marks() == marks && marks == "2 0 prompt\n", "{whole:?}");
+    }
+    // An erase of less than the whole screen leaves the rows a resize lent to come back.
+    for part in ["\x1b[2;1H\x1b[J", "\x1b[H\x1b[1J", "\x1b[2;3H\x1b[1J", "\x1b[2K"] {
+        let mut lent = term(4, 4, "a\r\nb\r\nc\r\nd");
+        lent.resize(4, 2);
+        lent.feed(part.as_bytes());
+        assert!(lent.lent(), "{part:?}");
     }
 }

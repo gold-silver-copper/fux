@@ -2013,18 +2013,19 @@ impl Term {
             // (The marks on what is erased are, in their order, where the erased part begins:
             // what they marked is gone, and they mark nothing of what is written there next.)
             (0 | b'?', 0, b'J') => match self.arg(0, 0) {
-                0 => {
+                0 if (row, col) != (0, 0) => {
                     self.erase(row, col, self.screen.cols);
                     (row + 1..self.screen.rows).for_each(|r| self.erase(r, 0, self.screen.cols));
                     self.move_marks(|r, c| (r.min(row), if (r, c) > (row, col) { col } else { c }));
                 }
-                1 => {
+                1 if (row + 1, col + 1) != (self.screen.rows, self.screen.cols) => {
                     (0..row).for_each(|r| self.erase(r, 0, self.screen.cols));
                     self.erase(row, 0, col + 1);
                     // (The place right after what was erased is its end too.)
                     self.move_marks(|r, c| if (r, c) <= (row, col + 1) { (0, 0) } else { (r, c) });
                 }
-                2 => {
+                // (From the screen's first cell on, or up to its last, is the whole screen, as 2 is.)
+                0..=2 => {
                     (0..self.screen.rows).for_each(|r| self.erase(r, 0, self.screen.cols));
                     self.move_marks(|_, _| (0, 0));
                     // A screen that was cleared is not given back what a resize took off its top.
