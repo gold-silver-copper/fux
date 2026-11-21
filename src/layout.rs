@@ -493,9 +493,7 @@ pub fn command(workspace: &Path, words: &[&str]) -> Result<String, String> {
     let lock = fs::File::open(workspace).map_err(|e| format!("{}: {e}", workspace.display()))?;
     lock.lock().map_err(|e| format!("{}: {e}", workspace.display()))?;
     let (old, mut layout, wrong) = Layout::load(workspace);
-    if let Some(wrong) = wrong {
-        return Err(wrong);
-    }
+    wrong.map_or(Ok(()), Err)?;
     if !words.is_empty() {
         layout.edit(words)?;
     }
