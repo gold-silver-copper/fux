@@ -195,7 +195,6 @@ struct View {
     waiting: Option<(Child, Instant)>,
     ctl_path: PathBuf,
     ctl_line: Vec<u8>,
-    quit: bool,
 }
 
 /// What puts the terminal back when the viewer leaves, however it leaves short of being killed;
@@ -282,7 +281,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         waiting: None,
         ctl_path,
         ctl_line: Vec::new(),
-        quit: false,
     };
     // The alternate screen, pastes marked, and "what are you" (for sixel). On the way the
     // terminal is asked whether it takes the kitty keyboard protocol: flags are set with the old
@@ -321,7 +319,7 @@ impl View {
         // When something last happened, and when the terminal last sent anything.
         let (mut active, mut heard) = (Instant::now(), Instant::now());
         // (The writer ends only when the terminal cannot be written to.)
-        while !self.quit && !writer.is_finished() {
+        while !writer.is_finished() {
             // A key's script runs before the keys typed after it, as a command
             // in a shell does: they wait until it ends (and what it printed is
             // read, and what it changed is drawn). One that takes longer than
@@ -337,9 +335,10 @@ impl View {
             }
             let n = (&*ctl).read(&mut buffer).unwrap_or(0);
             for line in crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), LINE_MAX) {
-                match line {
+                match line.as_deref().map(str::trim) {
                     None => self.message = format!("a line over {LINE_MAX} bytes from a key script was dropped"),
-                    Some(line) => self.command(line.trim()),
+                    Some("quit") => return Ok(()),
+                    Some(line) => self.command(line),
                 }
             }
             if self.frame()? || n > 0 {
@@ -379,8 +378,8 @@ impl View {
             if self.colours.as_ref().is_some_and(|(since, _)| since.elapsed() > Duration::from_secs(10)) {
                 self.told();
             }
-            if self.waiting.is_none() && !self.carry.is_empty() && !self.quit {
-                // (Not after `quit`.) When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
+            if self.waiting.is_none() && !self.carry.is_empty() {
+                // When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
                 self.keys(heard.elapsed() >= ESCAPE_WAIT);
             }
         }
@@ -398,7 +397,6 @@ impl View {
     /// A line a script printed: a command of the viewer's, or else a message to show.
     fn command(&mut self, line: &str) {
         match line.split_once(' ').unwrap_or((line, "")) {
-            ("quit", "") => self.quit = true,
             // (A name that has no folder is shown too: its layout's reading says that there is none.)
             ("workspace", name) if !is_name(name) => self.message = format!("no workspace {name}"),
             ("workspace", name) if name == self.workspace => {}
