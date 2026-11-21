@@ -944,12 +944,11 @@ impl View {
             let state = cells(&state, colour(11, Some(236), 0));
             let room = state.len().min(body.w);
             put(&mut back, w, body.x + body.w - room, body.y + body.h - 1, room, &state);
-            // What the focused pane's program copies goes to this terminal's clipboard,
-            // once: when its `clipboard` file is another than at the last look, the pane
-            // having had the focus then too. Coming to a pane only notes what is there.
-            if focused {
-                // (Which copy it is is asked of the open file its bytes are then read from: one that
-                // lands between a look at the name and a reading of it would be sent twice.)
+            // What the focused pane's program copies goes to this terminal's clipboard, once: when its `clipboard`
+            // file is another than at the last look, the pane having had the focus then too. Coming to a pane only
+            // notes what is there. (The name's stamp says whether to open it. Which copy it is is asked of the open
+            // file its bytes are then read from: one that lands between the two would be sent twice.)
+            if focused && self.copied.as_ref().is_none_or(|(at, old)| *at != pane_directory || *old != clipboard) {
                 let file = sys::open(pane_directory.join("clipboard"), false);
                 let stamp: Stamp = file.as_ref().ok().and_then(|file| file.metadata().ok()).map(stamp);
                 let seen = self.copied.replace((pane_directory.clone(), stamp));
@@ -958,6 +957,8 @@ impl View {
                 {
                     out.push_str(&format!("\x1b]52;c;{}\x07", base64_encode(&bytes)));
                 }
+            }
+            if focused {
                 title = Some(pane.title.clone()).filter(|title| !title.is_empty());
                 if pane.screen.cursor_shown && pane.screen.cursor.row < body.h && pane.screen.cursor.col < body.w {
                     let (row, col) = (body.y + pane.screen.cursor.row + 1, body.x + pane.screen.cursor.col + 1);
