@@ -184,25 +184,25 @@ fn start(args: &[OsString]) -> Result<(), String> {
     } else {
         named(workspace.join(pane))?.ok_or("no pane")?
     };
-    // The lock on the pane's directory is the proof that a holder lives: the
-    // kernel drops it when the holder is gone, however it went. We take it
-    // here and the holder inherits it. (Opened without waiting: a FIFO of that name holds nobody.)
-    let lock = sys::open(&dir, false).map_err(|e| fail(&dir, e))?;
+    // The lock on the pane's directory is the proof that a holder lives: the kernel drops it when the holder is
+    // gone, however it went. We take it here and the holder inherits it, and the directory with it: entered
+    // first, it is the one that is locked and the one the holder works in, even if it is renamed meanwhile.
+    let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
+    let lock = std::env::set_current_dir(&dir).and_then(|()| File::open(".")).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
-        Ok(()) => launch(&session, &dir, lock, &program),
+        Ok(()) => launch(&session, &dir, &cwd, lock, &program),
         Err(_) => Err("a holder already keeps this pane".into()),
     };
     started.map_err(|why| format!("{}: {why}", dir.display()))?;
     say(dir.as_os_str().as_bytes())
 }
 
-/// Starts the holder of a pane we hold the lock of, and waits until it is up.
-fn launch(session: &Path, dir: &Path, lock: File, program: &[OsString]) -> Result<(), String> {
-    let log = File::create(dir.join("log")).map_err(|e| format!("cannot make the log: {e}"))?;
-    let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
+/// Starts the holder of a pane we hold the lock of and are in, and waits until it is up. `cwd` is where we were.
+fn launch(session: &Path, dir: &Path, cwd: &Path, lock: File, program: &[OsString]) -> Result<(), String> {
+    let log = File::create("log").map_err(|e| format!("cannot make the log: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let mut holder = Command::new(me);
-    holder.arg("hold").arg(cwd).args(program).current_dir(dir);
+    holder.arg("hold").arg(cwd).args(program);
     // The pane's directory by the name it was started under (the holder's own working directory may read
     // otherwise, through a link), and the session, if it was named: whole paths, as the program may go anywhere.
     holder.env(name!("PANE"), dir).envs(var(name!("DIR")).map(|_| (name!("DIR"), session)));
@@ -215,7 +215,7 @@ fn launch(session: &Path, dir: &Path, lock: File, program: &[OsString]) -> Resul
         return Ok(());
     }
     let _ = holder.wait();
-    let log = text(&dir.join("log"), 64 << 10);
+    let log = text(Path::new("log"), 64 << 10);
     let why = log.lines().last().unwrap_or("the holder ended without a word");
     Err(why.trim_start_matches("fux: ").to_string())
 }

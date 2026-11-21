@@ -169,6 +169,34 @@ fn a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines(
 }
 
 #[test]
+fn a_pane_moved_while_it_is_started_is_held_where_it_went_and_its_name_is_anothers_to_start() {
+    // A start that has the pane's lock and waits (its `log` is a FIFO nobody reads yet); the
+    // folder is moved, and a second start takes the name. The first holder keeps the folder that
+    // was locked for it, under its new name, and the second the new one: never two in one.
+    let session = Session::new("twostarts");
+    let (pane, old) = (session.0.join("main/p"), session.0.join("main/old"));
+    fs::create_dir_all(&pane).unwrap();
+    assert!(Command::new("mkfifo").arg(pane.join("log")).status().unwrap().success());
+    let folder = fs::File::open(&pane).unwrap();
+    // (Asking whether the lock is taken takes it for a moment: a start that found it so is made again.)
+    let first = loop {
+        let mut first = session.fux().args(["start", "p", "--", "sleep", "600"]).spawn().unwrap();
+        let locked = || folder.try_lock_shared().map(|()| folder.unlock().unwrap()).is_err();
+        until("the first start has the lock", || locked() || first.try_wait().unwrap().is_some());
+        if first.try_wait().unwrap().is_none() {
+            break first;
+        }
+    };
+    fs::rename(&pane, &old).unwrap();
+    assert_eq!(session.start("p", &["sleep", "600"]), pane);
+    let second = read(&pane.join("status"));
+    let log = fs::File::open(old.join("log")).unwrap();
+    assert!(first.wait_with_output().unwrap().status.success());
+    assert_eq!((fact(&old, "state").as_str(), read(&pane.join("status"))), ("running", second));
+    drop(log);
+}
+
+#[test]
 fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were() {
     let session = Session::new("recipes");
     fs::create_dir_all(&session.0).unwrap();
