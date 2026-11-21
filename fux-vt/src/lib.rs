@@ -1322,13 +1322,12 @@ impl Term {
             self.screen.alt = alt;
         }
         if alt && clear {
-            self.clear();
+            self.fill(Cell::blank(Style::default()));
         }
     }
 
-    fn clear(&mut self) {
-        let blank = vec![Cell::blank(Style::default()); self.screen.cols];
-        self.screen.grid.iter_mut().for_each(|row| row.clone_from(&blank));
+    fn fill(&mut self, cell: Cell) {
+        self.screen.grid.iter_mut().for_each(|row| row.fill(cell));
         self.screen.pictures.clear();
     }
 
@@ -1682,9 +1681,7 @@ impl Term {
                 }
             }
             (b'#', b'8') => {
-                let fill = Cell { ch: 'E', ..Cell::blank(Style::default()) };
-                self.screen.grid.iter_mut().for_each(|row| row.fill(fill));
-                self.screen.pictures.clear();
+                self.fill(Cell { ch: 'E', ..Cell::blank(Style::default()) });
                 // (As a screen that was erased whole: its marks, and what a resize took off its top.)
                 self.move_marks(|_, _| (0, 0));
                 self.lent = self.lent.take().filter(|_| self.screen.alt);
@@ -2216,7 +2213,7 @@ impl Term {
             47 => self.set_alt(on, false),
             1047 => {
                 if !on && self.screen.alt {
-                    self.clear();
+                    self.fill(Cell::blank(Style::default()));
                 }
                 // Asked for while already there, it is left as it is (as in xterm).
                 self.set_alt(on, on && !self.screen.alt);
