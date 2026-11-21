@@ -2309,7 +2309,10 @@ fn the_blank_lines_a_command_ended_with_are_in_its_output() {
     let keys = concat!(env!("CARGO_MANIFEST_DIR"), "/keys");
     let shell = "printf '\\033]133;C\\007A\\n\\n\\n\\033]133;D;0\\007'; sleep 600";
     let pane = session.start("sh", &["sh", "-c", shell]);
-    until("the marks are there", || read(&pane.join("marks")).lines().count() == 2);
+    // (The holder writes `marks` before `screen`: the key is pressed when both are there.)
+    until("the marks and the output are there", || {
+        read(&pane.join("marks")).lines().count() == 2 && read(&pane.join("screen")).starts_with('A')
+    });
     let out = session.0.join("out");
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
     let mut script = Command::new(Path::new(keys).join("C-b/S-c"));
