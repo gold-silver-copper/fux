@@ -1654,3 +1654,32 @@ fn a_fifo_where_a_named_pane_would_be_is_refused_at_once() {
     };
     assert!(!status.success());
 }
+
+#[test]
+fn rounds_of_writing_that_fail_do_not_leave_their_pictures_for_good() {
+    // A program that draws a picture, erases it and draws the next, while the screen cannot be
+    // written (a directory where its new file would be made): a round that fails still removes
+    // the files of pictures no screen has any more, so they do not grow in number while it lasts.
+    let session = Session::new("picfail");
+    let draws = "until [ -e \"$FUXN_PANE/go\" ]; do sleep 0.05; done; i=0; while [ $i -lt 12 ]; do i=$((i + 1)); \
+        printf '\\033[2J\\033[H\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\'; sleep 0.1; done; : > \"$FUXN_PANE/drawn\"; sleep 600";
+    let pane = session.start("p", &["sh", "-c", draws]);
+    fs::create_dir(pane.join("screen.styled.new")).unwrap();
+    fs::write(pane.join("go"), "").unwrap();
+    let files = || {
+        fs::read_dir(&pane)
+            .unwrap()
+            .flatten()
+            .filter(|file| file.file_name().as_encoded_bytes().starts_with(b"pic-"))
+            .count()
+    };
+    until("the pictures are drawn in rounds that failed", || {
+        pane.join("drawn").exists() && read(&pane.join("log")).matches("cannot write the pane's files").count() >= 6
+    });
+    // (A few seconds for the last round, not `until`'s minute: files that stay, stay for good.)
+    let begun = Instant::now();
+    while files() > 2 {
+        assert!(begun.elapsed() < Duration::from_secs(3), "{} picture files after 12 pictures, one at a time", files());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

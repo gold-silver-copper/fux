@@ -441,6 +441,19 @@ impl Holder {
     /// `killed SIGNAL`), once it has ended: the `state` file, which until then says `running`,
     /// or `hungup` once the pty is closed.
     fn publish(&mut self, ended: Option<&str>) -> io::Result<()> {
+        let written = self.write(ended);
+        // A picture neither screen has any more has no reader left, after a round that failed too.
+        self.pictures.retain(|id| {
+            let kept = self.term.has_picture(*id);
+            if !kept {
+                let _ = fs::remove_file(format!("pic-{id}.sixel"));
+            }
+            kept
+        });
+        written
+    }
+
+    fn write(&mut self, ended: Option<&str>) -> io::Result<()> {
         let out = self.collect(0);
         for (id, data) in self.term.new_pictures() {
             // (One that cannot be written is not on the screen: it goes, its file below, and the log says why.)
@@ -527,15 +540,6 @@ impl Holder {
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
         // end: who watches a pane watches that one file, and finds every fact already there.
         replace("screen", self.term.plain().as_bytes())?;
-        replace("screen.styled", self.term.styled().as_bytes())?;
-        // A picture neither screen has any more (the one shown, the one behind) has no reader left.
-        self.pictures.retain(|id| {
-            let kept = self.term.has_picture(*id);
-            if !kept {
-                let _ = fs::remove_file(format!("pic-{id}.sixel"));
-            }
-            kept
-        });
-        Ok(())
+        replace("screen.styled", self.term.styled().as_bytes())
     }
 }
