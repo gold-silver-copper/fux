@@ -2243,3 +2243,25 @@ fn the_blank_lines_a_command_ended_with_are_in_its_output() {
     until("the editor was given the output", || out.exists());
     assert_eq!(read(&out), "A\n\n\n");
 }
+
+#[test]
+fn a_text_or_a_list_that_cannot_be_moved_into_its_pane_is_removed() {
+    // The editor's text and the picker's list are moved into their pane's folder and go with it. A
+    // pane that is gone by then (closed under them) takes nothing: the file is removed, not left in the session.
+    let session = Session::new("unmoved");
+    fs::create_dir_all(&session.0).unwrap();
+    let (text, list, enter) = (session.0.join(".text.case"), session.0.join(".pick.case"), session.0.join("enter"));
+    fs::write(&text, "private transcript\n").unwrap();
+    fs::write(&list, "a\tpane a\n").unwrap();
+    fs::write(&enter, "\n").unwrap();
+    for (script, args) in
+        [(".edit", vec!["--in", text.to_str().unwrap(), "1"]), (".pick", vec![list.to_str().unwrap(), "echo"])]
+    {
+        let mut helper = Command::new("sh");
+        helper.arg(format!("{}/keys/{script}", env!("CARGO_MANIFEST_DIR"))).args(args);
+        helper.env("FUXN_PANE", session.0.join("gone")).stdin(fs::File::open(&enter).unwrap());
+        let out = helper.output().unwrap();
+        assert!(String::from_utf8_lossy(&out.stderr).contains("gone"), "{script}: mv says why");
+    }
+    assert!(!text.exists() && !list.exists(), "left behind: text {} list {}", text.exists(), list.exists());
+}
