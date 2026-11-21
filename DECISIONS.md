@@ -1355,6 +1355,25 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     line below the tile. No picture is drawn on the terminal's last row.
   - A picture's height is its lowest painted pixel, not its last band of
     six (it took a row too many).
+- **D93. The fix check of D89 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  Changed: one OSC 4 may have any number of pairs (its loop had a counter
+  that overflowed at 65,280); the bound on answers no longer drops the
+  sets that follow; a colour form that is refused, and a palette number
+  that is not 0 to 255, each have their line in the log (a question about
+  such a number stays silent), which the test now really asserts.
+  - The cell a wide character leaves empty at a row's end is told in
+    `screen.styled` when it has a look (a colour): as U+200B and a blank
+    at the row's end. A painted blank alone could not be told from one
+    the program printed, and a reader joining rows by `wraps` would gain
+    a blank; U+200B is fux's own mark in the styled files already.
+    `screen`, `wraps` and both histories leave the cell out as before;
+    `keys/.text` takes the pair out where it joins rows.
+  - The cursor's colour: taken only for a pane whose program lives; given
+    back (OSC 112) in the string that restores the terminal, on every way
+    the viewer ends that it can act on. "Its own" is the colour the
+    terminal is set up with: a colour another program had given the
+    cursor before the viewer started is not put back, as its shape is
+    not.
 
 ## The old fux3's bugs: which classes are gone
 
