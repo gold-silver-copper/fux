@@ -1464,8 +1464,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     viewer, layout, the command line, the key scripts and `keys.rs` (5
     seats of 8: its names are the scripts' file names, and it reads the
     outer terminal). The versions are above what was published under
-    those names (0.17 and 0.10); all three are `publish = false` until
-    the owner says otherwise.
+    those names (0.17 and 0.10); all three were `publish = false` until
+    the owner said otherwise (D115).
   - The move changed no code: the program still says `term`, `sixel`,
     `width` and `sys`, now names for the two crates (`main.rs`). The unit
     tests went with the code they call (27 and 8, the same 35); the tests
@@ -2219,6 +2219,17 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     `plain`, `styled`, `covered`, `wraps`, `links` and `top` are gone
     from its interface (its tests keep the first two and the last
     three as helpers of their own, for the screen shown).
+
+- **D115. The three crates are published** (the owner, 2026-11-21: "please
+  publish the newest version fux fuxvt and fuxix to crates io"). `fuxix`
+  0.11.0, `fux-vt` 0.18.0 and `fux` 0.40.0 go to crates.io in that order,
+  from this branch, above what was published from master under those names
+  (0.10.0, 0.17.0, 0.38.0). `publish = false` goes; each package says its
+  repository, keywords and categories, the path dependencies say their
+  versions, and the MIT licence text is in each package. The names stay as
+  D41 says (`FUXN_…`, `fux-next`) until fux 1 is retired, so an
+  install of this one and fux 1 never share a session; `cargo install fux`
+  now gives this one, and the README says so.
 
 ## The old fux3's bugs: which classes are gone
 
