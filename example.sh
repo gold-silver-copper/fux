@@ -13,8 +13,8 @@ until_ok() { n=0; until "$@" >/dev/null 2>&1; do n=$((n + 1)); [ $n -lt 200 ] ||
 D=$("$fux" dir)
 "$fux" start build -- sh                       # a pane is a directory kept by one small process
 printf 'echo h""i\n' > "$D/main/build/in"       # plain tools are the clients
-until_ok grep -qx hi "$D/main/build/screen"
-cat "$D/main/build/screen"
+until_ok grep -qx hi "$D/main/build/shown/screen"
+cat "$D/main/build/shown/screen"
 ls "$D" "$D/main"                               # workspaces are folders, panes are folders in them
 [ "$(ls "$D")" = main ] && [ "$(ls "$D/main")" = build ]
 grep -qx running "$D/main/build/state"           # every fact about a pane is a small file
