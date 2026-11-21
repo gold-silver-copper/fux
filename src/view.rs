@@ -612,7 +612,6 @@ impl View {
                 (2, Some(Went::Script(script))) => {
                     let menu = self.menu.as_ref().map(|(directory, _)| directory.as_path());
                     if menu.is_some() && menu == script.parent() && script.with_file_name(".repeat").exists() {
-                        self.send();
                         self.script(&script, layout);
                     }
                     return;
@@ -633,7 +632,6 @@ impl View {
                 None
             }
             Ok(kind) if !name.is_empty() && kind.is_file() => {
-                self.send();
                 self.script(&file, layout);
                 // A menu with a file `.repeat` in it stays for the next key (to resize, say), until a key it has not.
                 self.menu = menu.filter(|(directory, _)| directory.join(".repeat").exists());
@@ -742,6 +740,7 @@ impl View {
     }
 
     fn script(&mut self, file: &Path, layout: &Layout) {
+        self.send();
         if self.scripts.len() + usize::from(self.waiting.is_some()) >= SCRIPTS_MAX {
             self.message = format!("{SCRIPTS_MAX} key scripts are still running: {} was not started", file.display());
             return;
