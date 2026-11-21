@@ -1392,6 +1392,36 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - A start in place begins a pane's files anew, so the script keeps what
     the pane had printed in `before` first. Keeping `history` across a
     restart in the holder was a seat's wish; the script does it without.
+- **D95. The fix check of D92 (1 Opus, 1 gpt-6.2-sol, a tester; one pass).**
+  The tester's pixel checks found every cut part exact; the reviewers
+  traced faults around the cut. Changed:
+  - one measure, the viewer's pixels: the viewer reads each picture's
+    real size and holds it to the tile's room in its own terminal's
+    cells. The pane's count of a picture's cells is no longer used for
+    drawing (a holder told another cell size could say "it fits" of a
+    picture that passed the line between tiles). A picture is passed on
+    unread only if it is square of pixel, has nothing above the tile and
+    fits; anything else is cut. A terminal that does not say how many
+    pixels a cell has gets no pictures, with a line in the corner
+    (before, one that "fit" by cells was passed on): without a cell's
+    size nothing shows that a picture stays in its tile;
+  - the budget counts what is painted inside the part, 16 times a pixel
+    on average, and the colours used inside it (a picture cut to its
+    last rows, or a photo in a short tile, was refused for what lay
+    outside);
+  - a picture file replaced under its name is a change; a picture
+    clipped at the bottom is kept by the resize that reveals it; one
+    beside no text keeps its column through a narrowing; an open menu
+    hides only the pictures it covers; a frame's pictures are 16 MiB
+    together at most.
+  - Refusals stay in the viewer's corner, every one of a frame joined,
+    set before the corner is drawn, shown to the next key. Not the
+    pane's `log`: it has one writer, and a refusal depends on the
+    viewer's tile, which the pane does not know. This departs from the
+    order's "a log line", for that reason.
+  - Kept: text written over part of a picture removes the whole picture
+    (the README says so); a cut picture has unset pixels left unset
+    whatever its own header asked.
 
 ## The old fux3's bugs: which classes are gone
 
