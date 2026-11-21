@@ -74,12 +74,16 @@ fn styled_history_has_historys_lines_with_their_looks() {
     // yet taken, and by the count of what was.
     let colours = "\x1b[35mab\x1b[36mcdefgh\x1b[m";
     let mut wide = crate::tests::term(8, 2, colours);
-    assert!(wide.resize(2, 2) && same_lines(&wide) && wide.peek().history == "abcd");
+    wide.resize(2, 2);
+    assert!(same_lines(&wide) && wide.peek().history == "abcd");
     let sent = wide.take(0);
     assert_eq!(sent.styled, "\x1b[0;35mab\x1b[m\x1b[0;36mcd\x1b[m");
-    assert!(wide.resize(8, 2) && wide.peek().history.is_empty() && wide.peek().styled.is_empty());
+    wide.resize(8, 2);
+    assert!(wide.peek().history.is_empty() && wide.peek().styled.is_empty());
     assert_eq!((wide.peek().unhistory, wide.peek().unstyled), (4, sent.styled.len()));
-    assert!(wide.resize(4, 1) && wide.resize(8, 2) && wide.peek().styled.is_empty() && wide.peek().unstyled > 0);
+    wide.resize(4, 1);
+    wide.resize(8, 2);
+    assert!(wide.peek().styled.is_empty() && wide.peek().unstyled > 0);
     // A line whose rest was cleared away ends in both; a full reset leaves both as they are.
     let mut cleared = crate::tests::term(4, 2, "\x1b[31mx\r\naaaabb\r\n\x1b[H\x1b[2J$ ls\r\nfile\r\n");
     assert!(same_lines(&cleared) && cleared.peek().history == "x\naaaa\n$ ls\n", "{:?}", cleared.peek().history);
@@ -113,16 +117,20 @@ fn history_waiting_to_be_written_is_bounded_in_both_texts_and_a_row_refused_ends
     // A resize is held to the same: 499 rows of 500 cells, each cell with colours of its own.
     let cells = "\x1b[38;2;254;255;255ma\x1b[38;2;255;255;255ma".repeat(125_000);
     let mut term = crate::tests::term(500, 500, &format!("\x1b[48;2;255;255;255m{cells}"));
-    assert!(term.resize(500, 1) && same_lines(&term) && term.peek().refused.len() == 1);
+    term.resize(500, 1);
+    assert!(same_lines(&term) && term.peek().refused.len() == 1);
     assert!(term.peek().styled.len() < (4 << 20) + (64 << 10), "{}", term.peek().styled.len());
     // (The rows kept to come back do: what was given of them is taken back, and no more.)
     let sent = term.take(0);
-    assert!(term.resize(500, 500) && term.peek().unstyled <= sent.styled.len() && term.plain().starts_with("aaa"));
+    term.resize(500, 500);
+    assert!(term.peek().unstyled <= sent.styled.len() && term.plain().starts_with("aaa"));
     // And what waits of them is counted once: rows of 2.2 MiB that a resize sent there are taken
     // back and given again by the next, with nothing taken between, and none is refused.
     let mut term = crate::tests::term(200, 300, &format!("\x1b[48;2;255;255;255m{}", &cells[..cells.len() * 6 / 25]));
-    assert!(term.resize(200, 2) && term.peek().styled.len() > 2 << 20);
-    assert!(term.resize(200, 1) && term.peek().refused.is_empty() && same_lines(&term), "{:?}", term.peek().refused);
+    term.resize(200, 2);
+    assert!(term.peek().styled.len() > 2 << 20);
+    term.resize(200, 1);
+    assert!(term.peek().refused.is_empty() && same_lines(&term), "{:?}", term.peek().refused);
 }
 
 #[test]
@@ -277,9 +285,11 @@ fn a_colour_a_program_sets_is_its_panes_until_it_gives_it_back() {
     assert_eq!((pane.peek().history.as_str(), pane.peek().styled.as_str()), ("a\nb\nc\nd\n\ne\n", styled.as_str()));
     // Only a row a resize sent there, which the next resize takes back, is told again: as it is then.
     let mut pane = term(4, 2, "\x1b[31ma\x1b[m\r\nb");
-    assert!(pane.resize(4, 1) && pane.peek().styled == red);
+    pane.resize(4, 1);
+    assert!(pane.peek().styled == red);
     pane.feed(b"\x1b]4;1;#010203\x07");
-    assert!(pane.resize(3, 1) && pane.peek().styled == own.replace('c', "a"), "{:?}", pane.peek().styled);
+    pane.resize(3, 1);
+    assert!(pane.peek().styled == own.replace('c', "a"), "{:?}", pane.peek().styled);
 }
 
 #[test]
@@ -347,7 +357,9 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
         (line(&term, 0), line(&term, 1), line(&term, 3)),
         ("$ ls".into(), "one".into(), "$ a long command that wraps".into())
     );
-    assert!(term.resize(4, 2) && term.resize(30, 9) && term.marks() == marks);
+    term.resize(4, 2);
+    term.resize(30, 9);
+    assert!(term.marks() == marks);
     assert_eq!((line(&term, 1), line(&term, 3)), ("one".into(), "$ a long command that wraps".into()));
     // A mark in a line that wraps says how far into the line it is.
     let wrapped = crate::tests::term(4, 3, &format!("{a}$ {b}abcdef{c}"));
@@ -358,7 +370,9 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
     assert!(gone.marks().ends_with("1 0 output\n1 21 end 3\n"), "{}", gone.marks());
     let mut wide = crate::tests::term(5, 3, &format!("{c}1234界{d}$"));
     assert_eq!((wide.marks().as_str(), wide.wraps().as_str()), ("0 0 output\n0 7 end 3\n", "1"));
-    assert!(wide.resize(12, 3) && gone.resize(30, 4) && gone.resize(5, 2));
+    wide.resize(12, 3);
+    gone.resize(30, 4);
+    gone.resize(5, 2);
     assert_eq!((wide.marks().as_str(), wide.wraps().as_str()), ("0 0 output\n0 7 end 3\n", ""));
     assert!(gone.marks().ends_with("1 0 output\n1 21 end 3\n"), "{}", gone.marks());
     // A mark is on its text: when a line above it becomes two (the first row of a wrapped line
@@ -395,7 +409,7 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
     // A mark that waits at a row's end stays on that side of the wrap when only the height
     // changes; and marks on rows pushed off the bottom are after what stays, in their order.
     let mut waits = crate::tests::term(4, 3, &format!("{c}abcd{d}$"));
-    assert!(waits.resize(4, 4));
+    waits.resize(4, 4);
     waits.feed(b"\x1b[2;1H\x1b[LNEW");
     assert_eq!((waits.plain().as_str(), waits.marks().as_str()), ("abcd\nNEW\n$\n\n", "0 0 output\n0 4 end 3\n"));
     let pushed = crate::tests::term(8, 3, &format!("x\r\np:{c}KEEP\r\nz{d}\x1b[H\x1b[L"));
@@ -442,8 +456,10 @@ fn a_link_is_on_its_cells_through_scrolling_erasing_and_wrapping_and_ends_at_his
     // wrapped anew; its line's number is a mark's kind of number.
     let mut long = crate::tests::term(6, 4, &format!("x\r\nab{}", link("http://w/", "0123456789")));
     assert_eq!(long.links(), "1 2 10 http://w/\n");
-    assert!(long.resize(4, 6) && long.links() == "1 2 10 http://w/\n", "{}", long.links());
-    assert!(long.resize(20, 4) && long.links() == "1 2 10 http://w/\n", "{}", long.links());
+    long.resize(4, 6);
+    assert!(long.links() == "1 2 10 http://w/\n", "{}", long.links());
+    long.resize(20, 4);
+    assert!(long.links() == "1 2 10 http://w/\n", "{}", long.links());
     // What scrolls into history takes its links' cells with it: history is text.
     long.feed(b"\r\n1\r\n2\r\n3\r\n4");
     assert_eq!((long.links().as_str(), long.top()), ("", 2));
@@ -456,15 +472,17 @@ fn a_link_is_on_its_cells_through_scrolling_erasing_and_wrapping_and_ends_at_his
     // A cell that is off the screen for a while keeps its address: a row a resize set aside
     // comes back with the link it had, however many links were made meanwhile.
     let mut aside = crate::tests::term(10, 3, &format!("{}\r\n\r\nb", link("http://A/", "a")));
-    assert!(aside.resize(10, 1));
+    aside.resize(10, 1);
     for n in 0..1200 {
         aside.feed(format!("\r{}", link(&format!("http://h/{n}"), "x")).as_bytes());
     }
-    assert!(aside.resize(10, 3) && aside.links().starts_with("0 0 1 http://A/\n"), "{}", aside.links());
+    aside.resize(10, 3);
+    assert!(aside.links().starts_with("0 0 1 http://A/\n"), "{}", aside.links());
     // A blank that is part of a link is text to wrapping anew; a soft reset ends the link that
     // was being printed.
     let mut blank = crate::tests::term(4, 2, &format!("{}\r", link("http://s/", "X ")));
-    assert!(blank.resize(5, 2) && blank.links() == "0 0 2 http://s/\n", "{}", blank.links());
+    blank.resize(5, 2);
+    assert!(blank.links() == "0 0 2 http://s/\n", "{}", blank.links());
     blank.feed(b"\x1b]8;;http://open/\x1b\\\x1b[!pZ");
     assert_eq!(blank.links(), "0 1 1 http://s/\n");
     // The list is no longer than a reader reads: it ends before the run that would make it so.
@@ -730,7 +748,7 @@ fn the_command_being_typed_is_not_wrapped_anew_where_the_shell_marks_its_prompt(
     let typed = format!("a line of output that is long\r\n{a}p> {b}echo abcdefghijabcdefghij");
     let mut marked = term(20, 6, &typed);
     assert_eq!(marked.plain(), "a line of output tha\nt is long\np> echo abcdefghijab\ncdefghij\n\n\n");
-    assert!(marked.resize(12, 6));
+    marked.resize(12, 6);
     // (The output above is whole, in more rows; the command's two rows are two rows, cut, and
     // one line still.)
     assert_eq!(marked.plain(), "a line of ou\ntput that is\n long\np> echo abcd\ncdefghij\n\n");
@@ -742,13 +760,15 @@ fn the_command_being_typed_is_not_wrapped_anew_where_the_shell_marks_its_prompt(
     assert_eq!(marked.plain(), "a line of ou\ntput that is\n long\np> echo abcd\nefghijabcdef\nghij\n");
     // Made narrower twice before the shell has drawn: its rows are the same two rows still.
     let mut twice = term(20, 6, &typed);
-    assert!(twice.resize(14, 6) && twice.resize(9, 6));
+    twice.resize(14, 6);
+    twice.resize(9, 6);
     twice.feed(redraw(1).as_bytes());
     assert_eq!(twice.plain().matches("p> echo").count(), 1, "{:?}", twice.plain());
     // The height alone changes nothing of it.
     let mut taller = term(20, 6, &typed);
     let before = whole(&taller);
-    assert!(taller.resize(20, 7) && taller.wraps() == "1 3" && whole(&taller) == before);
+    taller.resize(20, 7);
+    assert!(taller.wraps() == "1 3" && whole(&taller) == before);
     // Nothing that may be finished output is ever cut: every case below is wrapped anew, whole.
     let zeros = "0".repeat(50);
     for other in [
@@ -767,7 +787,7 @@ fn the_command_being_typed_is_not_wrapped_anew_where_the_shell_marks_its_prompt(
     ] {
         let mut term = term(20, 6, &other);
         let before = whole(&term);
-        assert!(term.resize(7, 6));
+        term.resize(7, 6);
         assert_eq!(whole(&term), before, "{other:?}");
     }
 }
@@ -785,7 +805,7 @@ fn the_main_screen_under_the_alternate_screen_is_told_as_it_will_be_shown_again(
     assert_eq!(term.wraps(), "");
     // A resize wraps it anew under the program, and it is told anew: as the screens then have
     // it when the program leaves.
-    assert!(term.resize(12, 4));
+    term.resize(12, 4);
     let wrapped = term.covered().expect("it is covered still");
     assert!(wrapped.2 == "2" && wrapped.0.starts_with("red\na line that \nwraps\n"), "{wrapped:?}");
     term.feed(b"\x1b[?1049l");
@@ -797,11 +817,9 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     // The case that lost 40 characters of 123: a line of 120, narrowed to 40 columns and widened back.
     let long: String = (0..120).map(|n| char::from(b'a' + n % 26)).collect();
     let mut wide = term(120, 10, &format!("{long}\r\nend"));
-    assert!(
-        wide.resize(40, 10)
-            && wide.plain().starts_with(&format!("{}\n{}\n{}\nend\n", &long[..40], &long[40..80], &long[80..]))
-    );
-    assert!(wide.resize(120, 10));
+    wide.resize(40, 10);
+    assert!(wide.plain().starts_with(&format!("{}\n{}\n{}\nend\n", &long[..40], &long[40..80], &long[80..])));
+    wide.resize(120, 10);
     assert_eq!(
         (wide.plain(), wide.screen.cursor.row, wide.screen.cursor.col),
         (format!("{long}\nend\n\n\n\n\n\n\n\n\n"), 1, 3)
@@ -809,13 +827,18 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     // A row erased from its start, or moved away, is no longer what the row above goes on in:
     // widened, the two do not become one line. And one column is a size like any other.
     let mut parted = term(4, 3, "abcdef\x1b[2;1H\x1b[Kxy");
-    assert!(parted.resize(8, 3) && parted.plain() == "abcd\nxy\n\n", "{:?}", parted.plain());
+    parted.resize(8, 3);
+    assert!(parted.plain() == "abcd\nxy\n\n", "{:?}", parted.plain());
     let mut emptied = term(4, 4, "abcdefghij\x1b[2;1H\x1b[2K");
-    assert!(emptied.resize(8, 4) && emptied.plain() == "abcd\n\nij\n\n", "{:?}", emptied.plain());
+    emptied.resize(8, 4);
+    assert!(emptied.plain() == "abcd\n\nij\n\n", "{:?}", emptied.plain());
     let mut moved = term(4, 3, "abcdef\x1b[2;1H\x1b[Lxy");
-    assert!(moved.resize(8, 3) && moved.plain() == "abcd\nxy\nef\n", "{:?}", moved.plain());
+    moved.resize(8, 3);
+    assert!(moved.plain() == "abcd\nxy\nef\n", "{:?}", moved.plain());
     let mut thin = term(6, 4, "a\u{4e00}b\u{4e8c}c");
-    assert!(thin.resize(1, 4) && thin.resize(6, 4) && thin.lines().2);
+    thin.resize(1, 4);
+    thin.resize(6, 4);
+    assert!(thin.lines().2);
     assert_eq!(thin.peek().history.clone() + &thin.lines().0.replace([' ', '\n'], ""), "abc");
     // A line whose first rows are in history, and whose rest is then cleared away, ends there:
     // what is printed next is a line of its own.
@@ -823,39 +846,42 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     assert_eq!(cleared.take(0).history, "x\naaaaaaaaaa\n$ ls\n");
     // A line editor draws a long line again row by row: written over, it is one line still.
     let mut drawn = term(5, 2, "abcdefg\x1b[1;5HX\x1b[2;1Hfg");
-    assert!(drawn.resize(10, 2) && drawn.plain() == "abcdXfg\n\n", "{:?}", drawn.plain());
+    drawn.resize(10, 2);
+    assert!(drawn.plain() == "abcdXfg\n\n", "{:?}", drawn.plain());
     // A saved cursor that waits at a row's end stays there; one in the blank part of a row is
     // kept inside the row and does not wait; the cursor behind the alternate screen comes back
     // to its column; a mark that comes after a resize still finds its letter.
     let mut waits = term(4, 5, "ABCD\x1b7EF");
-    assert!(waits.resize(2, 5));
+    waits.resize(2, 5);
     waits.feed(b"\x1b8");
     assert_eq!((waits.screen.cursor.row, waits.screen.cursor.col, waits.plain().as_str()), (1, 1, "AB\nCD\nEF\n\n\n"));
     let mut beside = term(20, 3, "ab\x1b[1;15H\x1b7\x1b[3;1H");
-    assert!(beside.resize(10, 3));
+    beside.resize(10, 3);
     beside.feed(b"\x1b8X");
     assert_eq!(beside.plain(), "ab       X\n\n\n");
     let mut hidden = term(8, 5, "A\x1b[1;8H\x1b[?1049h");
-    assert!(hidden.resize(3, 5) && hidden.resize(8, 5));
+    hidden.resize(3, 5);
+    hidden.resize(8, 5);
     hidden.feed(b"\x1b[?1049l");
     assert_eq!((hidden.screen.cursor.row, hidden.screen.cursor.col), (0, 7));
     let mut later = term(8, 3, "e");
-    assert!(later.resize(6, 3));
+    later.resize(6, 3);
     later.feed("\u{301}".as_bytes());
     assert_eq!(later.plain(), "e\u{301}\n\n\n");
     // (Only while the cursor is where the letter left it, as when nothing was resized.)
     let mut away = term(8, 3, "e\x1b[2;1H");
-    assert!(away.resize(6, 3));
+    away.resize(6, 3);
     away.feed("\u{301}".as_bytes());
     assert_eq!(away.plain(), "e\n\n\n");
     // A row that ends in coloured blanks stays one row, coloured to its new end; a blank that
     // was given a colour of its own is in `screen.styled`.
     let mut bar = term(8, 3, "\x1b[44m\x1b[K\x1b[m\r\nx");
-    assert!(bar.resize(4, 3) && bar.plain() == "\nx\n\n" && bar.peek().history.is_empty());
+    bar.resize(4, 3);
+    assert!(bar.plain() == "\nx\n\n" && bar.peek().history.is_empty());
     assert_eq!(bar.styled().lines().next(), Some("\x1b[0;44m    \x1b[m"));
     assert!(term(4, 1, "\x1b[31m \x1b[m").styled().starts_with("\x1b[0;31m "));
     let mut painted = term(4, 2, "\x1b[41m \x1b[m\r\n");
-    assert!(painted.resize(5, 2));
+    painted.resize(5, 2);
     assert_eq!(painted.styled(), "\x1b[0;41m \x1b[m\n\n");
     for seed in 0..300 {
         let next = &mut numbers(seed);
@@ -879,7 +905,7 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
             // (1) Every character printed is in the screen or in history, once and in order; (3) the cursor
             // stays on its character; (4) no character is cut in half.
             let kept = term.peek().history.len();
-            assert!(term.resize(2 + next(60), 1 + next(30)));
+            term.resize(2 + next(60), 1 + next(30));
             assert_eq!(
                 everything(&term),
                 lines_of(&printed),
@@ -906,7 +932,7 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
         }
         // (2) Back at the size it had, with nothing printed between: as it was, the rows that
         // went to history on the way taken back from it (if the cursor's own row did not go).
-        assert!(term.resize(size.0, size.1));
+        term.resize(size.0, size.1);
         if there {
             assert_eq!(term.peek().history.len(), history, "seed {seed}: history, back at {size:?}");
             assert!(same_lines(&term), "seed {seed}: styled history, back at {size:?}");
@@ -926,7 +952,7 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
 }
 
 #[test]
-fn a_resize_cuts_the_alternate_screen_and_a_refused_one_changes_nothing() {
+fn a_resize_cuts_the_alternate_screen_and_a_size_no_terminal_has_is_the_nearest_it_may_have() {
     for seed in 0..100 {
         let next = &mut numbers(seed);
         let text = some_text(next);
@@ -936,37 +962,20 @@ fn a_resize_cuts_the_alternate_screen_and_a_refused_one_changes_nothing() {
         term.feed(format!("\x1b[?1049h\x1b[H{}", some_text(next).replace('a', "ALT")).as_bytes());
         for _ in 0..1 + next(4) {
             // (4) No character is cut in half on either screen, and the alternate one's rows stay rows.
-            assert!(term.resize(2 + next(60), 1 + next(30)) && term.lines().2, "seed {seed}");
+            term.resize(2 + next(60), 1 + next(30));
+            assert!(term.lines().2, "seed {seed}");
         }
-        // (6) A size that is refused changes nothing, and says so.
-        let state = (
-            term.styled(),
-            term.screen.cursor.row,
-            term.screen.cursor.col,
-            term.screen.cols,
-            term.screen.rows,
-            term.peek().history.clone(),
-        );
-        for (cols, rows) in [(0, 5), (5, 0), (501, 5), (5, 501)] {
-            assert!(!term.resize(cols, rows));
-        }
-        assert_eq!(
-            state,
-            (
-                term.styled(),
-                term.screen.cursor.row,
-                term.screen.cursor.col,
-                term.screen.cols,
-                term.screen.rows,
-                term.peek().history.clone()
-            )
-        );
-        assert_eq!(term.peek().refused.len(), 1);
         // (5) Leaving the alternate screen gives the main one back at the new size, with all its text;
         // nothing of the alternate screen went to history.
         term.feed(b"\x1b[?1049l");
         assert_eq!(everything(&term), main, "seed {seed}: at {}x{}", term.screen.cols, term.screen.rows);
         assert!(!term.peek().history.contains("ALT") && term.plain().lines().count() == term.screen.rows);
+        // (6) A size no terminal may have is the nearest one it may, as for a new terminal: none is refused.
+        for (cols, rows) in [(0, 5), (5, 0), (501, 5), (5, 501)] {
+            term.resize(cols, rows);
+            assert_eq!((term.screen.cols, term.screen.rows), (cols.clamp(1, 500), rows.clamp(1, 500)));
+        }
+        assert!(term.peek().refused.is_empty() && term.lines().2, "seed {seed}");
     }
 }
 
@@ -1178,8 +1187,10 @@ fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_
     assert_eq!((long.plain().as_str(), long.wraps().as_str(), long.tail.lines), ("k\nl\nm\n", "", 1));
     // Rows a resize sent to history and took back are counted out and in again.
     let mut back = crate::tests::term(4, 4, "abcdefgh\r\nx\r\ny");
-    assert!(back.resize(4, 2) && (back.plain().as_str(), back.tail.lines) == ("x\ny\n", 1));
-    assert!(back.resize(4, 4) && (back.wraps().as_str(), back.tail.lines) == ("1", 0));
+    back.resize(4, 2);
+    assert!((back.plain().as_str(), back.tail.lines) == ("x\ny\n", 1));
+    back.resize(4, 4);
+    assert!((back.wraps().as_str(), back.tail.lines) == ("1", 0));
     // The form of the mouse's reports is told whether or not any report is on.
     let term = crate::tests::term(20, 2, "\x1b[?1002h\x1b[?1002$p\x1b[?1000$p\x1b[?1006$p");
     assert_eq!(String::from_utf8_lossy(&term.peek().reply), "\x1b[?1002;1$y\x1b[?1000;2$y\x1b[?1006;2$y");

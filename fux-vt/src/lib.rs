@@ -1318,17 +1318,14 @@ impl Term {
         self.screen.pictures.clear();
     }
 
-    /// Takes a new size, or refuses it and changes nothing. The main screen's
+    /// Takes a new size (the nearest a terminal may have, as `new`). The main screen's
     /// text is wrapped anew: a line that was wrapped is one line again, and
     /// rows that no longer fit go to history from the top. The alternate
     /// screen is cut or padded where it is, and none of it goes to history.
-    pub fn resize(&mut self, cols: usize, rows: usize) -> bool {
-        if !(1..=SIZE_MAX).contains(&cols) || !(1..=SIZE_MAX).contains(&rows) {
-            self.refuse("a size was refused: columns and rows are each 1 to 500");
-            return false;
-        }
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let (cols, rows) = (cols.clamp(1, SIZE_MAX), rows.clamp(1, SIZE_MAX));
         if (cols, rows) == (self.screen.cols, self.screen.rows) {
-            return true;
+            return;
         }
         // A command is being typed if the shell's last two marks are a prompt and where its
         // command begins, in that order and still on the screen (where each is, noted before
@@ -1480,7 +1477,6 @@ impl Term {
         };
         let screens: Vec<At> = self.marks.iter().map(|mark| screen(mark.0)).collect();
         self.marks.iter_mut().zip(screens).for_each(|(mark, at)| mark.0 = at);
-        true
     }
 
     /// Notes a refusal for the log, once until the holder has taken it.
