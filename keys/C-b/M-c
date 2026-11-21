@@ -6,4 +6,4 @@
 [ -n "$FUXN_PANE" ] || exit 0
 f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
 "$FUXN_KEYS/.text" "$f" styled > /dev/null
-FUXN_EDIT='less -+F -R +G %f' exec "$FUXN_KEYS/.edit" "$f"
+FUXN_EDIT='less -+F -R +G "$1"' exec "$FUXN_KEYS/.edit" "$f"

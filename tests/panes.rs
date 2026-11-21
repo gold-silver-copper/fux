@@ -182,7 +182,7 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     let mut search = session.fux();
     search.env("PATH", &path).env("FUXN_KEYS", &keys).env("OUT", &out).env("SHELL", "/bin/sh");
     search
-        .env("FUXN_EDIT", format!("{} +%l %f", session.0.join("ed").display()))
+        .env("FUXN_EDIT", format!("{} \"+$2\" \"$1\"", session.0.join("ed").display()))
         .env("PATH", format!("{}:{path}", session.0.join("none").display()));
     let found = search.args(["start", "w/find", "--"]).arg(keys.join(".search")).output().unwrap();
     let find = PathBuf::from(String::from_utf8(found.stdout).unwrap().trim());
@@ -342,7 +342,7 @@ fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     // What a key script would leave in the environment is not this pane's; another program's names are not ours to judge.
     // (How the editor is run is a setting for every viewer, one started in a pane too: it stays.)
     start.env("FUXN_WS", "main").env("FUXN_VIEW", "/nowhere").env("FUX_SOCKET", "/another").env("COLUMNS", "90");
-    start.env("FUXN_EDIT", "ed %f");
+    start.env("FUXN_EDIT", "ed \"$1\"");
     assert!(start.args(["start", "w2/p", "--", "sh"]).status().unwrap().success());
     let pane = session.0.join("w2/p");
     let me = env!("CARGO_BIN_EXE_fux");
@@ -353,7 +353,7 @@ fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     // A command typed in a pane means its own workspace, not `main`.
     until("the layout of its own workspace is printed", || read(&pane.join("here")) == "* p focus=p\n");
     let expected = format!(
-        "FUXN_DIR={}\nFUXN_EDIT=ed %f\nFUXN_PANE={}\nFUX_SOCKET=/another\nTERM=xterm-256color\nTERM_PROGRAM=fux-next\nTERM_PROGRAM_VERSION={}\n",
+        "FUXN_DIR={}\nFUXN_EDIT=ed \"$1\"\nFUXN_PANE={}\nFUX_SOCKET=/another\nTERM=xterm-256color\nTERM_PROGRAM=fux-next\nTERM_PROGRAM_VERSION={}\n",
         session.0.display(),
         pane.display(),
         env!("CARGO_PKG_VERSION")
@@ -1071,7 +1071,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
         script.env("OUT", &out).env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main");
         String::from_utf8(script.env("FUXN_PANE", pane).output().unwrap().stdout).unwrap()
     };
-    let run = |name: &str| run_in(name, &pane, format!("{} line-%l %f", session.0.join("vim").display()));
+    let run = |name: &str| run_in(name, &pane, format!("{} \"line-$2\" \"$1\"", session.0.join("vim").display()));
     clear();
     assert_eq!(run("S-c"), "");
     until("the editor was given the output", || read(&out) == "e\u{301}界\n");
@@ -1084,7 +1084,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     );
     // An editor still open when its pane is closed with the close key: the file it was given is
     // in the pane's own folder, and goes with it.
-    assert_eq!(run_in("c", &pane, "tail -f %f".into()), "");
+    assert_eq!(run_in("c", &pane, "tail -f \"$1\"".into()), "");
     let editor =
         || fs::read_dir(session.0.join("main")).unwrap().flatten().find(|pane| pane.path().join("text").exists());
     until("the editor has its file", || editor().is_some());
@@ -1205,7 +1205,7 @@ fn an_editor_that_ends_while_its_key_runs_has_taken_its_pane_and_the_key_says_no
     fs::write(session.0.join("file"), "text\n").unwrap();
     let mut script = Command::new(keys.join(".edit"));
     script.arg(session.0.join("file")).env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()));
-    script.env("FUXN_EDIT", "ed %f").env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main");
+    script.env("FUXN_EDIT", "ed \"$1\"").env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main");
     let out = script.env_remove("FUXN_PANE").output().unwrap();
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success() && said.is_empty(), "{:?}: {said}", out.status);

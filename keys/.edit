@@ -1,49 +1,27 @@
 #!/bin/sh
 # .edit FILE [LINE]: opens FILE in a tab of its own, in the editor, at LINE; FILE
 # is removed when that ends. LINE is 1 if not given.
-# How the editor is run is `$FUXN_EDIT` if that is set (`%f` is the file, `%l`
-# the line, which it may leave out; split at spaces, nothing else expanded; without `%f` the file is put
-# last), else `$EDITOR`, `$PAGER` or less, with the line as the `case` below
-# knows that editor to take it. The README has it in full ("Keys are scripts").
-put() {
-  rest=$1 word=
-  while :; do
-    case $rest in *"$2"*) word=$word${rest%%"$2"*}$3 rest=${rest#*"$2"} ;; *) break ;; esac
-  done
-  word=$word$rest
-}
+# How the editor is run is `$FUXN_EDIT` if that is set (a line of sh: the file is its
+# `$1`, the line its `$2`, which it may leave out), else `$EDITOR`, `$PAGER` or less,
+# with the line as the `case` below knows that editor to take it. The README has it in
+# full ("Keys are scripts").
 if [ "$1" = --in ]; then
   # In the tab's pane. The file is in the pane's own folder from here on, so it
   # goes with the pane however that is closed (`.shell` removes the folder when
   # the editor ends; the close key removes it under a running one).
-  f=$2 n=$3
-  shift 3
-  # (A file that cannot be moved there stays where it is: mv has said why.)
-  mv "$f" "$FUXN_PANE/text" || { echo "the file stays where it is: Enter closes this"; read -r _; exit; }
-  f=$FUXN_PANE/text
-  for word do
-    shift
-    put "$word" %l "$n"
-    put "$word" %f "$f"
-    set -- "$@" "$word"
-  done
-  "$@" || { echo "the editor ended with $?: Enter closes this"; read -r _; }
+  # (One that cannot be moved there has gone, or the pane is going: mv has said why.)
+  mv "$2" "$FUXN_PANE/text" || exit
+  f=$FUXN_PANE/text n=$3
+  set -f; set -- ${EDITOR:-${PAGER:-less}}
+  if [ -n "$FUXN_EDIT" ]; then sh -c "$FUXN_EDIT" sh "$f" "$n"
+  else case ${1##*/} in
+    vi|vim|nvim|nano|emacs) "$@" "+$n" "$f" ;;
+    less) "$@" "+${n}g" "$f" ;;
+    hx|helix) "$@" "$f:$n" ;;
+    *) "$@" "$f" ;;
+  esac; fi || { echo "the editor ended with $?: Enter closes this"; read -r _; }
   exit 0
 fi
-f=$1 n=${2:-1}
-set -f
-if [ -n "$FUXN_EDIT" ]; then
-  set -- $FUXN_EDIT
-  case " $* " in *%f*) ;; *) set -- "$@" %f ;; esac
-else
-  set -- ${EDITOR:-${PAGER:-less}}
-  case ${1##*/} in
-    vi|vim|nvim|nano|emacs) set -- "$@" +%l %f ;;
-    less) set -- "$@" +%lg %f ;;
-    hx|helix) set -- "$@" %f:%l ;;
-    *) set -- "$@" %f ;;
-  esac
-fi
-p=$(fux start -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.edit" --in "$f" "$n" "$@") || { rm -f "$f"; exit; }
+p=$(fux start -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.edit" --in "$1" "${2:-1}") || { rm -f "$1"; exit; }
 # (An editor that is done by now has taken its pane with it: then there is none to show.)
 fux layout pane "${p##*/}" 2> /dev/null || :
