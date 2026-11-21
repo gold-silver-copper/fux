@@ -430,7 +430,7 @@ key is looked up there. Any other key, with no menu open, goes to the program. S
 only a directory: `keys/C-b/v` is "C-b, then v", and `keys/M-left` would be
 Alt-Left with no prefix.
 
-Key names: a character is itself (`v`, `%`, `é`); `S-h` is capital H (file
+Key names: a character is itself (`v`, `%`, `é`); a capital is `S-` and its small letter, in any alphabet (`S-h` is H, `S-é` is É: file
 names differ by more than case, for macOS); `C-b`, `M-x`, `enter`, `tab`,
 `esc`, `space`, `slash`, `dot`, `backspace`, `up` `down` `left` `right`,
 `home` `end` `pgup` `pgdn` `insert` `delete`, `f1`…`f12`, with `C-`, `M-`,
@@ -500,8 +500,8 @@ arguments, split at spaces), else `$PAGER`, else `less`, in a new tab. `vi`, `vi
 keys at their line); any other editor
 gets the file alone, as not every editor reads `+LINE`. An editor behind a
 launcher of another name is one of those: say how yours is run in
-`FUXN_EDIT` (it comes before `$EDITOR`), a command in which `%f` is the file and `%l` the line, set where
-the viewer is started (a viewer started in a pane has it too; `export FUXN_EDIT='hx %f:%l'`, or your launcher in
+`FUXN_EDIT` (it comes before `$EDITOR`), a line of sh that is run with the file as `$1` and the line as `$2`, set where
+the viewer is started (a viewer started in a pane has it too; `export FUXN_EDIT='hx "$1:$2"'`, or your launcher in
 `hx`'s place; `keys/.edit` reads it and is yours to change). The file is in the editor pane's own folder and is removed
 when the editor ends, or with the pane if that is closed first. Its tab goes too (the
 pane removes its own folder, as a shell pane does), and the

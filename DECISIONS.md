@@ -1774,6 +1774,42 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     start); the cursor's waiting wrap kept in its column (fifteen places
     for five, on the print path); a key's kinds as an enum (written out,
     3 to 9 lines more).
+- **D104. The fifth wave** (four readers: the docs against the code, the
+  small files read least, the key scripts, and the whole once more, who
+  found "the tree is close to its minimum"). Taken:
+  - **D46, D100, in part.** Whether a pane's holder lives is, to the
+    viewer, whether anything reads its `in`: the viewer takes no lock.
+    `fux start` therefore takes the pane's lock in one try (it tried
+    twenty times, 5 ms apart, for a viewer's look to pass). The lock is
+    still the proof (D4) for `fux start`, the holder and `fux wait`.
+  - **D71, in part.** `FUXN_EDIT` is a line of sh run with the file and
+    the line as its arguments (`hx "$1:$2"`), not words in which `%f` and
+    `%l` are replaced: a setting that is a command is run by sh, as a
+    picker's command is, and nothing is spliced into text.
+  - `.new-shell` is a script that is run, as the other helpers are, not
+    a file to read for a function. `C-b w n` makes the folder and shows
+    it: the first shell there is `.empty`'s, as in any workspace with no
+    pane.
+  - A capital is `S-` and its small letter in both forms a terminal
+    tells keys in, in any alphabet (`É` was the key `É` in the old form
+    and `S-é` in the new).
+  - The docs were read against the code, sentence by sentence, and
+    corrected where they said more than the code does (what `fux wait`
+    proves, what the agents' recipes establish, what a round of writing
+    is) or said a thing in two places.
+  - **One source.** How many columns a character adds is in the table
+    the tool writes (the rule was applied again at every look). The
+    keypad's keys are named by one list.
+  - **Bugs**, each with a test that failed first where one could be made:
+    a click whose release was never told of taking the next click;
+    `width` finding U+FE0F past a character's end; a shell that ended
+    after a mistyped command said to be a program that could not be run;
+    a picker writing its choice to a viewer that had gone, as a file.
+  - **Left out**: one session file in place of `colours` and `keyboard`
+    (D55, D57: for the owner, with the case in the fifth audit); `C-b a
+    k` hanging up through `ctl` (the key sends TERM, as fux 1's does);
+    the picker taking a number only (the README: a number or a name);
+    the viewer's own words for typing into a pane that has ended.
 
 ## The old fux3's bugs: which classes are gone
 
