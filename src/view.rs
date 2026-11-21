@@ -365,7 +365,7 @@ impl View {
                     }
                 } else if self.ctl_line.len() > LINE_MAX {
                     self.ctl_line.clear();
-                    self.message = "a line over 4096 bytes from a key script was dropped".into();
+                    self.message = format!("a line over {LINE_MAX} bytes from a key script was dropped");
                 } else {
                     let line = String::from_utf8_lossy(&std::mem::take(&mut self.ctl_line)).into_owned();
                     self.command(line.trim());

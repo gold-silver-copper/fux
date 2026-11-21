@@ -65,8 +65,9 @@ struct Holder {
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
     pictures: BTreeSet<u32>,
-    /// `running`, `hungup`, `exited CODE` or `killed SIGNAL`: the `state` file.
-    state: String,
+    /// What became of the program once it ended (`exited CODE`, `killed SIGNAL`): the `state`
+    /// file, which until then says `running`, or `hungup` once the pty is closed.
+    ended: Option<String>,
     /// What the emulator produced and the next publish writes: history, pictures, a title, a clipboard.
     pending: Out,
     /// The session's folder, where the files are that say what the terminal outside is like, and
@@ -170,7 +171,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: BTreeSet::new(),
-        state: "running".into(),
+        ended: None,
         pending: Out::default(),
         session,
         told: (None, None),
@@ -312,10 +313,10 @@ impl Holder {
                         n => left -= n.min(left),
                     }
                 }
-                (self.master, self.state) = (None, state);
+                (self.master, self.ended) = (None, Some(state.clone()));
                 // (What cannot be written of the last screen is said in the log.)
                 if let Err(e) = self.publish() {
-                    self.log(&format!("cannot write the last screen (the program {}): {e}", self.state));
+                    self.log(&format!("cannot write the last screen (the program {state}): {e}"));
                 }
                 return Ok(());
             }
@@ -377,7 +378,8 @@ impl Holder {
         if self.input.len() + out.reply.len() <= INPUT_MAX {
             self.input.extend_from_slice(&out.reply);
         } else {
-            out.refused.push("an answer to the program was dropped: 64 KiB were waiting for it");
+            out.refused
+                .push("an answer to the program was dropped: as many typed bytes as are kept were waiting for it");
         }
         out.refused.into_iter().for_each(|refused| self.log(refused));
         // A resize took rows back from history's end: from what waits to be written, then from the file.
@@ -420,7 +422,7 @@ impl Holder {
             }
             let line = String::from_utf8_lossy(&std::mem::take(&mut self.ctl_line)).into_owned();
             if line.len() > CTL_LINE_MAX {
-                self.log("ctl: a line over 1280 bytes was dropped");
+                self.log(&format!("ctl: a line over {CTL_LINE_MAX} bytes was dropped"));
             } else if let Err(why) = self.command(&line) {
                 self.log(&format!("ctl: {line}: {why}"));
             }
@@ -441,9 +443,7 @@ impl Holder {
             Some("kill") if words.next().is_none() => {
                 // Closing the master is the hangup. What the program and its
                 // children do about it is theirs to decide.
-                if self.master.take().is_some() {
-                    self.state = "hungup".into();
-                }
+                self.master = None;
                 Ok(())
             }
             Some("resize") => {
@@ -551,6 +551,7 @@ impl Holder {
             None => (None, None, String::new()),
         };
         let covered = [("screen.main", main), ("screen.main.styled", looks)];
+        let state = self.ended.as_deref().unwrap_or(if self.master.is_some() { "running" } else { "hungup" });
         let texts = [
             // How the screen's rows are lines of the pane's text: the number of the first row's
             // line, then the rows that go on from the row above.
@@ -561,7 +562,7 @@ impl Holder {
             ("size", format!("{} {}\n", screen.cols, screen.rows)),
             ("cursor", format!("{} {} {shown} {}{colour}\n", at.row, at.col, screen.cursor_shape)),
             ("modes", format!("{}\n", words)),
-            ("state", format!("{}\n", self.state)),
+            ("state", format!("{state}\n")),
             ("status", self.status.clone()),
         ];
         let facts = covered.into_iter().chain(texts.into_iter().map(|(name, text)| (name, Some(text.into_bytes()))));
