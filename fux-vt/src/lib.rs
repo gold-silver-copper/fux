@@ -1696,10 +1696,9 @@ impl Term {
                 }
             }
             (b'#', b'8') => {
+                // (A screen erased whole, as by every other erase of it, then written over.)
+                self.erase((0, 0), (self.screen.rows - 1, self.screen.cols));
                 self.fill(Cell { ch: 'E', ..Cell::blank(Style::default()) });
-                // (As a screen that was erased whole: its marks, and what a resize took off its top.)
-                self.move_marks(|_, _| (0, 0));
-                self.lent = self.lent.take().filter(|_| self.screen.alt);
                 // And, as in xterm, the whole screen scrolls again and the cursor goes home.
                 (self.top, self.bottom, self.screen.cursor.origin) = (0, self.screen.rows - 1, false);
                 self.move_to(0, 0);
