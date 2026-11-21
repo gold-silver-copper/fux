@@ -191,8 +191,8 @@ struct View {
     keyed: Option<Instant>,
     pasting: bool,
     scripts: Vec<Child>,
-    /// The script the keys wait for: its pid and when it started.
-    waiting: Option<(u32, Instant)>,
+    /// The script the keys wait for, and when it started; `scripts` has the others that still run.
+    waiting: Option<(Child, Instant)>,
     ctl_path: PathBuf,
     ctl_line: Vec<u8>,
     quit: bool,
@@ -327,13 +327,12 @@ impl View {
             // read, and what it changed is drawn). One that takes longer than
             // two seconds is left running and the keys go on.
             self.scripts.retain_mut(|script| !matches!(script.try_wait(), Ok(Some(_))));
-            if let Some((pid, since)) = self.waiting {
-                let running = self.scripts.iter().any(|script| script.id() == pid);
-                if running && since.elapsed() > SCRIPT_WAIT {
-                    self.message = "a key script is still running: keys no longer wait for it".into();
-                }
-                if !running || since.elapsed() > SCRIPT_WAIT {
+            if let Some((child, since)) = &mut self.waiting {
+                if matches!(child.try_wait(), Ok(Some(_))) {
                     self.waiting = None;
+                } else if since.elapsed() > SCRIPT_WAIT {
+                    self.message = "a key script is still running: keys no longer wait for it".into();
+                    self.scripts.extend(self.waiting.take().map(|(child, _)| child));
                 }
             }
             let n = (&*ctl).read(&mut buffer).unwrap_or(0);
@@ -747,7 +746,7 @@ impl View {
     }
 
     fn script(&mut self, file: &Path, layout: &Layout) {
-        if self.scripts.len() >= SCRIPTS_MAX {
+        if self.scripts.len() + usize::from(self.waiting.is_some()) >= SCRIPTS_MAX {
             self.message = format!("{SCRIPTS_MAX} key scripts are still running: {} was not started", file.display());
             return;
         }
@@ -780,10 +779,8 @@ impl View {
             script.env(name, format!("{}x{}", tile.w, tile.h));
         }
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
-            Ok(child) => {
-                self.waiting = Some((child.id(), Instant::now()));
-                self.scripts.push(child);
-            }
+            Ok(child) if self.waiting.is_none() => self.waiting = Some((child, Instant::now())),
+            Ok(child) => self.scripts.push(child),
             Err(e) => self.message = format!("{}: {e}", file.file_name().unwrap_or_default().to_string_lossy()),
         }
     }
@@ -1056,9 +1053,7 @@ impl View {
         if first_look {
             let first = self.keys.join(".empty");
             if layout.tabs.is_empty() && wrong.is_none() && first.is_file() {
-                let waiting = self.waiting;
                 self.script(&first, &layout);
-                self.waiting = waiting.or(self.waiting);
             }
         }
         // (The key is named if it is there: the keys are the user's own.)
