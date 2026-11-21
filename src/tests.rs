@@ -854,17 +854,19 @@ fn the_main_screen_under_the_alternate_screen_is_told_as_it_will_be_shown_again(
     // Colours, a colour of the pane's own and a wrapped line: covered, the main screen is what
     // the screens said of it before; uncovered, nothing is told of it apart.
     let mut term = term(8, 4, "\x1b]10;#102030\x07\x1b[31mred\x1b[m\r\na line that wraps");
-    let before = (term.plain(), term.styled());
-    assert_eq!(term.covered(), None);
+    let before = (term.plain(), term.styled(), term.wraps());
+    assert_eq!((term.covered(), before.2.as_str()), (None, "2 3"));
     term.feed(b"\x1b[?1049h\x1b[Hfull\r\nscreen");
     assert!(term.plain().starts_with("full\nscreen\n") && term.covered() == Some(before.clone()));
+    // (Which rows go on is told of both: the program's screen has none.)
+    assert_eq!(term.wraps(), "");
     // A resize wraps it anew under the program, and it is told anew: as the screens then have
     // it when the program leaves.
     assert!(term.resize(12, 4));
     let wrapped = term.covered().expect("it is covered still");
-    assert!(wrapped != before && wrapped.0.starts_with("red\na line that \nwraps\n"), "{wrapped:?}");
+    assert!(wrapped.2 == "2" && wrapped.0.starts_with("red\na line that \nwraps\n"), "{wrapped:?}");
     term.feed(b"\x1b[?1049l");
-    assert_eq!((term.covered(), term.plain(), term.styled()), (None, wrapped.0, wrapped.1));
+    assert_eq!((term.covered(), (term.plain(), term.styled(), term.wraps())), (None, wrapped));
 }
 
 #[test]

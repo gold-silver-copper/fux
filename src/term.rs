@@ -617,9 +617,10 @@ impl Term {
         Term::text(&self.grid)
     }
 
-    /// The main screen while the alternate screen covers it, as `plain` and `styled` would have it.
-    pub fn covered(&self) -> Option<(String, String)> {
-        self.alt.then(|| (Term::text(&self.other), self.looks(&self.other)))
+    /// The main screen while the alternate screen covers it, as `plain`, `styled` and `wraps`
+    /// would have it.
+    pub fn covered(&self) -> Option<(String, String, String)> {
+        self.alt.then(|| (Term::text(&self.other), self.looks(&self.other), self.goes_on(&self.other, true)))
     }
 
     fn text(grid: &[Vec<Cell>]) -> String {
@@ -960,8 +961,12 @@ impl Term {
     /// The rows of the screen that go on from the row above (the text wrapped into them), as
     /// numbers from 0: what `plain` cannot say. The first row may go on from history's last line.
     pub fn wraps(&self) -> String {
-        let open = self.history_open.is_some() && !self.alt;
-        let rows = self.grid.iter().enumerate().filter(|(y, row)| continues(row) && (*y > 0 || open));
+        self.goes_on(&self.grid, !self.alt)
+    }
+
+    fn goes_on(&self, grid: &[Vec<Cell>], main: bool) -> String {
+        let open = self.history_open.is_some() && main;
+        let rows = grid.iter().enumerate().filter(|(y, row)| continues(row) && (*y > 0 || open));
         rows.map(|(y, _)| y.to_string()).collect::<Vec<String>>().join(" ")
     }
 

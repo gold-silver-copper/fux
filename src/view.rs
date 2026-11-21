@@ -1628,10 +1628,13 @@ impl Pane {
             }
         }
         // The links (`links`: line, cells into it, how many cells, address) are put on the cells.
-        // `top` and `wraps` say which line each row is of; a row starts as many cells into its
-        // line as the rows of that line above it hold. An address is plain printable text.
-        let rows: Vec<usize> = numbers(&fact("wraps", 4096));
-        let (mut line, mut base, mut starts) = (numbers(&fact("top", 32)).first().copied().unwrap_or(0), 0, Vec::new());
+        // `lines` says which line each row is of (the first row's, then the rows that go on); a
+        // row starts as many cells into its line as the rows of that line above it hold. An
+        // address is plain printable text.
+        let lines = fact("lines", 4096);
+        let mut lines = lines.lines().map(&numbers);
+        let (top, rows) = (lines.next().unwrap_or_default(), lines.next().unwrap_or_default());
+        let (mut line, mut base, mut starts) = (top.first().copied().unwrap_or(0), 0, Vec::new());
         for row in 0..self.term.rows {
             (line, base) = if row > 0 && !rows.contains(&row) { (line.saturating_add(1), 0) } else { (line, base) };
             starts.push((line, base));

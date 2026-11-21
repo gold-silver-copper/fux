@@ -632,13 +632,17 @@ impl Holder {
         let colour = term.cursor_colour().map_or(String::new(), |[r, g, b]| format!(" #{r:02x}{g:02x}{b:02x}"));
         // While a program has the alternate screen, the main screen it covers has two files, as
         // the screens are written; they are there before `modes` says `alt`, and gone before it
-        // no longer does.
-        let (main, looks) = term.covered().map(|(plain, styled)| (plain.into_bytes(), styled.into_bytes())).unzip();
+        // no longer does. Which of its rows go on is a third line of `lines` meanwhile.
+        let (main, looks, under) = match term.covered() {
+            Some((plain, styled, wraps)) => (Some(plain.into_bytes()), Some(styled.into_bytes()), wraps + "\n"),
+            None => (None, None, String::new()),
+        };
         let mut facts: Vec<(&'static str, Option<Vec<u8>>)> =
             vec![("screen.main", main), ("screen.main.styled", looks)];
         let texts = [
-            ("top", format!("{}\n", term.top())),
-            ("wraps", format!("{}\n", term.wraps())),
+            // How the screen's rows are lines of the pane's text: the number of the first row's
+            // line, then the rows that go on from the row above.
+            ("lines", format!("{}\n{}\n{under}", term.top(), term.wraps())),
             ("marks", term.marks()),
             ("links", term.links()),
             ("pictures", term.pictures.iter().map(placed).collect()),

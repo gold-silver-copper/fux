@@ -247,12 +247,15 @@ fn the_main_screen_a_full_screen_program_covers_is_in_files_of_its_own_until_it_
         file("screen.main").starts_with("green and a line of \nforty characters or \nso\n")
             && bare(&file("screen.main.styled")).starts_with("green and a line of \nforty")
     });
+    // (Which of its rows go on from the row above is a third line of `lines` meanwhile: the
+    // second is of the screen shown, where nothing wraps.)
+    assert_eq!(file("lines"), "0\n\n1 2\n");
     // The program leaves: the files go, and the screen is what they said.
     let covered = file("screen.main");
     fs::write(pane.join("in"), "\n").unwrap();
     until("the main screen is shown again", || !fact(&pane, "modes").contains("alt"));
     assert!(!pane.join("screen.main").exists() && !pane.join("screen.main.styled").exists());
-    until("the screen is the main one", || file("screen") == covered);
+    until("the screen is the main one", || file("screen") == covered && file("lines") == "0\n1 2\n");
 }
 
 /// Gives a session's `main` workspace a layout, as an editor that saves in one step does: the
@@ -300,7 +303,7 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     // Every fact has its file: where the cursor is, how input is sent, whether the program runs, who it is.
     let cursor: Vec<String> = fact(&pane, "cursor").split(' ').map(str::to_string).collect();
     assert!(cursor.len() == 4 && cursor[2] == "shown", "{cursor:?}");
-    assert_eq!((fact(&pane, "state").as_str(), fact(&pane, "top").as_str()), ("running", "0"));
+    assert_eq!((fact(&pane, "state").as_str(), read(&pane.join("lines")).as_str()), ("running", "0\n\n"));
     assert!(read(&pane.join("status")).lines().nth(1).unwrap().starts_with("pid "));
     until("the refusal is logged", || read(&pane.join("log")).contains("fly: not a command"));
     fs::write(pane.join("ctl"), "kill \x1b]0;now\x07\n").unwrap();
@@ -375,7 +378,7 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
     let written = |name: &str| fs::metadata(quiet.join(name)).unwrap().modified().unwrap();
     let wait = session.fux().arg("wait").arg(&quiet).output().unwrap();
     assert!(String::from_utf8_lossy(&wait.stdout).ends_with("state exited 0\n"));
-    for name in ["size", "cursor", "modes", "state", "status", "top", "wraps", "pictures", "screen"] {
+    for name in ["size", "cursor", "modes", "state", "status", "lines", "pictures", "screen"] {
         assert!(written(name) <= written("screen.styled"), "{name} was written after screen.styled");
     }
 
@@ -878,7 +881,11 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     let (first, last) =
         ("0 0 prompt\n0 2 command\n1 0 output\n14 0 end 0\n14 0 prompt\n", "17 0 end 1\n17 0 prompt\n17 2 command\n");
     assert!(marks.starts_with(first) && marks.ends_with(last), "{marks}");
-    assert!(fact(&pane, "top").parse::<usize>().unwrap() > 10);
+    // One file says how the screen's rows are lines of the pane's text: the number of the line
+    // its first row is of (the wrapped one, 13 lines in), then the rows that go on from the row
+    // above (the first, from history). No other file says either.
+    assert_eq!(read(&pane.join("lines")), "13\n0\n", "the number of the first row's line, then the rows that go on");
+    assert!(!pane.join("top").exists() && !pane.join("wraps").exists());
     // An editor for the test: it is called `vim`, so it is given a line number; it notes that
     // and copies the file it was to open.
     let out = session.0.join("out");

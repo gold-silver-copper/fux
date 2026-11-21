@@ -1428,6 +1428,31 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - Kept: text written over part of a picture removes the whole picture
     (the README says so); a cut picture has unset pixels left unset
     whatever its own header asked.
+- **D96. A pane's files: no `argv`, `screen.main`, and `lines` for `top`
+  and `wraps`** (the owner, messages 24, 26 and 27). Asked what else
+  could be a file of its own, the owner took four ("all good ideas"),
+  then three back ("argv seems spurious..so does colours maybe, and idk
+  about foreground either? screen.main seems very useful tho"), then
+  said "merge top and wraps".
+  - No `argv`: see D94. Restore reads `status` and is honest, not exact.
+  - `screen.main` and `screen.main.styled`: the main screen under a
+    full-screen program, as the screens would have it, there only while
+    `modes` says `alt` (written before it says so, removed before it
+    stops), written again only when it changes (a resize, a colour of
+    the pane's own). The holder renders the covered screen at each
+    publish to compare it; no flag says "it changed", which would be a
+    second truth to keep. Given up: nothing a reader had.
+  - `lines` in place of `top` and `wraps`: its first line the number of
+    the screen's first line, its second the rows that go on. Nothing
+    read one without the other. Checking what they meant under a
+    full-screen program found them of two screens: `top` (and `marks`)
+    of the main one, `wraps` (and `links`) of the one shown. That
+    stays, and a third line, there only then, says which rows of
+    `screen.main` go on: without it the covered screen's wrapped lines
+    and the marks in them could not be joined. Given up: the old two
+    names (no shim: pre-release), and `cat top` as one bare number
+    (`read` and `sed -n 1p` take the first line).
+  - Not added: a pane's `colours` file and `foreground` (message 26).
 
 ## The old fux3's bugs: which classes are gone
 

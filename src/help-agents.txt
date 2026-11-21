@@ -101,8 +101,11 @@ state   running | hungup | exited CODE | killed SIGNAL
 status  three lines: holder N / pid N (the program's) / command ...
 screen.main, screen.main.styled   only while `modes` says alt: the main screen that the
         full-screen program covers, as screen and screen.styled would have it
-top     the number, from 0, of the screen's first row among all lines the pane printed
-wraps   the screen rows (from 0) that continue the row above: `1 2` is one line in 3 rows
+lines   two lines: the number, from 0, of the screen's first row among all lines the pane
+        printed; then the screen rows (from 0) that continue the row above, `1 2` being one
+        line in 3 rows (empty if none). `{ read -r top; read -r wraps; } < lines`. While
+        `modes` says alt a third: the rows of screen.main that continue (the first line
+        counts its lines, the second is of `screen`)
 title   the window title the program set (absent until it does)
 cwd     the program's directory, if it announces it (absent else): a shell must, at each
         prompt. For bash: PROMPT_COMMAND='printf "\033]7;file://%s\007" "$PWD"'
@@ -110,12 +113,12 @@ notice  `N WORDS`: N grows by one with each notice, WORDS may be none (a bell). 
         `1 the build is done`. Absent until the first.
 marks   `LINE AT KIND`, a line for each prompt mark of a shell that makes them (below)
 links   `LINE COL LEN ADDRESS` for each link (OSC 8) on the screen, e.g. `24 0 4 https://x.y`:
-        LINE counts as `top` does (screen row = LINE - top, if no row above wraps), COL is
-        the first cell from 0, LEN the number of cells
+        LINE counts as the first line of `lines` does (screen row = LINE - that number, if
+        no row above wraps), COL is the first cell from 0, LEN the number of cells
 log     what the holder refused or lost. (Also: clipboard, pictures and pic-N.sixel.)
 A fact can be one frame (the next writing of the files) ahead of a screen read just before it. All the text of a
 pane, oldest first, wrapped rows joined into the lines that were printed:
-    whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(cat "$1/wraps")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/screen"; }
+    whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(sed -n 2p "$1/lines")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/screen"; }
     whole "$P" | tail -n 5
 It is exact for a pane that is still or ended, but for: colours, blanks at a line's end,
 empty lines at the very end, and text older than the two history files keep (4 to 8 MiB).
