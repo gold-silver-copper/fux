@@ -188,7 +188,7 @@ itself and for itself, with nobody watching:
 | `CSI > q` (XTVERSION) | `fux-next VERSION` |
 | `CSI c`, `CSI > c` (device attributes) | `CSI ? 62;4;22 c` (a VT220 with sixel and colour) and `CSI > 70;0;0 c`: a kind of terminal no other gives (xterm is 41, tmux 84, Ghostty 1 with version 10), so nothing a program knows of another terminal's versions is turned on |
 | `DCS $ q … ST` (DECRQSS) | what the emulator keeps: `m` (the colours and looks in force, in the form with colons), `r` (the scroll region), `SP q` (the cursor's shape); "not valid" for anything else |
-| `DCS + q NAMES ST` (XTGETTCAP) | each name by itself, from the table below; "not valid" for every other name, so a name fux does not know never hides one it does (more than 32 names or 2,048 bytes in one question are one "not valid") |
+| `DCS + q NAMES ST` (XTGETTCAP) | each name by itself, from the table below; "not valid" for every other name, so a name fux does not know never hides one it does (answers past the 16 KiB that may wait are dropped, with a line in `log`, as any answer is) |
 
 | Name | Value |
 |---|---|
