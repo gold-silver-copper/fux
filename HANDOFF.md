@@ -49,7 +49,7 @@ Rules the code follows (the first and the fourth are enforced by clippy; the oth
 and tests):
 - Non-test code never panics: `unwrap`, `expect`, indexing, `panic!` and friends are denied by clippy.
 - One source of truth for every fact, in the code and in the files; no field mirrors another.
-- Everything is bounded and refused out loud (the README's "Bounds" says each bound and who reports
+- Everything is bounded and refused out loud (the README says each bound, under "A pane's files" and "Bounds", and who reports
   a loss: the holder in the pane's `log`, which itself stops at 64 KiB; the viewer in its corner).
 - `File::open`, `fs::read` and `fs::read_to_string` are refused by `clippy.toml`: a FIFO put there by
   anyone would hang the caller. Use `sys::open` and friends. (Other opens, `OpenOptions` for history and
