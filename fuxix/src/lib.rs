@@ -1,6 +1,6 @@
 //! The system calls std does not give. The only crate with `unsafe`.
-//! Every `extern` is declared by hand from the C prototypes; the constants
-//! are Linux's and macOS's own and differ where the two systems differ.
+//! Every `extern` is declared by hand after the C prototypes; the constants
+//! are those of Linux (x86-64 and arm64) and of macOS, and differ where the two differ.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_ulong};
 use std::fs::{File, OpenOptions};
@@ -75,7 +75,6 @@ unsafe extern "C" {
         winsize: *mut Winsize,
     ) -> c_int;
     fn setsid() -> c_int;
-    fn fchdir(fd: c_int) -> c_int;
     fn signal(signal: c_int, handler: usize) -> usize;
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
@@ -141,12 +140,6 @@ pub fn own_children() {
     unsafe { signal(os::SIGCHLD, 0) };
 }
 
-/// Makes an already open directory the working directory of this process.
-pub fn enter_directory(directory: &File) -> io::Result<()> {
-    // SAFETY: fchdir takes the descriptor of the file we own.
-    check(unsafe { fchdir(directory.as_raw_fd()) }).map(drop)
-}
-
 pub fn set_winsize(tty: &File, size: Winsize) -> io::Result<()> {
     // SAFETY: TIOCSWINSZ reads one winsize through a valid pointer.
     check(unsafe { ioctl(tty.as_raw_fd(), os::TIOCSWINSZ, &size as *const Winsize) }).map(drop)
@@ -178,8 +171,9 @@ pub fn wait<const N: usize>(wanted: [(Option<BorrowedFd<'_>>, i16); N], timeout:
 
 /// This machine's name, as programs on it know it.
 pub fn host() -> Option<String> {
-    let mut name = [0u8; 256];
-    // SAFETY: gethostname writes at most the length given into a buffer of that length.
+    // (A name is 255 bytes at most, 256 with its end on macOS: one more stays zero.)
+    let mut name = [0u8; 257];
+    // SAFETY: gethostname writes at most the length given into a buffer that is longer.
     check(unsafe { gethostname(name.as_mut_ptr().cast(), name.len() - 1) }).ok()?;
     CStr::from_bytes_until_nul(&name).ok()?.to_str().ok().map(String::from)
 }
