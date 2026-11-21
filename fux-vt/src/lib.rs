@@ -1322,7 +1322,6 @@ impl Term {
     /// text is wrapped anew: a line that was wrapped is one line again, and
     /// rows that no longer fit go to history from the top. The alternate
     /// screen is cut or padded where it is, and none of it goes to history.
-    /// The new screens are made whole first and then take the old ones' place.
     pub fn resize(&mut self, cols: usize, rows: usize) -> bool {
         if !(1..=SIZE_MAX).contains(&cols) || !(1..=SIZE_MAX).contains(&rows) {
             self.refuse("a size was refused: columns and rows are each 1 to 500");
@@ -1343,9 +1342,10 @@ impl Term {
         // (The marks on the screen are places in the text while it is wrapped anew.)
         self.mark_texts(0..usize::MAX);
         let blank = Cell::blank(Style::default());
-        let (shown, hidden) = ((&self.screen.grid, &self.screen.pictures), (&self.other, &self.other_pictures));
-        let ((main, main_pictures), (other, other_pictures)) =
-            if self.screen.alt { (hidden, shown) } else { (shown, hidden) };
+        let last = self.going_on().and_then(|last| last.at).filter(|_| !self.screen.alt);
+        let shown = (&mut self.screen.grid, &mut self.screen.pictures);
+        let hidden = (&mut self.other, &mut self.other_pictures);
+        let ((main, main_pictures), (cut, still)) = if self.screen.alt { (hidden, shown) } else { (shown, hidden) };
         // Places on the main screen that stay on their character, each with whether it waits to
         // wrap at its row's end. First the cursor, whose line is taken to reach as far as it
         // stands (behind the alternate screen, the saved cursor is the one that will come back);
@@ -1353,7 +1353,6 @@ impl Term {
         // upper one on the highest of its rows that is kept still).
         let waits = |cursor: Cursor| (cursor.place().0, cursor.place().1, cursor.wrap);
         let (saved, cursor) = (waits(self.saved.first().copied().unwrap_or_default()), waits(self.screen.cursor));
-        let last = self.going_on().and_then(|last| last.at).filter(|_| !self.screen.alt);
         let mut places = vec![if self.screen.alt { saved } else { cursor }, saved];
         places.push(last.map_or(cursor, |(row, col, ..)| (row, col, false)));
         // (A picture's rows below the screen's last are counted on from the last.)
@@ -1367,7 +1366,7 @@ impl Term {
         for (i, picture) in main_pictures.iter().enumerate() {
             places.get_mut(3 + 2 * i).into_iter().for_each(|place| place.0 -= picture.off.min(held));
         }
-        let old: Vec<Vec<Cell>> = lent.iter().flat_map(|lent| &lent.rows).chain(main).cloned().collect();
+        let old = lent.iter().flat_map(|lent| &lent.rows).chain(main.iter());
         // While a shell reads a command, the line being typed is cut or padded at a new width,
         // not wrapped anew: the shell draws it again counting rows as it left them. Only where
         // that is sure to be the shell's own line: the cursor is at or after where the command
@@ -1382,7 +1381,7 @@ impl Term {
             (ours && here >= command && here.0 < end).then_some(first + held..end + held)
         });
         // (Its rows are one line still when each has been cut.)
-        let mut wrapped = reflow(&old, cols, &mut places, typed.unwrap_or(0..0));
+        let mut wrapped = reflow(old, cols, &mut places, typed.unwrap_or(0..0));
         // (A cursor beside its line's text is kept inside the row; a picture keeps its column.)
         let place = |i: usize| places.get(i).copied().unwrap_or_default();
         let at = |i: usize| (place(i).0, if place(i).2 { place(i).1.min(cols - 1) } else { place(i).1 });
@@ -1414,9 +1413,8 @@ impl Term {
         let rows_lent: Vec<Vec<Cell>> = wrapped.drain(..up).skip(keep).collect();
         wrapped.resize(rows, vec![blank; cols]);
         // The other screen keeps its rows: one that loses half a wide character loses it whole.
-        let mut cut = other.clone();
-        cut.resize(rows, Vec::new());
-        for row in &mut cut {
+        cut.resize_with(rows, Vec::new);
+        for row in cut {
             if row.get(cols).is_some_and(|c| c.ch == '\0')
                 && let Some(lead) = row.get_mut(cols - 1)
             {
@@ -1429,21 +1427,20 @@ impl Term {
         // last resize took are back with their text. Past the right edge and the last row it is
         // only not shown.
         let mut kept: Vec<Picture> = Vec::new();
-        for (i, picture) in main_pictures.iter().enumerate() {
+        for (i, picture) in main_pictures.drain(..).enumerate() {
             let ((row, col, _), (below, under, _)) = (place(3 + 2 * i), place(4 + 2 * i));
-            let below = below + picture.row + picture.rows - 1 - low(picture);
+            let below = below + picture.row + picture.rows - 1 - low(&picture);
             let back = picture.off.min(held);
             let (off, gone) = (picture.off - back, up.saturating_sub(row));
             let stacked = under == col && below == row + back + picture.rows - 1;
             // (One that has lost rows for good has its next row on the screen's first.)
             if stacked && below >= up && row < up + rows && (off == 0 || row <= up) {
                 let rows = below + 1 - row - gone;
-                kept.push(Picture { row: row.saturating_sub(up), col, rows, off: off + gone, ..picture.clone() });
+                kept.push(Picture { row: row.saturating_sub(up), col, rows, off: off + gone, ..picture });
             }
         }
-        let mut still = other_pictures.clone();
         still.retain(|p| p.row < rows && p.col < cols);
-        // Only history was changed until here: now the new screens take the old ones' place.
+        (*main, *main_pictures) = (wrapped, kept);
         let fit = |(row, col): (usize, usize)| (row.saturating_sub(up).min(rows - 1), col);
         let ((row, col), saved_at) = (fit(at(0)), fit(at(1)));
         if let Some(slot) = self.saved.first_mut() {
@@ -1454,12 +1451,10 @@ impl Term {
         }
         self.interrupt();
         if self.screen.alt {
-            (self.screen.grid, self.other, self.screen.pictures, self.other_pictures) = (cut, wrapped, still, kept);
             self.cluster = None;
             (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap) =
                 (self.screen.cursor.row.min(rows - 1), self.screen.cursor.col.min(cols - 1), false);
         } else {
-            (self.screen.grid, self.other, self.screen.pictures, self.other_pictures) = (wrapped, cut, kept, still);
             // A cursor past its row's last column is the one that waits to wrap there.
             let here = (row, col.min(cols - 1), col >= cols);
             (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap) = here;
@@ -2412,8 +2407,8 @@ fn continues(row: &[Cell]) -> bool {
 /// with whether it waits to wrap at its row's end, and come back as rows and
 /// columns of the new; the first is the cursor, whose line is taken to reach
 /// as far as it stands.
-fn reflow(
-    old: &[Vec<Cell>],
+fn reflow<'a>(
+    old: impl Iterator<Item = &'a Vec<Cell>>,
     cols: usize,
     places: &mut [(usize, usize, bool)],
     keep: std::ops::Range<usize>,
@@ -2425,11 +2420,12 @@ fn reflow(
     // that is kept as it is); and for each old row the line it is part of and where in it the row starts.
     let mut lines: Vec<(Vec<Cell>, Cell, bool)> = Vec::new();
     let mut origin: Vec<(usize, usize)> = Vec::new();
-    for (y, row) in old.iter().enumerate() {
+    let mut old = old.enumerate().peekable();
+    while let Some((y, row)) = old.next() {
         if lines.is_empty() || !continues(row) || keep.contains(&y) {
             lines.push((Vec::new(), blank, continues(row)));
         }
-        let goes_on = old.get(y + 1).is_some_and(|next| continues(next)) && !keep.contains(&y);
+        let goes_on = old.peek().is_some_and(|(_, next)| continues(next)) && !keep.contains(&y);
         // (What is cut off a line's end is what is the same as the fill, and nothing else.)
         let end = row.last().map_or(blank, |last| Cell::blank(last.style));
         let mut used = match goes_on {
