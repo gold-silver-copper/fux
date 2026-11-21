@@ -1696,25 +1696,20 @@ impl Term {
     fn end_string(&mut self, end: Option<&str>) {
         self.state = State::Ground;
         let string = std::mem::take(&mut self.string);
-        if string.len() > PICTURE_MAX + 1 {
-            return;
-        }
-        match string.split_first().zip(end) {
-            Some(((b'P', data), _)) if data.starts_with(b"$q") && !self.string_holed => {
-                self.report_setting(data.get(2..).unwrap_or_default());
-            }
-            Some(((b'P', data), _)) if data.starts_with(b"+q") && !self.string_holed => {
-                self.report_caps(data.get(2..).unwrap_or_default());
-            }
-            Some(((b'P', data), _)) => {
-                let header = data.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
-                if data.get(header) == Some(&b'q') && data.iter().all(|b| (0x20..=0x7e).contains(b)) {
-                    self.picture(data);
-                }
-            }
-            Some(((b']', data), end)) => self.command(&String::from_utf8_lossy(data), end),
+        let Some(end) = end.filter(|_| string.len() <= PICTURE_MAX + 1) else { return };
+        match string.as_slice() {
+            [b'P', b'$', b'q', data @ ..] if !self.string_holed => self.report_setting(data),
+            [b'P', b'+', b'q', data @ ..] if !self.string_holed => self.report_caps(data),
+            [b'P', data @ ..] if Term::is_sixel(data) => self.picture(data),
+            [b']', data @ ..] => self.command(&String::from_utf8_lossy(data), end),
             _ => {}
         }
+    }
+
+    /// Whether what is between a DCS and its ST is a sixel picture: numbers, `q`, printable bytes.
+    pub fn is_sixel(data: &[u8]) -> bool {
+        let numbers = data.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
+        matches!(data.get(numbers..), Some([b'q', rest @ ..]) if rest.iter().all(|b| (0x20..=0x7e).contains(b)))
     }
 
     /// Report the selector's *current* setting. DECRPSS carries one CSI body.
