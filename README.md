@@ -168,8 +168,8 @@ hundredths of a second.)
 The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux-next`,
 `TERM_PROGRAM_VERSION`, `COLORTERM=truecolor` and `FUXN_PANE` (its pane's directory, whole path), in
 the directory `fux start` was run in, with the rest of that environment and
-the signals 1 to 31 at their defaults. Of this program's own `FUXN_…` names
-it gets only `FUXN_PANE` and, if they were set, `FUXN_DIR`, `FUXN_KEYS` and `FUXN_EDIT`;
+the signals 1 to 31 at their defaults. Four names are not passed on, those a key script is
+told of its viewer (`FUXN_WS`, `FUXN_VIEW`, `FUXN_ROW` and `FUXN_COL`: below);
 and neither `COLUMNS` nor `LINES`, which the holder reads for itself: the
 pane's first size is 80x24, or the `COLUMNS` and the `LINES` the starter set (each 1 to
 500; one that is set and is not such a number fails the start, which says so).

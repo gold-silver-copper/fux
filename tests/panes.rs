@@ -391,7 +391,7 @@ fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     // What a key script would leave in the environment is not this pane's; another program's names are not ours to judge.
     // (How the editor is run is a setting for every viewer, one started in a pane too: it stays.)
     start.env("FUXN_WS", "main").env("FUXN_VIEW", "/nowhere").env("FUX_SOCKET", "/another").env("COLUMNS", "90");
-    start.env("FUXN_EDIT", "ed \"$1\"");
+    start.env("FUXN_EDIT", "ed \"$1\"").env("FUXN_ROW", "40x24").env("FUXN_COL", "80x12");
     assert!(start.args(["start", "w2/p", "--", "sh"]).status().unwrap().success());
     let pane = session.0.join("w2/p");
     let me = env!("CARGO_BIN_EXE_fux");

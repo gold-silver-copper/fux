@@ -87,14 +87,9 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     let mut child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
-        // The program is told what terminal it is in and which pane. Of this
-        // program's own names it gets that one, the session's and the keys' if they
-        // were set, and no other (a key script's workspace is not this
-        // pane's); and no size but the terminal's own.
-        let kept = [name!("PANE"), name!("DIR"), name!("KEYS"), name!("EDIT")];
-        let ours =
-            |n: &OsString| n.as_encoded_bytes().starts_with(name!("").as_bytes()) && !kept.iter().any(|k| n == k);
-        for name in std::env::vars_os().map(|(name, _)| name).filter(ours) {
+        // The program is told what terminal it is in and which pane, and no size but the terminal's
+        // own. What a key script is told of its viewer is not this pane's.
+        for name in [name!("WS"), name!("VIEW"), name!("ROW"), name!("COL")] {
             child.env_remove(name);
         }
         child.args(args).current_dir(cwd).env("TERM", TERM).env_remove("COLUMNS").env_remove("LINES");
