@@ -20,7 +20,8 @@ FILES = {
 }
 # The order is fux-vt/src/width.rs's: a character's kind is the low four bits of its table entry.
 KINDS = "Other CR LF Control Extend ZWJ Regional_Indicator Prepend SpacingMark L V T LV LVT".split()
-CONSONANT, LINKER, EXTEND, PICTURE, WIDE, EMOJI, ROOM = 0x10, 0x20, 0x30, 0x40, 0x80, 0x100, 0x200
+CONSONANT, LINKER, EXTEND, PICTURE, EMOJI, COLUMN = 0x10, 0x20, 0x30, 0x40, 0x80, 0x100
+WIDE, ROOM = 0x1000, 0x2000  # known while the table is made, and in it only as columns
 SYLLABLES = range(0xAC00, 0xD7A4)  # LV and LVT, computed in fux-vt/src/width.rs
 
 
@@ -61,10 +62,17 @@ def table(folder):
     for c in range(0x110000):
         if bits[c] & 0xF == KINDS.index("Regional_Indicator"):
             bits[c] &= ~WIDE
+    # The columns a character adds to its cluster. Marks and joiners take no room, wide ones
+    # neither (the voiced marks of kana), but for the few with ROOM (a skin tone too); nor do
+    # the vowel and the final consonant of a Hangul syllable.
+    none = [KINDS.index(kind) for kind in ("CR", "LF", "Control", "ZWJ", "V", "T")]
+    for c, b in enumerate(bits):
+        mark = b & 0xF == KINDS.index("Extend") and not b & ROOM
+        bits[c] = b & 0xFF | COLUMN * (0 if mark else 2 if b & WIDE else 0 if b & 0xF in none else 1)
     for c in SYLLABLES:
-        if bits[c] != (KINDS.index("LVT" if (c - 0xAC00) % 28 else "LV") | WIDE):
+        if bits[c] != (KINDS.index("LVT" if (c - 0xAC00) % 28 else "LV") | 2 * COLUMN):
             raise SystemExit(f"U+{c:04X} is not the syllable fux-vt/src/width.rs computes")
-        bits[c] = 0
+        bits[c] = COLUMN  # (what is around them: they start no run)
     starts = [(c, bits[c]) for c in range(0x80, 0x110000) if c == 0x80 or bits[c] != bits[c - 1]]
     print(f"// A table written by tools/unicode.py from Unicode {RELEASE}: where a run of characters of one kind starts, and the kind.")
     print("#[rustfmt::skip]")
