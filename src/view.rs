@@ -70,8 +70,7 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
     }
     // Only one whole sixel picture is passed on: nothing else in the file can reach the terminal.
     let inside = bytes.strip_prefix(b"\x1bP").and_then(|rest| rest.strip_suffix(b"\x1b\\"));
-    let sixel = |inside: &&[u8]| inside.iter().find(|b| !(b.is_ascii_digit() || **b == b';')) == Some(&b'q');
-    let inside = inside.filter(|inside| inside.iter().all(|b| (0x20..=0x7e).contains(b))).filter(sixel);
+    let inside = inside.filter(|inside| Term::is_sixel(inside));
     let Some(inside) = inside else { return Ok(None) };
     let (w, h, square) = sixel::size(inside);
     let (wide, high) = (w.min(*wide), h.saturating_sub(*top).min(*high));
