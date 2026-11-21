@@ -788,12 +788,8 @@ impl View {
             return;
         }
         // (Where the tile is, is as it was drawn; what its program asks to be told is read now.)
-        let focused = self.tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name));
-        let Some((term, body)) =
-            focused.map(|(name, body)| (asks(&self.session.join(&self.workspace).join(name)), *body))
-        else {
-            return;
-        };
+        let Some((name, body)) = self.tiles.iter().find(|(name, _)| self.focus.as_ref() == Some(name)) else { return };
+        let term = asks(&self.session.join(&self.workspace).join(name));
         // A button held stays that program's until it is let go: a drag out of the tile is reported at its edge.
         if press || release {
             self.held = press.then_some(true);
