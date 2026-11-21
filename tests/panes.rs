@@ -205,9 +205,15 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     let (was, runs) = (read(&other.join("status")), read(&old.join("status")));
     assert!(was.ends_with("\ncommand printf %s\\n * the-needle;$HOME\n"), "{was}");
     assert!(!other.join("argv").exists(), "a pane has no argv file: its command is in status");
-    let restored =
-        Command::new("sh").arg(keys.join(".restore")).env("PATH", &path).env("FUXN_DIR", &session.0).output().unwrap();
+    // (The session is named from where the script is run, as a login may name it: it is the same
+    // session after the script has gone to the pane's directory, here the home it is given.)
+    let (home, named) = (session.0.join("home"), session.0.file_name().unwrap());
+    fs::create_dir_all(&home).unwrap();
+    let mut restore = Command::new("sh");
+    restore.arg(keys.join(".restore")).env("PATH", &path).env("FUXN_DIR", named).env("HOME", &home);
+    let restored = restore.current_dir(session.0.parent().unwrap()).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started v/other again\n");
+    assert!(!home.join(named).exists(), "the pane was started in a session of that name under its own directory");
     until("it has run again", || {
         read(&other.join("status")) != was && read(&other.join("screen")).starts_with("*\nthe-needle;$HOME\n")
     });

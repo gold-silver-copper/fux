@@ -10,7 +10,7 @@
 # files anew. A pane that is alive is left alone: `fux start` refuses a name a
 # holder keeps. Which panes that starts wrongly, and how a session outlasts a
 # reboot: the README, "Search every pane, and after a reboot".
-D=${FUXN_DIR:-$(fux dir)} || exit
+D=$(fux dir) && export FUXN_DIR="$D" || exit
 for p in "$D"/*/*/; do
   p=${p%/}
   command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)
