@@ -1521,10 +1521,9 @@ impl Term {
         } else {
             (self.screen.grid, self.other, self.screen.pictures, self.other_pictures) = (wrapped, cut, kept, still);
             // A cursor past its row's last column is the one that waits to wrap there.
-            (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap) =
-                (row, col.min(cols - 1), col >= cols);
+            let here = (row, col.min(cols - 1), col >= cols);
+            (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap) = here;
             // The character printed last is where it was in the text: what comes next may join it.
-            let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
             let (at_row, at_col) = fit(at(3));
             self.cluster = last.filter(|_| at(3).0 >= up).and_then(|(.., under)| {
                 Some(Last { at: Some((at_row, at_col, *self.screen.cell_at(at_row, at_col)?, under)), cursor: here })
