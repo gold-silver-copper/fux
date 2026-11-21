@@ -366,9 +366,13 @@ then. A workspace shows at most 1,000 panes. `fux layout EDIT` makes
 one edit:
 
 `split row|col PANE [beside ANCHOR]` (put PANE beside or below ANCHOR, defaulting to the focused pane) ·
-`pane PANE` (give it the keys, and show its tab) · `focus left|right|up|down|next|prev` · `tab next|prev|-` (`-`: the tab shown before) · `break`
+`pane PANE` (give it the keys, and show its tab) · `focus left|right|up|down|next|prev` (a side is a side in the terminal whose size the edit is told in `COLUMNS` and `LINES`, as a key's script is; told none, in a very large one) · `tab next|prev|-` (`-`: the tab shown before) · `break`
 (the focused pane to its own tab) · `swap next|prev` · `size row|col +N|-N` ·
 `rotate` · `arrange row|col|grid|main`
+
+(`size` changes a share, counted in hundredths of its row or column, not a number of cells: the cells come from rounding the shares along the row. Where
+one part has nearly all of it, or a share is rounded to a whole hundredth, a step can leave the line where it is or move it a cell or a few the other way
+(`row(a:6 b:113)` in 120 columns, `-5`: a has 7 where it had 6). Step again, or write the shares in the file.)
 
 Your terminal may not count a character's columns as fux does (it may draw
 three people where fux joined a family). The viewer keeps that inside the
@@ -639,7 +643,7 @@ choice, `.edit` to open.
 with the words of its command line (`status`) and in the directory the
 program last said it was in (`cwd`: a shell that announces it; else, and after a start in place that failed since and took `cwd` away, your home
 directory). What the pane had printed is kept beside it in `before` (`history.1`, `history` and `screen`, one after another), since a
-start in place begins a pane's files anew, also one whose holder then ends before its first screen. Run from a login with no `FUXN_KEYS`, it tells the panes the folder it is in itself. A pane that is alive is left
+start in place begins a pane's files anew, also one whose holder then ends before its first screen. A pane whose text cannot be copied (a file of it that cannot be read: `cat` says which) is not started again. Run from a login with no `FUXN_KEYS`, it tells the panes the folder it is in itself. A pane that is alive is left
 alone, and the layouts are files, so tiles and tabs are as they were. It
 starts programs, it does not bring them back: a shell starts fresh in its
 directory, an editor without its open files.
@@ -718,6 +722,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   once.** Each starts one, as each would on its own: close one.
 - **Don't put other folders in a workspace**: every folder there with a
   pane's kind of name is shown as a pane. Files are fine. And don't make a workspace folder by hand with `|`, `&` or `\` in its name (fux makes none): the search key's list is garbled by it.
+- **Don't make `SHELL` a script whose interpreter is gone**: the file is there to run, so the default keys take the status of the start that failed for the shell's own, and the pane closes before the error can be read (`fux start -- "$SHELL"` keeps it in `screen`).
 - **Don't take one failed `rm -r` of a busy pane's folder for a refusal**: its holder may write a file in the moment the folder is emptied (`Directory not empty`). Once more removes it.
 - **Don't look for the `-` mark after choosing the tab already shown with `C-b f t`**: the list was a tab of its own and the one shown before it, and it is gone.
 - **Don't edit `layout` by hand just as panes come or go**: the viewer writes
