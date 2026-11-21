@@ -3,4 +3,4 @@
 # group: Find
 # `.search` does it, in a pane of its own.
 p=$(fux start -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.search") || exit
-fux layout pane "${p##*/}" 2> /dev/null || :
+fux layout pane "${p##*/}" 2> /dev/null
