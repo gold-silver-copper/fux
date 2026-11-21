@@ -100,9 +100,9 @@ struct Pane {
     state: String,
     /// The addresses of the links on the screen: a cell's `link` less one is its place here.
     addresses: Vec<String>,
-    /// Pictures on the screen: file, row, column, columns, rows, and how many more rows it has
-    /// above the screen's first.
-    pictures: Vec<(String, [usize; 5])>,
+    /// Pictures on the screen: file, row, column, and how many more rows it has above the
+    /// screen's first.
+    pictures: Vec<(String, [usize; 3])>,
     /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
     asked: (u32, usize, usize, (u16, u16)),
     /// The title its program set (the `title` file), without control characters.
@@ -1020,7 +1020,7 @@ impl View {
                     keys = pane.screen.keys() & self.keyboard;
                 }
             }
-            for (file, [row, col, _, _, off]) in &pane.pictures {
+            for (file, [row, col, off]) in &pane.pictures {
                 // The cells the tile has for it, from its corner on, and what they are in pixels
                 // of this terminal's cells: what the pane counted its cells from is not asked.
                 // None is drawn on the terminal's last row: a terminal may put the cursor under a
@@ -1449,7 +1449,7 @@ impl Pane {
                 && is_name(name)
             {
                 let off = if above { *row } else { 0 };
-                self.pictures.push((name.into(), [row - off, *col, *cols, rows.saturating_sub(off), off]));
+                self.pictures.push((name.into(), [row - off, *col, off]));
             }
         }
         // The links (`links`: line, cells into it, how many cells, address) are put on the cells.
