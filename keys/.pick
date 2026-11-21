@@ -15,9 +15,7 @@ list=$1; shift
 # (The list is in this pane's own folder from here on, and goes with it; if it cannot be moved there, mv has said why.)
 mv "$list" "$FUXN_PANE/list" || exit
 list=$FUXN_PANE/list
-finder=
-for f in fzf sk fzy; do command -v "$f" >/dev/null 2>&1 && { finder=$f; break; }; done
-if [ -n "$finder" ]; then
+if finder=$({ command -v fzf || command -v sk || command -v fzy; } 2>/dev/null); then
   line=$("$finder" < "$list")
 else
   awk '{ printf "%3d  %s\n", NR, $0 }' "$list"
