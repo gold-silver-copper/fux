@@ -1,15 +1,5 @@
 #!/bin/sh
 # split side by side
 # group: Panes
-# `.shell` runs your shell and removes the pane's folder when it ends.
-# The new shell starts where the focused pane's program says it is (its `cwd`
-# file, from OSC 7), if it says.
-IFS= read -r d 2>/dev/null < "$FUXN_PANE/cwd" && [ -d "$d" ] && cd "$d"
-# The viewer says how large the new tile will be: the pane starts at that size.
-p=$(COLUMNS=${FUXN_ROW%x*} LINES=${FUXN_ROW#*x} fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell") || exit
-# Beside the pane the key was pressed on, wherever the focus is by now.
-if [ -n "$FUXN_PANE" ]; then
-  fux layout split row "${p##*/}" beside "${FUXN_PANE##*/}"
-else
-  fux layout pane "${p##*/}"
-fi
+. "$FUXN_KEYS/.new-shell"
+new_shell row "$FUXN_ROW"

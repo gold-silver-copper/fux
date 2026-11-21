@@ -1,9 +1,5 @@
 #!/bin/sh
 # new tab
 # group: Tabs
-# `.shell` runs your shell and removes the pane's folder when it ends.
-# The new shell starts where the focused pane's program says it is (its `cwd`
-# file, from OSC 7), if it says.
-IFS= read -r d 2>/dev/null < "$FUXN_PANE/cwd" && [ -d "$d" ] && cd "$d"
-p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell") || exit
-fux layout pane "${p##*/}"
+. "$FUXN_KEYS/.new-shell"
+new_shell
