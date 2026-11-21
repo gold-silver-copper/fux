@@ -1353,3 +1353,28 @@ fn a_row_that_goes_on_from_the_one_above_still_does_when_characters_are_put_in_o
     let erased = term(10, 3, "aaaaaaaaaaabcde\x1b[2;2H\x1b[P\x1b[@\x1b[2K");
     assert_eq!(erased.wraps(), "");
 }
+
+#[test]
+fn the_test_pattern_leaves_the_shells_marks_at_the_screens_start_and_the_rows_a_resize_lent_in_history() {
+    // (ESC # 8 writes over the whole screen, as CSI 2 J erases it: what the marks marked is gone.)
+    for whole in ["\x1b#8", "\x1b[2J"] {
+        let mut marked = term(10, 4, "one\r\n\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n");
+        assert_eq!(marked.marks(), "1 0 prompt\n1 2 command\n2 0 output\n");
+        marked.feed(whole.as_bytes());
+        assert_eq!(marked.marks(), "0 0 prompt\n0 0 command\n0 0 output\n", "{whole:?}");
+        let mut lent = term(4, 4, "a\r\nb\r\nc\r\nd");
+        lent.resize(4, 2);
+        assert!(lent.lent() && lent.plain() == "c\nd\n");
+        lent.feed(whole.as_bytes());
+        lent.feed(b"\x1b[HEEEE\r\nEEEE");
+        assert!(!lent.lent(), "{whole:?}");
+        lent.resize(4, 4);
+        assert_eq!((lent.plain().as_str(), lent.tail.lines), ("EEEE\nEEEE\n\n\n", 2), "{whole:?}");
+        // On the alternate screen it is that screen's alone: the main one's marks and rows are as they were.
+        let mut under = term(4, 4, "a\r\nb\r\n\x1b]133;A\x07c\r\nd");
+        under.resize(4, 2);
+        let marks = under.marks();
+        under.feed(format!("\x1b[?1049h{whole}").as_bytes());
+        assert!(under.lent() && under.marks() == marks && marks == "2 0 prompt\n", "{whole:?}");
+    }
+}

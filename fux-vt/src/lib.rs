@@ -1666,6 +1666,9 @@ impl Term {
                 let fill = Cell { ch: 'E', ..Cell::blank(Style::default()) };
                 self.screen.grid.iter_mut().for_each(|row| row.fill(fill));
                 self.screen.pictures.clear();
+                // (As a screen that was erased whole: its marks, and what a resize took off its top.)
+                self.move_marks(|_, _| At::Screen(0, 0));
+                self.lent = self.lent.take().filter(|_| self.screen.alt);
                 // And, as in xterm, the whole screen scrolls again and the cursor goes home.
                 (self.top, self.bottom, self.screen.cursor.origin) = (0, self.screen.rows - 1, false);
                 self.move_to(0, 0);
@@ -2023,9 +2026,7 @@ impl Term {
                     (0..self.screen.rows).for_each(|r| self.erase(r, 0, self.screen.cols));
                     self.move_marks(|_, _| At::Screen(0, 0));
                     // A screen that was cleared is not given back what a resize took off its top.
-                    if !self.screen.alt {
-                        self.lent = None;
-                    }
+                    self.lent = self.lent.take().filter(|_| self.screen.alt);
                 }
                 _ => {}
             },
