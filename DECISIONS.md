@@ -1508,17 +1508,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     a file. A mode that is one switch is kept in one place (`switch`)
     for set, reset and the question: none can be set and then answered
     "not recognised".
-  - It cost lines: 7,127 to 7,172 (fux-vt +68, fux -23). Sixteen are
-    lines rustfmt wraps for `self.screen.`; the rest are the two
-    structs' headers and the methods that took the fields' place. The
-    target of 7,100 is not met by this series.
-  - Left out, not reached in the time given: the cursor as one struct
-    saved by assignment, the wrap and gap marks in the row and not in a
-    cell's style, marks and resize places as structs. Still the
-    viewer's: the words of `modes`, the `cursor` line and the links of
-    `links` are put on its own `Screen` by `view.rs` (`set_words`,
-    `set_link`, the cursor's fields).
-    `Out` (8 of 8, a change of its own).
+  - **The cursor is one `Cursor`** (row, column, style, origin, the
+    character sets, whether it waits to wrap), which a `Screen` has and
+    DECSC saves by assignment: `Saved` is gone, and nothing can be added
+    to the cursor and not saved. A soft reset keeps its place and takes
+    the rest as it starts.
+  - It cost lines: 7,127 to 7,149 (fux-vt +44, fux -22). The private
+    fields and the reader's move were +49 (the two structs' headers, the
+    methods that took the fields' place, and the lines rustfmt wraps
+    for `self.screen.`), where the panel had estimated -40 to -100
+    without building it; the switch, the cursor and what they let be
+    tidied gave 27 back. The target of 7,100 is not met by this series.
+  - Left out, because each adds lines or changes what a pane publishes:
+    - the wrap and gap marks in the row and not in a cell's style: a
+      mark now travels with its cell (ICH at a wrapped row's first
+      column moves it away, DCH brings it back, and `lines` says so),
+      which a flag on the row cannot say byte for byte;
+    - marks as a struct with an enum of kinds, and a resize's places as
+      a struct: about 15 lines more, for kinds that one `match` makes
+      and places that `reflow` takes as one slice.
+  - Still the viewer's: the words of `modes`, the `cursor` line and the
+    records of `links` are put on its own `Screen` by `view.rs`
+    (`set_words`, `set_link`, the cursor's fields).
 - **D99. The simplifying run changes no behaviour: what its fix checks
   found was put back** (message 29's rule). Two readers for each series
   asked only "did behaviour change". Put back as it was at `525e2c8b9`:
