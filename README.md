@@ -903,7 +903,7 @@ and in the viewer (a sixel terminal keeps the pixels the text did not
 cover): a pane's picture is one rectangle of cells, not pixels. A picture
 keeps its place through a resize where the text beside it does: one on rows
 that wrap anew at the new width goes; one past the right edge or the last
-row of a smaller screen is kept, and shown again on a larger one; a resize
+row of a smaller screen is kept, and shown again on a larger one (unless what is erased meanwhile reaches that edge: an erase to a row's end takes the pictures past it, one to the screen's end those below it); a resize
 that tells of cells of another size in pixels takes every picture away.
 After a picture
 the cursor goes to the start of the line below it (a VT340 and xterm leave it on the

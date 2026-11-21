@@ -2082,7 +2082,15 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   moved is removed; a sixel at the bottom of a scroll region that
   ends above the last row stays; `CSI Ps $ p` is answered; a start
   from a directory that is gone claims no name; a shell split from a
-  pane that went meanwhile is shown in its own tab. And the
+  pane that went meanwhile is shown in its own tab. The third pass:
+  when the tab shown and an earlier one go together, the tab now in
+  its place is shown (only `retain_panes` turns old places of tabs
+  into new ones); what is typed after a key waits for every script
+  started before it (the one slot for "the script waited for" is
+  gone: two could be running); a menu too narrow for its count shows
+  the mark alone; a picture kept past a smaller screen's edge goes
+  with an erase that reaches that edge (one rule for which pictures
+  an erase takes, for `erase` and the whole-screen fill). And the
   leftovers of D112's review that the base shared: five fixed, the
   rest each given its line in the README.
 
