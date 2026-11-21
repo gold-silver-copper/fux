@@ -1904,7 +1904,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   ones known (`ESC # # 8` filled the screen; the character sets of
   `ESC (` and `ESC )` aside); a styled row longer than
   500 columns is cut as at any width; a pane started again that never
-  came up leaves no `state` of the run before (`fux wait` printed the
+  came up, once it had written its own `status`, leaves no `state` of
+  the run before (`fux wait` printed the
   new pid with the old end); the old `cwd` is removed before the
   program runs (a program that wrote its own at once lost it); a file
   is read again when its inode's change time moves (a `colours` that
@@ -1996,8 +1997,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   with its cell when a character before it grows wider in insert
   mode; a key's script is never told a size that is no size (the
   viewer knows its terminal's size from the start, and a terminal of
-  no rows or columns leaves `COLUMNS` and `LINES` unset: the first
-  shell starts 80 by 24, as before D102); the clipboard's stamp and
+  no rows or of no columns leaves `LINES` or `COLUMNS` unset: the
+  first shell starts with 24 or 80 for it, as before D102); the clipboard's stamp and
   bytes are of one open file (a copy could be sent twice); `C-b w n`
   starts the shell before it shows the workspace (D104's change let
   what was typed next find no pane); a part asked to be narrower is

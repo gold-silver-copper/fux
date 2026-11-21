@@ -438,7 +438,7 @@ names differ by more than case, for macOS; a terminal that tells the key's lette
 
 A script gets `FUXN_DIR` (the session), `FUXN_WS` (the workspace shown),
 `FUXN_PANE` (the focused pane's directory, empty with no pane), `FUXN_KEYS`, `FUXN_VIEW`,
-`COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has; neither is set for a terminal that says it has no columns or no rows, and `fux start` then makes a pane 80 by 24),
+`COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has; `COLUMNS` is not set for a terminal that says it has no columns, nor `LINES` for one with no rows: `fux start` takes 80 or 24 for the one missing),
 `FUXN_ROW` and `FUXN_COL` (the size, as `COLSxROWS`, of the tile a split of the
 focused pane would make: `FUXN_ROW` side by side, as `C-b v` splits, `FUXN_COL`
 one above the other, as `C-b s` does; the split keys
@@ -686,7 +686,7 @@ fux adds nothing to stop these. What happens is what Unix does:
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `state` stays as it was (`running`, as a rule) and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
-  `printf > in` then waits for ever, as on any FIFO nobody reads (neither, while something of yours still holds `in` open). `fux start`
+  `printf > in` then waits for ever, as on any FIFO nobody reads (neither, while something of yours still holds `in` open for reading). `fux start`
   with the same name starts it again in place, with FIFOs of its own: who
   still waits on the old ones waits on. (A holder that ends normally
   removes its FIFOs, so a late `echo kill > ctl` only leaves a small file.)
