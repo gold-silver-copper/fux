@@ -1439,6 +1439,39 @@ fn a_click_gives_a_tile_the_keys_also_between_programs_that_ask_for_presses_only
 }
 
 #[test]
+fn a_click_whose_release_the_terminal_never_told_of_does_not_take_the_next_click() {
+    // A program that asks for the mouse beside one that does not. A click on the second gives it
+    // the keys, and the terminal is then asked for no reports: the release of that click is
+    // never told of. Back on the first, a click is that program's.
+    let (outer, inner) = (Session::new("router"), Session::new("rinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let a = inner.start("a", &["sh", "-c", "stty raw -echo; printf '\\033[?1000h\\033[?1006h'; exec cat -v"]);
+    inner.start("b", &["sh", "-c", "stty raw -echo; exec cat -v"]);
+    until("the first asks for the mouse", || fact(&a, "modes") == "mouse1000 mousesgr");
+    lay(&inner.0, "* row(a b) focus=a\n");
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer asked its terminal for the mouse", || fact(&view, "modes").contains("mouse1000"));
+    fs::write(view.join("in"), "\x1b[<0;50;3M").unwrap();
+    let layout = || read(&inner.0.join("main/layout"));
+    until_or("the click moved the focus", layout, || layout().contains("focus=b"));
+    until("the viewer asks for the mouse no more", || !fact(&view, "modes").contains("mouse1000"));
+    assert!(inner.fux().env("FUXN_WS", "main").args(["layout", "pane", "a"]).status().unwrap().success());
+    until("the viewer asks for the mouse again", || fact(&view, "modes").contains("mouse1000"));
+    fs::write(view.join("in"), "\x1b[<0;5;3M\x1b[<0;5;3m").unwrap();
+    let start = Instant::now();
+    until_or(
+        "the click is the program's",
+        || read(&a.join("screen")),
+        || {
+            assert!(start.elapsed() < Duration::from_secs(8), "the click went nowhere: {:?}", read(&a.join("screen")));
+            read(&a.join("screen")).contains("^[[<0;5;3M^[[<0;5;3m")
+        },
+    );
+}
+
+#[test]
 fn a_menu_opens_whatever_kind_of_file_a_key_is() {
     // A FIFO where a key's script would be, and one where a menu's caption would be: nobody
     // writes to either, and the menu opens all the same.

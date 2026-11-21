@@ -714,11 +714,13 @@ impl View {
         let (Some(button), Some(x), Some(y)) = (numbers.next(), numbers.next(), numbers.next()) else { return };
         // A press: not a move (32), not the wheel (64), a button down; Shift, Alt and Ctrl (4, 8, 16) aside.
         let press = !release && button & 0x60 == 0 && button & 3 != 3;
-        if self.held == Some(false) {
-            // The rest of a click that only moved the focus is nobody's.
-            self.held = if release { None } else { self.held };
+        // The rest of a click that only moved the focus is nobody's; a press begins a new click
+        // (the release of the last may never have been told of).
+        if self.held == Some(false) && !press {
+            self.held = self.held.filter(|_| !release);
             return;
         }
+        self.held = self.held.filter(|program| *program);
         let inside = |r: &Rect| (r.x + 1..=r.x + r.w).contains(&x) && (r.y + 1..=r.y + r.h).contains(&y);
         let over = self.tiles.iter().find(|(_, body)| inside(body)).map(|(name, _)| name.clone());
         if self.held.is_none() && over != self.focus {
