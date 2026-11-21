@@ -543,51 +543,47 @@ impl Holder {
             ("state", format!("{state}\n")),
         ];
         let facts = covered.into_iter().chain(texts.into_iter().map(|(name, text)| (name, Some(text.into_bytes()))));
-        // What the program said, facts as the others, each waiting until this round has written
-        // it: the clipboard is the bytes it set, and set again is written
-        // again (what is on the terminal's clipboard may be another's by now).
-        let mut said = Vec::new();
+        let write = |name: &str, bytes: Option<&[u8]>| match bytes {
+            Some(bytes) => replace(name, bytes),
+            None => fs::remove_file(name).or_else(|e| if e.kind() == ErrorKind::NotFound { Ok(()) } else { Err(e) }),
+        };
+        // (One that cannot be written fails the round: it is written in a later one, the newest of each.)
+        for (name, bytes) in facts {
+            if self.facts.get(name) != Some(&bytes) {
+                write(name, bytes.as_deref())?;
+                self.facts.insert(name, bytes);
+            }
+        }
+        // What the program said, each waiting until a round has written it. The clipboard is the
+        // bytes it set, and set again is written again (what is on the terminal's clipboard may
+        // be another's by now).
         if let Some(bytes) = &self.pending.clipboard {
-            self.facts.remove("clipboard");
-            said.push(("clipboard", Some(bytes.clone())));
+            replace("clipboard", bytes)?;
+            self.pending.clipboard = None;
         }
         // The directory the program says it is in: kept if it is one of this machine (no host
         // named, or this one's name or address), and forgotten if it is another machine's (a
         // shell at the far end of ssh): a path of there means nothing here.
+        // (The file is the program's to write too: what it says is written, whatever was written last.)
         if let Some((host, path)) = &self.pending.cwd {
-            // (The file is the program's to write too: what it says is written, whatever was written last.)
-            self.facts.remove("cwd");
             let same = |name: &str| name.eq_ignore_ascii_case(host);
             let here = host.is_empty()
                 || ["localhost", "127.0.0.1", "[::1]"].into_iter().any(same)
                 || sys::host().is_some_and(|name| same(&name));
             match (here, path.starts_with('/')) {
-                (true, true) => said.push(("cwd", Some(format!("{path}\n").into_bytes()))),
+                (true, true) => replace("cwd", format!("{path}\n").as_bytes())?,
                 (true, false) => {}
-                (false, _) => said.push(("cwd", None)),
+                (false, _) => write("cwd", None)?,
             }
+            self.pending.cwd = None;
         }
         // What the program wanted noticed last: a number that grows with each round that writes
         // one (so that the same words twice are two), then the words; the number alone is the bell.
-        let noticed = self.noticed.wrapping_add(1);
         if let Some(text) = &self.pending.notice {
-            let line = format!("{noticed} {text}").trim_end().to_string() + "\n";
-            said.push(("notice", Some(line.into_bytes())));
+            let noticed = self.noticed.wrapping_add(1);
+            replace("notice", (format!("{noticed} {text}").trim_end().to_string() + "\n").as_bytes())?;
+            (self.noticed, self.pending.notice) = (noticed, None);
         }
-        // (One that cannot be written fails the round, which is tried again: the newest of each.)
-        for (name, bytes) in facts.chain(said) {
-            if self.facts.get(name) != Some(&bytes) {
-                match &bytes {
-                    Some(bytes) => replace(name, bytes)?,
-                    None => fs::remove_file(name)
-                        .or_else(|e| if e.kind() == ErrorKind::NotFound { Ok(()) } else { Err(e) })?,
-                }
-                self.facts.insert(name, bytes);
-            }
-        }
-        self.noticed = if self.pending.notice.is_some() { noticed } else { self.noticed };
-        (self.pending.clipboard, self.pending.cwd) = (None, None);
-        self.pending.notice = None;
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
         // end: who watches a pane watches that one file, and finds every fact already there.
         replace("screen", self.term.plain().as_bytes())?;
