@@ -323,16 +323,9 @@ impl Holder {
                     }
                 }
                 (self.master, self.state) = (None, state);
-                // The last screen is tried for two seconds, so that who waits for the pane's end
-                // finds all of it; what cannot be written by then is said in the log.
-                let tried = Instant::now();
-                while let Err(e) = self.publish() {
-                    let gone = e.kind() == ErrorKind::NotFound && fs::symlink_metadata("in").is_err();
-                    if tried.elapsed() > Duration::from_secs(2) || gone {
-                        self.log(&format!("cannot write the last screen (the program {}): {e}", self.state));
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
+                // (What cannot be written of the last screen is said in the log.)
+                if let Err(e) = self.publish() {
+                    self.log(&format!("cannot write the last screen (the program {}): {e}", self.state));
                 }
                 return Ok(());
             }
