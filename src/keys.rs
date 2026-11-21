@@ -71,6 +71,8 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String, 
     }
     let length = (first.leading_ones() as usize).clamp(1, 4);
     let Some(text) = bytes.get(..length) else { return whole.then(|| (bytes.len(), String::new(), None)) };
+    let character = std::str::from_utf8(text).ok().and_then(|text| text.chars().next());
+    let small = |c: char| c.to_lowercase().next().unwrap_or(c);
     let name = match first {
         0x0d => "enter".into(),
         0x09 => "tab".into(),
@@ -81,12 +83,11 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String, 
         b'.' => "dot".into(),
         0x01..=0x1a => format!("C-{}", char::from(first + 0x60)),
         0x1c..=0x1f => format!("C-{}", char::from(first + 0x40)),
-        b'A'..=b'Z' => format!("S-{}", char::from(first + 0x20)),
-        _ => String::from_utf8(text.to_vec()).unwrap_or_default(),
+        // (A capital is Shift and the small letter, of any alphabet, as in the kitty protocol's form.)
+        _ => character.map(|c| format!("{}{}", if c.is_uppercase() { "S-" } else { "" }, small(c))).unwrap_or_default(),
     };
     // A character by itself is a press of its key.
-    let only = std::str::from_utf8(text).ok().and_then(|text| text.chars().next()).filter(|c| !c.is_control());
-    Some((length, name, only.map(|c| ((c.to_lowercase().next().map_or(0, u32::from), b'u'), None, 1, false))))
+    Some((length, name, character.filter(|c| !c.is_control()).map(|c| ((u32::from(small(c)), b'u'), None, 1, false))))
 }
 
 /// A key as the kitty protocol tells of it: its number and its sequence's last byte.
