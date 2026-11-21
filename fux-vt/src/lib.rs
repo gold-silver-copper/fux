@@ -2101,27 +2101,20 @@ impl Term {
         // What REP repeats: the character printed just before it, with nothing between (as xterm).
         let printed = self.interrupt();
         match (self.csi.private, self.csi.inter, last) {
-            (0, 0, b'A') => self.move_rows(n, false),
-            (0, 0, b'B') => self.move_rows(n, true),
+            (0, 0, b'A' | b'B') => self.move_rows(n, last == b'B'),
             (0, 0, b'e') => {
                 self.screen.cursor.row = row.saturating_add(n).min(self.screen.rows - 1);
                 self.screen.cursor.wrap = false;
             }
             (0, 0, b'C' | b'a') => self.move_to_col(col + n),
             (0, 0, b'D') => self.move_to_col(col.saturating_sub(n)),
-            (0, 0, b'E') => {
-                self.move_rows(n, true);
-                self.move_to_col(0);
-            }
-            (0, 0, b'F') => {
-                self.move_rows(n, false);
+            (0, 0, b'E' | b'F') => {
+                self.move_rows(n, last == b'E');
                 self.move_to_col(0);
             }
             (0, 0, b'G' | b'`') => self.move_to_col(n - 1),
             (0, 0, b'H' | b'f') => self.move_to(n - 1, self.arg(1, 1) - 1),
-            (0, 0, b'd') => {
-                self.move_to(n - 1, col);
-            }
+            (0, 0, b'd') => self.move_to(n - 1, col),
             (0, 0, b'I') => self.tab(n),
             (0, 0, b'Z') => {
                 for _ in 0..n {
