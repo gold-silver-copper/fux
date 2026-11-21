@@ -2009,3 +2009,31 @@ fn a_picture_below_a_shortened_alternate_screen_is_not_listed_until_its_row_is_b
     fs::write(pane.join("ctl"), "resize 80 24\n").unwrap();
     until("the picture is listed again", || fact(&pane, "pictures") == listed);
 }
+
+#[test]
+fn a_restore_that_failed_keeps_the_text_and_a_pane_started_again_is_told_the_keys() {
+    let session = Session::new("unrestored");
+    let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    // Two ended panes: one whose holder cannot write its first screen when it is started again (a
+    // directory where it puts `marks` together), and one that prints where the keys are.
+    let lost = session.start("w/lost", &["seq", "1", "60"]);
+    let told = session.start("w/told", &["printenv", "FUXN_KEYS"]);
+    for pane in [&lost, &told] {
+        assert!(session.fux().arg("wait").arg(pane).status().unwrap().success());
+    }
+    assert!(read(&lost.join("history")).contains("\n17\n") && read(&told.join("screen")).trim().is_empty());
+    fs::create_dir(lost.join("marks.new")).unwrap();
+    // (Run as a login runs it: by the script's path, with no FUXN_KEYS.)
+    let mut restore = Command::new("sh");
+    restore.arg(keys.join(".restore")).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+    restore.env("FUXN_DIR", &session.0).env_remove("FUXN_KEYS").env_remove("FUXN_PANE").env_remove("FUXN_WS");
+    let restored = restore.output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&restored.stdout), "started w/told again\n");
+    until("the pane started again says where the keys are", || {
+        read(&told.join("screen")).replace('\n', "").contains(&keys.display().to_string())
+    });
+    // The start that failed had begun the pane's files anew: what it had printed is in `before`.
+    assert!(!read(&lost.join("history")).contains("\n17\n"), "the start did not get as far as the test means");
+    assert!(read(&lost.join("before")).contains("\n17\n"), "before: {:?}", read(&lost.join("before")));
+}
