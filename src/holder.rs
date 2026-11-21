@@ -630,7 +630,13 @@ impl Holder {
         let shown = if term.cursor_shown { "shown" } else { "hidden" };
         // (The cursor's colour, if the program set one: a fifth word.)
         let colour = term.cursor_colour().map_or(String::new(), |[r, g, b]| format!(" #{r:02x}{g:02x}{b:02x}"));
-        let mut facts: Vec<(&'static str, Option<Vec<u8>>)> = [
+        // While a program has the alternate screen, the main screen it covers has two files, as
+        // the screens are written; they are there before `modes` says `alt`, and gone before it
+        // no longer does.
+        let (main, looks) = term.covered().map(|(plain, styled)| (plain.into_bytes(), styled.into_bytes())).unzip();
+        let mut facts: Vec<(&'static str, Option<Vec<u8>>)> =
+            vec![("screen.main", main), ("screen.main.styled", looks)];
+        let texts = [
             ("top", format!("{}\n", term.top())),
             ("wraps", format!("{}\n", term.wraps())),
             ("marks", term.marks()),
@@ -641,10 +647,8 @@ impl Holder {
             ("modes", format!("{}\n", term.words())),
             ("state", format!("{}\n", self.state)),
             ("status", self.status.clone()),
-        ]
-        .into_iter()
-        .map(|(name, text)| (name, Some(text.into_bytes())))
-        .collect();
+        ];
+        facts.extend(texts.into_iter().map(|(name, text)| (name, Some(text.into_bytes()))));
         // What the program said: the title is one line; the clipboard is the bytes it set, and
         // set again is written again (what is on the terminal's clipboard may be another's by now).
         let mut said = Vec::new();

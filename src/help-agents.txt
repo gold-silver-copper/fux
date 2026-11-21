@@ -99,6 +99,8 @@ modes   words, or an empty line: `alt` (a full-screen program has the alternate 
         paste, appcursor, keypad, focus, mouseN, mousesgr, keysN
 state   running | hungup | exited CODE | killed SIGNAL
 status  three lines: holder N / pid N (the program's) / command ...
+screen.main, screen.main.styled   only while `modes` says alt: the main screen that the
+        full-screen program covers, as screen and screen.styled would have it
 top     the number, from 0, of the screen's first row among all lines the pane printed
 wraps   the screen rows (from 0) that continue the row above: `1 2` is one line in 3 rows
 title   the window title the program set (absent until it does)
@@ -146,11 +148,14 @@ So never wait for "an end": wait for one MORE than there were before you typed.
     grep ' end' "$S/marks" | tail -n 1; cat "$S/cwd"       # LINE AT end 1, and /
 
 FULL-SCREEN PROGRAMS (vim, less, htop)
-`modes` says alt while one is on the alternate screen; `screen` is then its screen. Send
+`modes` says alt while one is on the alternate screen; `screen` is then its screen, and
+`screen.main` the main screen it covers (there before `modes` says alt, gone when it
+leaves): what the shell showed before the program opened, read without leaving it. Send
 keys as bytes; after each, wait for a changed frame or for the text you expect.
     printf 'less "%s/status"\r' "$P" > "$P/in"; seen alt "$P/modes"
+    grep '<<t1' "$P/screen.main"              # under less: the shell's screen, with the tag printed above
     f=$(frame "$P"); printf '/pid\r' > "$P/in"; changed "$P" "$f"      # search; vim: printf '\033:wq\r'
-    printf 'q' > "$P/in"; unseen alt "$P/modes"
+    printf 'q' > "$P/in"; unseen alt "$P/modes"; [ ! -e "$P/screen.main" ]
 A program that asks what its terminal is gets fux's own answers: XTVERSION `fux-next N`;
 COLORTERM=truecolor in its environment; and by name (XTGETTCAP) only what fux does: TN name
 Co colors RGB Tc setrgbf setrgbb Smulx Setulc Ss Se. So Neovim uses true colour and

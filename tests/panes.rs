@@ -217,6 +217,44 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     assert_eq!(read(&old.join("status")), runs);
 }
 
+#[test]
+fn the_main_screen_a_full_screen_program_covers_is_in_files_of_its_own_until_it_leaves() {
+    let session = Session::new("covered");
+    let shows = "printf '\\033[32mgreen\\033[m and a line of forty characters or so\\n\\033[?1049hfull'; read x; \
+        printf '\\033[?1049l'; read x";
+    let pane = session.start("p", &["sh", "-c", shows]);
+    let file = |name: &str| read(&pane.join(name));
+    // The facts are written before the screens: when `screen` is the program's, they are there.
+    until("the program has the alternate screen", || file("screen").contains("\nfull\n"));
+    assert!(
+        pane.join("screen.main").exists(),
+        "the covered main screen has a file while a program has the alternate screen"
+    );
+    let (main, styled) = (file("screen.main"), file("screen.main.styled"));
+    assert!(main.starts_with("green and a line of forty characters or so\n") && main.lines().count() == 24, "{main:?}");
+    assert!(styled.starts_with("\x1b[0;32mgreen\x1b[") && bare(&styled) == main, "{styled:?}");
+    assert!(fact(&pane, "modes").contains("alt") && !file("screen").contains("green"));
+    // What the program draws meanwhile is not the covered screen's: its files are not written again.
+    use std::os::unix::fs::MetadataExt;
+    let stamp = |name: &str| fs::metadata(pane.join(name)).map(|file| (file.ino(), file.mtime_nsec())).ok();
+    let written = (stamp("screen.main"), stamp("screen.main.styled"));
+    fs::write(pane.join("in"), "more").unwrap();
+    until("the program's screen has changed", || file("screen").contains("\nfullmore\n"));
+    assert_eq!((stamp("screen.main"), stamp("screen.main.styled")), written);
+    // A resize wraps the covered screen anew, and the files say so.
+    fs::write(pane.join("ctl"), "resize 20 24\n").unwrap();
+    until("the covered screen is wrapped anew", || {
+        file("screen.main").starts_with("green and a line of \nforty characters or \nso\n")
+            && bare(&file("screen.main.styled")).starts_with("green and a line of \nforty")
+    });
+    // The program leaves: the files go, and the screen is what they said.
+    let covered = file("screen.main");
+    fs::write(pane.join("in"), "\n").unwrap();
+    until("the main screen is shown again", || !fact(&pane, "modes").contains("alt"));
+    assert!(!pane.join("screen.main").exists() && !pane.join("screen.main.styled").exists());
+    until("the screen is the main one", || file("screen") == covered);
+}
+
 /// Gives a session's `main` workspace a layout, as an editor that saves in one step does: the
 /// file is whole at every moment (the viewer reads it, and writes it too, at any time).
 fn lay(session: &Path, text: &str) {

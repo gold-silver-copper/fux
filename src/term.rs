@@ -614,11 +614,20 @@ impl Term {
 
     /// The screen as plain text, one line per row, blanks at the end cut.
     pub fn plain(&self) -> String {
+        Term::text(&self.grid)
+    }
+
+    /// The main screen while the alternate screen covers it, as `plain` and `styled` would have it.
+    pub fn covered(&self) -> Option<(String, String)> {
+        self.alt.then(|| (Term::text(&self.other), self.looks(&self.other)))
+    }
+
+    fn text(grid: &[Vec<Cell>]) -> String {
         let mut out = String::new();
-        for (y, row) in self.grid.iter().enumerate() {
+        for (y, row) in grid.iter().enumerate() {
             // A row that goes on in the next keeps the blanks at its end: they are in the
             // middle of its line (but not the gap a wide character left).
-            if self.grid.get(y + 1).is_some_and(|next| continues(next)) {
+            if grid.get(y + 1).is_some_and(|next| continues(next)) {
                 let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
                 row.iter().take(row.len() - usize::from(gap)).for_each(|cell| cell.push_text(&mut out));
             } else {
@@ -640,9 +649,13 @@ impl Term {
     /// a cell has that number or that default: so with a background of its own every cell of
     /// the screen has it, the blank ones too, and every row is as long as the screen is wide.
     pub fn styled(&self) -> String {
+        self.looks(&self.grid)
+    }
+
+    fn looks(&self, grid: &[Vec<Cell>]) -> String {
         let mut out = String::new();
-        for (y, row) in self.grid.iter().enumerate() {
-            let goes_on = self.grid.get(y + 1).is_some_and(|next| continues(next));
+        for (y, row) in grid.iter().enumerate() {
+            let goes_on = grid.get(y + 1).is_some_and(|next| continues(next));
             Term::row_styled(row, goes_on, true, &self.own, &mut Joiner::default(), &mut out);
             out.push('\n');
         }
