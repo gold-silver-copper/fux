@@ -518,11 +518,10 @@ tab shown before it is shown again (the one you came from, unless you looked
 at another meanwhile); an editor that failed first waits for Enter, so that
 what it said can be read.
 
-`C-b M-c` (Alt-c) is the same text with its colours: older styled history,
-`history.styled` and `screen.styled` in one private file, in `less -R` at its
-end, in a tab of its own that goes when you leave less (`q`), the file with it.
-It is `less` whatever `$EDITOR` is: an editor shows the codes, not the colours;
-and a text shorter than the screen stays open whatever `$LESS` says (`-+F`)
+`C-b M-c` (Alt-c) is the same with its colours: the text of the styled files,
+in `less -R` at its end, whatever `$EDITOR` is (an editor shows the codes, not
+the colours). Its tab and its file go when you leave less (`q`), as an editor's
+do, and a text shorter than the screen stays open whatever `$LESS` says (`-+F`)
 (`keys/C-b/M-c` is four commands, and yours to change).
 
 There is no zoom either: a pane shown alone is a tab with one pane. If you

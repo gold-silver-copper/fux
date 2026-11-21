@@ -1,12 +1,10 @@
 #!/bin/sh
 # .edit FILE [LINE]: opens FILE in a tab of its own, in the editor, at LINE; FILE
 # is removed when that ends.
-# How the editor is run is `$FUXN_EDIT` if that is set: a command in which `%f`
-# is the file and `%l` the line (`FUXN_EDIT='hx %f:%l'`; split at spaces,
-# nothing else expanded; without `%f` the file is put last). If not, it is
-# `$EDITOR`, else `$PAGER`, else less, with the line in the form the editor is
-# known to take (vi, vim, nvim, nano, emacs, less, hx, helix) and without it
-# for any other: an editor behind a launcher of another name wants `FUXN_EDIT`.
+# How the editor is run is `$FUXN_EDIT` if that is set (`%f` is the file, `%l`
+# the line; split at spaces, nothing else expanded; without `%f` the file is put
+# last), else `$EDITOR`, `$PAGER` or less, with the line as the `case` below
+# knows that editor to take it. The README has it in full ("Keys are scripts").
 put() {
   rest=$1 word=
   while :; do
@@ -17,8 +15,7 @@ put() {
 if [ "$1" = --in ]; then
   # In the tab's pane. The file is in the pane's own folder from here on, so it
   # goes with the pane however that is closed (`.shell` removes the folder when
-  # the editor ends; the close key removes it under a running one). An editor
-  # that failed first waits for Enter, so that what it said can be read.
+  # the editor ends; the close key removes it under a running one).
   f=$2 n=$3
   shift 3
   # (A file that cannot be moved there stays where it is: mv has said why.)

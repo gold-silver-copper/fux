@@ -2,9 +2,8 @@
 # send TERM to the pane's program
 # group: Pane actions
 # `state` says whether the program runs and `status` what its number is: the
-# number of a program that ended may be another's by now. (A default shell
-# pane's program is `.shell`, which ignores TERM as a shell does; a pane
-# started with a program of its own gets it.)
+# number of a program that ended may be another's by now. (In a default shell
+# pane the program is `.shell`, which ignores TERM: see there.)
 read -r state 2>/dev/null < "$FUXN_PANE/state"
 # (One that was hung up and has not ended still runs: it is the one that needs TERM.)
 case $state in running | hungup) ;; *) echo "no program is running in this pane"; exit ;; esac
