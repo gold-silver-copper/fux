@@ -1443,12 +1443,9 @@ impl Term {
         (*main, *main_pictures) = (wrapped, kept);
         let fit = |(row, col): (usize, usize)| (row.saturating_sub(up).min(rows - 1), col);
         let ((row, col), saved_at) = (fit(at(0)), fit(at(1)));
-        if let Some(slot) = self.saved.first_mut() {
-            (slot.row, slot.col, slot.wrap) = (saved_at.0, saved_at.1.min(cols - 1), saved_at.1 >= cols);
-        }
-        if let Some(slot) = self.saved.get_mut(1) {
-            (slot.row, slot.col) = (slot.row.min(rows - 1), slot.col.min(cols - 1));
-        }
+        let [main, alt] = &mut self.saved;
+        (main.row, main.col, main.wrap) = (saved_at.0, saved_at.1.min(cols - 1), saved_at.1 >= cols);
+        (alt.row, alt.col) = (alt.row.min(rows - 1), alt.col.min(cols - 1));
         self.interrupt();
         if self.screen.alt {
             self.cluster = None;
