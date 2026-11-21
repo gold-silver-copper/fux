@@ -147,7 +147,7 @@ fn sequence(parameters: &str, last: u8) -> (String, Option<Event>) {
             // (Ctrl with it is the same Ctrl-b), a capital as Shift and the small letter.
             let sign = shifted.filter(|c| modifier & 1 != 0 && !c.is_alphabetic());
             modifier &= if sign.is_some() { !1 } else { !0 };
-            let key = sign.or(standard.filter(|_| plain.is_some_and(|c| !c.is_ascii()))).or(plain);
+            let key = sign.or(standard.filter(|_| plain.is_some_and(|c| !c.is_ascii() && c.is_alphabetic()))).or(plain);
             modifier |= u8::from(key.is_some_and(|c| c.is_uppercase()));
             match key.map(|c| c.to_lowercase().next().unwrap_or(c)) {
                 Some('\r') => "enter".into(),

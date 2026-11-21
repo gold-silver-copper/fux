@@ -310,6 +310,11 @@ fn keys_have_the_names_of_their_files() {
         (b"\x1b[233;2u", "S-é"),
         ("\x1bÉ".as_bytes(), "M-S-é"),
         (b"\x1b[233;4u", "M-S-é"),
+        // A letter of another alphabet is named by the key it shares with ours, if the terminal tells
+        // it; a sign outside ASCII is no letter, and is itself in the new form as in the old.
+        (b"\x1b[1092::97u", "a"),
+        ("§".as_bytes(), "§"),
+        (b"\x1b[167::96u", "§"),
         (b"\x1b[200~", "paste-start"),
         (b"\x1b[?62;4c", "terminal:?62;4"),
     ] {
