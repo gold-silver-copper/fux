@@ -1923,6 +1923,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   whoever ran `fux start` stays blocked in the pane (4 lines of FFI;
   the README's "Don't" list says so); a FIFO put where a
   workspace's folder is makes `fux layout` wait (not guarded: D100).
+- **D109. The ninth wave: which whole concept can go** (two readers of
+  the whole tree). Taken: `fux layout tab N` (a tab by its number: a
+  tab is shown by a pane in it, `pane NAME`; `tab next|prev|-` stay);
+  the holder takes from its program's environment the four names a
+  key script is told of its viewer (`FUXN_WS`, `FUXN_VIEW`, `FUXN_ROW`,
+  `FUXN_COL`) and no other (D34 took out every other `FUXN_` name: a guard
+  against the user's own variables); the terminal's name is one
+  constant for `TERM` and the two capability answers; the README no
+  longer says to restore from `.empty` (it runs only where no pane's
+  folder is). Not taken, each the owner's to weigh because it removes
+  something a user can name on or beside the keep-list: the four
+  `arrange` presets and their keys (34 lines), OSC 99 notices (17),
+  OSC 777 (5), `C-b w h` and `C-b w l` (10), `rotate` and `C-b g t`
+  (10), `split` without `beside` (8), `TERM_PROGRAM_VERSION` (1).
 
 ## The old fux3's bugs: which classes are gone
 
