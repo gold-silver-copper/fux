@@ -223,7 +223,7 @@ fn lay(session: &Path, text: &str) {
     fs::rename(session.join("main/.layout.test"), layout).unwrap();
 }
 
-/// Waits up to 20 seconds for something to become true.
+/// Waits up to a minute for something to become true.
 fn until(what: &str, ready: impl FnMut() -> bool) {
     until_or(what, String::new, ready);
 }
@@ -232,7 +232,8 @@ fn until(what: &str, ready: impl FnMut() -> bool) {
 fn until_or(what: &str, more: impl Fn() -> String, mut ready: impl FnMut() -> bool) {
     let start = Instant::now();
     while !ready() {
-        assert!(start.elapsed() < Duration::from_secs(20), "timed out waiting until {what}{}", more());
+        // (A minute: the nine megabytes of the history test take twenty seconds on a busy machine.)
+        assert!(start.elapsed() < Duration::from_secs(60), "timed out waiting until {what}{}", more());
         std::thread::sleep(Duration::from_millis(20));
     }
 }
