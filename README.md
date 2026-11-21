@@ -126,8 +126,8 @@ counted on the longer of `history` and `history.styled`: rows past that (one
 write of the program or one resize that makes more, with what still waits from before; rows a resize takes back and gives again are counted once) are not kept, in either
 file, with a line in `log`, and the line they were part of ends there in
 both. The holder writes what waits once it is past 512 KiB, so a history file
-is 4 MiB and one such write long at most: about 4.5 MiB as a rule, 8.6 MiB at
-the very most (12.6 for a line that never ends), and the screen's text more
+is 4 MiB and one such write long at most: about 4.5 MiB as a rule, 12.6 MiB at
+the very most (two such writes of 4 MiB and more past the last one that fitted, or a line that never ends), and the screen's text more
 while a resize may take its rows back. When the program ends, at most 4 MiB of what
 it wrote last is still read; a `resize` first draws, at the old size, up to
 1 MiB of what the program had already written.
@@ -423,7 +423,7 @@ The keys directory is `$FUXN_KEYS`, else `$XDG_CONFIG_HOME/fux-next/keys`, else
 `~/.config/fux-next/keys`; the viewer
 writes the default scripts there if it does not exist (and only then: after
 an upgrade, remove the folder, or copy `keys/` from the source over it, to
-get the new defaults). A key that has a file
+get the new defaults; a copy over it leaves the keys this version no longer has). A key that has a file
 of its name runs it (a file that cannot be run says so in the corner). A key that has a directory opens it as a
 menu (each script's second line, `# what it does`, is its entry) and the next
 key is looked up there. Any other key, with no menu open, goes to the program. So the prefix is
@@ -431,7 +431,7 @@ only a directory: `keys/C-b/v` is "C-b, then v", and `keys/M-left` would be
 Alt-Left with no prefix.
 
 Key names: a character is itself (`v`, `%`, `é`); a capital is `S-` and its small letter, in any alphabet (`S-h` is H, `S-é` is É: file
-names differ by more than case, for macOS); `C-b`, `M-x`, `enter`, `tab`,
+names differ by more than case, for macOS; a terminal that tells the key's letter on a US layout names it by that one); `C-b`, `M-x`, `enter`, `tab`,
 `esc`, `space`, `slash`, `dot`, `backspace`, `up` `down` `left` `right`,
 `home` `end` `pgup` `pgdn` `insert` `delete`, `f1`…`f12`, with `C-`, `M-`,
 `S-` before them when held (`C-left`, `S-f5`).
@@ -633,7 +633,7 @@ Both are scripts over the files, and yours to change.
 **`C-b f s` searches every pane of the session.** It asks for words in a pane
 of its own, lists every line that has them as they are (no pattern; each pane's `history.1`,
 `history` and screen, wrapped lines whole, ASCII letters of either case; ended
-panes too), and opens the pane's text, made anew, at the number of the line you choose, in the editor.
+panes too; a `history` put aside in the instant it is read can be missed: search again), and opens the pane's text, made anew, at the number of the line you choose, in the editor.
 `keys/.search` does it: `.text` for a pane's text, `grep`, `.pick` for the
 choice, `.edit` to open.
 
@@ -686,7 +686,7 @@ fux adds nothing to stop these. What happens is what Unix does:
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `state` stays as it was (`running`, as a rule) and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
-  `printf > in` then waits for ever, as on any FIFO nobody reads. `fux start`
+  `printf > in` then waits for ever, as on any FIFO nobody reads (neither, while something of yours still holds `in` open). `fux start`
   with the same name starts it again in place, with FIFOs of its own: who
   still waits on the old ones waits on. (A holder that ends normally
   removes its FIFOs, so a late `echo kill > ctl` only leaves a small file.)
@@ -705,6 +705,8 @@ fux adds nothing to stop these. What happens is what Unix does:
   terminal, it inherits the open files of whoever ran `fux start` (`3>&-` closes one).
 - **Don't start a pane from a program that blocks signals.** A pane's program gets the
   signals its starter had blocked, blocked: Ctrl-C then does nothing there.
+- **Don't start a pane again in the instant something reads it with `fux wait`.** `fux start`
+  tries the pane's lock once: it then says a holder keeps the pane. Start it again.
 - **Don't write more to `in` in one go than a FIFO takes whole, if others
   write too**: a larger write can interleave with theirs (how much that is:
   "Linux and macOS", below).
@@ -735,7 +737,7 @@ Differences are left as they are:
   matters.
 - One write of up to 4096 bytes to a FIFO arrives whole on Linux; 512 on macOS.
 - macOS ships no `flock(1)`; `fux wait` takes the same lock, and waits for it.
-- macOS file names ignore case by default, hence `S-h` for H.
+- macOS file names ignore case by default, hence `S-h` for H. A pane named `LAYOUT` there is the workspace's `layout`: don't.
 - macOS is covered by CI only (the tests, the viewer among them, and the
   example); nobody has used it there by hand.
 

@@ -1901,7 +1901,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   erased is the character erased, for marks and pictures too; text
   that wraps on the last row below the scroll region joins no other
   line; a sequence with an intermediate byte too many is none of the
-  ones known (`ESC # # 8` filled the screen); a styled row longer than
+  ones known (`ESC # # 8` filled the screen; the character sets of
+  `ESC (` and `ESC )` aside); a styled row longer than
   500 columns is cut as at any width; a pane started again that never
   came up leaves no `state` of the run before (`fux wait` printed the
   new pid with the old end); the old `cwd` is removed before the
@@ -1980,7 +1981,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   2. The four `arrange` presets and their keys (34 lines): **kept, 10
      of 10**. They are part of tiling as tmux and fux 1 users know it,
      and the command rewrites the tree under the workspace's lock,
-     which a script over the file cannot.
+     which a plain script over the file does not take.
   Nothing of that size was taken: the tree is at the least this run
   could prove.
 
