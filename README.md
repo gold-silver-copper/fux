@@ -124,7 +124,7 @@ cells. A program that says it is in the middle of drawing (mode 2026) is not
 written out until it says it is done, or the oldest output not yet written is half a second old: nothing a program wrote waits longer, so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data each; a ninth drops the
 oldest, with a line in `log`. At most 4 MiB of history wait to be written,
 counted on the longer of `history` and `history.styled`: rows past that (one
-write of the program or one resize that makes more, with what still waits from before) are not kept, in either
+write of the program or one resize that makes more, with what still waits from before; rows a resize takes back and gives again are counted once) are not kept, in either
 file, with a line in `log`, and the line they were part of ends there in
 both. The holder writes what waits once it is past 512 KiB, so a history file
 is 4 MiB and one such write long at most: about 4.5 MiB as a rule, 8.6 MiB at

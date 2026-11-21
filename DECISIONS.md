@@ -1692,6 +1692,53 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     the main screen's pictures (about 24 lines of following them through
     the wrap), and whether the constants of `fuxix` should say which
     Linux machines they are for.
+- **D102. The third wave** (three readers on the tree after D101). Taken:
+  - **D69 and D70 on mode 2026, replaced.** Nothing a program wrote
+    waits more than half a second to be written, drawing or not: the
+    half second counts from the oldest output not yet written, not from
+    the first 2026 with no end since. The old rule froze a pane whose
+    program drew frame after frame with no pause (each new 2026 seen
+    between two looks started the half second again; a test shows it).
+    The holder's `drawing` and the emulator's count of 2026s are gone.
+  - What a program said once (a picture, the clipboard, its directory,
+    a notice) stays in the emulator until the round of writing that
+    takes it, and is written in that round or lost with it, as history
+    is; the holder's copy of it is gone. A picture's bytes are its
+    placement's until then: erased before a round, they are gone with it
+    (they used to wait in a list with no bound).
+  - A holder started again in place removes no picture files of the
+    holder before it; `pictures` names the live ones.
+  - A `COLUMNS` or `LINES` that is set and is no size fails the start,
+    which says so: no size is made up.
+  - `.text` takes one reading of a pane (it read again, five times at
+    most, if the pane had printed meanwhile): of a pane that is printing,
+    a line may be there twice and a mark's line off by what scrolled.
+  - **One source.** One parser for the kitty forms of a key (`event`
+    read again what `sequence` had split). One look at each tile's pane
+    a frame. One operation owns the link the terminal has open. A resize
+    takes back what history had of the rows above before it gives them
+    again (they were counted twice against the bound). Whether a line
+    feed is the text wrapping is told down the call, not kept in the
+    terminal. The names fux will not make are read out from their list.
+  - **Types.** A pane with no program cannot own a key's release
+    (`NonZeroU32`); what became of the program is given to the round that
+    writes it, not kept beside the pty.
+  - **Bugs**, each with a test that failed first: the frozen pane above;
+    two programs that ask for the mouse's presses alone (a click that
+    moved the focus swallowed every later one); a FIFO named as a key
+    hanging the viewer; a resize joining a mark to a character the cursor
+    had left; a painted blank lost when the screen is wrapped anew;
+    erasing in a line leaving the marks of what it erased on what is
+    written next (`C-b C` would have opened the wrong text); a control
+    character of two bytes in a hand-written `screen.styled` dropping
+    the rest of its row; a second resize before a round refusing rows
+    early; erased pictures waiting without bound.
+  - **Left out**: the holder's look every two seconds for its `in`
+    (removing a pane's directory must end its pane: the README's first
+    "don't"); the places of a resize given to `reflow` by reference
+    (risky for 6 to 10 lines); the frame's budget for pictures
+    remembering why it refused (rare, and more lines); `.search` opening
+    by a line's number after history was put aside meanwhile.
 
 ## The old fux3's bugs: which classes are gone
 
