@@ -397,7 +397,7 @@ looks the last is passed on; of two panes', both, the last in the corner. Anothe
 that asked to be told about focus (mode 1004) is told when its pane gains
 and loses the keys, and when your terminal's window does.
 
-The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile, the terminal's cell size or the pane's program changes. Two
+The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile, the terminal's cell size or the pane's program changes (a request its `ctl` had no room for, 64 KiB unread there with its holder stopped, is not made again until one of them changes). Two
 viewers with different sizes do not fight: the last to ask wins, and the
 other shows what fits.
 
@@ -583,7 +583,7 @@ coming back to it, never sends an old clipboard again. A copy the viewer could n
 **The mouse** passes through. When the focused pane's program asks for mouse
 reports, the viewer asks your terminal for the same in the SGR form (and for releases too when the program asked for presses alone, mode 9, which is told of presses only) and forwards each one over
 that pane's tile to it, in the form it asked for, counted from the tile's corner; a drag that leaves the tile is
-reported at its edge until the button is let go. A click on another tile
+reported at its edge until a button is let go (with two held, the first to be let go ends it: the rest of the drag outside the tile is not told). A click on another tile
 gives that tile the keys and is not passed on. The viewer uses the mouse for nothing else, and when the
 focused program does not ask, your terminal's own selection works as ever.
 
