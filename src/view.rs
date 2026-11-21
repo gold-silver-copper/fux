@@ -210,16 +210,10 @@ struct View {
     quit: bool,
 }
 
-/// Puts the terminal back when the viewer leaves, however it leaves short of
-/// being killed. (The cursor's shape and colour are put to the terminal's own, not to what
-/// another program may have made them before.)
-struct Restore(File, sys::Termios);
-impl Drop for Restore {
-    fn drop(&mut self) {
-        let _ = self.0.write_all(b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b]112\x1b\\\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t");
-        let _ = sys::restore_mode(&self.0, &self.1);
-    }
-}
+/// What puts the terminal back when the viewer leaves, however it leaves short of being killed;
+/// its mode is put back after it. (The cursor's shape and colour are put to the terminal's own,
+/// not to what another program may have made them before.)
+const LEAVING: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b]112\x1b\\\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t";
 
 pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), String> {
     let tty = io::stdin().as_fd().try_clone_to_owned().map(File::from).map_err(|e| format!("standard input: {e}"))?;
@@ -243,8 +237,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     sys::make_fifo(&ctl_path).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
     let ctl = sys::open(&ctl_path, false).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
     let ctl_writer = sys::open(&ctl_path, true).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
-    let saved = sys::raw_mode(&tty).map_err(|e| format!("cannot set the terminal: {e}"))?;
-    let restore = Restore(tty.try_clone().map_err(|e| e.to_string())?, saved);
+    let restore = sys::raw_mode(tty.try_clone().map_err(|e| e.to_string())?, LEAVING);
+    let restore = restore.map_err(|e| format!("cannot set the terminal: {e}"))?;
     size.rows = 0; // the first frame sees a new size and draws everything
     let (out, queue) = mpsc::channel::<String>();
     let unwritten = Arc::new(AtomicUsize::new(0));

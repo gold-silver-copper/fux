@@ -4,7 +4,7 @@
 
 use std::ffi::{CString, c_char, c_int, c_ulong};
 use std::fs::{File, OpenOptions};
-use std::io::{self, Error};
+use std::io::{self, Error, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -63,7 +63,7 @@ struct PollFd {
 /// inside it (`cfmakeraw` does), so it is a block big enough for both.
 #[repr(C, align(8))]
 #[derive(Clone, Copy)]
-pub struct Termios([u8; 128]);
+struct Termios([u8; 128]);
 
 #[cfg_attr(target_os = "linux", link(name = "util"))]
 unsafe extern "C" {
@@ -199,19 +199,30 @@ pub fn make_fifo(path: &Path) -> io::Result<()> {
     check(unsafe { mkfifo(path.as_ptr(), 0o600) }).map(drop)
 }
 
-/// Puts the terminal in raw mode and gives back what to restore.
-pub fn raw_mode(tty: &File) -> io::Result<Termios> {
+/// A terminal in raw mode. Dropped, it writes the terminal what it was given to say on leaving
+/// and then puts its mode back as it was.
+pub struct Raw(File, Termios, &'static [u8]);
+
+impl Drop for Raw {
+    fn drop(&mut self) {
+        let _ = self.0.write_all(self.2);
+        let _ = set_mode(&self.0, &self.1);
+    }
+}
+
+/// Puts the terminal in raw mode until what is given back is dropped.
+pub fn raw_mode(tty: File, leaving: &'static [u8]) -> io::Result<Raw> {
     let mut saved = Termios([0; 128]);
     // SAFETY: tcgetattr writes one termios, which fits in the block.
     check(unsafe { tcgetattr(tty.as_raw_fd(), &mut saved) })?;
     let mut raw = saved;
     // SAFETY: cfmakeraw edits the termios tcgetattr just filled.
     unsafe { cfmakeraw(&mut raw) };
-    restore_mode(tty, &raw)?;
-    Ok(saved)
+    set_mode(&tty, &raw)?;
+    Ok(Raw(tty, saved, leaving))
 }
 
-pub fn restore_mode(tty: &File, termios: &Termios) -> io::Result<()> {
+fn set_mode(tty: &File, termios: &Termios) -> io::Result<()> {
     // SAFETY: tcsetattr reads one termios that tcgetattr filled. 0 is TCSANOW.
     check(unsafe { tcsetattr(tty.as_raw_fd(), 0, termios) }).map(drop)
 }
