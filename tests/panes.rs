@@ -306,11 +306,9 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     until("the refusal is logged", || read(&pane.join("log")).contains("fly: not a command"));
     fs::write(pane.join("ctl"), "kill \x1b]0;now\x07\n").unwrap();
     until("a refused line is logged without its control codes", || read(&pane.join("log")).contains("kill ?]0;now?"));
-    // A pane whose program cannot start leaves its folder, with a log that says why; started
-    // again under that name, it runs.
+    // A pane whose program cannot start is not left behind.
     assert!(!session.fux().args(["start", "none", "--", "/no/such/program"]).output().unwrap().status.success());
-    assert!(read(&session.0.join("main/none/log")).contains("cannot start /no/such/program"));
-    assert_eq!(fact(&session.start("none", &["sleep", "600"]), "state"), "running");
+    assert!(!session.0.join("main/none").exists());
     // A second start of a live pane is refused; the first is not disturbed.
     assert!(!session.fux().args(["start", "build", "--", "sh"]).output().unwrap().status.success());
     fs::write(pane.join("in"), "exit 3\n").unwrap();

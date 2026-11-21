@@ -157,9 +157,9 @@ fn start(args: &[OsString]) -> Result<(), String> {
     // again in place, and a number that is taken is not free.
     let named = |dir: PathBuf| match DirBuilder::new().mode(0o700).create(&dir) {
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(fail(&dir, e)),
-        made => Ok((made.is_ok() || !pane.is_empty()).then_some(dir)),
+        made => Ok((made.is_ok() || !pane.is_empty()).then_some((dir, made.is_ok()))),
     };
-    let dir = if pane.is_empty() {
+    let (dir, made) = if pane.is_empty() {
         let mut numbers = (1..10000).map(|n| named(workspace.join(n.to_string())));
         numbers.find_map(Result::transpose).ok_or("no free number for a pane")??
     } else {
@@ -173,8 +173,12 @@ fn start(args: &[OsString]) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(5 * u64::from(i > 0)));
         lock.try_lock().is_ok()
     });
-    // (A start that fails leaves the folder, with a `log` that says why.)
     let started = if locked { launch(&dir, &lock, &program) } else { Err("a holder already keeps this pane".into()) };
+    // A folder made for a pane that never was is not left behind: under its lock, nobody has
+    // started anything in it.
+    if started.is_err() && locked && made {
+        let _ = fs::remove_dir_all(&dir);
+    }
     // Our copy of the lock goes before anything that could wait.
     drop(lock);
     started.map_err(|why| format!("{}: {why}", dir.display()))?;
@@ -212,15 +216,14 @@ fn wait(args: &[OsString]) -> Result<(), String> {
     let [dir] = args else {
         return Err("wait takes one pane directory".into());
     };
-    let dir = Path::new(dir);
-    // The holder locks its directory for as long as it lives. The status is
-    // read in that same directory before our own lock goes, even if it was renamed.
-    let lock = File::open(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    lock.lock_shared().map_err(|e| format!("{}: {e}", dir.display()))?;
-    sys::enter_directory(&lock).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // The holder locks its directory for as long as it lives. The directory is entered first:
+    // the lock and what is read are of that same directory, even if it is renamed meanwhile.
+    let entered = std::env::set_current_dir(dir).and_then(|()| File::open("."));
+    let lock = entered.and_then(|lock| lock.lock_shared().map(|()| lock));
+    let lock = lock.map_err(|e| format!("{}: {e}", Path::new(dir).display()))?;
     // What became of the program is in `state`, and its number in `status`: the holder wrote
     // both, and the last screen after them, before its lock went.
-    let state = read_some(Path::new("state")).map_err(|e| format!("{}/state: {e}", dir.display()))?;
+    let state = read_some(Path::new("state")).map_err(|e| format!("{}/state: {e}", Path::new(dir).display()))?;
     let status = read_some(Path::new("status")).unwrap_or_default();
     drop(lock);
     let pid = status.lines().find(|line| line.starts_with("pid ")).unwrap_or("pid 0");
