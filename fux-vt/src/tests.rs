@@ -823,6 +823,11 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     assert!(later.resize(6, 3));
     later.feed("\u{301}".as_bytes());
     assert_eq!(later.plain(), "e\u{301}\n\n\n");
+    // (Only while the cursor is where the letter left it, as when nothing was resized.)
+    let mut away = term(8, 3, "e\x1b[2;1H");
+    assert!(away.resize(6, 3));
+    away.feed("\u{301}".as_bytes());
+    assert_eq!(away.plain(), "e\n\n\n");
     // A row that ends in coloured blanks stays one row, coloured to its new end; a blank that
     // was given a colour of its own is in `screen.styled`.
     let mut bar = term(8, 3, "\x1b[44m\x1b[K\x1b[m\r\nx");

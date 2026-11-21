@@ -1153,19 +1153,23 @@ impl Term {
         self.screen.cursor.wrap = false;
     }
 
+    /// The character printed last, while text goes on from it: the cursor is where that left it
+    /// and its cell is as it left it. A change of style or a title between a letter and its
+    /// accent moves nothing, a move or an erase does.
+    fn going_on(&self) -> Option<&Last> {
+        let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
+        self.cluster.as_ref().filter(|last| {
+            last.cursor == here
+                && last.at.as_ref().is_none_or(|(row, col, cell, _)| self.screen.cell_at(*row, *col) == Some(cell))
+        })
+    }
+
     fn print(&mut self, mut c: char) {
         if self.screen.cursor.graphics.get(usize::from(self.screen.cursor.shift)) == Some(&true) {
             c = line_drawing(c);
         }
-        // Text goes on from the character printed last while the cursor is where that left it
-        // and its cell is as it left it: a change of style or a title between a letter and its
-        // accent moves nothing, a move or an erase does.
         let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
-        let goes_on = self.cluster.as_ref().is_some_and(|last| {
-            last.cursor == here
-                && last.at.as_ref().is_none_or(|(row, col, cell, _)| self.screen.cell_at(*row, *col) == Some(cell))
-        });
-        let mut joiner = self.cluster.as_ref().filter(|_| goes_on).map_or(Joiner::default(), |last| last.joiner);
+        let mut joiner = self.going_on().map_or(Joiner::default(), |last| last.joiner);
         if joiner.joins(c) {
             self.join(c);
         } else if width(c, &[]) == 0 {
@@ -1355,7 +1359,7 @@ impl Term {
         // upper one on the highest of its rows that is kept still).
         let waits = |cursor: Cursor| (cursor.place().0, cursor.place().1, cursor.wrap);
         let (saved, cursor) = (waits(self.saved.first().copied().unwrap_or_default()), waits(self.screen.cursor));
-        let last = self.cluster.and_then(|last| last.at).filter(|_| !self.screen.alt);
+        let last = self.going_on().and_then(|last| last.at).filter(|_| !self.screen.alt);
         let mut places = vec![if self.screen.alt { saved } else { cursor }, saved];
         places.push(last.map_or(cursor, |(row, col, ..)| (row, col, false)));
         // (A picture's rows below the screen's last are counted on from the last.)
