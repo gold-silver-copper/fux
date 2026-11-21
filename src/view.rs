@@ -1441,11 +1441,8 @@ impl Pane {
 /// keys with no heading first. At most 200.
 fn menu_entries(directory: &Path) -> Vec<Entry> {
     let names = fs::read_dir(directory).into_iter().flatten().flatten();
-    let names = names.filter_map(|entry| entry.file_name().into_string().ok()).filter(|name| !name.starts_with('.'));
-    let mut names: Vec<String> = names.take(MENU_MAX + 1).collect();
-    let more = names.len() > MENU_MAX;
-    names.truncate(MENU_MAX);
-    let described = names.into_iter().map(|name| {
+    let mut names = names.filter_map(|entry| entry.file_name().into_string().ok()).filter(|n| !n.starts_with('.'));
+    let describe = |name: String| {
         let path = directory.join(&name);
         // A script's lines after `#!`: `# caption`, `# group: NAME`. A directory's `.about`: `caption`, `# group: NAME`.
         let (file, before, menu) = if path.is_dir() { (path.join(".about"), "\n# ", "…") } else { (path, "", "") };
@@ -1453,9 +1450,9 @@ fn menu_entries(directory: &Path) -> Vec<Entry> {
         let mut lines = text.lines().skip(1).map(|line| line.strip_prefix("# ").unwrap_or_default());
         let about = format!("{}{menu}", lines.next().unwrap_or_default());
         (name, about, lines.next().and_then(|line| line.strip_prefix("group: ")).unwrap_or_default().to_string())
-    });
-    let mut entries: Vec<Entry> = described.collect();
+    };
+    let mut entries: Vec<Entry> = names.by_ref().take(MENU_MAX).map(describe).collect();
     entries.sort_by(|a, b| (&a.2, &a.0).cmp(&(&b.2, &b.0)));
-    entries.extend(more.then(|| ("…".to_string(), "more keys than a menu lists".to_string(), String::new())));
+    entries.extend(names.next().map(|_| ("…".to_string(), "more keys than a menu lists".to_string(), String::new())));
     entries
 }
