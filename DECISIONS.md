@@ -1845,6 +1845,36 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     style's codes (the bytes of `screen.styled`); a frame's links as its
     tiles' lists end to end (D99); the cursor drawn where its file says
     without keeping it inside the rows read (the design's promise).
+- **D106. Six cuts that had been set aside for the owner, settled by a
+  panel of ten** (2026-11-21; 2 Opus, 4 gpt-6.2-sol, 4 gpt-6.2-astra,
+  each with one point of view: a daily user, the maintainer, a writer
+  of scripts and agents, a Unix purist, a terminal-standards reader, a
+  newcomer, someone coming from tmux and fux 1, a reliability reader, a
+  reviewer counting lines against loss, a user of pictures and colours;
+  seven of ten settles; the ballots are in the run's notes). The owner
+  may overrule any.
+  1. A resize keeps following pictures: **kept, 10 of 10** (a picture a
+     command printed once and left is never drawn again; splitting the
+     pane would lose it).
+  2. One session file in place of `colours` and `keyboard`: **left as
+     two, 8 of 10** (Opus 0/2 for two, sol 4/4, astra 4/4): one write
+     sets the keyboard flags and leaves the colours as they are.
+     Dissent: one writer, one moment, one reader.
+  3. `C-b a k` hangs up the pane's program through `ctl` instead of
+     sending TERM to a pid read from `status`: **taken, 9 of 10** (Opus
+     2/2, sol 4/4, astra 3/4). Dissent: a program that ignores a hangup
+     and ends cleanly on TERM has no key of its own now.
+  4. One default key for each thing (`C-b t h`, `t l`, `m j`, `m k`
+     go): **taken, 7 of 10** (Opus 2/2, sol 3/4, astra 2/4). Dissent:
+     the move menu no longer takes all of `h j k l`, as focus and
+     resize do.
+  5. `fux wait` only waits and prints nothing: **left as it is, 8 of
+     10** (it reads the pid and the state under the lock of the
+     directory it waited on; a path read afterwards may be another
+     run's). Dissent: it restates two files.
+  6. The words of `modes` in one table's order, and one writer for a
+     style's codes in xterm's order: **taken, 10 of 10** (the order of
+     bytes in two files changes, their meaning does not).
 
 ## The old fux3's bugs: which classes are gone
 
