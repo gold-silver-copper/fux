@@ -287,10 +287,8 @@ pub struct Out {
     pub clipboard: Option<Vec<u8>>,
     /// The directory the program said it is in last (OSC 7): the host it named, and the path.
     pub cwd: Option<(String, String)>,
-    /// What the program wanted noticed last (empty for the bell), and how many times it wanted
-    /// something noticed since this was taken.
+    /// What the program wanted noticed last (empty for the bell).
     pub notice: Option<String>,
-    pub notices: u32,
 }
 
 /// The character printed last: where the cursor was left, and the character's place, its
@@ -1767,7 +1765,7 @@ impl Term {
     pub fn notice(&mut self, text: &str) {
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         let cut = (0..=text.len().min(1024)).rev().find(|at| text.is_char_boundary(*at)).unwrap_or(0);
-        (self.out.notice, self.out.notices) = (text.get(..cut).map(str::to_string), self.out.notices.saturating_add(1));
+        self.out.notice = text.get(..cut).map(str::to_string);
     }
 
     /// An operating system command: a title (0, 2), the clipboard (52), or a question about a

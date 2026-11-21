@@ -287,12 +287,12 @@ fn a_program_says_where_it_is_what_to_notice_and_how_it_draws() {
         term.feed(format!("\x1b]7;file://far{path}\x07").as_bytes());
         assert_eq!(term.take(0).cwd, Some(("far".to_string(), String::new())));
     }
-    // What it wants noticed: the bell (no words), and words in three forms; each one counts.
+    // What it wants noticed: the bell (no words), and words in three forms, the last of them kept.
     term.feed(b"\x07");
-    assert_eq!((term.peek().notice.as_deref(), term.peek().notices), (Some(""), 1));
+    assert_eq!(term.take(0).notice.as_deref(), Some(""));
     // (Not a progress bar or another numbered command after `9;`, nor a question in kitty's form.)
     term.feed(b"\x1b]9;4;1;50\x07\x1b]9;9;/tmp\x07\x1b]99;i=1:p=?;\x07\x1b]99;i=1:e=1;aGk=\x07");
-    assert_eq!(term.peek().notices, 1);
+    assert_eq!(term.peek().notice, None);
     term.feed(b"\x1b]9;done\x07\x1b]99;i=1;hello\x1b\\\x1b]777;notify;make;all\x01 built\x07");
     assert_eq!((term.take(0).notice.as_deref(), term.plain().as_str()), (Some("make: all built"), "\n\n"));
     // That it wants to be told when its pane gains the keys is a word among the modes; that it

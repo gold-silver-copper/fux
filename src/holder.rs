@@ -54,7 +54,7 @@ struct Holder {
     facts: HashMap<&'static str, Option<Vec<u8>>>,
     /// The last round of writing failed.
     failing: bool,
-    /// How many notices there have been: the number in the `notice` file.
+    /// How many rounds of writing had a notice: the number in the `notice` file.
     noticed: u32,
     /// Since when the program has been in the middle of drawing (mode 2026), and how many times
     /// it had said so by then.
@@ -385,7 +385,6 @@ impl Holder {
         self.pending.clipboard = out.clipboard.or(self.pending.clipboard.take());
         self.pending.cwd = out.cwd.or(self.pending.cwd.take());
         self.pending.notice = out.notice.or(self.pending.notice.take());
-        self.pending.notices += out.notices;
         if !out.history.is_empty() || !out.styled.is_empty() || out.unhistory.max(out.unstyled) > 0 {
             self.history([("history", out.history, out.unhistory), ("history.styled", out.styled, out.unstyled)]);
         }
@@ -568,9 +567,9 @@ impl Holder {
                 (false, _) => said.push(("cwd", None)),
             }
         }
-        // What the program wanted noticed last: a number that grows with each one (so that the
-        // same words twice are two), then the words; the number alone is the bell.
-        let noticed = self.noticed.wrapping_add(self.pending.notices.max(1));
+        // What the program wanted noticed last: a number that grows with each round that writes
+        // one (so that the same words twice are two), then the words; the number alone is the bell.
+        let noticed = self.noticed.wrapping_add(1);
         if let Some(text) = &self.pending.notice {
             let line = format!("{noticed} {text}").trim_end().to_string() + "\n";
             said.push(("notice", Some(line.into_bytes())));
@@ -588,7 +587,7 @@ impl Holder {
         }
         self.noticed = if self.pending.notice.is_some() { noticed } else { self.noticed };
         (self.pending.clipboard, self.pending.cwd) = (None, None);
-        (self.pending.notice, self.pending.notices) = (None, 0);
+        self.pending.notice = None;
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
         // end: who watches a pane watches that one file, and finds every fact already there.
         replace("screen", self.term.plain().as_bytes())?;
