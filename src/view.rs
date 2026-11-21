@@ -1434,7 +1434,7 @@ impl View {
                 link(&mut out, new.link);
                 pen = new.link;
             }
-            new.push_text(&mut out);
+            out.extend(new.chars());
             again = again.max(i + 1 + usize::from(new.wide()) + new.spill());
             at = ascii.then_some(i + 1);
         }

@@ -192,16 +192,12 @@ impl Cell {
     pub fn spill(&self) -> usize {
         spread(self.ch, &self.more).saturating_sub(width(self.ch, &self.more))
     }
-    /// How many bytes its text is.
-    fn bytes(&self) -> usize {
-        let more = self.more.iter().filter(|&&m| m != '\0').map(|m| m.len_utf8()).sum::<usize>();
-        if self.ch == '\0' { 0 } else { self.ch.len_utf8() + more }
+    /// The text this cell contributes. Its wide continuation and unused slots contribute nothing.
+    pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
+        std::iter::once(self.ch).chain(self.more.iter().copied()).filter(|&c| self.ch != '\0' && c != '\0')
     }
-    pub fn push_text(&self, out: &mut String) {
-        if self.ch != '\0' {
-            out.push(self.ch);
-            out.extend(self.more.iter().filter(|&&m| m != '\0'));
-        }
+    fn bytes(&self) -> usize {
+        self.chars().map(char::len_utf8).sum()
     }
 }
 
@@ -517,13 +513,19 @@ impl Term {
 
     // ---- files -----------------------------------------------------------
 
-    fn row_text(row: &[Cell], out: &mut String) {
+    /// A wrapped row keeps its trailing spaces, except for a wide character's padding cell.
+    fn row_text(row: &[Cell], goes_on: bool, out: &mut String) {
         let start = out.len();
-        // (The blanks at a row's end are not put there to be cut again: most of a row is those.)
         let blank = |cell: &Cell| cell.ch == '\0' || (cell.ch == ' ' && cell.more.first() == Some(&'\0'));
-        let used = row.iter().rposition(|cell| !blank(cell)).map_or(0, |last| last + 1);
-        row.iter().take(used).for_each(|cell| cell.push_text(out));
-        out.truncate(start + out.get(start..).map_or(0, |text| text.trim_end_matches(' ').len()));
+        let used = if goes_on {
+            row.len() - usize::from(row.last().is_some_and(|cell| cell.style.flags & PAD != 0))
+        } else {
+            row.iter().rposition(|cell| !blank(cell)).map_or(0, |last| last + 1)
+        };
+        out.extend(row.iter().take(used).flat_map(Cell::chars));
+        if !goes_on {
+            out.truncate(start + out.get(start..).map_or(0, |text| text.trim_end_matches(' ').len()));
+        }
     }
 
     /// A row's text as history keeps it. A row that goes on in the next is not ended, so history
@@ -549,14 +551,8 @@ impl Term {
             *joiner = Joiner::default();
         }
         let start = out.len();
-        if goes_on {
-            let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
-            row.iter().take(row.len() - usize::from(gap)).for_each(|cell| cell.push_text(out));
-            *open = Some(open.unwrap_or(0) + out.len() - start);
-        } else {
-            Term::row_text(row, out);
-            *open = None;
-        }
+        Term::row_text(row, goes_on, out);
+        *open = goes_on.then(|| open.unwrap_or(0) + out.len() - start);
         // (Most rows have no looks and no character that could join another: their text is all of it.)
         let looks = |cell: &Cell| Style { flags: cell.style.flags & !MARKS, ..cell.style } != Style::default();
         let bare =
@@ -593,7 +589,7 @@ impl Term {
                     before.push('\n');
                 }
                 let upto = self.col + usize::from(self.wrap_pending);
-                cells.iter().take(upto).for_each(|cell| cell.push_text(&mut before));
+                before.extend(cells.iter().take(upto).flat_map(Cell::chars));
             }
             let open = (&mut open, &mut Joiner::default());
             Term::row_history(cells, goes_on, &self.own, open, &mut all, &mut String::new());
@@ -626,14 +622,8 @@ impl Term {
     fn text(grid: &[Vec<Cell>]) -> String {
         let mut out = String::new();
         for (y, row) in grid.iter().enumerate() {
-            // A row that goes on in the next keeps the blanks at its end: they are in the
-            // middle of its line (but not the gap a wide character left).
-            if grid.get(y + 1).is_some_and(|next| continues(next)) {
-                let gap = row.last().is_some_and(|cell| cell.style.flags & PAD != 0);
-                row.iter().take(row.len() - usize::from(gap)).for_each(|cell| cell.push_text(&mut out));
-            } else {
-                Term::row_text(row, &mut out);
-            }
+            let goes_on = grid.get(y + 1).is_some_and(|next| continues(next));
+            Term::row_text(row, goes_on, &mut out);
             out.push('\n');
         }
         out
@@ -712,7 +702,7 @@ impl Term {
                 joiner.joins(cell.ch);
             }
             cell.more.iter().take_while(|&&c| c != '\0').for_each(|&c| _ = joiner.joins(c));
-            cell.push_text(out);
+            out.extend(cell.chars());
         }
         if style != plain {
             out.push_str("\x1b[m");
