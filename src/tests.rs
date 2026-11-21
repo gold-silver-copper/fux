@@ -267,6 +267,10 @@ fn when_the_tab_shown_goes_the_tab_shown_before_it_is_shown() {
     // The marked tab goes too: the position, as before there was a mark.
     layout.settle(vec!["c".into()]);
     assert_eq!(layout.print(), "* c focus=c\n");
+    // A pane of the shown tab that an earlier line has too stays with the earlier line; the mark stays on its own.
+    let mut twice = parse("  a focus=a\n- b focus=b\n* row(a c) focus=c\n").expect("a layout");
+    twice.settle(vec!["a".into(), "b".into(), "c".into()]);
+    assert_eq!(twice.print(), "  a focus=a\n- b focus=b\n* c focus=c\n");
     // A pane that leaves for a tab of its own leaves its old tab marked, and `tab -` goes back.
     let mut broken = parse("* row(a b) focus=b\n").expect("a layout");
     broken.edit(&["break"]).expect("break");

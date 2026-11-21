@@ -274,40 +274,16 @@ impl Layout {
     /// leaves it, a pane it does not place gets a tab of its own, and every
     /// tab's focus is one of its panes.
     pub fn settle(&mut self, existing: Vec<String>) {
-        let (shown, marked) = (self.names(Some(self.current)), self.names(self.before));
         let mut unplaced: std::collections::HashSet<_> = existing.into_iter().collect();
-        self.retain_panes(|name| unplaced.remove(name));
+        let [same, back] = self.retain_panes(|name| unplaced.remove(name));
         let mut unplaced: Vec<_> = unplaced.into_iter().collect();
         unplaced.sort_by(|a, b| (a.len(), a).cmp(&(b.len(), b)));
         self.tabs.extend(unplaced.iter().map(|name| tab_of(name)));
         // The tab shown stays the one that was shown, wherever it is now. If
         // it is gone, the tab shown before it is shown; if that is gone too,
         // the tab now in its place.
-        let find = |tabs: &[Tab], names: &[String]| {
-            tabs.iter().position(|tab| tab.panes().iter().any(|p| names.iter().any(|n| n == p)))
-        };
-        let (same, back) = (find(&self.tabs, &shown), find(&self.tabs, &marked));
         self.current = same.or(back).unwrap_or(self.current).min(self.tabs.len().saturating_sub(1));
         self.before = back.filter(|back| *back != self.current);
-    }
-
-    /// The names of the panes of a tab, to find it again after tabs came and went.
-    fn names(&self, tab: Option<usize>) -> Vec<String> {
-        let tab = tab.and_then(|at| self.tabs.get(at));
-        tab.map(|tab| tab.panes().iter().map(|name| name.to_string()).collect()).unwrap_or_default()
-    }
-
-    /// One edit, as `fux layout WORDS…` gives it. An edit that ends on another
-    /// tab marks the one it left as the tab shown before.
-    pub fn edit(&mut self, words: &[&str]) -> Result<(), String> {
-        let (shown, marked) = (self.names(Some(self.current)), self.names(self.before));
-        self.apply(words)?;
-        let other = |names: &[String]| {
-            let has = |tab: &Tab| tab.panes().iter().any(|p| names.iter().any(|n| n == p));
-            self.tabs.iter().enumerate().position(|(at, tab)| at != self.current && has(tab))
-        };
-        self.before = other(&shown).or_else(|| other(&marked));
-        Ok(())
     }
 
     /// The workspace's layout as it stands: its file's text, the layout
@@ -354,21 +330,29 @@ impl Layout {
     }
 
     /// Prune the trees, dropping empty tabs and giving a surviving pane the focus.
-    fn retain_panes(&mut self, mut keep: impl FnMut(&str) -> bool) {
+    /// Says where the tab shown and the tab shown before it are now, if they are still there.
+    fn retain_panes(&mut self, mut keep: impl FnMut(&str) -> bool) -> [Option<usize>; 2] {
+        let mut kept = Vec::new();
         self.tabs = std::mem::take(&mut self.tabs)
             .into_iter()
-            .filter_map(|mut tab| {
+            .enumerate()
+            .filter_map(|(at, mut tab)| {
                 tab.root = tab.root.filter(&mut keep)?;
                 if !tab.panes().contains(&tab.focus.as_str()) {
                     tab.focus = tab.panes().first()?.to_string();
                 }
+                kept.push(at);
                 Some(tab)
             })
             .collect();
+        [Some(self.current), self.before].map(|old| kept.iter().position(|at| Some(*at) == old))
     }
 
-    fn apply(&mut self, words: &[&str]) -> Result<(), String> {
-        let count = self.tabs.len();
+    /// One edit, as `fux layout WORDS…` gives it. An edit that ends on another
+    /// tab marks the one it left as the tab shown before.
+    pub fn edit(&mut self, words: &[&str]) -> Result<(), String> {
+        // Where the tab shown and the tab shown before it are, as the edit moves tabs.
+        let (count, mut marks) = (self.tabs.len(), [Some(self.current), self.before]);
         let step = |at: usize, count: usize, previous: bool| {
             let count = count.max(1);
             (at + if previous { count - 1 } else { 1 }) % count
@@ -383,15 +367,14 @@ impl Layout {
                     ["beside", pane] => return Err(format!("cannot split pane {name} beside {pane}")),
                     _ => return Err("split takes row|col PANE [beside ANCHOR]".into()),
                 };
-                self.retain_panes(|pane| pane != *name);
+                marks = self.retain_panes(|pane| pane != *name);
+                // With no pane to go beside, it gets a tab of its own, the last.
                 let at = beside.as_deref().and_then(|pane| self.tab_with(pane).ok());
-                let Some((tab, beside)) = at.and_then(|at| self.tabs.get_mut(at)).zip(beside) else {
-                    self.tabs.push(tab_of(name));
-                    self.current = self.tabs.len() - 1;
-                    return Ok(());
-                };
-                tab.beside(&beside, name, row);
-                self.current = at.unwrap_or(0);
+                self.current = at.unwrap_or(self.tabs.len());
+                match self.tabs.get_mut(self.current).zip(beside) {
+                    Some((tab, beside)) => tab.beside(&beside, name, row),
+                    None => self.tabs.push(tab_of(name)),
+                }
             }
             ["focus", way @ ("left" | "right" | "up" | "down")] => {
                 let tab = self.tab_mut()?;
@@ -439,7 +422,7 @@ impl Layout {
             ["break"] if self.tab().is_some_and(|tab| tab.panes().len() < 2) => {}
             ["break"] => {
                 let name = self.tab_mut()?.focus.clone();
-                self.retain_panes(|pane| pane != name);
+                marks = self.retain_panes(|pane| pane != name);
                 self.current = (self.current + 1).min(self.tabs.len());
                 self.tabs.insert(self.current, tab_of(&name));
             }
@@ -480,6 +463,7 @@ impl Layout {
             }
             _ => return Err(format!("'{}' is not a layout edit: see the README", words.join(" "))),
         }
+        self.before = marks.into_iter().flatten().find(|at| *at != self.current);
         Ok(())
     }
 }
