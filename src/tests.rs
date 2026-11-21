@@ -157,6 +157,11 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
         ("\x1bA", "M-S-a"),
         ("\x1b[97:65;4u", "M-S-a"),
         ("\x1b[1080::98;5u", "C-b"),
+        // (And by itself where that key is no letter of ours: é on the key that is our `2`.)
+        ("\u{e9}", "\u{e9}"),
+        ("\x1b[233::50u", "\u{e9}"),
+        ("\u{c9}", "S-\u{e9}"),
+        ("\x1b[233:201:50;2u", "S-\u{e9}"),
         ("\x1b[5~", "pgup"),
         ("\x1b[57421u", "pgup"),
         ("\x1b[57399u", "0"),
