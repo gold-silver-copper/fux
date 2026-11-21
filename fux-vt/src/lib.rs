@@ -15,7 +15,7 @@ use std::fmt::Write as _;
 /// The most bytes one picture may have; a longer one is dropped and noted.
 pub const PICTURE_MAX: usize = 4 << 20;
 /// The most pictures a screen keeps; a new one past it drops the oldest.
-pub const PICTURES_MAX: usize = 8;
+const PICTURES_MAX: usize = 8;
 /// The most columns and the most rows a screen may have.
 pub const SIZE_MAX: usize = 500;
 /// The most history kept between two looks by the holder; lines past it are dropped and noted.
@@ -32,7 +32,7 @@ const KEYS_KEPT: usize = 16;
 /// What a program is told when it asks for a capability by its terminfo name (XTGETTCAP): what
 /// this emulator does, and no more. A name that is not here is answered "not valid", each by
 /// itself. (The README has the same table; a test holds the two together.)
-pub const CAPS: &[(&str, &str)] = &[
+const CAPS: &[(&str, &str)] = &[
     ("TN", "xterm-256color"),
     ("name", "xterm-256color"),
     ("Co", "256"),
@@ -63,17 +63,17 @@ pub enum Color {
 
 pub const BOLD: u16 = 1;
 pub const DIM: u16 = 2;
-pub const ITALIC: u16 = 4;
-pub const UNDERLINE: u16 = 8;
-pub const BLINK: u16 = 16;
-pub const REVERSE: u16 = 32;
-pub const HIDDEN: u16 = 64;
-pub const STRIKE: u16 = 128;
+const ITALIC: u16 = 4;
+const UNDERLINE: u16 = 8;
+const BLINK: u16 = 16;
+const REVERSE: u16 = 32;
+const HIDDEN: u16 = 64;
+const STRIKE: u16 = 128;
 /// The kind of an underline that is not one plain line (with `UNDERLINE`).
-pub const DOUBLE: u16 = 1024;
-pub const CURLY: u16 = 2048;
-pub const DOTTED: u16 = 4096;
-pub const DASHED: u16 = 8192;
+const DOUBLE: u16 = 1024;
+const CURLY: u16 = 2048;
+const DOTTED: u16 = 4096;
+const DASHED: u16 = 8192;
 const KIND: [u16; 4] = [DOUBLE, CURLY, DOTTED, DASHED];
 const KINDS: u16 = DOUBLE | CURLY | DOTTED | DASHED;
 /// The looks that are one bit each: the SGR code that sets it, the bit, the code that takes it away.
@@ -361,7 +361,7 @@ pub struct Screen {
     pub cols: usize,
     pub rows: usize,
     grid: Vec<Vec<Cell>>,
-    pub alt: bool,
+    alt: bool,
     /// The kitty keyboard protocol: the flags a program asked for on the main screen and on
     /// the alternate one, with the flags it pushed aside on each.
     keys: [(u8, Vec<u8>); 2],
@@ -2416,7 +2416,7 @@ impl Term {
 
 /// Base64, as the clipboard command carries it. `None` for text that is not:
 /// a character outside the set, padding anywhere but at the end, or a length no bytes give.
-pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
     // Padding, if there is any, must be the padding of that length; and what is left over of
     // the last character must be nothing.
     let padded = text.len() - text.trim_end_matches('=').len();
