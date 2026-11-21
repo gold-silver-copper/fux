@@ -13,7 +13,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::process::ExitStatusExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -80,30 +80,23 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     let size = Winsize { cols, rows, xpixel: cols * 10, ypixel: rows * 20 };
     let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
     let (program, args) = command.split_first().ok_or("no program to run")?;
-    // `fux start` says under what name the pane's directory was started.
-    let pane = std::env::var_os(name!("PANE")).ok_or("hold is started by `fux start`")?;
-    // (The session is two folders up from the pane, by the name the pane was started under.)
-    let session = Path::new(&pane).ancestors().nth(2).unwrap_or(Path::new("")).to_path_buf();
+    // `fux start` says under what name the pane's directory was started, and its program is told
+    // the same. The session is found as by any command in a pane: the one named, or two folders up.
+    let session = crate::here().ok_or("hold is started by `fux start`".into()).and_then(|_| crate::session())?;
     let mut child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
         // The program is told what terminal it is in and which pane. Of this
-        // program's own names it gets the session's and the keys' if they
+        // program's own names it gets that one, the session's and the keys' if they
         // were set, and no other (a key script's workspace is not this
         // pane's); and no size but the terminal's own.
-        let kept = [name!("DIR"), name!("KEYS"), name!("EDIT")];
+        let kept = [name!("PANE"), name!("DIR"), name!("KEYS"), name!("EDIT")];
         let ours =
             |n: &OsString| n.as_encoded_bytes().starts_with(name!("").as_bytes()) && !kept.iter().any(|k| n == k);
         for name in std::env::vars_os().map(|(name, _)| name).filter(ours) {
             child.env_remove(name);
         }
-        child
-            .args(args)
-            .current_dir(cwd)
-            .env("TERM", TERM)
-            .env(name!("PANE"), pane)
-            .env_remove("COLUMNS")
-            .env_remove("LINES");
+        child.args(args).current_dir(cwd).env("TERM", TERM).env_remove("COLUMNS").env_remove("LINES");
         child
             .env("COLORTERM", "truecolor")
             .env("TERM_PROGRAM", crate::TERM_PROGRAM)

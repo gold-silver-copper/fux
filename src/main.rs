@@ -56,16 +56,15 @@ fn here() -> Option<PathBuf> {
 }
 
 /// The session directory: `$FUXN_DIR`; else, in a pane, the session that pane
-/// is in; else `$XDG_RUNTIME_DIR/fux-next`; else `~/.cache/fux-next`.
+/// is in; else `$XDG_RUNTIME_DIR/fux-next`; else `~/.cache/fux-next`. By its whole path: one named by
+/// a relative path is meant from here, and every path of a workspace or a pane is made from this one.
 fn session() -> Result<PathBuf, String> {
     let from_pane = || Some(here()?.parent()?.parent()?.to_path_buf());
-    // A directory named by a relative path is meant from here: panes and scripts get its whole path.
-    var(name!("DIR"))
-        .map(|dir| std::path::absolute(&dir).unwrap_or(dir))
-        .or_else(from_pane)
-        .or_else(|| var("XDG_RUNTIME_DIR").map(|d| d.join(FOLDER)))
-        .or_else(|| var("HOME").map(|d| d.join(".cache").join(FOLDER)))
-        .ok_or_else(|| concat!("no session directory: set ", name!("DIR")).into())
+    let xdg = || var("XDG_RUNTIME_DIR").map(|d| d.join(FOLDER));
+    let home = || var("HOME").map(|d| d.join(".cache").join(FOLDER));
+    let dir = var(name!("DIR")).or_else(from_pane).or_else(xdg).or_else(home);
+    let dir = dir.ok_or(concat!("no session directory: set ", name!("DIR")))?;
+    std::path::absolute(&dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 /// The workspace meant when none is named: `$FUXN_WS` (a key script's); else,
@@ -168,7 +167,8 @@ fn start(args: &[OsString]) -> Result<(), String> {
         [] => vec![std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into())],
         program => program.to_vec(),
     };
-    let workspace = session()?.join(workspace);
+    let session = session()?;
+    let workspace = session.join(workspace);
     let fail = |path: &Path, e: std::io::Error| format!("{}: {e}", path.display());
     DirBuilder::new().mode(0o700).recursive(true).create(&workspace).map_err(|e| fail(&workspace, e))?;
     // Making the directory is what claims a new name; a name that is taken is a pane to start
@@ -189,7 +189,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     // here and the holder inherits it. (Opened without waiting: a FIFO of that name holds nobody.)
     let lock = sys::open(&dir, false).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
-        Ok(()) => launch(&dir, lock, &program),
+        Ok(()) => launch(&session, &dir, lock, &program),
         Err(_) => Err("a holder already keeps this pane".into()),
     };
     started.map_err(|why| format!("{}: {why}", dir.display()))?;
@@ -197,19 +197,15 @@ fn start(args: &[OsString]) -> Result<(), String> {
 }
 
 /// Starts the holder of a pane we hold the lock of, and waits until it is up.
-fn launch(dir: &Path, lock: File, program: &[OsString]) -> Result<(), String> {
+fn launch(session: &Path, dir: &Path, lock: File, program: &[OsString]) -> Result<(), String> {
     let log = File::create(dir.join("log")).map_err(|e| format!("cannot make the log: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let mut holder = Command::new(me);
     holder.arg("hold").arg(cwd).args(program).current_dir(dir);
-    // The pane's directory by the name it was started under (the holder's
-    // own working directory may read otherwise, through a link).
-    holder.env(name!("PANE"), std::path::absolute(dir).unwrap_or(dir.to_path_buf()));
-    // (And the session, if it was named, by its whole path: the pane's program may go anywhere.)
-    if var(name!("DIR")).is_some() {
-        holder.env(name!("DIR"), session()?);
-    }
+    // The pane's directory by the name it was started under (the holder's own working directory may read
+    // otherwise, through a link), and the session, if it was named: whole paths, as the program may go anywhere.
+    holder.env(name!("PANE"), dir).envs(var(name!("DIR")).map(|_| (name!("DIR"), session)));
     holder.stdin(Stdio::from(lock)).stdout(Stdio::piped()).stderr(log);
     sys::new_session(&mut holder, false);
     let mut holder = holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?;
