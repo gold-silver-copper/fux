@@ -131,12 +131,6 @@ fn text(path: &Path, most: u64) -> String {
     String::from_utf8_lossy(&read(sys::open(path, false), most).0).into_owned()
 }
 
-/// At most 64 KiB of a small file of ours, as text, or why it cannot be read.
-fn read_some(path: &Path) -> std::io::Result<String> {
-    let (bytes, read) = read(sys::open(path, false), 64 << 10);
-    read.map(|_| String::from_utf8_lossy(&bytes).into_owned())
-}
-
 fn start(args: &[OsString]) -> Result<(), String> {
     let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let (names, program) = (args.get(..split).unwrap_or(&[]), args.get(split + 1..).unwrap_or(&[]));
@@ -213,7 +207,7 @@ fn launch(dir: &Path, lock: &File, program: &[OsString]) -> Result<(), String> {
         return Ok(());
     }
     let _ = holder.wait();
-    let log = read_some(&dir.join("log")).unwrap_or_default();
+    let log = text(&dir.join("log"), 64 << 10);
     let why = log.lines().last().unwrap_or("the holder ended without a word");
     Err(why.trim_start_matches("fux: ").to_string())
 }
@@ -229,11 +223,12 @@ fn wait(args: &[OsString]) -> Result<(), String> {
     let lock = lock.map_err(|e| format!("{}: {e}", Path::new(dir).display()))?;
     // What became of the program is in `state`, and its number in `status`: the holder wrote
     // both, and the last screen after them, before its lock went.
-    let state = read_some(Path::new("state")).map_err(|e| format!("{}/state: {e}", Path::new(dir).display()))?;
-    let status = read_some(Path::new("status")).unwrap_or_default();
+    let (state, read) = read(sys::open("state", false), 64);
+    read.map_err(|e| format!("{}/state: {e}", Path::new(dir).display()))?;
+    let status = text(Path::new("status"), 64 << 10);
     drop(lock);
     let pid = status.lines().find(|line| line.starts_with("pid ")).unwrap_or("pid 0");
-    say(format!("{pid}\nstate {}", state.trim_end()).as_bytes())
+    say(format!("{pid}\nstate {}", String::from_utf8_lossy(&state).trim_end()).as_bytes())
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {

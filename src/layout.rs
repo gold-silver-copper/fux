@@ -99,13 +99,6 @@ impl Node {
         }
     }
 
-    fn contains(&self, name: &str) -> bool {
-        match self {
-            Node::Pane(pane) => pane == name,
-            Node::Split(_, parts) => parts.iter().any(|(part, _)| part.contains(name)),
-        }
-    }
-
     /// Gives every pane its rectangle. Between two parts there is one column
     /// or one row that is neither's (the viewer draws a line there).
     fn place(&self, area: Rect, focus: &str, into: &mut Vec<(String, Rect)>) {
@@ -118,7 +111,7 @@ impl Node {
         let length = if row { area.w } else { area.h };
         let shown = parts.len().min(length.div_ceil(2));
         let room = length.saturating_sub(shown.saturating_sub(1));
-        let focused = parts.iter().skip(shown).find(|(part, _)| part.contains(focus));
+        let focused = parts.iter().skip(shown).find(|(part, _)| part.panes().contains(&focus));
         let parts = parts.iter().take(shown - usize::from(focused.is_some())).chain(focused);
         let total: usize = parts.clone().map(|p| p.1.max(1) as usize).sum();
         let mut sizes: Vec<usize> = parts.clone().map(|p| (room * p.1.max(1) as usize / total.max(1)).max(1)).collect();
@@ -155,7 +148,7 @@ impl Node {
     /// Changes the share of the part in the nearest row (or column) that holds the pane.
     fn change_share(&mut self, name: &str, of_row: bool, change: i64) -> bool {
         let Node::Split(row, parts) = self else { return false };
-        let Some(at) = parts.iter().position(|(part, _)| part.contains(name)) else { return false };
+        let Some(at) = parts.iter().position(|(part, _)| part.panes().contains(&name)) else { return false };
         if parts.get_mut(at).is_some_and(|(part, _)| part.change_share(name, of_row, change)) {
             return true;
         }
@@ -366,7 +359,7 @@ impl Layout {
             .into_iter()
             .filter_map(|mut tab| {
                 tab.root = tab.root.filter(&mut keep)?;
-                if !tab.root.contains(&tab.focus) {
+                if !tab.panes().contains(&tab.focus.as_str()) {
                     tab.focus = tab.panes().first()?.to_string();
                 }
                 Some(tab)

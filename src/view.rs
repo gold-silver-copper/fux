@@ -421,7 +421,7 @@ impl View {
     /// last frame was drawn from, so the next one is drawn (and the panes read) whatever it finds.
     fn forget(&mut self) {
         self.panes.clear();
-        self.from = None;
+        (self.from, self.looked) = (None, None);
     }
 
     /// A line a script printed: a command of the viewer's, or else a message to show.
@@ -436,7 +436,6 @@ impl View {
                 } else if name != self.workspace {
                     self.before = Some(std::mem::replace(&mut self.workspace, name));
                     self.forget();
-                    self.looked = None;
                 }
             }
             ("workspace", name) => self.message = format!("no workspace {name}"),
@@ -1010,12 +1009,10 @@ impl View {
             // once: when its `clipboard` file is another than at the last look, the pane
             // having had the focus then too. Coming to a pane only notes what is there.
             if focused {
-                let file = sys::open(pane_directory.join("clipboard"), false);
-                let stamp: Stamp = file.as_ref().ok().and_then(|file| file.metadata().ok()).map(stamp);
-                let seen = self.copied.replace((pane_directory.clone(), stamp));
-                if let (Ok(file), Some((before, old))) = (file, seen)
+                let seen = self.copied.replace((pane_directory.clone(), clipboard));
+                if let (Ok(file), Some((before, old))) = (sys::open(pane_directory.join("clipboard"), false), seen)
                     && before == pane_directory
-                    && old != stamp
+                    && old != clipboard
                 {
                     let mut bytes = Vec::new();
                     let _ = file.take(1 << 20).read_to_end(&mut bytes);

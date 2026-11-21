@@ -52,15 +52,13 @@ struct Holder {
     _slave: File,
     /// The facts as they were written last, each in its file: one is written again only when it changes.
     facts: HashMap<&'static str, Option<Vec<u8>>>,
-    /// What the `status` file says.
-    status: String,
     /// The last round of writing failed.
     failing: bool,
     /// How many notices there have been: the number in the `notice` file.
     noticed: u32,
-    /// Since when the program has been in the middle of drawing (mode 2026).
-    drawing: Option<Instant>,
-    syncs: u32,
+    /// Since when the program has been in the middle of drawing (mode 2026), and how many times
+    /// it had said so by then.
+    drawing: Option<(Instant, u32)>,
     input: Vec<u8>,
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
@@ -161,13 +159,9 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         master: Some(master),
         _slave: slave,
         facts: HashMap::new(),
-        // Who holds the pane, the program's own number, and what it runs: a fact as the others
-        // are, written once (it never changes), with them and before the first screen.
-        status: format!("holder {}\npid {pid}\ncommand {command}\n", std::process::id()),
         failing: false,
         noticed: 0,
         drawing: None,
-        syncs: 0,
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: BTreeSet::new(),
@@ -183,7 +177,11 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     }
     // The FIFOs are there for as long as this function runs, and not after.
     let fifos = fifo("in").and_then(|input| Ok((input, fifo("ctl")?)));
-    let result = fifos.map_err(|e| format!("cannot make the FIFOs: {e}"));
+    // Who holds the pane, the program's own number, and what it runs: written once, as it
+    // never changes, before the first screen.
+    let status = format!("holder {}\npid {pid}\ncommand {command}\n", std::process::id());
+    let result = fifos.and_then(|fifos| replace("status", status.as_bytes()).map(|()| fifos));
+    let result = result.map_err(|e| format!("cannot make the FIFOs or the status: {e}"));
     let result = result.and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended));
     let _ = fs::remove_file("in");
     let _ = fs::remove_file("ctl");
@@ -223,13 +221,13 @@ impl Holder {
             // A program in the middle of drawing (mode 2026) is not shown until it says it is done,
             // or half a second has gone by: one that never says so cannot freeze its pane.
             // (The half second runs from the first time it said so with no end since.)
-            let again = std::mem::replace(&mut self.syncs, self.term.screen().syncs) != self.term.screen().syncs;
+            let again = self.term.screen().syncs;
             self.drawing = match self.drawing {
                 _ if !self.term.screen().sync => None,
-                Some(since) if !again => Some(since),
-                _ => Some(Instant::now()),
+                Some((since, said)) if said == again => Some((since, said)),
+                _ => Some((Instant::now(), again)),
             };
-            let left = self.drawing.map_or(Duration::ZERO, |since| DRAWING_MAX.saturating_sub(since.elapsed()));
+            let left = self.drawing.map_or(Duration::ZERO, |(since, _)| DRAWING_MAX.saturating_sub(since.elapsed()));
             let drawing = !left.is_zero() && self.master.is_some();
             let every = if quiet && !self.failing { PUBLISH_QUIET } else { PUBLISH_EVERY };
             // The budget is for what is read between two screens; while a program in the middle
@@ -563,7 +561,6 @@ impl Holder {
             ("cursor", format!("{} {} {shown} {}{colour}\n", at.row, at.col, screen.cursor_shape)),
             ("modes", format!("{}\n", words)),
             ("state", format!("{state}\n")),
-            ("status", self.status.clone()),
         ];
         let facts = covered.into_iter().chain(texts.into_iter().map(|(name, text)| (name, Some(text.into_bytes()))));
         // What the program said, facts as the others, each waiting until this round has written
