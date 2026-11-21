@@ -7,7 +7,7 @@
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
 use crate::term::{
-    BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode, sixel_size,
+    BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode,
 };
 use crate::width::Joiner;
 use crate::{is_name, keys, sixel};
@@ -76,7 +76,7 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
     let sixel = |inside: &&[u8]| inside.iter().find(|b| !(b.is_ascii_digit() || **b == b';')) == Some(&b'q');
     let inside = inside.filter(|inside| inside.iter().all(|b| (0x20..=0x7e).contains(b))).filter(sixel);
     let Some(inside) = inside else { return Ok(None) };
-    let (w, h, square) = sixel_size(inside);
+    let (w, h, square) = sixel::size(inside);
     let (wide, high) = (w.min(*wide), h.saturating_sub(*top).min(*high));
     let sixel = match square && (*top, wide, high) == (0, w, h) {
         true => String::from_utf8_lossy(inside).into_owned(),

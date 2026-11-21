@@ -2,6 +2,7 @@
 //! queries programs wait on, keeps the lines that scroll off the top, and
 //! takes sixel pictures whole. It knows nothing of files or processes.
 
+use crate::sixel;
 use crate::width::{Joiner, plain, spread, width};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -1993,7 +1994,7 @@ impl Term {
 
     /// Places a sixel picture at the cursor and moves the cursor below it.
     fn picture(&mut self, data: &[u8]) {
-        let (width, height, _) = sixel_size(data);
+        let (width, height, _) = sixel::size(data);
         let cols = width.div_ceil(self.cell.0.max(1)).max(1);
         let rows = height.div_ceil(self.cell.1.max(1)).max(1);
         if cols > SIZE_MAX || rows > SIZE_MAX {
@@ -2584,46 +2585,4 @@ fn line_drawing(c: char) -> char {
         '_' => ' ',
         _ => c,
     }
-}
-
-/// The size of a sixel picture in pixels: the larger of what its raster
-/// attributes say and what its data paints. And whether its pixels are square: whether its
-/// raster attributes, if it has any, give a pixel's height and width as the same number.
-pub fn sixel_size(data: &[u8]) -> (usize, usize, bool) {
-    let body = data.iter().copied().skip_while(|&b| b != b'q').skip(1);
-    let (mut x, mut band, mut painted, mut declared) = (0usize, 0usize, (0usize, 0usize), (0usize, 0usize));
-    // Whose numbers are being read: `!` a repeat count, `#` a colour, `"` the raster attributes.
-    let (mut owner, mut numbers, mut square) = (b' ', vec![0usize], true);
-    for byte in body.chain(std::iter::once(b'$')) {
-        if byte.is_ascii_digit() {
-            if let Some(n) = numbers.last_mut() {
-                *n = n.saturating_mul(10).saturating_add(usize::from(byte - b'0')).min(1 << 20);
-            }
-        } else if byte == b';' {
-            if numbers.len() < 8 {
-                numbers.push(0);
-            }
-        } else {
-            if owner == b'"' {
-                let size = |i: usize| numbers.get(i).copied().unwrap_or(0);
-                declared = (declared.0.max(size(2)), declared.1.max(size(3)));
-                square &= size(0) == size(1);
-            }
-            let repeat = if owner == b'!' { numbers.first().copied().unwrap_or(1).max(1) } else { 1 };
-            (owner, numbers) = (b' ', vec![0]);
-            match byte {
-                b'!' | b'#' | b'"' => owner = byte,
-                b'?'..=b'~' => {
-                    // (As wide as its rows are long, and as high as its lowest painted pixel.)
-                    let low = band * 6 + 8 - (byte - b'?').leading_zeros() as usize;
-                    x = x.saturating_add(repeat);
-                    painted = (painted.0.max(x), if byte == b'?' { painted.1 } else { painted.1.max(low) });
-                }
-                b'$' => x = 0,
-                b'-' => (x, band) = (0, band + 1),
-                _ => {}
-            }
-        }
-    }
-    (painted.0.max(declared.0), painted.1.max(declared.1), square)
 }
