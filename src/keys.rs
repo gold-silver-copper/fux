@@ -16,10 +16,6 @@ pub const DEFAULT: &[(&str, &str)] = scripts!(
     "C-b/x/.about" "C-b/x/y"
 );
 
-/// How long a key's sequence may be before it is given up as no key (the kitty protocol's text
-/// of a key can be many numbers long).
-const CSI_MAX: usize = 1024;
-
 /// The key at the start of `bytes`: how many bytes it is and its name. The
 /// name is empty for a sequence that is no key we know (it is passed on as
 /// it is). `None` when more bytes are needed to tell; with `whole`, no more
@@ -33,9 +29,10 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)>
             Some(b'[') => {
                 // A sequence not yet whole waits for its end, however long that takes to come.
                 let Some(end) = bytes.iter().skip(2).position(|b| (0x40..=0x7e).contains(b)) else {
-                    // Alt-[ alone, with nothing after it for a moment, is that key; more than that waits.
+                    // Alt-[ alone, with nothing after it for a moment, is that key; more than that waits, until it
+                    // is too long to be a key (the kitty protocol's text of a key can be many numbers long).
                     let alone = (whole && bytes.len() == 2).then(|| (2, "M-[".to_string()));
-                    return alone.or((bytes.len() > CSI_MAX).then(|| (bytes.len(), String::new())));
+                    return alone.or((bytes.len() > 1024).then(|| (bytes.len(), String::new())));
                 };
                 let parameters = String::from_utf8_lossy(bytes.get(2..end + 2)?).into_owned();
                 Some((end + 3, sequence(&parameters, *bytes.get(end + 2)?)))
