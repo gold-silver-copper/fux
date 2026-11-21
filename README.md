@@ -620,7 +620,8 @@ wider tile; a file written anew under its name is drawn anew. What is drawn
 of a picture is made once and kept for as long as it is drawn. A part has
 square pixels, and a pixel the program never painted stays unpainted in it
 (the part says that such pixels keep what is under them, whatever the
-picture said). No picture is drawn on your terminal's last row: a terminal
+picture said: which colour a terminal fills them with is its own).
+No picture is drawn on your terminal's last row: a terminal
 may put the cursor under a picture and scroll everything to do so. While a
 menu is open, a picture it covers a cell of is not drawn. A cell counts as
 100 pixels wide and high at most, in a pane and in the viewer alike.
@@ -901,16 +902,13 @@ editor on the pane's text, `C-b M-c` is `less` on it in colour); Windows. `clear
 
 Pictures: a pixel shape other than square (sixel can ask for pixels twice
 as high as wide) is not kept: cells are counted as if pixels were square,
-and such a picture is always written anew, with square ones. A picture that
-does not fit its tile and is past a bound above is not drawn at all. Text
+and such a picture is always written anew, with square ones. Text
 written over any cell of a picture takes the whole picture away, in the pane
 and in the viewer (a sixel terminal keeps the pixels the text did not
 cover): a pane's picture is one rectangle of cells, not pixels. A picture
 keeps its place through a resize where the text beside it does: one on rows
 that wrap anew at the new width goes; one past the right edge or the last
-row of a smaller screen is kept, and shown again on a larger one. A part
-never fills the pixels a picture left unpainted, even if the picture asked
-for them to be filled: which colour a terminal fills them with is its own.
+row of a smaller screen is kept, and shown again on a larger one.
 After a picture
 the cursor goes to the start of the line below it (a VT340 and xterm leave it on the
 picture's last row), so that a prompt does not write over it; a picture
