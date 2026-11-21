@@ -464,10 +464,10 @@ the part that had scrolled into history is all there is, and it opens that) and 
 (both for a shell that marks its prompts, and neither while the pane shows a
 program's own screen: for bash from 4.4 on, `PS1='\[\e]133;A\a\]'$PS1'\[\e]133;B\a\]'; PS0='\e]133;C\a';
 PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'`, the `printf` put first in a
-`PROMPT_COMMAND` you have already), `C-b` send C-b itself; `t` tabs (`n` new, `h` `l`), `w`
+`PROMPT_COMMAND` you have already), `C-b` send C-b itself; `t` then `n` a new tab, `w`
 workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
-the pane (`h j k l`, repeating), `a` pane actions (`n` to a new tab, `k` send
-TERM to the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
+the pane (`h` earlier, `l` later, repeating), `a` pane actions (`n` to a new tab, `k` hang
+up the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
 (`p` a pane, `t` a tab, `w` a workspace: a list in a pane of its own, chosen
 with fzf, sk or fzy if one is installed and by number or name if none is (a number is a line of the list first, and a name only if the list has no such line)). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
@@ -476,9 +476,8 @@ the pane's own folder, however the shell ended. Only when `.shell` itself
 is gone first (killed, or hung up) is nobody left to remove the folder, and it stays until the
 close key or `rm -r` takes it: saying `killed` after `kill` in `ctl` or a
 `.shell` killed outright, and `lost` when the holder was killed. The `a k`
-key sends TERM to the pane's program, which in a default shell pane is
-`.shell`: that ignores TERM, as an interactive shell does, so the key does
-nothing there; it is for panes started with a program of their own. The close key moves the folder out of the
+key hangs up the pane's program (`kill` on its `ctl`, as closing its terminal
+would); a signal of your choice is one line (`kill -TERM` and the `pid` of `status`). The close key moves the folder out of the
 workspace (the tile goes at once), removes its `in`, and removes the folder
 when `fux wait` says the holder has left (a holder looks for its `in` every two seconds).
 

@@ -4,8 +4,6 @@
 # pane closes when its shell exits is this script's doing, not fux's.
 # This script killed outright never gets there: the folder stays for the close key.
 here=$(ls -di "$FUXN_PANE")
-# TERM (the `C-b a k` key sends it to this wrapper alone) is ignored, and not passed on.
-trap : TERM
 if [ $# -gt 0 ]; then "$@"; else "${SHELL:-sh}"; fi
 # (A program that could not be run at all has said why: that stays to be read.
 # One that is there to run has run, and 126 or 127 is its own: a shell's last command's, say.)
