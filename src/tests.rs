@@ -375,6 +375,18 @@ fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour(
     let before = sliver.tabs.first().expect("a tab").tiles(area).first().expect("a tile").1.w;
     sliver.edit(&["size", "row", "-5"]).expect("size");
     assert_eq!((before, sliver.tabs.first().expect("a tab").tiles(area).first().expect("a tile").1.w), (1, 1));
+    // In a row of three as well: a pane of one column of 22 asked to be narrower keeps its column (its
+    // share was brought up to the least a step leaves, 5 of 99, and it had two), and one whose share is
+    // under that least is not given it (4 of 80 became 5 of 99: 26 columns of 500 for 25).
+    for (shares, w, step) in [("a:2 b:17 c:21", 22, "-5"), ("a:4 b:37 c:39", 500, "-1")] {
+        let mut row = parse(&format!("* row({shares}) focus=a\n")).expect("a row");
+        let width = |row: &Layout| {
+            row.tabs.first().expect("a tab").tiles(Rect { x: 0, y: 0, w, h: 3 }).first().expect("a tile").1.w
+        };
+        let before = (width(&row), row.print());
+        row.edit(&["size", "row", step]).expect("size");
+        assert_eq!((width(&row), row.print()), before);
+    }
     // The focus is on d by now; the new pane still goes beside the pane it was asked for.
     let mut layout = parse("* row(a b) focus=b\n  d focus=d\n  n focus=n\n").expect("a layout");
     layout.edit(&["split", "col", "n", "beside", "a"]).expect("split");
