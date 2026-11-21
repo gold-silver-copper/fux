@@ -62,9 +62,8 @@ fn here() -> Option<PathBuf> {
 fn session() -> Result<PathBuf, String> {
     let from_pane = || Some(here()?.parent()?.parent()?.to_path_buf());
     // A directory named by a relative path is meant from here: panes and scripts get its whole path.
-    let whole = |dir: PathBuf| std::path::absolute(&dir).unwrap_or(dir);
     var(name!("DIR"))
-        .map(whole)
+        .map(|dir| std::path::absolute(&dir).unwrap_or(dir))
         .or_else(from_pane)
         .or_else(|| var("XDG_RUNTIME_DIR").map(|d| d.join(FOLDER)))
         .or_else(|| var("HOME").map(|d| d.join(".cache").join(FOLDER)))
