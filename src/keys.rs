@@ -142,12 +142,13 @@ fn sequence(parameters: &str, last: u8) -> (String, Option<Event>) {
         // standard layout in its place.
         (b'u', _) => {
             let [plain, shifted, standard] = [code, sign, standard].map(|n| n.and_then(char::from_u32));
-            // A key is named as it is in the old form: a sign that needs Shift by the sign and
-            // not by Shift (`M-#`), a letter of another alphabet by the key it shares with ours
-            // (Ctrl with it is the same Ctrl-b), a capital as Shift and the small letter.
+            // A key is named as it is in the old form: a sign that needs Shift by the sign and not by Shift
+            // (`M-#`), a letter of another alphabet by the letter of ours it shares a key with (Ctrl with it
+            // is the same Ctrl-b) and by itself where that key is no letter, a capital as Shift and the small letter.
             let sign = shifted.filter(|c| modifier & 1 != 0 && !c.is_alphabetic());
             modifier &= if sign.is_some() { !1 } else { !0 };
-            let key = sign.or(standard.filter(|_| plain.is_some_and(|c| !c.is_ascii()))).or(plain);
+            let ours = |c: &char| c.is_alphabetic() && plain.is_some_and(|c| !c.is_ascii() && c.is_alphabetic());
+            let key = sign.or(standard.filter(ours)).or(plain);
             modifier |= u8::from(key.is_some_and(|c| c.is_uppercase()));
             match key.map(|c| c.to_lowercase().next().unwrap_or(c)) {
                 Some('\r') => "enter".into(),

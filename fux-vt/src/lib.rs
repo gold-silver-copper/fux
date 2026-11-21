@@ -453,12 +453,7 @@ impl Screen {
     /// The screen a `styled` text says, `cols` wide and of as many rows as it has lines (a reader's
     /// side of `Term::styled`): cells and looks, and none of what `set_words` and `set_link` say.
     pub fn read(styled: &str, cols: usize) -> Screen {
-        // (One column more than the pane is said to have, also past the widest a terminal may be:
-        // there a line that is longer ends, and is cut off.)
-        let mut term = Term::new(cols.saturating_add(1).min(SIZE_MAX), styled.lines().count());
-        term.screen.cols = cols.min(SIZE_MAX) + 1;
-        term.screen.grid.iter_mut().for_each(|row| row.resize(term.screen.cols, Cell::blank(Style::default())));
-        term.feed(b"\x1b[?7l");
+        let mut term = Term::sized(cols, styled.lines().count(), false);
         for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
             // The rows are text and colours, as the holder writes them: anything else in a
             // file of someone's own making is shown as `?`.
@@ -533,10 +528,15 @@ impl Screen {
 
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Term {
-        let (cols, rows) = (cols.clamp(1, SIZE_MAX), rows.clamp(1, SIZE_MAX));
+        Term::sized(cols, rows, true)
+    }
+
+    /// With no `wrap` (a reader's) it has one column more, also past the widest: there a longer line ends, cut off.
+    fn sized(cols: usize, rows: usize, wrap: bool) -> Term {
+        let (cols, rows) = (cols.clamp(usize::from(wrap), SIZE_MAX) + usize::from(!wrap), rows.clamp(1, SIZE_MAX));
         let grid = vec![vec![Cell::blank(Style::default()); cols]; rows];
         Term {
-            screen: Screen { cols, rows, grid: grid.clone(), cursor_shown: true, autowrap: true, ..Screen::default() },
+            screen: Screen { cols, rows, grid: grid.clone(), cursor_shown: true, autowrap: wrap, ..Screen::default() },
             told: Told { cell: (10, 20), ..Told::default() },
             other: grid,
             top: 0,
@@ -988,6 +988,28 @@ impl Term {
         }
     }
 
+    /// The cells of a row from `col` on go `n` columns on, blanks coming in at `col` (`on`), or back
+    /// over the `n` at `col`, blanks coming in at the row's end. The marks at `marks` and after go
+    /// with their cells (one on a cell taken out, to where that part begins), half a wide character
+    /// becomes a blank, and the row's first cell, whichever that is now, says if the row goes on.
+    fn shift(&mut self, row: usize, col: usize, n: usize, on: bool, marks: usize) {
+        let (blank, cols) = (self.blank(), self.screen.cols);
+        let goes_on = col == 0 && self.screen.grid.get(row).is_some_and(|cells| continues(cells));
+        self.split(row, col);
+        self.split(row, if on { col } else { col.saturating_add(n) });
+        let to = |c: usize| if on { (c + n).min(cols) } else { c.saturating_sub(n).max(col) };
+        self.move_marks(|r, c| (r, if r == row && c >= marks { to(c) } else { c }));
+        if let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
+            let n = n.min(rest.len());
+            let keep = rest.len() - n;
+            rest.rotate_left(if on { keep } else { n });
+            rest.get_mut(if on { 0..n } else { keep..keep + n }).into_iter().for_each(|gone| gone.fill(blank));
+            rest.iter_mut().for_each(|cell| cell.style.flags &= !MARKS);
+            rest.first_mut().into_iter().for_each(|first| first.style.flags |= u16::from(goes_on) * CONT);
+        }
+        self.tidy(row);
+    }
+
     /// Row `row` no longer goes on from the one above it: its neighbour is another now.
     fn parts(&mut self, row: usize) {
         if let Some(first) = self.screen.grid.get_mut(row).and_then(|cells| cells.first_mut()) {
@@ -995,8 +1017,8 @@ impl Term {
         }
     }
 
-    /// Blanks the cells from `from` up to `to`, each a row and a column: the rows between whole.
-    fn erase(&mut self, mut from: (usize, usize), mut to: (usize, usize)) {
+    /// Blanks the cells from `from` up to `to`, each a row and a column: the rows between whole. Says where its end came to be.
+    fn erase(&mut self, mut from: (usize, usize), mut to: (usize, usize)) -> (usize, usize) {
         let (blank, cols) = (self.blank(), self.screen.cols);
         // (Half a wide character erased is the character erased: its other cell is of the erased part.)
         let half = |(row, at)| usize::from(self.screen.cell_at(row, at).is_some_and(|cell| cell.ch == '\0'));
@@ -1012,19 +1034,20 @@ impl Term {
             if let Some(cells) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(start..end)) {
                 cells.fill(blank);
             }
-            self.uncover(row, start, end);
+            self.uncover(row..row + 1, start, if end == cols { usize::MAX } else { end });
         }
         self.screen.cursor.wrap = false;
         // (The marks on what is erased are, in their order, where the erased part begins: what
         // they marked is gone, and they mark nothing of what is written there next. The place
         // right after it is its end too.)
         self.move_marks(|r, c| if (from..=to).contains(&(r, c)) { from } else { (r, c) });
+        to
     }
 
-    /// The pictures that lie on cells `from` to `to` of a row are written over: they go.
-    /// (Asked first, here and in `scroll_pictures`: a flood prints and scrolls millions of times over none.)
-    fn uncover(&mut self, row: usize, from: usize, to: usize) {
-        let on = |p: &Picture| (p.row..p.row + p.rows).contains(&row) && p.col < to && from < p.col + p.cols;
+    /// The pictures that lie on cells `from` to `to` of the rows `rows` are written over: they go. (A row erased to its
+    /// end is erased past it, and the display erased to its end below it too. Asked first, as in `scroll_pictures`: a flood prints over none.)
+    fn uncover(&mut self, rows: std::ops::Range<usize>, from: usize, to: usize) {
+        let on = |p: &Picture| p.row < rows.end && rows.start < p.row + p.rows && p.col < to && from < p.col + p.cols;
         let Some(_) = self.screen.pictures.iter().position(on) else { return };
         self.screen.pictures.retain(|p| !on(p));
     }
@@ -1183,7 +1206,7 @@ impl Term {
             // Until it is placed it has no cell: what joins a character that found no room goes with it.
             (self.last, self.cluster) = (c, Some(Last { at: None, cursor: here, joiner }));
             let new = Cell { ch: c, more: ['\0'; MORE], style: self.screen.cursor.style, link: self.link };
-            self.place(new, width(c, &[]) == 2, self.insert);
+            self.place(new, width(c, &[]) == 2, 0);
         }
         // What the next character must find to go on from this one.
         let here = (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap);
@@ -1197,7 +1220,6 @@ impl Term {
     /// Adds `c` to the character printed last: it is the same cluster (UAX #29).
     fn join(&mut self, c: char) {
         let Some((row, col, _, under)) = self.cluster.and_then(|last| last.at) else { return };
-        let insert = self.insert;
         let Some(cell) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col)) else { return };
         let (whole, was_wide) = (*cell, cell.wide());
         let Some(slot) = cell.more.iter_mut().find(|m| **m == '\0') else {
@@ -1215,23 +1237,15 @@ impl Term {
             if col + 2 > self.screen.cols {
                 // It leaves the row's last cell as it found it.
                 *cell = under;
-            } else if insert && let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col + 1..)) {
-                // In insert mode its second column is one more column put in.
-                rest.rotate_right(1);
             }
             (self.screen.cursor.col, self.screen.cursor.wrap) = (col, false);
-            self.place(grown, true, false);
-            if insert {
-                // (The marks after it go one column on with their cells.)
-                let cols = self.screen.cols;
-                self.move_marks(|r, c| (r, if r == row && c > col { (c + 1).min(cols) } else { c }));
-                self.tidy(row);
-            }
+            self.place(grown, true, 1);
         }
     }
 
-    /// Puts a character at the cursor, on the next row if this one has no room, and moves on.
-    fn place(&mut self, mut new: Cell, wide: bool, insert: bool) {
+    /// Puts a character at the cursor, on the next row if this one has no room, and moves on. In insert
+    /// mode it puts in the columns it takes but the `has` it has there already (none, where it wraps).
+    fn place(&mut self, mut new: Cell, wide: bool, mut has: usize) {
         if wide && self.screen.cols < 2 {
             return;
         }
@@ -1249,7 +1263,7 @@ impl Term {
                 {
                     last.style.flags |= PAD;
                 }
-                self.screen.cursor.col = 0;
+                (self.screen.cursor.col, has) = (0, 0);
                 self.linefeed(true);
                 new.style.flags |= u16::from(row == self.bottom || row + 1 < self.screen.rows) * CONT;
             } else if wide {
@@ -1258,9 +1272,13 @@ impl Term {
             self.screen.cursor.wrap = false;
         }
         let (row, col) = (self.screen.cursor.row, self.screen.cursor.col);
-        let (cells, cols) = (1 + usize::from(wide), self.screen.cols);
+        let cells = 1 + usize::from(wide);
         let blank = self.blank();
         let mut under = blank;
+        if self.insert {
+            // (The marks after it go with their cells, as when CSI @ makes the room.)
+            self.shift(row, col + has, cells.saturating_sub(has), true, col + 1);
+        }
         if let Some(line) = self.screen.grid.get_mut(row) {
             // What this overwrites or parts may be half of a wide character: blank the other half.
             if line.get(col).is_some_and(|c| c.ch == '\0')
@@ -1269,14 +1287,10 @@ impl Term {
                 *lead = blank;
             }
             let goes_on = col == 0 && continues(line);
-            match line.get_mut(col..) {
-                Some(rest) if insert => rest.rotate_right(cells.min(rest.len())),
-                _ => under = line.get(col).copied().filter(|c| c.ch != '\0').unwrap_or(blank),
-            }
+            under = line.get(col).copied().filter(|c| c.ch != '\0' && !self.insert).unwrap_or(blank);
             // Written over, a row's first cell still says that the row goes on from the one above (a line
             // editor draws a long line again row by row), and so does one put before it. Erased, it does not.
             new.style.flags |= u16::from(goes_on) * CONT;
-            line.get_mut(col + cells).into_iter().for_each(|moved| moved.style.flags &= !CONT);
             if let Some(half) = line.get_mut(col + cells).filter(|c| c.ch == '\0') {
                 *half = blank;
             }
@@ -1287,12 +1301,7 @@ impl Term {
                 *cell = Cell { ch: '\0', more: ['\0'; MORE], style: new.style, link: new.link };
             }
         }
-        if insert {
-            // (The marks after it go with their cells, as when CSI @ makes the room.)
-            self.move_marks(|r, c| (r, if r == row && c > col { (c + cells).min(cols) } else { c }));
-            self.tidy(row);
-        }
-        self.uncover(row, col, col + cells);
+        self.uncover(row..row + 1, col, col + cells);
         if let Some(last) = &mut self.cluster {
             last.at = Some((row, col, new, under));
         }
@@ -1331,7 +1340,7 @@ impl Term {
 
     fn fill(&mut self, cell: Cell) {
         self.screen.grid.iter_mut().for_each(|row| row.fill(cell));
-        self.screen.pictures.clear();
+        self.uncover(0..usize::MAX, 0, usize::MAX);
     }
 
     /// Takes a new size (the nearest a terminal may have, as `new`). The main screen's
@@ -1685,10 +1694,9 @@ impl Term {
                 }
             }
             (b'#', b'8') => {
+                // (A screen erased whole, as by every other erase of it, then written over.)
+                _ = self.erase((0, 0), (self.screen.rows - 1, self.screen.cols));
                 self.fill(Cell { ch: 'E', ..Cell::blank(Style::default()) });
-                // (As a screen that was erased whole: its marks, and what a resize took off its top.)
-                self.move_marks(|_, _| (0, 0));
-                self.lent = self.lent.take().filter(|_| self.screen.alt);
                 // And, as in xterm, the whole screen scrolls again and the cursor goes home.
                 (self.top, self.bottom, self.screen.cursor.origin) = (0, self.screen.rows - 1, false);
                 self.move_to(0, 0);
@@ -1940,12 +1948,14 @@ impl Term {
         }
         let bytes = Some([b"\x1bP", data, b"\x1b\\"].concat());
         let Cursor { row, col, .. } = self.screen.cursor;
+        // The picture scrolls with the text; of one taller than the screen the last rows stay. For one the
+        // scroll region has room for, the room is made first: scrolled there, it lies across the region's end.
+        let room = if (self.top..=self.bottom).contains(&row) && rows <= self.bottom - self.top { rows } else { 0 };
+        (0..room).for_each(|_| self.linefeed(false));
+        let row = self.screen.cursor.row.saturating_sub(room);
         self.screen.pictures.push(Picture { id: self.next_picture, row, col, cols, rows, off: 0, bytes });
         self.next_picture = self.next_picture.wrapping_add(1);
-        // The picture scrolls with the text; of one taller than the screen the last rows stay.
-        for _ in 0..rows {
-            self.linefeed(false);
-        }
+        (room..rows).for_each(|_| self.linefeed(false));
         self.move_to_col(0);
     }
 
@@ -2016,7 +2026,7 @@ impl Term {
             (0, 0, b'd') => self.move_to(n - 1, col),
             (0, 0, b'I' | b'Z') => self.tab(n, last == b'Z'),
             (0 | b'?', 0, b'J' | b'K') => {
-                // (CSI J is the screen's rows, CSI K the cursor's: from the cursor on, up to it, or all.)
+                // (CSI J is the screen's rows, CSI K the cursor's: from the cursor on, up to it, or all; J to the end takes the rows below too.)
                 let (first, end) = if last == b'J' { (0, self.screen.rows - 1) } else { (row, row) };
                 let (first, end) = ((first, 0), (end, self.screen.cols));
                 let (from, to) = match self.arg(0, 0) {
@@ -2025,34 +2035,12 @@ impl Term {
                     2 => (first, end),
                     _ => return,
                 };
-                self.erase(from, to);
+                let below = if self.erase(from, to) == end && last == b'J' { usize::MAX } else { 0 };
+                self.uncover(self.screen.rows..below, 0, usize::MAX);
             }
-            (0, 0, b'X') => self.erase((row, col), (row, col.saturating_add(n).min(self.screen.cols))),
+            (0, 0, b'X') => _ = self.erase((row, col), (row, col.saturating_add(n).min(self.screen.cols))),
             (0, 0, b'@' | b'P') => {
-                let goes_on = col == 0 && self.screen.grid.get(row).is_some_and(|cells| continues(cells));
-                self.split(row, col);
-                if last == b'P' {
-                    self.split(row, col.saturating_add(n));
-                }
-                let (blank, cols) = (self.blank(), self.screen.cols);
-                // (The marks from there on go with their cells: one on a cell taken out, to where that part begins.)
-                let to = |c: usize| if last == b'@' { (c + n).min(cols) } else { c.saturating_sub(n).max(col) };
-                self.move_marks(|r, c| (r, if r == row && c >= col { to(c) } else { c }));
-                if let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
-                    let n = n.min(rest.len());
-                    let keep = rest.len() - n;
-                    if last == b'@' {
-                        rest.copy_within(..keep, n);
-                        rest.split_at_mut(n).0.fill(blank);
-                    } else {
-                        rest.copy_within(n.., 0);
-                        rest.split_at_mut(keep).1.fill(blank);
-                    }
-                    // (That the row goes on from the one above is said by its first cell, whichever that is now.)
-                    rest.iter_mut().for_each(|cell| cell.style.flags &= !CONT);
-                    rest.first_mut().into_iter().for_each(|first| first.style.flags |= u16::from(goes_on) * CONT);
-                }
-                self.tidy(row);
+                self.shift(row, col, n, last == b'@', col);
                 self.screen.cursor.wrap = false;
             }
             (0, 0, b'L' | b'M') if (self.top..=self.bottom).contains(&row) => {
@@ -2113,6 +2101,9 @@ impl Term {
                 let answer = if mode == 2027 { 3 } else { set.map_or(0, |on| 2 - u8::from(on)) };
                 self.respond(&format!("\x1b[?{mode};{answer}$y"));
             }
+            // A mode that is not private: insert mode has a state (1 set, 2 reset), no other is known (0).
+            (0, b'$', b'p') if n == 4 => self.respond(&format!("\x1b[4;{}$y", 2 - u8::from(self.insert))),
+            (0, b'$', b'p') => self.respond(&format!("\x1b[{};0$y", self.arg(0, 0))),
             (0, b'!', b'p') => {
                 // A soft reset: modes and the scroll region back to how they start.
                 (self.insert, self.screen.autowrap, self.screen.cursor_shown, self.link) = (false, true, true, 0);

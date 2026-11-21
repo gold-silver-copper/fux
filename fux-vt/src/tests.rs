@@ -1362,6 +1362,24 @@ fn a_row_that_goes_on_from_the_one_above_still_does_when_characters_are_put_in_o
 }
 
 #[test]
+fn in_insert_mode_a_character_that_wraps_is_put_in_before_what_is_on_the_next_row_however_it_came_to_be_wide() {
+    // (An emoji wide from the start, and one that U+FE0F widens in the row's last column.)
+    for emoji in ["\u{1f600}", "\u{2764}\u{fe0f}"] {
+        let term = term(8, 2, &format!("\x1b[2;1HAB\x1b[1;8H\x1b[4h{emoji}"));
+        assert_eq!(term.plain(), format!("       \n{emoji}AB\n"), "{emoji}");
+    }
+}
+
+#[test]
+fn a_row_shortened_keeps_no_sign_of_where_its_end_was() {
+    // A wide character with no room leaves the row's last cell as no text. With a character taken
+    // out at the row's start (CSI P) that cell is no longer the last: put back at the end (CSI @),
+    // it is a blank like any other.
+    let term = term(8, 3, "aaaaaaa\u{65e5}\x1b[1;1H\x1b[P\x1b[@");
+    assert_eq!(term.lines().0.trim_end(), " aaaaaa \u{65e5}");
+}
+
+#[test]
 fn a_row_that_goes_on_from_the_one_above_still_does_when_a_character_is_printed_into_its_start_in_insert_mode() {
     // (CSI 4 h: what is printed pushes the rest of the row along, as CSI @ does before a character is written.)
     let narrow = term(10, 3, "aaaaaaaaaaabcde\x1b[2;1H\x1b[4hX");
@@ -1514,4 +1532,79 @@ fn a_picture_on_the_alternate_screen_keeps_its_column_on_a_screen_too_narrow_to_
         term.resize(cols, 4);
         assert_eq!(term.screen.pictures.first().map(|p| (p.row, p.col)), Some((0, 7)), "{cols} columns");
     }
+}
+
+#[test]
+fn a_picture_drawn_at_the_bottom_of_a_scroll_region_is_above_the_cursor_as_at_the_screens() {
+    // A screen of 10 rows with cells of 10 by 20 pixels: the picture is `height` pixels high and
+    // is drawn at row `at` (counted from 1) of the scroll region `region`.
+    let placed = |region: &str, at: usize, height: usize| {
+        let term = term(20, 10, &format!("{region}\x1b[{at};1H\x1bP0;0;0q\"1;1;10;{height}#0!10~-!10~\x1b\\"));
+        (term.screen.pictures.first().map(|p| (p.row, p.rows, p.off)), term.screen.cursor.row)
+    };
+    // The region is the whole screen: the picture's two rows are above the cursor.
+    assert_eq!(placed("", 10, 40), (Some((7, 2, 0)), 9));
+    // The region ends above the screen's last row (apt's progress bar sets such a one): the same.
+    assert_eq!(placed("\x1b[1;9r", 9, 40), (Some((6, 2, 0)), 8));
+    assert_eq!(placed("\x1b[3;9r", 9, 40), (Some((6, 2, 0)), 8));
+    // One as high as the room above the region's last row fills it; one with room below it scrolls nothing.
+    assert_eq!(placed("\x1b[3;9r", 6, 120), (Some((2, 6, 0)), 8));
+    assert_eq!(placed("\x1b[1;9r", 3, 40), (Some((2, 2, 0)), 4));
+    // One taller than the region lies across its edge when it scrolls, and goes; below the region
+    // nothing scrolls, and its rows past the screen's last are only not shown.
+    assert_eq!(placed("\x1b[1;9r", 9, 200), (None, 8));
+    assert_eq!(placed("\x1b[1;9r", 10, 40), (Some((9, 2, 0)), 9));
+}
+
+#[test]
+fn a_program_that_asks_about_a_mode_that_is_not_private_is_answered() {
+    // Insert mode (4) has a state, 2 for reset and 1 for set; no other is known (0), and each is
+    // answered by the number it was asked with, 0 too. Unanswered, the program waits.
+    let asked = term(8, 1, "\x1b[4$p\x1b[4h\x1b[4$p\x1b[4l\x1b[4$p\x1b[2$p\x1b[1049$p\x1b[0$p\x1b[$p");
+    let told = "\x1b[4;2$y\x1b[4;1$y\x1b[4;2$y\x1b[2;0$y\x1b[1049;0$y\x1b[0;0$y\x1b[0;0$y";
+    assert_eq!(String::from_utf8_lossy(&asked.peek().reply), told);
+}
+
+#[test]
+fn a_picture_kept_past_the_edge_of_a_smaller_screen_goes_with_what_is_erased_up_to_that_edge() {
+    // A picture at column 70 of 80 is kept when the screen has 40: each erase is fed there, and
+    // what is left is asked on 80 columns again.
+    let after = |erase: &str| {
+        let mut term = term(80, 4, "\x1b[1;71H\x1bPq~\x1b\\");
+        term.resize(40, 4);
+        term.feed(erase.as_bytes());
+        let narrow = term.screen.pictures.len();
+        term.resize(80, 4);
+        (narrow, term.screen.pictures.first().map(|p| (p.row, p.col)))
+    };
+    // The whole screen cleared (`clear` sends this) and its row erased to the end: it is gone, and stays gone.
+    assert_eq!(after("\x1b[H\x1b[2J"), (0, None));
+    assert_eq!(after("\x1b[1;5H\x1b[K"), (0, None));
+    // Not erased, it comes back: another row's erase, an erase that ends before its row's end and
+    // a character on its row's last cell do not reach it.
+    assert_eq!(after("\x1b[2;1H\x1b[K\x1b[1;5H\x1b[1K\x1b[1;40Hx"), (1, Some((0, 70))));
+    // On the alternate screen, one below the last row of a screen made lower: an erase up to the
+    // cursor leaves it, the whole screen cleared takes it.
+    let mut term = term(10, 6, "\x1b[?1049h\x1b[5;1H\x1bPq~\x1b\\");
+    term.resize(10, 2);
+    term.feed(b"\x1b[2;3H\x1b[1J");
+    assert_eq!(term.screen.pictures.first().map(|p| p.row), Some(4));
+    term.feed(b"\x1b[2J");
+    term.resize(10, 6);
+    assert_eq!(term.screen.pictures.first().map(|p| p.row), None);
+    // From the last row: the display erased from the cursor on takes it, whatever the cursor's
+    // column (the rows below are whole rows); the line erased leaves it, as the line's end is not the display's.
+    let below = |erase: &str| {
+        let mut term = self::term(10, 6, "\x1b[?1049h\x1b[5;1H\x1bPq~\x1b\\");
+        term.resize(10, 2);
+        term.feed(erase.as_bytes());
+        term.resize(10, 6);
+        term.screen.pictures.first().map(|p| p.row)
+    };
+    assert_eq!(
+        (below("\x1b[2;3H\x1b[J"), below("\x1b[2;1H\x1b[2K"), below("\x1b[2;1H\x1b[99X")),
+        (None, Some(4), Some(4))
+    );
+    // (Erased up to the first half of a wide character in the last cells, the display is erased to its end.)
+    assert_eq!(below("\x1b[2;9H\u{754c}\x1b[2;9H\x1b[1J"), None);
 }

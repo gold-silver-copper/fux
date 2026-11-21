@@ -157,6 +157,11 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
         ("\x1bA", "M-S-a"),
         ("\x1b[97:65;4u", "M-S-a"),
         ("\x1b[1080::98;5u", "C-b"),
+        // (And by itself where that key is no letter of ours: é on the key that is our `2`.)
+        ("\u{e9}", "\u{e9}"),
+        ("\x1b[233::50u", "\u{e9}"),
+        ("\u{c9}", "S-\u{e9}"),
+        ("\x1b[233:201:50;2u", "S-\u{e9}"),
         ("\x1b[5~", "pgup"),
         ("\x1b[57421u", "pgup"),
         ("\x1b[57399u", "0"),
@@ -285,6 +290,27 @@ fn when_the_tab_shown_goes_the_tab_shown_before_it_is_shown() {
 }
 
 #[test]
+fn when_the_tab_shown_goes_with_no_tab_shown_before_it_the_tab_now_in_its_place_is_shown() {
+    let after = |text: &str, existing: &[&str]| {
+        let mut layout = parse(text).expect("a layout");
+        layout.settle(existing.iter().map(|name| name.to_string()).collect());
+        layout.print()
+    };
+    let four = "  1 focus=1\n* 2 focus=2\n  3 focus=3\n  4 focus=4\n";
+    // Only the shown tab goes: the tab after it is in its place.
+    assert_eq!(after(four, &["1", "3", "4"]), "  1 focus=1\n* 3 focus=3\n  4 focus=4\n");
+    // An earlier tab goes with it: its place is counted among the tabs that stay, not among those that were.
+    assert_eq!(after(four, &["3", "4"]), "* 3 focus=3\n  4 focus=4\n");
+    // With a tab shown before it, that one is shown, wherever it is now.
+    let marked = "  1 focus=1\n* 2 focus=2\n  3 focus=3\n- 4 focus=4\n";
+    assert_eq!(after(marked, &["3", "4"]), "  3 focus=3\n* 4 focus=4\n");
+    // The last tab is shown and goes: the tab that is last now; a pane with no tab yet gets the place.
+    let last = "  1 focus=1\n  2 focus=2\n* 3 focus=3\n";
+    assert_eq!(after(last, &["1", "2"]), "  1 focus=1\n* 2 focus=2\n");
+    assert_eq!(after(last, &["2", "9"]), "  2 focus=2\n* 9 focus=9\n");
+}
+
+#[test]
 fn keys_have_the_names_of_their_files() {
     let name = |bytes: &[u8]| next(bytes, true, false);
     for (bytes, expected) in [
@@ -310,6 +336,11 @@ fn keys_have_the_names_of_their_files() {
         (b"\x1b[233;2u", "S-é"),
         ("\x1bÉ".as_bytes(), "M-S-é"),
         (b"\x1b[233;4u", "M-S-é"),
+        // A letter of another alphabet is named by the key it shares with ours, if the terminal tells
+        // it; a sign outside ASCII is no letter, and is itself in the new form as in the old.
+        (b"\x1b[1092::97u", "a"),
+        ("§".as_bytes(), "§"),
+        (b"\x1b[167::96u", "§"),
         (b"\x1b[200~", "paste-start"),
         (b"\x1b[?62;4c", "terminal:?62;4"),
     ] {
@@ -380,6 +411,10 @@ fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour(
     layout.edit(&["split", "col", "n", "beside", "a"]).expect("split");
     assert_eq!(layout.print(), "* row(col(a n) b) focus=n\n  d focus=d\n");
     assert!(layout.edit(&["split", "col", "n", "beside", "nobody"]).is_err());
+    // With no anchor named the focused pane is the anchor: a pane is put beside itself neither way.
+    let mut own = parse("* row(a b) focus=a\n").expect("a layout");
+    assert!(own.edit(&["split", "row", "a"]).is_err() && own.edit(&["split", "row", "a", "beside", "a"]).is_err());
+    assert_eq!(own.print(), "* row(a b) focus=a\n");
     // In a view with room for one of three, the one drawn is the one that has the keys.
     let crowded = parse("* row(a b c) focus=c\n").expect("a layout");
     let tiles = crowded.tabs.first().expect("a tab").tiles(Rect { x: 0, y: 0, w: 1, h: 3 });

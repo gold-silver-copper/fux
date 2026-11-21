@@ -44,12 +44,13 @@ const LOOK_EVERY: Duration = Duration::from_secs(2);
 
 struct Holder {
     term: Term,
-    master: Option<File>,
+    /// The pty, and with it what waits to be written to the program: hung up, both are gone, and
+    /// what is then read from `in` is dropped.
+    pty: Option<(File, Vec<u8>)>,
     /// The facts as they were written last, each in its file: one is written again only when it changes.
     facts: HashMap<&'static str, Option<Vec<u8>>>,
     /// How many rounds of writing had a notice: the number in the `notice` file.
     noticed: u32,
-    input: Vec<u8>,
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
     pictures: BTreeSet<u32>,
@@ -119,10 +120,9 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
     let command: String = command.chars().take(4096).collect();
     let mut holder = Holder {
         term: Term::new(usize::from(cols), usize::from(rows)),
-        master: Some(master),
+        pty: Some((master, Vec::new())),
         facts: HashMap::new(),
         noticed: 0,
-        input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: BTreeSet::new(),
         session,
@@ -175,7 +175,7 @@ impl Holder {
             // at once, cannot freeze its pane. Any other is shown this long after the last round, or
             // sooner once it has gone quiet: nothing more from it for a millisecond (whatever else
             // the holder was woken for meanwhile), and not because it is not being read.
-            let drawing = self.term.screen().sync && self.master.is_some();
+            let drawing = self.term.screen().sync && self.pty.is_some();
             let round = dirty.map(|first: Instant| match budget {
                 _ if drawing => left(first, DRAWING_MAX),
                 0 => left(published, PUBLISH_EVERY),
@@ -205,14 +205,14 @@ impl Holder {
                     return Ok(());
                 }
             }
-            let master = self.master.as_ref();
+            let waiting = self.pty.as_ref().map_or(0, |(_, waiting)| waiting.len());
             let read = if budget > 0 { sys::POLLIN } else { 0 };
-            let write = if self.input.is_empty() { 0 } else { sys::POLLOUT };
+            let write = if waiting == 0 { 0 } else { sys::POLLOUT };
             let wanted = [
                 (Some(ended.as_fd()), sys::POLLIN),
                 (Some(ctl.as_fd()), sys::POLLIN),
-                (master.map(AsFd::as_fd), read | write),
-                (master.map(|_| input.as_fd()), if self.input.len() < INPUT_MAX { sys::POLLIN } else { 0 }),
+                (self.pty.as_ref().map(|(master, _)| master.as_fd()), read | write),
+                (Some(input.as_fd()), if waiting < INPUT_MAX { sys::POLLIN } else { 0 }),
             ];
             let [ended_now, commanded, program, typed] =
                 sys::wait(wanted, wait).map_err(|e| format!("cannot wait: {e}"))?;
@@ -231,22 +231,21 @@ impl Holder {
                 heard = Instant::now();
                 dirty.get_or_insert(heard);
             }
-            if typed != 0 && self.master.is_some() {
-                let room = INPUT_MAX.saturating_sub(self.input.len()).min(buffer.len());
-                if let Some(Ok(n)) = buffer.get_mut(..room).map(|b| (&*input).read(b)) {
-                    self.input.extend_from_slice(buffer.get(..n).unwrap_or(&[]));
-                }
+            if typed != 0 {
+                let room = INPUT_MAX.saturating_sub(self.pty.as_ref().map_or(0, |pty| pty.1.len())).min(buffer.len());
+                let n = buffer.get_mut(..room).and_then(|b| (&*input).read(b).ok()).unwrap_or(0);
+                self.pty.iter_mut().for_each(|(_, waiting)| waiting.extend_from_slice(buffer.get(..n).unwrap_or(&[])));
             }
-            let typed = self.master.as_ref().filter(|_| !self.input.is_empty()).map(|mut m| m.write(&self.input));
-            if let Some(Ok(n)) = typed {
-                self.input.drain(..n.min(self.input.len()));
+            for (master, waiting) in self.pty.iter_mut().filter(|(_, waiting)| !waiting.is_empty()) {
+                let n = master.write(waiting).unwrap_or(0);
+                waiting.drain(..n.min(waiting.len()));
             }
             if ended_now != 0 {
                 let mut state = String::new();
                 let _ = ended.read_to_string(&mut state);
                 // What the program wrote last is still in the pty: read it, up to 4 MiB.
                 self.drain(4 << 20);
-                self.master = None;
+                self.pty = None;
                 // (What cannot be written of the last screen is said in the log.)
                 if let Err(e) = self.publish(Some(&state)) {
                     self.log(&format!("cannot write the last screen (the program {state}): {e}"));
@@ -295,7 +294,7 @@ impl Holder {
     /// them from that; says whether there were any.
     fn read_program(&mut self, buffer: &mut [u8], left: &mut usize) -> bool {
         let buffer = buffer.get_mut(..(*left).min(buffer.len())).unwrap_or_default();
-        let Some(n @ 1..) = self.master.as_ref().and_then(|mut m| m.read(buffer).ok()) else { return false };
+        let Some(n @ 1..) = self.pty.as_ref().and_then(|(m, _)| (&*m).read(buffer).ok()) else { return false };
         // What the colours are is in the session's `colours` file, two folders up, if a viewer
         // (or a person) wrote one: read again when it has changed, 16 KiB of it at most.
         self.told();
@@ -316,11 +315,12 @@ impl Holder {
     /// a clipboard, a directory, a notice) comes with `over` 0 alone, and is the caller's to write.
     fn collect(&mut self, over: usize) -> Out {
         let mut out = self.term.take(over);
-        if self.input.len() + out.reply.len() <= INPUT_MAX {
-            self.input.extend_from_slice(&out.reply);
-        } else {
-            out.refused
-                .push("an answer to the program was dropped: as many typed bytes as are kept were waiting for it");
+        match &mut self.pty {
+            Some((_, waiting)) if waiting.len() + out.reply.len() <= INPUT_MAX => waiting.extend_from_slice(&out.reply),
+            Some(_) => out
+                .refused
+                .push("an answer to the program was dropped: as many typed bytes as are kept were waiting for it"),
+            None => {}
         }
         out.refused.drain(..).for_each(|refused| self.log(refused));
         if !out.history.is_empty() || !out.styled.is_empty() || out.unhistory.max(out.unstyled) > 0 {
@@ -337,7 +337,7 @@ impl Holder {
             Some("kill") if words.next().is_none() => {
                 // Closing the master is the hangup. What the program and its
                 // children do about it is theirs to decide.
-                self.master = None;
+                self.pty = None;
                 return Ok(());
             }
             Some("resize") => {
@@ -353,7 +353,7 @@ impl Holder {
                 // What the program has written so far, it wrote for the old size:
                 // it is drawn at that size first (up to 1 MiB of it).
                 self.drain(1 << 20);
-                let Some(master) = &self.master else {
+                let Some((master, _)) = &self.pty else {
                     return Err("the program was hung up".into());
                 };
                 let size = Winsize { cols, rows, xpixel: cols * cell.0, ypixel: rows * cell.1 };
@@ -452,7 +452,7 @@ impl Holder {
         };
         let title = Some(term.title()).filter(|title| !title.is_empty()).map(|title| format!("{title}\n").into_bytes());
         let covered = [("screen.main", main), ("screen.main.styled", looks), ("title", title)];
-        let state = ended.unwrap_or(if self.master.is_some() { "running" } else { "hungup" });
+        let state = ended.unwrap_or(if self.pty.is_some() { "running" } else { "hungup" });
         let texts = [
             // How the screen's rows are lines of the pane's text: the number of the first row's
             // line, then the rows that go on from the row above.

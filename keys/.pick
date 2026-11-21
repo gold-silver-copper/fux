@@ -13,7 +13,7 @@ if [ "$1" = --tab ]; then
 fi
 list=$1; shift
 # (The list is in this pane's own folder from here on, and goes with it; if it cannot be moved there, mv has said why, and Enter closes the pane.)
-mv "$list" "$FUXN_PANE/list" || { read -r _; exit; }
+mv "$list" "$FUXN_PANE/list" || { rm -f "$list"; read -r _; exit; }
 list=$FUXN_PANE/list
 if finder=$({ command -v fzf || command -v sk || command -v fzy; } 2>/dev/null); then
   line=$("$finder" < "$list")

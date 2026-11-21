@@ -187,10 +187,9 @@ struct View {
     typed: Vec<u8>,
     /// When a key last went to a pane: its echo is looked for often for a moment after.
     keyed: Option<Instant>,
-    pasting: bool,
-    scripts: Vec<Child>,
-    /// The script the keys wait for, and when it started; `scripts` has the others that still run.
-    waiting: Option<(Child, Instant)>,
+    pasting: Option<bool>,
+    /// The key scripts that still run, each with when it started while the keys wait for it (two seconds).
+    scripts: Vec<(Child, Option<Instant>)>,
     ctl_path: PathBuf,
     ctl_line: Vec<u8>,
 }
@@ -242,7 +241,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         tty,
         out,
         unwritten: 0,
-        // (The terminal's size is known from the start: a key typed before the first frame is told it.)
         size: Winsize { cols: size.cols.min(SIZE_MAX as u16), rows: size.rows.min(SIZE_MAX as u16), ..size },
         front: Vec::new(),
         from: None,
@@ -273,9 +271,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         carry: Vec::new(),
         typed: Vec::new(),
         keyed: None,
-        pasting: false,
+        pasting: None,
         scripts: Vec::new(),
-        waiting: None,
         ctl_path,
         ctl_line: Vec::new(),
     };
@@ -285,7 +282,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // The terminal is asked once what its colours are (the two it draws with, its cursor's and its palette),
     // and last of all what it is: its answer to that ends the wait for the others.
     // (First a link is closed: whatever ran before may have left one open, and no cell here is part of it.)
-    const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
+    const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[2J\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
     view.write(START.to_string() + &asked + "\x1b[c");
     let result = view.run(&ctl, &wrote);
@@ -320,14 +317,12 @@ impl View {
             // in a shell does: they wait until it ends (and what it printed is
             // read, and what it changed is drawn). One that takes longer than
             // two seconds is left running and the keys go on.
-            self.scripts.retain_mut(|script| !matches!(script.try_wait(), Ok(Some(_))));
-            if let Some((child, since)) = &mut self.waiting {
-                if matches!(child.try_wait(), Ok(Some(_))) {
-                    self.waiting = None;
-                } else if since.elapsed() > SCRIPT_WAIT {
-                    self.message = "a key script is still running: keys no longer wait for it".into();
-                    self.scripts.extend(self.waiting.take().map(|(child, _)| child));
-                }
+            self.scripts.retain_mut(|(script, _)| !matches!(script.try_wait(), Ok(Some(_))));
+            for (_, since) in
+                self.scripts.iter_mut().filter(|(_, since)| since.is_some_and(|at| at.elapsed() > SCRIPT_WAIT))
+            {
+                self.message = "a key script is still running: keys no longer wait for it".into();
+                *since = None;
             }
             let n = (&*ctl).read(&mut buffer).unwrap_or(0);
             for line in crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), LINE_MAX) {
@@ -342,7 +337,7 @@ impl View {
             }
             // Files are looked at often just after something happened and seldom at rest.
             let timeout = match active.elapsed().as_millis() {
-                _ if self.waiting.is_some() => 2,
+                _ if self.waiting() => 2,
                 // (A key's echo is a millisecond or two away.)
                 _ if self.keyed.is_some_and(|at| at.elapsed() < ECHO_WAIT) => 1,
                 0..300 => 4,
@@ -376,11 +371,17 @@ impl View {
             if self.colours.as_ref().is_some_and(|(since, _)| since.elapsed() > Duration::from_secs(10)) {
                 self.told();
             }
-            if self.waiting.is_none() && !self.carry.is_empty() {
+            // (Keys wait for the first look at a workspace: one with no pane gets its shell there, and they are its.)
+            if !self.waiting() && !self.carry.is_empty() && self.looked.is_some() {
                 // When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
                 self.keys(heard.elapsed() >= ESCAPE_WAIT);
             }
         }
+    }
+
+    /// Whether the keys wait: for every script started that neither ended nor ran two seconds.
+    fn waiting(&self) -> bool {
+        self.scripts.iter().any(|(_, since)| since.is_some())
     }
 
     /// Another workspace is shown: what was read of the panes is forgotten, and with it what the
@@ -419,12 +420,9 @@ impl View {
         // of it now is looked at.)
         let has = self.focus.as_ref().map(|name| self.session.join(&self.workspace).join(name));
         self.leave(has.as_deref());
-        // (Whether its program wants a paste marked is read now, as who it is is for a key: a frame
-        // may be a while behind, when the terminal reads slowly.)
-        let wants_paste = has.as_deref().is_some_and(|pane| asks(pane).paste);
         let mut at = 0;
         while let Some(rest) = bytes.get(at..).filter(|rest| !rest.is_empty()) {
-            if self.pasting {
+            if let Some(marked) = self.pasting {
                 // Pasted text is never keys: it goes to the pane as it is, up to the end mark.
                 const END: &[u8] = b"\x1b[201~";
                 let end = rest.windows(END.len()).position(|window| window == END);
@@ -436,8 +434,8 @@ impl View {
                 if end.is_none() {
                     break;
                 }
-                self.pasting = false;
-                self.typed.extend_from_slice(if wants_paste { END } else { &[] });
+                self.pasting = None;
+                self.typed.extend_from_slice(if marked { END } else { &[] });
                 at += END.len();
                 continue;
             }
@@ -449,8 +447,10 @@ impl View {
             at += length;
             match name.split_once(':').unwrap_or((&name, "")) {
                 ("paste-start", _) => {
-                    self.pasting = true;
-                    self.typed.extend_from_slice(if wants_paste { raw } else { &[] });
+                    // (Whether its program wants a paste marked is read when the paste begins, and kept: it ends as it began.)
+                    let marked = has.as_deref().is_some_and(|pane| asks(pane).paste);
+                    self.pasting = Some(marked);
+                    self.typed.extend_from_slice(if marked { raw } else { &[] });
                 }
                 ("mouse", report) => self.mouse(report),
                 ("terminal", told) => {
@@ -484,7 +484,7 @@ impl View {
                 ("mode", _) => {}
                 _ => self.key(&name, raw, event, &layout),
             }
-            if self.waiting.is_some() || std::mem::take(&mut self.pause) {
+            if self.waiting() || std::mem::take(&mut self.pause) {
                 break;
             }
         }
@@ -567,13 +567,16 @@ impl View {
         let first = self.notices.insert(key(""), (None, false)).is_none();
         for name in layout.tabs.iter().flat_map(|tab| tab.panes()) {
             let file = directory.join(name).join("notice");
-            let stamp: Stamp = fs::metadata(&file).ok().filter(|m| m.is_file()).map(stamp);
-            if self.notices.get(&key(name)).is_some_and(|(was, _)| *was == stamp) {
+            let named: Stamp = fs::metadata(&file).ok().filter(|m| m.is_file()).map(stamp);
+            if self.notices.get(&key(name)).is_some_and(|(was, _)| *was == named) {
                 continue;
             }
+            // (Which notice it is is asked of the open file its words are read from; of its name where none opens.)
+            let file = sys::open(&file, false);
+            let stamp = file.as_ref().map_or(named, |f| f.metadata().ok().filter(|m| m.is_file()).map(stamp));
             self.notices.insert(key(name), (stamp, stamp.is_some() && self.focus.as_deref() != Some(name)));
-            if stamp.is_some() && !first {
-                let text = text(&file, 1200);
+            if file.is_ok() && stamp.is_some() && !first {
+                let text = String::from_utf8_lossy(&crate::read(file, 1200).0).into_owned();
                 let words = text.lines().next().unwrap_or_default().split_once(' ').map_or("", |(_, words)| words);
                 let words: String = words.chars().filter(|c| !c.is_control()).take(200).collect();
                 // (With the pane's name before them, the words cannot be taken for one of the
@@ -740,7 +743,7 @@ impl View {
 
     fn script(&mut self, file: &Path, layout: &Layout) {
         self.send();
-        if self.scripts.len() + usize::from(self.waiting.is_some()) >= SCRIPTS_MAX {
+        if self.scripts.len() >= SCRIPTS_MAX {
             self.message = format!("{SCRIPTS_MAX} key scripts are still running: {} was not started", file.display());
             return;
         }
@@ -761,7 +764,8 @@ impl View {
         // and its program is never drawn at one size and then at another.
         // (A terminal that says it has no columns or no rows has told no size, and a script is told
         // none: what it starts is as large as `fux start` makes a pane it is told no size for.)
-        let told = [("COLUMNS", self.size.cols, 80), ("LINES", self.size.rows, 24)];
+        let now = sys::winsize(&self.tty).unwrap_or(self.size);
+        let told = [("COLUMNS", now.cols.min(SIZE_MAX as u16), 80), ("LINES", now.rows.min(SIZE_MAX as u16), 24)];
         let [w, h] = told.map(|(name, size, or)| {
             let _ = if size > 0 { script.env(name, size.to_string()) } else { script.env_remove(name) };
             usize::from(if size > 0 { size } else { or })
@@ -779,8 +783,7 @@ impl View {
             script.env(name, format!("{}x{}", tile.w, tile.h));
         }
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
-            Ok(child) if self.waiting.is_none() => self.waiting = Some((child, Instant::now())),
-            Ok(child) => self.scripts.push(child),
+            Ok(child) => self.scripts.push((child, Some(Instant::now()))),
             Err(e) => self.message = format!("{}: {e}", file.file_name().unwrap_or_default().to_string_lossy()),
         }
     }
@@ -807,7 +810,7 @@ impl View {
     /// Looks at the files and draws what changed. Says whether anything did.
     fn frame(&mut self) -> io::Result<bool> {
         // One frame at a time: while the terminal is still reading the last, the next one waits
-        // (and is then of what the panes show by then), and the keys do not.
+        // (and is then of what the panes show by then), and the keys do not, but for a workspace's first frame.
         if self.unwritten > 0 {
             return Ok(false);
         }
@@ -942,14 +945,13 @@ impl View {
                 (_, state) => format!(" {state} "),
             };
             let state = cells(&state, colour(11, Some(236), 0));
-            let room = state.len().min(body.w);
-            put(&mut back, w, body.x + body.w - room, body.y + body.h - 1, room, &state);
-            // What the focused pane's program copies goes to this terminal's clipboard,
-            // once: when its `clipboard` file is another than at the last look, the pane
-            // having had the focus then too. Coming to a pane only notes what is there.
-            if focused {
-                // (Which copy it is is asked of the open file its bytes are then read from: one that
-                // lands between a look at the name and a reading of it would be sent twice.)
+            let (room, y) = (state.len().min(body.w), body.y + body.h - 1);
+            put(back.get_mut(y * w..(y + 1) * w).unwrap_or_default(), body.x + body.w - room, room, &state);
+            // What the focused pane's program copies goes to this terminal's clipboard, once: when its `clipboard`
+            // file is another than at the last look, the pane having had the focus then too. Coming to a pane only
+            // notes what is there. (The name's stamp says whether to open it. Which copy it is is asked of the open
+            // file its bytes are then read from: one that lands between the two would be sent twice.)
+            if focused && self.copied.as_ref().is_none_or(|(at, old)| *at != pane_directory || *old != clipboard) {
                 let file = sys::open(pane_directory.join("clipboard"), false);
                 let stamp: Stamp = file.as_ref().ok().and_then(|file| file.metadata().ok()).map(stamp);
                 let seen = self.copied.replace((pane_directory.clone(), stamp));
@@ -958,6 +960,8 @@ impl View {
                 {
                     out.push_str(&format!("\x1b]52;c;{}\x07", base64_encode(&bytes)));
                 }
+            }
+            if focused {
                 title = Some(pane.title.clone()).filter(|title| !title.is_empty());
                 if pane.screen.cursor_shown && pane.screen.cursor.row < body.h && pane.screen.cursor.col < body.w {
                     let (row, col) = (body.y + pane.screen.cursor.row + 1, body.x + pane.screen.cursor.col + 1);
@@ -1053,8 +1057,8 @@ impl View {
         // A workspace that has no pane when it is first shown is not left blank: the keys'
         // `.empty` is run (a new shell, by default). One whose last pane ends while it is
         // shown stays empty, and says how to go on.
-        // (No pane is what the layout says, not what there was room to draw. A script that is
-        // being waited for is still waited for: the keys typed after it are its workspace's.)
+        // (No pane is what the layout says, not what there was room to draw. The keys typed after
+        // a script that chose this workspace wait for `.empty` too: they are its workspace's.)
         if first_look {
             let first = self.keys.join(".empty");
             if layout.tabs.is_empty() && wrong.is_none() && first.is_file() {
@@ -1071,16 +1075,18 @@ impl View {
             None if layout.tabs.is_empty() && self.message.is_empty() => (&hint, colour(11, Some(236), 0)),
             None => (&self.message, colour(11, Some(236), 0)),
         };
+        // (The last row, the bar's and a notice's, is lent apart from the rows above it, the keys': what is given
+        // one cannot write on the other, nor past a row's end.)
         let (last, mut covered) = (h.saturating_sub(1), None);
+        let (above, foot) = back.split_at_mut_checked(last * w).unwrap_or_default();
         if !note.is_empty() && self.menu.is_none() {
             let note = cells(&format!(" {note} "), style);
             let room = note.len().min(w.saturating_sub(1));
-            put(&mut back, w, w.saturating_sub(room + 1), last, room, &note);
+            put(foot, w.saturating_sub(room + 1), room, &note);
         }
         if let Some((directory, entries)) = &self.menu {
-            // While a prefix is in use: the bar over the last row (the
-            // workspace, its tabs, the keys typed so far), and above it, in
-            // the corner, the keys that can follow.
+            // While a prefix is in use: the bar over the last row (the workspace, its tabs, the keys typed so far),
+            // and above it, in the corner, the keys that can follow.
             let (bar, panel) = (colour(250, Some(236), 0), colour(255, Some(238), 0));
             let path = directory.strip_prefix(&self.keys).unwrap_or(Path::new(""));
             let typed = path.iter().map(|key| key.to_string_lossy()).collect::<Vec<_>>().join(" ");
@@ -1104,7 +1110,7 @@ impl View {
                 cells(&format!(" {note} "), style)
             };
             let said = right.len().min(w * 3 / 4);
-            put(&mut back, w, 0, last, w, &vec![Cell::blank(bar); w]);
+            foot.fill(Cell::blank(bar));
             // As many tabs as fit, the one shown among them.
             let room = w.saturating_sub(said + 2);
             let fits = |first: usize| {
@@ -1112,8 +1118,8 @@ impl View {
             };
             let first = (0..=layout.current).find(|first| fits(*first)).unwrap_or(layout.current);
             left.extend(labels.iter().skip(first).flatten());
-            put(&mut back, w, 0, last, room, &left);
-            put(&mut back, w, w.saturating_sub(said + 1), last, said, &right);
+            put(foot, 0, room, &left);
+            put(foot, w.saturating_sub(said + 1), said, &right);
             // The keys, under their headings; what does not fit above the bar is counted, not shown.
             let key_width = entries.iter().map(|(key, ..)| key.chars().count()).max().unwrap_or(0);
             let (mut lines, mut heading) = (vec![(typed, BOLD)], "");
@@ -1139,17 +1145,18 @@ impl View {
                 boxes.push((part, width, w - right));
                 right = rest;
             }
-            // The last line shown gives its place to the count, so it is counted too.
+            // The last line shown gives its place to the count, so is counted too; a count with no room is a mark.
             let over = lines.len().saturating_sub(boxes.len() * last.max(1));
-            let more = cells(&format!(" ▼ {} more", over + 1), Style { flags: DIM, ..panel });
+            let more = format!(" ▼ {} more", over + 1);
+            let fits = boxes.last().is_some_and(|(_, width, _)| more.chars().count() <= *width);
+            let more = cells(if fits { &more } else { "▼" }, Style { flags: DIM, ..panel });
             let height = boxes.first().map_or(0, |(part, ..)| part.len());
             for (n, (part, width, from)) in boxes.iter().enumerate().rev() {
-                for i in 0..height {
-                    let y = last.saturating_sub(height) + i;
+                for (i, row) in above.chunks_exact_mut(w.max(1)).skip(last.saturating_sub(height)).enumerate() {
                     let hides = n + 1 == boxes.len() && over > 0 && i + 1 == height;
                     let line = if hides { Some(&more) } else { part.get(i) };
-                    put(&mut back, w, right + from, y, *width, &vec![Cell::blank(panel); *width]);
-                    put(&mut back, w, right + from, y, *width, line.map_or(&[], |line| line));
+                    put(row, right + from, *width, &vec![Cell::blank(panel); *width]);
+                    put(row, right + from, *width, line.map_or(&[], |line| line));
                 }
             }
             (cursor, cursor_colour, covered) = (String::new(), None, Some((right, last.saturating_sub(height))));
@@ -1299,23 +1306,20 @@ fn address(table: &[String], number: u16) -> Option<&str> {
     table.get(usize::from(number).checked_sub(1)?).map(String::as_str)
 }
 
-/// Puts cells on row `y` from column `x`, at most `room` of them and none
-/// past the screen's width `w`; a wide character that would be cut is a blank.
-fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Cell]) {
-    let room = room.min(w.saturating_sub(x));
+/// Puts cells on a row from column `x`, at most `room` of them and none past
+/// the row's end, which is all it can reach; a wide character that would be cut is a blank.
+fn put(row: &mut [Cell], x: usize, room: usize, cells: &[Cell]) {
+    let room = room.min(row.len().saturating_sub(x));
     // What is written over the right half of a wide character takes its left half with it.
     if room > 0
-        && x > 0
-        && back.get(y * w + x).is_some_and(|under| under.ch == '\0')
-        && let Some(left) = back.get_mut(y * w + x - 1)
+        && row.get(x).is_some_and(|c| c.ch == '\0')
+        && let Some(left) = row.get_mut(x.wrapping_sub(1))
     {
         *left = Cell::blank(left.style);
     }
-    for (i, cell) in cells.iter().enumerate().take(room) {
+    for (i, (slot, cell)) in row.iter_mut().skip(x).zip(cells).take(room).enumerate() {
         let cut = i + 1 == room && cells.get(i + 1).is_some_and(|next| next.ch == '\0');
-        if let Some(slot) = back.get_mut(y * w + x + i) {
-            *slot = if cut { Cell::blank(cell.style) } else { *cell };
-        }
+        *slot = if cut { Cell::blank(cell.style) } else { *cell };
     }
 }
 

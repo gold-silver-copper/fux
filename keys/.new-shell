@@ -5,5 +5,6 @@
 IFS= read -r d 2>/dev/null < "$FUXN_PANE/cwd" && cd "$d" 2>/dev/null
 [ $# -lt 2 ] || export COLUMNS="${2%x*}" LINES="${2#*x}"
 p=$(fux start -- "$FUXN_KEYS/.shell") || exit
-if [ $# -eq 2 ] && [ -n "$FUXN_PANE" ]; then fux layout split "$1" "${p##*/}" beside "${FUXN_PANE##*/}"
-else fux layout pane "${p##*/}"; fi
+# (A pane to split from that has gone meanwhile: the layout says so, and the new shell is shown in its own tab.)
+[ $# -eq 2 ] && [ -n "$FUXN_PANE" ] && fux layout split "$1" "${p##*/}" beside "${FUXN_PANE##*/}" ||
+  fux layout pane "${p##*/}"
