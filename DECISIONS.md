@@ -1333,6 +1333,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     line before a command prints); a mark beyond the cut is at the cut
     until the shell draws its prompt again; a shell that does not redraw
     after a resize leaves its command cut.
+- **D92. A picture that does not fit its tile is drawn: the part inside**
+  (message 23, step 7; the owner: no placeholder, done properly). The
+  holder still passes a picture through as a file. The viewer, where a
+  picture does not fit, reads the sixel into pixels (`src/sixel.rs`,
+  which names nothing else of the program and compiles alone), cuts the
+  rectangle its visible cells cover and writes that as a sixel of its
+  own; a picture that fits is passed on unread, as before. So a wider
+  tile shows it whole again.
+  - A picture stays while a row of it is on the screen: off the top it
+    goes row by row, and `pictures` then has a ROW below 0 (a reader of
+    unsigned numbers skips the line, which is what happened before). A
+    resize keeps a picture that is now wider than the screen.
+  - Bounds: 4 MiB read and 4 MiB written; a part of at most its cells
+    times the cell's pixels and 2^23 pixels; registers 0 to 255; work
+    counted in pixels painted, not on a clock, so a picture is refused
+    or drawn the same on every machine. A refusal is said once in the
+    viewer's corner (the pane's `log` has one writer, its holder).
+  - A part is written with square pixels and unset pixels left unset
+    (`P2=1`), so no terminal fills the last band's unused rows over the
+    line below the tile. No picture is drawn on the terminal's last row.
+  - A picture's height is its lowest painted pixel, not its last band of
+    six (it took a row too many).
 
 ## The old fux3's bugs: which classes are gone
 
