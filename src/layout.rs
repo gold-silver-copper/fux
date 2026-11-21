@@ -434,21 +434,17 @@ impl Layout {
             }
             ["arrange", way @ ("row" | "col" | "grid" | "main")] => {
                 let tab = self.tab_mut()?;
-                let mut panes = tab.panes().into_iter().map(|p| (Node::Pane(p.to_string()), 1));
+                let panes = tab.panes();
+                let parts = |names: &[&str]| names.iter().map(|&name| (Node::Pane(name.into()), 1)).collect();
                 tab.root = match *way {
-                    "row" | "col" => Node::Split(*way == "row", panes.collect()),
+                    "row" | "col" => Node::Split(*way == "row", parts(&panes)),
                     "main" => {
-                        let first = panes.next();
-                        let rest = (Node::Split(false, panes.collect()), 1);
-                        Node::Split(true, first.map(|first| (first.0, 2)).into_iter().chain([rest]).collect())
+                        let (&first, rest) = panes.split_first().ok_or("there are no panes here")?;
+                        Node::Split(true, vec![(Node::Pane(first.into()), 2), (Node::Split(false, parts(rest)), 1)])
                     }
                     _ => {
-                        let panes: Vec<(Node, u32)> = panes.collect();
-                        let across = (1..).find(|n| n * n >= panes.len()).unwrap_or(1);
-                        Node::Split(
-                            false,
-                            panes.chunks(across).map(|row| (Node::Split(true, row.to_vec()), 1)).collect(),
-                        )
+                        let across = panes.len().saturating_sub(1).isqrt() + 1;
+                        Node::Split(false, panes.chunks(across).map(|row| (Node::Split(true, parts(row)), 1)).collect())
                     }
                 }
                 .filter(&mut |_| true)

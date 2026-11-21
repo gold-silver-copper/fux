@@ -335,3 +335,28 @@ fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour(
     let tiles = crowded.tabs.first().expect("a tab").tiles(Rect { x: 0, y: 0, w: 1, h: 3 });
     assert_eq!(tiles.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["c"]);
 }
+
+#[test]
+fn arrange_puts_a_tabs_panes_in_a_row_a_column_a_grid_or_one_beside_the_rest() {
+    let arranged = |text: &str, way: &str| {
+        let mut layout = parse(text).expect("a layout");
+        layout.edit(&["arrange", way]).expect("arrange");
+        layout.print()
+    };
+    let five = "* row(a col(b:3 c) d e) focus=c\n";
+    assert_eq!(arranged(five, "row"), "* row(a b c d e) focus=c\n");
+    assert_eq!(arranged(five, "col"), "* col(a b c d e) focus=c\n");
+    assert_eq!(arranged(five, "grid"), "* col(row(a b c) row(d e)) focus=c\n");
+    assert_eq!(arranged(five, "main"), "* row(a:2 col(b c d e)) focus=c\n");
+    // A grid is as many across as it takes to be no taller than wide; a row of one is that pane.
+    assert_eq!(arranged("* row(a b c d) focus=a\n", "grid"), "* col(row(a b) row(c d)) focus=a\n");
+    assert_eq!(
+        arranged("* col(a b c d e f g h i j) focus=a\n", "grid"),
+        "* col(row(a b c d) row(e f g h) row(i j)) focus=a\n"
+    );
+    assert_eq!(arranged("* col(a b c) focus=a\n", "grid"), "* col(row(a b) c) focus=a\n");
+    assert_eq!(arranged("* col(a b) focus=b\n", "main"), "* row(a:2 b) focus=b\n");
+    for way in ["row", "col", "grid", "main"] {
+        assert_eq!(arranged("* a focus=a\n", way), "* a focus=a\n");
+    }
+}
