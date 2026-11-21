@@ -367,16 +367,12 @@ impl Holder {
         let mut words = line.split_whitespace();
         match words.next() {
             // Anyone may have something noticed: the words after `notify`, as a program's own notice.
-            Some("notify") => {
-                self.term.notice(line.trim_start().strip_prefix("notify").unwrap_or_default().trim());
-                self.collect(READ_BUDGET);
-                Ok(())
-            }
+            Some("notify") => self.term.notice(line.trim_start().strip_prefix("notify").unwrap_or_default().trim()),
             Some("kill") if words.next().is_none() => {
                 // Closing the master is the hangup. What the program and its
                 // children do about it is theirs to decide.
                 self.master = None;
-                Ok(())
+                return Ok(());
             }
             Some("resize") => {
                 let numbers: Vec<u16> = words.map(|word| word.parse().unwrap_or(0)).collect();
@@ -402,11 +398,11 @@ impl Holder {
                     self.term.told().cell = (usize::from(cell.0), usize::from(cell.1));
                 }
                 self.term.resize(usize::from(cols), usize::from(rows));
-                self.collect(READ_BUDGET);
-                Ok(())
             }
-            _ => Err("not a command (kill, resize COLS ROWS, notify TEXT)".into()),
+            _ => return Err("not a command (kill, resize COLS ROWS, notify TEXT)".into()),
         }
+        self.collect(READ_BUDGET);
+        Ok(())
     }
 
     /// Appends the lines that scrolled off to `history`, and the same lines with their looks to
