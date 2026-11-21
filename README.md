@@ -51,7 +51,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 | `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE`, `WORKSPACE/PANE`, or `WORKSPACE/` or nothing for the first free number, 1 to 9999 (no workspace named: below). No program: `$SHELL`, else `/bin/sh`. A pane whose holder is gone is started again in place; a start that fails leaves the folder, with a `log` that says why |
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. Wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
-| `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
+| `fux layout [EDIT…]` | prints the workspace's layout as the folders make it (and writes it, if they changed it), or edits it (below) |
 | `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it, read it, wait, get a command's output and exit code, tell a live pane from a dead one, end and clean up, in plain sh, with the hazards said. It is `src/help-agents.txt`, in the binary; every command on it is run, in order, by `tools/help-agents.sh` (CI, both systems) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
@@ -365,17 +365,17 @@ viewers of the same workspace share it, focus included:
 
 One tab a line. `row(…)` puts its parts side by side, `col(…)` stacks them,
 `:N` is a part's share (1 to 10000; rows and columns nest at most 32 deep), `*` marks the tab shown and `-` the tab shown before it, `focus=` is the pane that
-gets the keys. When the tab shown goes (its last pane ends), the `-` tab is
-shown, as `cd -` would (a tab goes when its last pane's folder is removed,
+gets the keys. When the tab shown goes, the `-` tab is shown, as `cd -` would,
+or with none the tab now in its place (a tab goes when its last pane's folder is removed,
 not when a program merely ends); an edit that ends on another tab moves the mark. It
 is in the file, so two viewers agree. A folder the file does not place gets a
 tab of its own; a name with no folder is dropped. A part there is no room
-for (more parts than cells) is hidden. The focused pane gets a cell even
+for (each needs a cell, and one for the line before the next) is hidden. The focused pane gets a cell even
 then. A workspace shows at most 1,000 panes. `fux layout EDIT` makes
 one edit:
 
 `split row|col PANE [beside ANCHOR]` (put PANE beside or below ANCHOR, defaulting to the focused pane) ·
-`pane PANE` (give it the keys, and show its tab) · `focus left|right|up|down|next|prev` · `tab next|prev|N|-` (`-`: the tab shown before) · `break`
+`pane PANE` (give it the keys, and show its tab) · `focus left|right|up|down|next|prev` · `tab next|prev|N|-` (N from 1; `-`: the tab shown before) · `break`
 (the focused pane to its own tab) · `swap next|prev` · `size row|col +N|-N` ·
 `rotate` · `arrange row|col|grid|main`
 
@@ -433,7 +433,7 @@ an upgrade, remove the folder, or copy `keys/` from the source over it, to
 get the new defaults). A key that has a file
 of its name runs it (a file that cannot be run says so in the corner). A key that has a directory opens it as a
 menu (each script's second line, `# what it does`, is its entry) and the next
-key is looked up there. Any other key goes to the program. So the prefix is
+key is looked up there. Any other key, with no menu open, goes to the program. So the prefix is
 only a directory: `keys/C-b/v` is "C-b, then v", and `keys/M-left` would be
 Alt-Left with no prefix.
 
@@ -498,7 +498,7 @@ A script's third line may be `# group: NAME` (and so may the second line of
 an `.about`): the menu lists keys under their group's name, groups in
 alphabetical order, keys with no group first (the menu reads a script's
 first kilobyte for its caption and group). A menu taller than the
-terminal goes on in a second column.
+terminal goes on in more columns; what has no room is counted in its last line.
 
 There is no copy mode: `C-b c` puts the pane's older history, its history and
 its screen in one private file and opens it in `$EDITOR` (which may hold
@@ -575,14 +575,14 @@ back: a pane closed meanwhile (dropped), a pane opened meanwhile (it keeps
 its own tab), and a share that another viewer or script changed in the old
 tab while the pane was out, which the kept line overwrites. If the pane's
 old neighbours are in different tabs by then, the kept line replaces the
-first tab that holds one of them. Closing the pane
-forgets the line; a pane named `row` or `col` confuses the match.
+first tab that holds one of them; with none left, the pane keeps its tab. Closing the pane
+forgets the line.
 
 **The look** is fux 1's. A pane has every cell but the one-cell line between it
 and its neighbour (`│`, `─`, a tee or a cross where lines meet); the lines
 touching the focused pane are green. There are no titles and no bar: while a
 prefix is in use, the last row shows the workspace, its tabs and the keys
-typed so far, and the corner above it the keys that can follow. A message
+typed so far (or a message), and the corner above it the keys that can follow. A message
 (a script's words, what is wrong with `layout`) sits in the bottom right
 corner until the next key. A pane whose program ended, or whose holder is
 gone, says so in the corner of its own last row (`exited 0`, `lost`).
@@ -729,8 +729,8 @@ fux adds nothing to stop these. What happens is what Unix does:
 - **Don't edit `layout` by hand just as panes come or go**: the viewer writes
   the file then too, and one of the two edits is lost. `fux layout` takes a
   lock and loses none.
-- **Don't write nonsense to `layout`**: the viewer says what is wrong in the corner
-  of its last row and shows every pane as a tab until it is fixed.
+- **Don't write nonsense to `layout`** (or more than 160 KiB): the viewer says what is wrong in the corner
+  of its last row and shows every pane as a tab, and `fux layout` refuses, until it is fixed.
 
 ## Linux and macOS
 
@@ -749,7 +749,7 @@ Differences are left as they are:
 
 ## Coming from tmux
 
-`ls "$(fux dir)"` lists the workspaces (tmux's sessions); `fux view NAME`
+`ls -d "$(fux dir)"/*/` lists the workspaces (tmux's sessions); `fux view NAME`
 attaches to one and `C-b d` detaches; a workspace with no pane gets a shell
 each time a viewer comes to show it (`keys/.empty` does that, and is yours to change; a
 keys directory an earlier build wrote has none, and nothing is started), and
