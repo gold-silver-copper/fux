@@ -458,7 +458,7 @@ impl Layout {
 /// words only settles it against the panes there; says how it reads then.
 /// The workspace's folder is locked meanwhile, so two edits never mix.
 pub fn command(workspace: &Path, words: &[&str]) -> Result<Layout, String> {
-    let lock = fs::File::open(workspace).map_err(|e| format!("{}: {e}", workspace.display()))?;
+    let lock = crate::sys::open(workspace, false).map_err(|e| format!("{}: {e}", workspace.display()))?;
     lock.lock().map_err(|e| format!("{}: {e}", workspace.display()))?;
     let (old, mut layout, wrong) = Layout::load(workspace);
     wrong.map_or(Ok(()), Err)?;

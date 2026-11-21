@@ -1,0 +1,5 @@
+disallowed-methods = [
+    { path = "std::fs::File::open", reason = "a FIFO there holds the caller: use sys::open / read / text" },
+    { path = "std::fs::read", reason = "a FIFO there holds the caller: use sys::open / read / text" },
+    { path = "std::fs::read_to_string", reason = "a FIFO there holds the caller: use sys::open / read / text" },
+]

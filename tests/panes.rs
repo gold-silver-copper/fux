@@ -1,5 +1,5 @@
 //! The program itself, driven the way a person drives it: with files.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::disallowed_methods)]
 
 use fux_vt::sixel;
 use std::fs;
@@ -1779,6 +1779,29 @@ fn a_fifo_where_a_named_pane_would_be_is_refused_at_once() {
             start.kill().unwrap();
             start.wait().unwrap();
             panic!("after 4 s the start was still waiting for the FIFO");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(!status.success());
+}
+
+#[test]
+fn a_fifo_where_a_workspace_would_be_is_refused_at_once() {
+    // A FIFO nobody reads or writes, under a workspace's name: it is no folder of panes, and
+    // `fux layout` says so without waiting for its other end.
+    let session = Session::new("fifoworkspace");
+    fs::create_dir_all(&session.0).unwrap();
+    assert!(Command::new("mkfifo").arg(session.0.join("main")).status().unwrap().success());
+    let mut layout = session.fux().arg("layout").stdout(std::process::Stdio::null()).spawn().unwrap();
+    let begun = Instant::now();
+    let status = loop {
+        if let Some(status) = layout.try_wait().unwrap() {
+            break status;
+        }
+        if begun.elapsed() > Duration::from_secs(4) {
+            layout.kill().unwrap();
+            layout.wait().unwrap();
+            panic!("after 4 s the layout was still waiting for the FIFO");
         }
         std::thread::sleep(Duration::from_millis(20));
     };

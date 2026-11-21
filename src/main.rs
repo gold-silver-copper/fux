@@ -180,7 +180,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     // gone, however it went. We take it here and the holder inherits it, and the directory with it: entered
     // first, it is the one that is locked and the one the holder works in, even if it is renamed meanwhile.
     let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
-    let lock = std::env::set_current_dir(&dir).and_then(|()| File::open(".")).map_err(|e| fail(&dir, e))?;
+    let lock = std::env::set_current_dir(&dir).and_then(|()| sys::open(".", false)).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
         Ok(()) => launch(&session, &dir, &cwd, lock, sections.next().unwrap_or_default()),
         Err(_) => Err("a holder already keeps this pane".into()),
@@ -219,7 +219,7 @@ fn wait(args: &[OsString]) -> Result<(), String> {
     };
     // The holder locks its directory for as long as it lives. The directory is entered first:
     // the lock and what is read are of that same directory, even if it is renamed meanwhile.
-    let entered = std::env::set_current_dir(dir).and_then(|()| File::open("."));
+    let entered = std::env::set_current_dir(dir).and_then(|()| sys::open(".", false));
     let lock = entered.and_then(|lock| lock.lock_shared().map(|()| lock));
     let lock = lock.map_err(|e| format!("{}: {e}", Path::new(dir).display()))?;
     // What became of the program is in `state`, and its number in `status`: the holder wrote
