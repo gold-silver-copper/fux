@@ -402,8 +402,6 @@ pub struct Term {
     screen: Screen,
     told: Told,
     other: Vec<Vec<Cell>>,
-    /// The cursor's row on the main screen while the alternate one is shown.
-    main_row: usize,
     top: usize,
     bottom: usize,
     autowrap: bool,
@@ -541,7 +539,6 @@ impl Term {
             screen: Screen { cols, rows, grid: grid.clone(), cursor_shown: true, ..Screen::default() },
             told: Told { cell: (10, 20), ..Told::default() },
             other: grid,
-            main_row: 0,
             top: 0,
             bottom: rows - 1,
             autowrap: true,
@@ -675,7 +672,7 @@ impl Term {
     /// before the cursor; and whether every wide character on both screens has both its cells.
     #[cfg(test)]
     pub fn lines(&self) -> (String, String, bool) {
-        let (main, row) = (self.main(), if self.screen.alt { self.main_row } else { self.screen.cursor.row });
+        let (main, row) = (self.main(), if self.screen.alt { self.saved[0].row } else { self.screen.cursor.row });
         let (mut all, mut before, mut open) = (String::new(), String::new(), self.tail);
         for (y, (cells, goes_on)) in with_next(main).enumerate() {
             if y == row {
@@ -1346,7 +1343,6 @@ impl Term {
             self.cluster = None;
             std::mem::swap(&mut self.screen.pictures, &mut self.other_pictures);
             self.screen.alt = alt;
-            self.main_row = self.screen.cursor.row;
         }
         if alt && clear {
             self.clear();
@@ -1390,12 +1386,12 @@ impl Term {
         // Places on the main screen that stay on their character, each with whether it waits to
         // wrap at its row's end. First the cursor, whose line is taken to reach as far as it
         // stands (behind the alternate screen, the saved cursor is the one that will come back);
-        // then the saved cursor, the row to come back to, the character printed last, and two
-        // corners of each picture (the upper one on the highest of its rows that is kept still).
+        // then the saved cursor, the character printed last, and two corners of each picture (the
+        // upper one on the highest of its rows that is kept still).
         let waits = |cursor: Cursor| (cursor.place().0, cursor.place().1, cursor.wrap);
         let (saved, cursor) = (waits(self.saved.first().copied().unwrap_or_default()), waits(self.screen.cursor));
         let last = self.cluster.and_then(|last| last.at).filter(|_| !self.screen.alt);
-        let mut places = vec![if self.screen.alt { saved } else { cursor }, saved, (self.main_row, 0, false)];
+        let mut places = vec![if self.screen.alt { saved } else { cursor }, saved];
         places.push(last.map_or(cursor, |(row, col, ..)| (row, col, false)));
         // (A picture's rows below the screen's last are counted on from the last.)
         let low = |p: &Picture| (p.row + p.rows - 1).min(main.len().saturating_sub(1));
@@ -1406,7 +1402,7 @@ impl Term {
         places.iter_mut().for_each(|place| place.0 += held);
         // (Of a picture's rows that are off the top, the last resize's are among them.)
         for (i, picture) in main_pictures.iter().enumerate() {
-            places.get_mut(4 + 2 * i).into_iter().for_each(|place| place.0 -= picture.off.min(held));
+            places.get_mut(3 + 2 * i).into_iter().for_each(|place| place.0 -= picture.off.min(held));
         }
         let old: Vec<Vec<Cell>> = lent.iter().flat_map(|lent| &lent.rows).chain(main).cloned().collect();
         // While a shell reads a command, the line being typed is cut or padded at a new width,
@@ -1437,8 +1433,7 @@ impl Term {
         let at = |i: usize| (place(i).0, if place(i).2 { place(i).1.min(cols - 1) } else { place(i).1 });
         // Blank rows below the cursor go first; a row with something on it is never dropped:
         // rows go to history from the top, and the cursor with them if text below it needs the room.
-        let lowest = at(0).0.max(if self.screen.alt { at(2).0 } else { 0 });
-        while wrapped.len() > rows.max(lowest + 1) && wrapped.last().is_some_and(|row| row.iter().all(|c| *c == blank))
+        while wrapped.len() > rows.max(at(0).0 + 1) && wrapped.last().is_some_and(|row| row.iter().all(|c| *c == blank))
         {
             wrapped.pop();
         }
@@ -1483,7 +1478,7 @@ impl Term {
         // only not shown.
         let mut kept: Vec<Picture> = Vec::new();
         for (i, picture) in main_pictures.iter().enumerate() {
-            let ((row, col, _), (below, under, _)) = (place(4 + 2 * i), place(5 + 2 * i));
+            let ((row, col, _), (below, under, _)) = (place(3 + 2 * i), place(4 + 2 * i));
             let below = below + picture.row + picture.rows - 1 - low(picture);
             let back = picture.off.min(held);
             let (off, gone) = (picture.off - back, up.saturating_sub(row));
@@ -1498,7 +1493,7 @@ impl Term {
         still.retain(|p| p.row < rows && p.col < cols);
         // Nothing was changed until here: now the new state takes the old one's place.
         let fit = |(row, col): (usize, usize)| (row.saturating_sub(up).min(rows - 1), col);
-        let ((row, col), saved_at, main_row) = (fit(at(0)), fit(at(1)), fit(at(2)).0);
+        let ((row, col), saved_at) = (fit(at(0)), fit(at(1)));
         if let Some(slot) = self.saved.first_mut() {
             (slot.row, slot.col, slot.wrap) = (saved_at.0, saved_at.1.min(cols - 1), saved_at.1 >= cols);
         }
@@ -1508,7 +1503,7 @@ impl Term {
         self.interrupt();
         if self.screen.alt {
             (self.screen.grid, self.other, self.screen.pictures, self.other_pictures) = (cut, wrapped, still, kept);
-            (self.main_row, self.cluster) = (main_row, None);
+            self.cluster = None;
             (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap) =
                 (self.screen.cursor.row.min(rows - 1), self.screen.cursor.col.min(cols - 1), false);
         } else {
@@ -1517,8 +1512,8 @@ impl Term {
             let here = (row, col.min(cols - 1), col >= cols);
             (self.screen.cursor.row, self.screen.cursor.col, self.screen.cursor.wrap) = here;
             // The character printed last is where it was in the text: what comes next may join it.
-            let (at_row, at_col) = fit(at(3));
-            self.cluster = last.filter(|_| at(3).0 >= up).and_then(|(.., under)| {
+            let (at_row, at_col) = fit(at(2));
+            self.cluster = last.filter(|_| at(2).0 >= up).and_then(|(.., under)| {
                 Some(Last { at: Some((at_row, at_col, *self.screen.cell_at(at_row, at_col)?, under)), cursor: here })
             });
         }

@@ -1124,11 +1124,14 @@ fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_
 
 #[test]
 fn a_resize_under_the_alternate_screen_keeps_the_main_screens_lines() {
-    let mut term = Term::new(10, 8);
-    term.feed(b"l1\r\nl2\r\nl3\r\nl4\r\nl5\r\n\x1b[?1047h");
-    term.resize(10, 3);
-    term.feed(b"\x1b[?1047l");
-    assert_eq!(term.peek().history.clone() + &term.plain(), "l1\nl2\nl3\nl4\nl5\n\n");
+    // Blank rows are kept down to the saved cursor's row, the one that will come back: the row
+    // under the last line with a cursor saved there (1049), no blank row with none saved (1047).
+    for (mode, kept) in [(1049, "l1\nl2\nl3\nl4\nl5\n\n"), (1047, "l1\nl2\nl3\nl4\nl5\n")] {
+        let mut term = term(10, 8, &format!("l1\r\nl2\r\nl3\r\nl4\r\nl5\r\n\x1b[?{mode}h"));
+        term.resize(10, 3);
+        term.feed(format!("\x1b[?{mode}l").as_bytes());
+        assert_eq!(term.peek().history.clone() + &term.plain(), kept, "{mode}");
+    }
     // A row with text below the cursor is kept as well: rows leave by the top, into history.
     let mut below = Term::new(10, 6);
     below.feed(b"TOP\x1b[5;1HBOTTOM\x1b[1;1H\x1b[?1049h");
