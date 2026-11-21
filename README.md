@@ -458,8 +458,7 @@ at most), so `C-b t n` and then text types into the new shell; a script that
 takes longer puts its work in the background, as the defaults do.
 What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace (`workspace -` the one this
-viewer showed before, which is also where it goes when the one shown is
-removed; failing that, `main`, if there is one), and anything else (an error
+viewer showed before), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key. A key with no file, pressed in an
 open menu, closes the menu and goes nowhere (in a menu that stays open, as resize and move do, the prefix opens its own menu again: `C-b r l l C-b v` resizes and then splits). Writing the same lines to the FIFO
 `$FUXN_VIEW` does the same from anywhere.
@@ -688,7 +687,9 @@ fux adds nothing to stop these. What happens is what Unix does:
 
 - **Don't `rm -r` a pane you want.** The directory is the pane: its holder
   notices within 2 seconds, hangs up the program and leaves. That is also how
-  to close one. `rm -r` of a workspace ends all its panes.
+  to close one. `rm -r` of a workspace ends all its panes; a viewer that
+  shows it says that the folder is gone and stays, until you show it another
+  (`C-b f w`) or a new tab (`C-b t n`) makes the folder again.
 - **Don't `mv` a live pane across filesystems** (that is a copy and an `rm`).
   Within one, the pane simply has the new name; the program's `FUXN_PANE`
   still says the old one, so a default shell pane that was moved no longer

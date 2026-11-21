@@ -858,15 +858,6 @@ impl View {
             self.drawn.clear();
             out.push_str("\x1b[m\x1b[2J");
         }
-        // A workspace that is gone gives way to the one shown before it, if
-        // that is still there, and else to `main`, if that is.
-        if !self.session.join(&self.workspace).is_dir() {
-            let other = [self.before.take().unwrap_or_default(), "main".into()];
-            if let Some(other) = other.into_iter().find(|name| is_name(name) && self.session.join(name).is_dir()) {
-                self.message = format!("workspace {} is gone", std::mem::replace(&mut self.workspace, other));
-                self.forget();
-            }
-        }
         let directory = self.session.join(&self.workspace);
         let (text, mut layout, mut wrong) = Layout::load(&directory);
         // The file says what is shown: when panes came or went, it is written
