@@ -417,10 +417,8 @@ pub struct Term {
     lent: Option<Lent>,
     state: State,
     csi: Csi,
-    utf8: u32,
-    utf8_left: u8,
-    /// The smallest character this many bytes may encode: a longer spelling of a smaller one is refused.
-    utf8_min: u32,
+    /// The bytes read so far of a character of more than one.
+    utf8: Vec<u8>,
     /// The string being read, after the byte that began it (`]` for OSC, `P` for DCS…).
     string: Vec<u8>,
     /// (A control byte came inside it and was dropped: what is left is not what was sent.)
@@ -544,9 +542,7 @@ impl Term {
             lent: None,
             state: State::Ground,
             csi: Csi::default(),
-            utf8: 0,
-            utf8_left: 0,
-            utf8_min: 0,
+            utf8: Vec::new(),
             string: Vec::new(),
             string_holed: false,
             out: Out::default(),
@@ -1545,30 +1541,29 @@ impl Term {
     }
 
     fn ground(&mut self, byte: u8) {
-        if self.utf8_left > 0 {
+        if let Some(&first) = self.utf8.first() {
             if byte & 0xc0 == 0x80 {
-                self.utf8 = (self.utf8 << 6) | u32::from(byte & 0x3f);
-                self.utf8_left -= 1;
-                // A sequence of the right length for no character (written too long, a surrogate,
-                // past the last one) shows one mark, as in xterm.
-                match char::from_u32(self.utf8).filter(|_| self.utf8 >= self.utf8_min) {
-                    _ if self.utf8_left > 0 => {}
+                self.utf8.push(byte);
+                if self.utf8.len() == first.leading_ones() as usize {
+                    // A sequence of the right length for no character (written too long, a surrogate,
+                    // past the last one) shows one mark, as in xterm.
+                    let whole = std::str::from_utf8(&self.utf8).ok().and_then(|text| text.chars().next());
+                    self.utf8.clear();
                     // A C1 control written as UTF-8 is no character and, as in xterm, no control: nothing.
-                    Some('\u{80}'..'\u{a0}') => {}
-                    whole => self.print(whole.unwrap_or('\u{fffd}')),
+                    if !matches!(whole, Some('\u{80}'..'\u{a0}')) {
+                        self.print(whole.unwrap_or('\u{fffd}'));
+                    }
                 }
                 return;
             }
-            self.utf8_left = 0;
+            self.utf8.clear();
             self.print('\u{fffd}');
         }
         match byte {
             0x1b => self.state = State::Escape,
             0x00..=0x1f => self.control(byte),
             0x20..=0x7e => self.print(char::from(byte)),
-            0xc2..=0xdf => (self.utf8, self.utf8_left, self.utf8_min) = (u32::from(byte & 0x1f), 1, 0x80),
-            0xe0..=0xef => (self.utf8, self.utf8_left, self.utf8_min) = (u32::from(byte & 0x0f), 2, 0x800),
-            0xf0..=0xf4 => (self.utf8, self.utf8_left, self.utf8_min) = (u32::from(byte & 0x07), 3, 0x10000),
+            0xc2..=0xf4 => self.utf8.push(byte),
             0x7f => {}
             _ => self.print('\u{fffd}'),
         }
