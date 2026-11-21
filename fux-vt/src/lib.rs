@@ -236,23 +236,33 @@ enum At {
     Text(usize, usize),
 }
 
-/// Where history's text ends: if its last row was not ended (its line goes on in the screen's
-/// first row), how many bytes of that line it has; and what its last character is to the next
-/// (in `history.styled`, two that would read as one are kept apart).
+/// Where history's text ends: how many whole lines it has (the number of the line the screen's
+/// first row is of); if its last row was not ended (its line goes on in the screen's first row),
+/// how many bytes of that line it has; and what its last character is to the next (in
+/// `history.styled`, two that would read as one are kept apart).
 #[derive(Clone, Copy, Default)]
 struct Tail {
+    lines: usize,
     open: Option<usize>,
     joiner: Joiner,
 }
 
+impl Tail {
+    /// The line is ended, in both texts.
+    fn end(&mut self, out: &mut String, styled: &mut String) {
+        out.push('\n');
+        styled.push('\n');
+        (self.lines, self.open) = (self.lines + 1, None);
+    }
+}
+
 /// The rows a resize sent to history, while they are still its last lines: a later resize that
-/// has room takes them back. With them, how many bytes (plain and styled) and lines they are
-/// there, and where history ended before them.
+/// has room takes them back. With them, how many bytes (plain and styled) they are there, and
+/// where history ended before them.
 struct Lent {
     rows: Vec<Vec<Cell>>,
     bytes: usize,
     styled: usize,
-    lines: usize,
     before: Tail,
 }
 
@@ -403,8 +413,6 @@ pub struct Term {
     last: char,
     /// The character printed last, and what the next one needs to know to join it.
     cluster: Option<Last>,
-    /// How many whole lines have gone into history: the number of the line the screen's first row is of.
-    gone: usize,
     /// The addresses of the links on the two screens (OSC 8), by a cell's `link` less one; and
     /// the link that what is printed now is part of.
     links: Vec<String>,
@@ -542,7 +550,6 @@ impl Term {
             saved: [Cursor::default(); 2],
             last: '\0',
             cluster: None,
-            gone: 0,
             marks: Vec::new(),
             links: Vec::new(),
             link: 0,
@@ -635,9 +642,7 @@ impl Term {
     /// the program set, in which the row is told as it is now: history is not told again later.
     fn row_history(row: &[Cell], goes_on: bool, own: &Own, tail: &mut Tail, out: &mut String, styled: &mut String) {
         if tail.open.is_some() && !continues(row) {
-            out.push('\n');
-            styled.push('\n');
-            tail.open = None;
+            tail.end(out, styled);
         }
         if tail.open.is_none() {
             tail.joiner = Joiner::default();
@@ -662,8 +667,7 @@ impl Term {
             Term::row_styled(row, goes_on, false, own, &mut tail.joiner, styled);
         }
         if !goes_on {
-            out.push('\n');
-            styled.push('\n');
+            tail.end(out, styled);
         }
     }
 
@@ -800,7 +804,8 @@ impl Term {
     /// How many lines are before the main screen's first row: those gone into history whole,
     /// and one more that history has the start of, if what it went on in was erased.
     pub fn top(&self) -> usize {
-        self.gone + usize::from(self.tail.open.is_some() && !self.main().first().is_some_and(|row| continues(row)))
+        self.tail.lines
+            + usize::from(self.tail.open.is_some() && !self.main().first().is_some_and(|row| continues(row)))
     }
 
     /// The number of a link's address in the table, which keeps at most `LINKS_MAX`: when it is
@@ -970,9 +975,7 @@ impl Term {
     /// (that row was erased), history's line is ended there.
     fn settle(&mut self) {
         if self.tail.open.is_some() && !self.main().first().is_some_and(|row| continues(row)) {
-            self.out.history.push('\n');
-            self.out.styled.push('\n');
-            (self.gone, self.tail.open) = (self.gone + 1, None);
+            self.tail.end(&mut self.out.history, &mut self.out.styled);
             // (What comes after them in history makes the rows a resize sent there stay there.)
             self.lent = None;
         }
@@ -1102,7 +1105,7 @@ impl Term {
         let Some(region) = self.screen.grid.get_mut(from..=self.bottom) else {
             return;
         };
-        let (mut full, before) = (false, self.out.history.len());
+        let mut full = false;
         // (Blanks that have a colour are a row's looks to its end: also the background's, if the
         // program set one of its own.)
         let cut = blank == Cell::blank(Style::default()) && !self.own.contains_key(&BACKGROUND);
@@ -1120,16 +1123,14 @@ impl Term {
                 Term::row_history(text, goes_on, &self.own, &mut self.tail, &mut out.history, &mut out.styled);
             } else if kept {
                 // (A row that is not kept ends the line it would have gone on, in both texts.)
-                if self.tail.open.take().is_some() {
-                    self.out.history.push('\n');
-                    self.out.styled.push('\n');
+                if self.tail.open.is_some() {
+                    self.tail.end(&mut self.out.history, &mut self.out.styled);
                 }
                 full = true;
             }
             row.iter_mut().take(used).for_each(|cell| *cell = blank);
         }
         region.rotate_left(n);
-        self.gone += self.out.history.get(before..).map_or(0, |new| new.matches('\n').count());
         self.scroll_pictures(from, n, true);
         // The rows have new neighbours at both ends of what moved. (The row now at the top of
         // the main screen may go on from the line that history has the start of.)
@@ -1455,9 +1456,8 @@ impl Term {
             }
             // (The same bound as for rows that scroll off: one past it ends the line, in both texts.)
             if waiting + history.len().max(styled.len()) >= HISTORY_PENDING_MAX {
-                if tail.open.take().is_some() {
-                    history.push('\n');
-                    styled.push('\n');
+                if tail.open.is_some() {
+                    tail.end(&mut history, &mut styled);
                 }
                 full = true;
                 continue;
@@ -1528,16 +1528,13 @@ impl Term {
             *taken += back.saturating_sub(given.len());
             *given = given.get(..waiting).unwrap_or_default().to_string() + again;
         };
-        let (back, styled_back, lines_back) = lent.map_or((0, 0, 0), |lent| (lent.bytes, lent.styled, lent.lines));
+        let (back, styled_back) = lent.map_or((0, 0), |lent| (lent.bytes, lent.styled));
         retake(&mut self.out.history, &mut self.out.unhistory, back, &history);
         retake(&mut self.out.styled, &mut self.out.unstyled, styled_back, &styled);
-        let lines = |text: &str| text.matches('\n').count();
-        self.gone = (self.gone + lines(&history)).saturating_sub(lines_back);
         self.lent = (!rows_lent.is_empty()).then(|| Lent {
             rows: rows_lent,
             bytes: history.len() - before,
             styled: styled.len() - styled_before,
-            lines: lines(history.get(before..).unwrap_or_default()),
             before: was,
         });
         self.tail = tail;
@@ -1721,7 +1718,6 @@ impl Term {
                     titles,
                     next_picture: self.next_picture,
                     tail: self.tail,
-                    gone: self.gone,
                     marks: std::mem::take(&mut self.marks),
                     ..Term::new(self.screen.cols, self.screen.rows)
                 };

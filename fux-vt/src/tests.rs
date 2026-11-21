@@ -1089,13 +1089,13 @@ fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_
     // Which rows go on from the row above is what the plain text cannot say; and how many
     // whole lines have gone into history numbers the line the first row is of.
     let mut long = crate::tests::term(4, 3, "abcdefghij\r\nk");
-    assert_eq!((long.plain().as_str(), long.wraps().as_str(), long.gone), ("efgh\nij\nk\n", "0 1", 0));
+    assert_eq!((long.plain().as_str(), long.wraps().as_str(), long.tail.lines), ("efgh\nij\nk\n", "0 1", 0));
     long.feed(b"\r\nl\r\nm");
-    assert_eq!((long.plain().as_str(), long.wraps().as_str(), long.gone), ("k\nl\nm\n", "", 1));
+    assert_eq!((long.plain().as_str(), long.wraps().as_str(), long.tail.lines), ("k\nl\nm\n", "", 1));
     // Rows a resize sent to history and took back are counted out and in again.
     let mut back = crate::tests::term(4, 4, "abcdefgh\r\nx\r\ny");
-    assert!(back.resize(4, 2) && (back.plain().as_str(), back.gone) == ("x\ny\n", 1));
-    assert!(back.resize(4, 4) && (back.wraps().as_str(), back.gone) == ("1", 0));
+    assert!(back.resize(4, 2) && (back.plain().as_str(), back.tail.lines) == ("x\ny\n", 1));
+    assert!(back.resize(4, 4) && (back.wraps().as_str(), back.tail.lines) == ("1", 0));
     // The form of the mouse's reports is told whether or not any report is on.
     let term = crate::tests::term(20, 2, "\x1b[?1002h\x1b[?1002$p\x1b[?1000$p\x1b[?1006$p");
     assert_eq!(String::from_utf8_lossy(&term.peek().reply), "\x1b[?1002;1$y\x1b[?1000;2$y\x1b[?1006;2$y");
