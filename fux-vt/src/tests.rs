@@ -1460,7 +1460,7 @@ fn a_sequence_with_an_intermediate_byte_too_many_is_none_of_the_ones_known() {
 
 #[test]
 fn a_styled_row_longer_than_the_widest_pane_is_cut_off_as_at_any_width() {
-    for cols in [3, 499, 500, 9999] {
+    for cols in [3, 499, 500, 9999, usize::MAX] {
         let wide = cols.min(500);
         let screen = Screen::read(&format!("{}Z\n", "a".repeat(wide)), cols);
         assert_eq!(screen.cell_at(0, wide - 1).map(|cell| cell.ch), Some('a'), "{cols}");
