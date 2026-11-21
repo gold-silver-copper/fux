@@ -2040,7 +2040,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     the compiler: a row is a plain list of cells;
   - `place` decides itself whether a character is inserted (callers
     said so with a flag, and one said it wrong for an emoji that
-    widens at a row's end): the old call does not compile;
+    widens at a row's end): the old call does not compile (a caller
+    still says how many columns are there already: a wrong count is
+    for the tests to refuse);
   - `ESC # 8` erases through the erase every other whole-screen erase
     uses;
   - a reader's screen is built at its width by the constructor
@@ -2052,7 +2054,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - which workspace is meant is chosen and checked by one function
     that a command must hand its own name, if it has one;
   - the bar, a notice and the menu are lent only the cells they may
-    paint: the menu reaching the bar's row by a sum does not compile;
+    paint, by rows: the menu reaching the bar's row by a sum does not
+    compile (naming the bar's row outright still would);
   - the pty and the input waiting for it are one value: a hang-up
     cannot keep one without the other.
   Classes with no such remedy, and why, are in the pull request (each
@@ -2068,7 +2071,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   in insert mode is put in before the next row's text; a row
   shortened keeps no sign of where its end was; a paste that began
   marked ends marked; a key's script is told the size the terminal
-  has now; a sign outside ASCII is itself in both forms of a key, and
+  has now; a sign outside ASCII that is no letter is itself in both
+  forms of a key (one Unicode calls alphabetic, a vowel sign say, is
+  still named by its US key in the kitty form), and
   so is a letter on a key that is no letter on a US layout; what is
   typed before an empty workspace has its shell waits for it, also
   after a key that went there; a notice is read from one open file;
@@ -2090,7 +2095,17 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   gone: two could be running); a menu too narrow for its count shows
   the mark alone; a picture kept past a smaller screen's edge goes
   with an erase that reaches that edge (one rule for which pictures
-  an erase takes, for `erase` and the whole-screen fill). And the
+  an erase takes, for `erase` and the whole-screen fill).
+  Known and left from this run's own review: a paste whose pane
+  loses the keys to another viewer's edit midway ends in the other
+  pane, now with its end mark (D109's case); a notice whose file is
+  swapped between the look and the open by a hard link can ring
+  twice; with 32 scripts running past their two seconds each key
+  looks at all 32; `C-b S-c` on a pane moved between its two reads
+  opens blank lines; `C-b w n` gives up when the folder it lost is
+  removed in the same instant; a character printed in insert mode
+  clears the flags of the rest of its row (a pass over cells the
+  move already makes). And the
   leftovers of D112's review that the base shared: five fixed, the
   rest each given its line in the README.
 

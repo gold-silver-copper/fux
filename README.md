@@ -108,7 +108,7 @@ copied while its pane was busy. So keep the cursor inside the rows you have,
 and take the rows that are there over what `size` says. The viewer does.
 When a pane is still, or ended, its files agree, unless `log` says its last round failed.
 
-**Bounds.** Each round replaces a pane's two screens (a pair), with the facts that changed (`lines` when its numbers did, as with every row that scrolls) and, when lines wait for it, an append to `history`.
+**Bounds.** Each round replaces a pane's two screens (a pair), with the facts that changed (`lines` when its numbers did, as when a line scrolls off) and, when lines wait for it, an append to `history`.
 While a program keeps writing (never a millisecond without output) that is at most
 40 pairs a second: a flood (`yes`) costs 80 replacements of screens a second. What a program
 wrote before it wrote nothing for a millisecond is shown at once, though never within 8 ms of
@@ -180,7 +180,7 @@ itself and for itself, with nobody watching:
 | `CSI > q` (XTVERSION) | `fux-next VERSION` |
 | `CSI c`, `CSI > c` (device attributes) | `CSI ? 62;4;22 c` (a VT220 with sixel and colour) and `CSI > 70;0;0 c`: a kind of terminal no other gives (xterm is 41, tmux 84, Ghostty 1 with version 10), so nothing a program knows of another terminal's versions is turned on |
 | `DCS $ q … ST` (DECRQSS) | what the emulator keeps: `m` (the colours and looks in force, in the form with colons), `r` (the scroll region), `SP q` (the cursor's shape); "not valid" for anything else |
-| `DCS + q NAMES ST` (XTGETTCAP) | each name by itself, from the table below; "not valid" for every other name, so a name fux does not know never hides one it does (answers past the 64 KiB of typed bytes and answers that may wait are dropped, with a line in `log`, as any answer is) |
+| `DCS + q NAMES ST` (XTGETTCAP) | each name by itself, from the table below; "not valid" for every other name, so a name fux does not know never hides one it does (answers past the 16 KiB of them the emulator lets wait at once are dropped, with a line in `log`; what waits for the program, typed bytes and answers together, is 64 KiB at most) |
 
 | Name | Value |
 |---|---|
@@ -448,7 +448,7 @@ start their pane at that size, so its program is not drawn twice), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; one that
 takes longer runs on while keys are taken again (the defaults put such work in the background).
-Keys that waited (for a script, or for a workspace's first frame) are read as one run of bytes when they are taken: Escape and then a letter typed meanwhile are Alt with that letter, however long lay between them.
+Keys that waited (for a script, or for a workspace's first frame) are read as one run of bytes when they are taken: Escape and then a letter typed meanwhile are Alt with that letter, however long lay between them (in the old form of keys; in the kitty form Escape is a key of its own).
 What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key (its first 200 characters; a line over 4096 bytes is dropped whole, and the corner says so). A key with no file, pressed in an
@@ -583,7 +583,7 @@ gone, says so in the corner of its own last row (`exited 0`; `lost` where `state
 pane's title (and its own back when no pane has one, and when it leaves);
 no row is taken for it. What the focused pane's program copies (OSC 52)
 is passed to your terminal once, when its `clipboard` file changes: looking at a pane, or
-coming back to it, never sends an old clipboard again. A copy the viewer could not read when it was written (a `clipboard` it may not open) is sent when it can be read and the pane's tile is next drawn: a `chmod` alone sends nothing.
+coming back to it, never sends an old clipboard again. A copy the viewer could not read when it was written (a `clipboard` it may not open) is sent when it can be read and the pane's tile is next drawn: a `chmod` alone sends nothing, unless a menu is open, which draws.
 
 **The mouse** passes through. When the focused pane's program asks for mouse
 reports, the viewer asks your terminal for the same in the SGR form (and for releases too when the program asked for presses alone, mode 9, which is told of presses only) and forwards each one over
@@ -723,7 +723,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   once.** Each starts one, as each would on its own: close one.
 - **Don't put other folders in a workspace**: every folder there with a
   pane's kind of name is shown as a pane. Files are fine. And don't make a workspace folder by hand with `|`, `&` or `\` in its name (fux makes none): the search key's list is garbled by it.
-- **Don't make `SHELL` a script whose interpreter is gone**: the file is there to run, so the default keys take the status of the start that failed for the shell's own, and the pane closes before the error can be read (`fux start -- "$SHELL"` keeps it in `screen`).
+- **Don't make `SHELL` a script whose interpreter is gone**: the file is there to run, so the default keys take the status of the start that failed for the shell's own, and the pane closes before the error can be read (`fux start -- "$SHELL"` says it and leaves it in the pane's `log`).
 - **Don't take one failed `rm -r` of a busy pane's folder for a refusal**: its holder may write a file in the moment the folder is emptied (`Directory not empty`). Once more removes it.
 - **Don't look for the `-` mark after choosing the tab already shown with `C-b f t`**: the list was a tab of its own and the one shown before it, and it is gone.
 - **Don't edit `layout` by hand just as panes come or go**: the viewer writes
