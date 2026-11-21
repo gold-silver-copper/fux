@@ -880,8 +880,8 @@ impl View {
         match send_to(&path, &typed) {
             Ok(n) if n == typed.len() => {}
             Ok(n) => self.message = format!("{name}: only {n} of {} typed bytes were queued", typed.len()),
-            // A FIFO nobody reads (6, on Linux and macOS alike), or none at all: the pane has ended.
-            Err(e) if e.raw_os_error() == Some(6) || e.kind() == io::ErrorKind::NotFound => {
+            // A FIFO nobody reads, or none at all: the pane has ended.
+            Err(e) if sys::no_reader(&e) || e.kind() == io::ErrorKind::NotFound => {
                 self.message = format!("{name} has ended: nothing reads what you type");
             }
             Err(e) => self.message = format!("{name}: {e}: what you typed was dropped"),

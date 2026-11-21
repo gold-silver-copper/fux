@@ -2,7 +2,7 @@
 //! Every `extern` is declared by hand from the C prototypes; the constants
 //! are Linux's and macOS's own and differ where the two systems differ.
 
-use std::ffi::{CString, c_char, c_int, c_ulong, c_void};
+use std::ffi::{CString, c_char, c_int, c_ulong};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Error};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -21,6 +21,7 @@ mod os {
     pub const TIOCGWINSZ: c_ulong = 0x5413;
     pub const TIOCSWINSZ: c_ulong = 0x5414;
     pub type Nfds = c_ulong;
+    pub type Mode = u32;
 }
 #[cfg(target_os = "macos")]
 mod os {
@@ -31,6 +32,7 @@ mod os {
     pub const TIOCGWINSZ: c_ulong = 0x4008_7468;
     pub const TIOCSWINSZ: c_ulong = 0x8008_7467;
     pub type Nfds = c_uint;
+    pub type Mode = u16;
 }
 const F_SETFD: c_int = 2;
 const F_GETFL: c_int = 3;
@@ -69,8 +71,8 @@ unsafe extern "C" {
         master: *mut c_int,
         slave: *mut c_int,
         name: *mut c_char,
-        termios: *const c_void,
-        winsize: *const Winsize,
+        termios: *mut Termios,
+        winsize: *mut Winsize,
     ) -> c_int;
     fn setsid() -> c_int;
     fn fchdir(fd: c_int) -> c_int;
@@ -78,19 +80,12 @@ unsafe extern "C" {
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn poll(fds: *mut PollFd, nfds: os::Nfds, timeout: c_int) -> c_int;
-    fn mkfifo(path: *const c_char, mode: c_uint_mode) -> c_int;
+    fn mkfifo(path: *const c_char, mode: os::Mode) -> c_int;
     fn tcgetattr(fd: c_int, termios: *mut Termios) -> c_int;
     fn tcsetattr(fd: c_int, actions: c_int, termios: *const Termios) -> c_int;
     fn cfmakeraw(termios: *mut Termios);
     fn gethostname(name: *mut c_char, len: usize) -> c_int;
 }
-/// `mode_t`: 32 bits on Linux, 16 on macOS.
-#[cfg(target_os = "linux")]
-#[allow(non_camel_case_types)]
-type c_uint_mode = u32;
-#[cfg(target_os = "macos")]
-#[allow(non_camel_case_types)]
-type c_uint_mode = u16;
 
 fn check(result: c_int) -> io::Result<c_int> {
     if result < 0 { Err(Error::last_os_error()) } else { Ok(result) }
@@ -99,10 +94,10 @@ fn check(result: c_int) -> io::Result<c_int> {
 /// A new pty of the given size: (master, slave). The master does not wait on
 /// reads or writes and neither end is inherited by a program started later
 /// (the slave reaches the pane's program as its standard streams only).
-pub fn pty(size: Winsize) -> io::Result<(File, File)> {
+pub fn pty(mut size: Winsize) -> io::Result<(File, File)> {
     let (mut master, mut slave) = (-1, -1);
-    // SAFETY: both out-pointers are valid for the call; name and termios may be null.
-    check(unsafe { openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), &size) })?;
+    // SAFETY: the out-pointers and the size are valid for the call; name and termios may be null.
+    check(unsafe { openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) })?;
     // SAFETY: openpty succeeded, so both are open descriptors nobody else owns.
     let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
     for fd in [&master, &slave] {
@@ -191,6 +186,11 @@ pub fn host() -> Option<String> {
 /// holds no caller (to read it is to find it empty; to write it is an error at once).
 pub fn open(path: impl AsRef<Path>, write: bool) -> io::Result<File> {
     OpenOptions::new().read(!write).write(write).custom_flags(os::O_NONBLOCK).open(path)
+}
+
+/// Whether an open to write failed because the FIFO has no reader (ENXIO, 6 on both systems).
+pub fn no_reader(error: &Error) -> bool {
+    error.raw_os_error() == Some(6)
 }
 
 pub fn make_fifo(path: &Path) -> io::Result<()> {
