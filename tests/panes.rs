@@ -1676,6 +1676,29 @@ fn a_menu_on_a_terminal_of_one_row_leaves_the_bar_to_be_read() {
 }
 
 #[test]
+fn a_menu_with_no_room_for_its_count_shows_no_part_of_a_number() {
+    // 26 keys and their heading on a terminal of 4 columns and 3 rows: one line is shown and 26
+    // are not, and ` ▼ 26 more` has no room. A count cut to its first digit would say 2.
+    let (outer, inner) = (Session::new("cnouter"), Session::new("cninner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    for key in 'a'..='z' {
+        fs::write(keys.join("C-b").join(key.to_string()), "#!/bin/sh\n# abcdefghij\n").unwrap();
+    }
+    inner.start("one", &["sleep", "600"]);
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let mut start = outer.fux();
+    start.env("COLUMNS", "4").env("LINES", "3").args(["start", "view", "--"]).args(command);
+    start.args([env!("CARGO_BIN_EXE_fux"), "view"]);
+    let view = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let screen = || read(&view.join("screen"));
+    until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
+    fs::write(view.join("in"), "\x02").unwrap();
+    until_or("the menu is shown", screen, || screen().contains('▼'));
+    assert!(!screen().contains(|c: char| c.is_ascii_digit()), "{:?}", screen());
+}
+
+#[test]
 fn a_menu_opens_whatever_kind_of_file_a_key_is() {
     // A FIFO where a key's script would be, and one where a menu's caption would be: nobody
     // writes to either, and the menu opens all the same.

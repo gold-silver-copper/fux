@@ -1145,9 +1145,11 @@ impl View {
                 boxes.push((part, width, w - right));
                 right = rest;
             }
-            // The last line shown gives its place to the count, so it is counted too.
+            // The last line shown gives its place to the count, so is counted too; a count with no room is a mark.
             let over = lines.len().saturating_sub(boxes.len() * last.max(1));
-            let more = cells(&format!(" ▼ {} more", over + 1), Style { flags: DIM, ..panel });
+            let more = format!(" ▼ {} more", over + 1);
+            let fits = boxes.last().is_some_and(|(_, width, _)| more.chars().count() <= *width);
+            let more = cells(if fits { &more } else { "▼" }, Style { flags: DIM, ..panel });
             let height = boxes.first().map_or(0, |(part, ..)| part.len());
             for (n, (part, width, from)) in boxes.iter().enumerate().rev() {
                 for (i, row) in above.chunks_exact_mut(w.max(1)).skip(last.saturating_sub(height)).enumerate() {
