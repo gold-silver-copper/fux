@@ -447,11 +447,9 @@ impl Holder {
     fn publish(&mut self, ended: Option<&str>) -> io::Result<()> {
         let out = self.collect(0);
         for (id, data) in self.term.new_pictures() {
-            // (One that cannot be written is not on the screen either: it goes, and the log says why.)
-            let name = format!("pic-{id}.sixel");
+            // (One that cannot be written is not on the screen: it goes, its file below, and the log says why.)
             self.pictures.insert(id);
-            if let Err(e) = fs::write(&name, data) {
-                let _ = fs::remove_file(&name);
+            if let Err(e) = fs::write(format!("pic-{id}.sixel"), data) {
                 self.term.keep_pictures(|kept| kept != id);
                 self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
             }

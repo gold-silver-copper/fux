@@ -1015,10 +1015,11 @@ impl Term {
     }
 
     /// The pictures that lie on cells `from` to `to` of a row are written over: they go.
+    /// (Asked first, here and in `scroll_pictures`: a flood prints and scrolls millions of times over none.)
     fn uncover(&mut self, row: usize, from: usize, to: usize) {
-        self.screen
-            .pictures
-            .retain(|p| !((p.row..p.row + p.rows).contains(&row) && p.col < to && from < p.col + p.cols));
+        let on = |p: &Picture| (p.row..p.row + p.rows).contains(&row) && p.col < to && from < p.col + p.cols;
+        let Some(_) = self.screen.pictures.iter().position(on) else { return };
+        self.screen.pictures.retain(|p| !on(p));
     }
 
     /// Pictures move with rows `from..=bottom` when those scroll by `n`; one
@@ -1026,6 +1027,7 @@ impl Term {
     /// screen's top a picture goes row by row: it stays while it has one left.
     /// Past the screen's last row it is only not shown.
     fn scroll_pictures(&mut self, from: usize, n: usize, up: bool) {
+        let Some(_) = self.screen.pictures.first() else { return };
         let bottom = self.bottom;
         let low = if bottom + 1 == self.screen.rows { usize::MAX } else { bottom + 1 };
         self.screen.pictures.retain_mut(|p| {
