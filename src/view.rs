@@ -93,6 +93,7 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
 type From = (String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Stamp, bool)>, Stamp, Vec<Stamp>);
 
 /// What the viewer knows of a pane: its last screen, read from the file.
+#[derive(Default)]
 struct Pane {
     /// The screen's file when it was last read.
     seen: Stamp,
@@ -974,7 +975,9 @@ impl View {
         let mut wants_focus = None;
         let mut keys = 0;
         for ((name, body), held) in tiles.iter().zip(held) {
-            let pane = self.panes.entry(name.clone()).or_insert_with(Pane::new);
+            // (Before its first screen is read, a pane is one blank cell with the cursor shown on it.)
+            let unread = || Pane { screen: Screen::read("", 0), ..Pane::default() };
+            let pane = self.panes.entry(name.clone()).or_insert_with(unread);
             let pane_directory = directory.join(name);
             pane.read(&pane_directory);
             let focused = self.focus.as_ref() == Some(name);
@@ -1470,22 +1473,6 @@ fn program(directory: &Path) -> (u32, bool) {
 }
 
 impl Pane {
-    fn new() -> Pane {
-        Pane {
-            seen: None,
-            // (Before its first screen is read: one blank cell, the cursor shown on it.)
-            screen: Screen::read("", 0),
-            size: (0, 0),
-            pid: 0,
-            state: String::new(),
-            pictures: Vec::new(),
-            addresses: Vec::new(),
-            asked: (0, 0, 0, (0, 0)),
-            title: String::new(),
-            cursor_colour: None,
-        }
-    }
-
     /// Reads the pane if its screen's file changed: the holder writes that file last, so every
     /// fact it wrote before is there by then. A fact may still be a moment ahead of the text
     /// (or far off, in a folder someone copied): the rows are the lines that are there, and the
