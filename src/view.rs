@@ -10,7 +10,7 @@ use crate::term::{
     BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode,
 };
 use crate::width::Joiner;
-use crate::{is_name, keys, sixel};
+use crate::{is_name, keys, sixel, text};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -67,7 +67,7 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
     if *wide == 0 || *high == 0 {
         return Err("the terminal does not say how many pixels a cell has");
     }
-    let bytes = read(path, PICTURE_MAX as u64 + 9);
+    let bytes = crate::read(path, PICTURE_MAX as u64 + 9).0;
     if bytes.len() > PICTURE_MAX + 8 {
         return Err("its file is over 4 MiB");
     }
@@ -1440,20 +1440,6 @@ fn put(back: &mut [Cell], w: usize, x: usize, y: usize, room: usize, cells: &[Ce
             *slot = if cut { Cell::blank(cell.style) } else { *cell };
         }
     }
-}
-
-/// Up to `most` bytes of a file as it is now, opened without waiting (should the name be a
-/// FIFO); none, if it cannot be read.
-fn read(path: &Path, most: u64) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path);
-    let _ = file.map(|file| file.take(most).read_to_end(&mut bytes));
-    bytes
-}
-
-/// The same, as text.
-fn text(path: &Path, most: u64) -> String {
-    String::from_utf8_lossy(&read(path, most)).into_owned()
 }
 
 /// Writes to a pane's FIFO (`in`, `ctl`) without waiting.

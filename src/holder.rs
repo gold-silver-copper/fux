@@ -377,13 +377,7 @@ impl Holder {
             let stamp = fs::metadata(&file).ok().filter(|file| file.is_file());
             let stamp = stamp.and_then(|file| Some((file.modified().ok()?, file.len(), file.ino())));
             if stamp != *known {
-                let mut text = Vec::new();
-                if stamp.is_some() {
-                    // (Opened without waiting, should the name have become a FIFO's meanwhile.)
-                    let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(&file);
-                    let _ = file.map(|file| file.take(16 << 10).read_to_end(&mut text));
-                }
-                let text = String::from_utf8_lossy(&text).into_owned();
+                let text = stamp.map_or_else(String::new, |_| crate::text(&file, 16 << 10));
                 *known = stamp;
                 match name {
                     "colours" => self.term.colours = text,

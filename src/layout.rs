@@ -13,7 +13,6 @@
 use crate::{is_name, replace};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Read;
 use std::path::Path;
 
 /// The parts of a split, each with its share.
@@ -305,11 +304,8 @@ impl Layout {
     /// settled against the folders, and what is wrong with the file if it
     /// cannot be read as a layout (it then counts as empty, and is left alone).
     pub fn load(workspace: &Path) -> (String, Layout, Option<String>) {
-        let mut bytes = Vec::new();
-        let read = match fs::File::open(workspace.join("layout")) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            file => file.and_then(|file| file.take(FILE_MAX + 1).read_to_end(&mut bytes)),
-        };
+        let (bytes, read) = crate::read(&workspace.join("layout"), FILE_MAX + 1);
+        let read = read.or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(0) } else { Err(e) });
         let text = read.map_err(|e| format!("the layout file cannot be read: {e}")).and_then(|n| {
             check_file_size(n)?;
             String::from_utf8(bytes).map_err(|_| "the layout file is not text".to_string())
