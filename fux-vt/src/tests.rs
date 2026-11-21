@@ -375,6 +375,12 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
     gone.resize(5, 2);
     assert_eq!((wide.marks().as_str(), wide.wraps().as_str()), ("0 0 output\n0 7 end 3\n", ""));
     assert!(gone.marks().ends_with("1 0 output\n1 21 end 3\n"), "{}", gone.marks());
+    // Marks on the screen after one that history has: each is on its own text at a new width.
+    let mut both = crate::tests::term(10, 3, &format!("{c}one\r\ntwo\r\nthree\r\nfour\r\n{a}$ {b}abcdefgh{c}"));
+    let each = "0 0 output\n4 0 prompt\n4 2 command\n4 10 output\n";
+    assert_eq!(both.marks(), each);
+    both.resize(7, 3);
+    assert_eq!(both.marks(), each);
     // A mark is on its text: when a line above it becomes two (the first row of a wrapped line
     // is erased), the mark's line is one further on, as its text is.
     let mut split = crate::tests::term(6, 6, &format!("abcdefghij\r\n{a}$ {b}go\r\n{c}RESULT\r\n{d}"));
