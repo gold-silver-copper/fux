@@ -2067,16 +2067,13 @@ impl Term {
                 self.move_marks(|r, c| At::Screen(r, if r == row && c >= col { to(c) } else { c }));
                 if let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
                     let n = n.min(rest.len());
-                    let gap = if last == b'@' {
-                        rest.rotate_right(n);
-                        rest.get_mut(..n)
+                    let keep = rest.len() - n;
+                    if last == b'@' {
+                        rest.copy_within(..keep, n);
+                        rest.split_at_mut(n).0.fill(blank);
                     } else {
-                        rest.rotate_left(n);
-                        let keep = rest.len() - n;
-                        rest.get_mut(keep..)
-                    };
-                    if let Some(gap) = gap {
-                        gap.fill(blank);
+                        rest.copy_within(n.., 0);
+                        rest.split_at_mut(keep).1.fill(blank);
                     }
                 }
                 self.tidy(row);
