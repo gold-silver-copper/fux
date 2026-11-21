@@ -3,7 +3,45 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
-use crate::{PICTURES_MAX, Screen, Term};
+use crate::width::Joiner;
+use crate::{Cell, Out, PICTURES_MAX, Screen, Term, continues, with_next};
+
+impl Term {
+    /// What waits to be taken, for the tests to look at.
+    pub fn peek(&self) -> &Out {
+        &self.out
+    }
+
+    /// For tests: the main screen's text as lines (rows that go on joined), all of it and the part
+    /// before the cursor; and whether every wide character on both screens has both its cells.
+    pub fn lines(&self) -> (String, String, bool) {
+        let (main, row) = (self.main(), if self.screen.alt { self.saved[0].row } else { self.screen.cursor.row });
+        let (mut all, mut before, mut open) = (String::new(), String::new(), self.tail);
+        for (y, (cells, goes_on)) in with_next(main).enumerate() {
+            if y == row {
+                before.clone_from(&all);
+                if open.open.is_some() && !continues(cells) {
+                    before.push('\n');
+                }
+                before.extend(cells.iter().take(self.screen.cursor.place().1).flat_map(Cell::chars));
+            }
+            open.joiner = Joiner::default();
+            Term::row_history(cells, goes_on, &self.own, &mut open, &mut all, &mut String::new());
+        }
+        let whole = [&self.screen.grid, &self.other].iter().all(|grid| {
+            grid.len() == self.screen.rows
+                && grid.iter().all(|cells| {
+                    cells.len() == self.screen.cols
+                        && (0..=cells.len()).all(|x| {
+                            let half = cells.get(x).is_some_and(|cell| cell.ch == '\0');
+                            let lead = x.checked_sub(1).and_then(|x| cells.get(x));
+                            half == lead.is_some_and(|cell| cell.ch != '\0' && cell.wide())
+                        })
+                })
+        });
+        (all, before, whole)
+    }
+}
 
 fn term(cols: usize, rows: usize, bytes: &str) -> Term {
     let mut term = Term::new(cols, rows);

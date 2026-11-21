@@ -595,12 +595,6 @@ impl Term {
         self.other_pictures.retain(|p| keep(p.id));
     }
 
-    /// What waits to be taken, for the tests to look at.
-    #[cfg(test)]
-    pub fn peek(&self) -> &Out {
-        &self.out
-    }
-
     /// Whether history's last rows are a resize's, which the next one may take back.
     pub fn lent(&self) -> bool {
         self.lent.is_some()
@@ -664,37 +658,6 @@ impl Term {
         if !goes_on {
             tail.end(out, styled);
         }
-    }
-
-    /// For tests: the main screen's text as lines (rows that go on joined), all of it and the part
-    /// before the cursor; and whether every wide character on both screens has both its cells.
-    #[cfg(test)]
-    pub fn lines(&self) -> (String, String, bool) {
-        let (main, row) = (self.main(), if self.screen.alt { self.saved[0].row } else { self.screen.cursor.row });
-        let (mut all, mut before, mut open) = (String::new(), String::new(), self.tail);
-        for (y, (cells, goes_on)) in with_next(main).enumerate() {
-            if y == row {
-                before.clone_from(&all);
-                if open.open.is_some() && !continues(cells) {
-                    before.push('\n');
-                }
-                before.extend(cells.iter().take(self.screen.cursor.place().1).flat_map(Cell::chars));
-            }
-            open.joiner = Joiner::default();
-            Term::row_history(cells, goes_on, &self.own, &mut open, &mut all, &mut String::new());
-        }
-        let whole = [&self.screen.grid, &self.other].iter().all(|grid| {
-            grid.len() == self.screen.rows
-                && grid.iter().all(|cells| {
-                    cells.len() == self.screen.cols
-                        && (0..=cells.len()).all(|x| {
-                            let half = cells.get(x).is_some_and(|cell| cell.ch == '\0');
-                            let lead = x.checked_sub(1).and_then(|x| cells.get(x));
-                            half == lead.is_some_and(|cell| cell.ch != '\0' && cell.wide())
-                        })
-                })
-        });
-        (all, before, whole)
     }
 
     /// The screen as plain text, one line per row, blanks at the end cut.
