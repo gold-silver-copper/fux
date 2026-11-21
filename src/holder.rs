@@ -301,7 +301,7 @@ impl Holder {
         self.told();
         self.term.feed(buffer.get(..n).unwrap_or(&[]));
         self.collect(READ_BUDGET);
-        *left -= n;
+        *left = left.saturating_sub(n);
         true
     }
 
