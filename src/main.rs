@@ -78,13 +78,14 @@ fn workspace() -> Result<String, String> {
     if is_name(&named) { Ok(named) } else { Err(format!("{named}: not a workspace's name")) }
 }
 
-/// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot, and not `-` alone
-/// (which marks a tab in the layout and means "the one before" to the viewer), nor the name of
-/// the session's files of what the terminal is like (its colours, its keyboard) or of a
-/// workspace's layout.
+/// The names fux will not make: `-` (which marks a tab in the layout and means "the one before" to
+/// the viewer), the session's files of what the terminal is like, and a workspace's layout.
+const TAKEN: [&str; 5] = ["-", "colours", "keyboard", "layout", "layout.new"];
+
+/// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot, and none of `TAKEN`.
 fn is_name(name: &str) -> bool {
     !name.is_empty()
-        && !["-", "colours", "keyboard", "layout", "layout.new"].contains(&name)
+        && !TAKEN.contains(&name)
         && !name.starts_with('.')
         && name.len() <= 64
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
@@ -145,8 +146,9 @@ fn start(args: &[OsString]) -> Result<(), String> {
         None => (workspace()?, name.as_str()),
     };
     if !is_name(&workspace) || !(pane.is_empty() || is_name(pane)) {
+        let taken = TAKEN.join(" ");
         return Err(format!(
-            "{name}: a name is letters, digits, '.', '_' and '-', at most 64, not starting with a dot, and not layout, colours or keyboard"
+            "{name}: a name is letters, digits, '.', '_' and '-', at most 64, not starting with a dot, and none of: {taken}"
         ));
     }
     let program: Vec<OsString> = match program {
