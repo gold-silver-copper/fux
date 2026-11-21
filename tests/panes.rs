@@ -569,8 +569,13 @@ fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
     fs::create_dir_all(inner.0.join("other")).unwrap();
     let ctl =
         fs::read_dir(&inner.0).unwrap().flatten().find(|file| file.file_name().to_string_lossy().starts_with(".view."));
-    fs::write(ctl.unwrap().path(), "workspace other\n").unwrap();
+    let ctl = ctl.unwrap().path();
+    fs::write(&ctl, "workspace other\n").unwrap();
     until("the other workspace is shown", || read(&view.join("screen")).contains("no panes in other"));
+    assert_eq!(read(&keys.join("ran")), "other\n");
+    // The viewer keeps no workspace but the one it shows: `-` is no name, and names none.
+    fs::write(&ctl, "workspace -\n").unwrap();
+    until("the viewer says that it is none", || read(&view.join("screen")).contains("no workspace -"));
     assert_eq!(read(&keys.join("ran")), "other\n");
 }
 

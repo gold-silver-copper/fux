@@ -123,8 +123,6 @@ enum Went {
 struct View {
     session: PathBuf,
     workspace: String,
-    /// The workspace shown before this one: this viewer's own memory, in no file.
-    before: Option<String>,
     keys: PathBuf,
     tty: File,
     /// What goes to the terminal is written by a thread of its own, so that a terminal that
@@ -249,7 +247,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     let mut view = View {
         session,
         workspace,
-        before: None,
         keys,
         tty,
         out,
@@ -416,17 +413,13 @@ impl View {
     fn command(&mut self, line: &str) {
         match line.split_once(' ').unwrap_or((line, "")) {
             ("quit", "") => self.quit = true,
-            // `workspace -` is the workspace shown before this one.
-            ("workspace", name) if is_name(self.before.as_deref().filter(|_| name == "-").unwrap_or(name)) => {
-                let name = self.before.clone().filter(|_| name == "-").unwrap_or(name.into());
-                if !self.session.join(&name).is_dir() {
-                    self.message = format!("no workspace {name}");
-                } else if name != self.workspace {
-                    self.before = Some(std::mem::replace(&mut self.workspace, name));
-                    self.forget();
-                }
+            // (A name that has no folder is shown too: its layout's reading says that there is none.)
+            ("workspace", name) if !is_name(name) => self.message = format!("no workspace {name}"),
+            ("workspace", name) if name == self.workspace => {}
+            ("workspace", name) => {
+                self.workspace = name.into();
+                self.forget();
             }
-            ("workspace", name) => self.message = format!("no workspace {name}"),
             _ => self.message = line.chars().filter(|c| !c.is_control()).take(200).collect(),
         }
     }

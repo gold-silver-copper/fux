@@ -78,8 +78,8 @@ fn workspace() -> Result<String, String> {
     if is_name(&named) { Ok(named) } else { Err(format!("{named}: not a workspace's name")) }
 }
 
-/// The names fux will not make: `-` (which marks a tab in the layout and means "the one before" to
-/// the viewer), the session's files of what the terminal is like, and a workspace's layout.
+/// The names fux will not make: `-` (which marks a tab in the layout and is "the one before" to
+/// `fux layout`), the session's files of what the terminal is like, and a workspace's layout.
 const TAKEN: [&str; 5] = ["-", "colours", "keyboard", "layout", "layout.new"];
 
 /// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot, and none of `TAKEN`.
