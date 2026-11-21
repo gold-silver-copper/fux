@@ -189,7 +189,7 @@ struct View {
     keyed: Option<Instant>,
     pasting: Option<bool>,
     scripts: Vec<Child>,
-    /// The script the keys wait for, and when it started; `scripts` has the others that still run.
+    /// The script the keys wait for, the last one started, and when; `scripts` has the others that still run.
     waiting: Option<(Child, Instant)>,
     ctl_path: PathBuf,
     ctl_line: Vec<u8>,
@@ -782,8 +782,7 @@ impl View {
             script.env(name, format!("{}x{}", tile.w, tile.h));
         }
         match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
-            Ok(child) if self.waiting.is_none() => self.waiting = Some((child, Instant::now())),
-            Ok(child) => self.scripts.push(child),
+            Ok(child) => self.scripts.extend(self.waiting.replace((child, Instant::now())).map(|(child, _)| child)),
             Err(e) => self.message = format!("{}: {e}", file.file_name().unwrap_or_default().to_string_lossy()),
         }
     }
@@ -1057,8 +1056,8 @@ impl View {
         // A workspace that has no pane when it is first shown is not left blank: the keys'
         // `.empty` is run (a new shell, by default). One whose last pane ends while it is
         // shown stays empty, and says how to go on.
-        // (No pane is what the layout says, not what there was room to draw. A script that is
-        // being waited for is still waited for: the keys typed after it are its workspace's.)
+        // (No pane is what the layout says, not what there was room to draw. The keys typed after
+        // a script that chose this workspace wait for `.empty` now: they are its workspace's.)
         if first_look {
             let first = self.keys.join(".empty");
             if layout.tabs.is_empty() && wrong.is_none() && first.is_file() {

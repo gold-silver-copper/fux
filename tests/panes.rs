@@ -2159,6 +2159,32 @@ fn what_is_typed_before_a_workspace_with_no_pane_is_first_drawn_goes_to_its_shel
 }
 
 #[test]
+fn what_is_typed_after_a_key_that_shows_a_workspace_with_no_pane_goes_to_its_shell() {
+    // The key's script names the workspace and is still running when `.empty` is started for it,
+    // and has ended before `.empty` has made the pane: the letter typed after the key waits for
+    // `.empty`, whose workspace it is typed in, and not only for the script that chose it.
+    let (outer, inner) = (Session::new("wlouter"), Session::new("wlinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b/w")).unwrap();
+    fs::write(keys.join("C-b/w/l"), "#!/bin/sh\necho workspace other\nsleep 0.2\n").unwrap();
+    let empty = "#!/bin/sh\nsleep 1\np=$(fux start \"$FUXN_WS/1\" -- cat) && fux layout pane 1\n";
+    fs::write(keys.join(".empty"), empty).unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("C-b/w/l")).arg(keys.join(".empty")).status().unwrap();
+    inner.start("one", &["sh", "-c", "echo READY; exec cat"]);
+    fs::create_dir_all(inner.0.join("other")).unwrap();
+    let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &viewer[..]].concat());
+    until("the viewer shows the first workspace", || read(&view.join("screen")).contains("READY"));
+    fs::write(view.join("in"), "\x02wlZ").unwrap();
+    let shell = inner.0.join("other/1");
+    until("the workspace has its shell", || fact(&shell, "state") == "running");
+    let seen =
+        || format!(": the shell shows {:?}, the viewer {:?}", read(&shell.join("screen")), read(&view.join("screen")));
+    until_or("the letter is typed to the shell", seen, || read(&shell.join("screen")).contains('Z'));
+}
+
+#[test]
 fn a_restore_that_cannot_copy_what_a_pane_printed_does_not_start_it_again() {
     // `.restore` starts a pane in place, which begins its files anew: what it had printed is copied
     // first, and a pane whose text cannot be copied (a `screen` that cannot be read) is left as it is.
