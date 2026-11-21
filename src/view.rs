@@ -156,10 +156,9 @@ struct View {
     /// The keys that are down, as far as the terminal tells, and where the press of each went:
     /// those whose press went to a script or a pane. Any other is the viewer's own to its end.
     down: Vec<((u32, u8), Went)>,
-    /// The terminal joins characters into clusters as fux does (its mode 2027), and whether
+    /// If the terminal joins characters into clusters as fux does (its mode 2027): whether
     /// this viewer was the one to turn that on.
-    joins: bool,
-    joined: bool,
+    joins: Option<bool>,
     /// The pane that was told it has the keys (it asked to be told: mode 1004).
     told_focus: Option<PathBuf>,
     /// Each pane's `notice` as it was last looked at: the file's stamp, and whether it has one
@@ -264,8 +263,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         keyboard: 0,
         links: Vec::new(),
         down: Vec::new(),
-        joins: false,
-        joined: false,
+        joins: None,
         told_focus: None,
         notices: HashMap::new(),
         looked: None,
@@ -301,7 +299,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     view.leave(None);
     // The pane that was told it has the keys is told that it has them no more.
     view.tell(None);
-    if view.joined {
+    if view.joins == Some(true) {
         view.write("\x1b[?2027l".into());
     }
     // All of it is written before the terminal is put back; what could not be is why the viewer stopped.
@@ -489,10 +487,10 @@ impl View {
                 }
                 // The terminal's answer about joining characters into clusters (mode 2027): set (1,
                 // or 3 for good) or not set but known (2), which is then turned on.
-                ("mode", state) if !self.joins => {
+                ("mode", state) if self.joins.is_none() => {
                     let state = state.strip_prefix("2027;").and_then(|state| state.parse::<u8>().ok()).unwrap_or(0);
-                    (self.joins, self.joined) = (matches!(state, 1..=3), state == 2);
-                    if self.joined {
+                    self.joins = matches!(state, 1..=3).then_some(state == 2);
+                    if self.joins == Some(true) {
                         self.write("\x1b[?2027h".into());
                     }
                 }
@@ -867,7 +865,7 @@ impl View {
             .collect();
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
         let clipboard = clipboard.map(stamp);
-        let terminal = (self.sixel, self.joins, self.keyboard, self.window, cell_size);
+        let terminal = (self.sixel, self.joins.is_some(), self.keyboard, self.window, cell_size);
         let picture = |file: PathBuf| fs::metadata(file).ok().map(stamp);
         let known = tiles.iter().filter_map(|(name, _)| Some((name, self.panes.get(name)?)));
         let known = known.flat_map(|(name, pane)| pane.pictures.iter().map(move |(file, _)| (name, file)));
@@ -923,7 +921,7 @@ impl View {
                     // fux joins) would there reach past the tile's edge: a `?` stands in each of its columns.
                     let first = x - usize::from(cell.ch == '\0' && x > 0);
                     // (A terminal that says it joins characters as fux does draws it as fux counts it.)
-                    if let Some(whole) = pane.screen.cell_at(y, first).filter(|c| c.spill() > 0 && !self.joins)
+                    if let Some(whole) = pane.screen.cell_at(y, first).filter(|c| c.spill() > 0 && self.joins.is_none())
                         && first + 1 + usize::from(whole.wide()) + whole.spill() > body.w
                     {
                         cell = Cell { ch: '?', more: ['\0'; MORE], ..cell };
