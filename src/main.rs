@@ -279,10 +279,9 @@ fn run(args: &[OsString]) -> Result<(), String> {
             view::view(session()?, workspace, keys.ok_or(concat!("no keys directory: set ", name!("KEYS")))?)
         }
         Some("layout") => {
-            let workspace = workspace();
             let words: Vec<String> = rest.iter().map(|word| word.to_string_lossy().into_owned()).collect();
             let text =
-                layout::command(&session()?.join(workspace), &words.iter().map(String::as_str).collect::<Vec<_>>())?;
+                layout::command(&session()?.join(workspace()), &words.iter().map(String::as_str).collect::<Vec<_>>())?;
             if words.is_empty() { say(text.trim_end().as_bytes()) } else { Ok(()) }
         }
         Some("hold") => match rest.split_first() {
