@@ -373,7 +373,6 @@ impl Layout {
                     _ => return Err("split takes row|col PANE [beside ANCHOR]".into()),
                 };
                 self.retain_panes(|pane| pane != *name);
-                let new = (Node::Pane(name.to_string()), 1);
                 let at =
                     self.tabs.iter().position(|tab| beside.as_deref().is_some_and(|pane| tab.panes().contains(&pane)));
                 let Some((tab, beside)) = at.and_then(|at| self.tabs.get_mut(at)).zip(beside) else {
@@ -382,14 +381,12 @@ impl Layout {
                     return Ok(());
                 };
                 tab.focus = name.to_string();
-                let mut new = Some(new);
                 let found = tab.root.with_parent(&beside, &mut |parent_row, parts, at| {
                     if *parent_row == row {
                         // The new part is as large as the one it is put beside (parts that were
                         // given shares since would leave one of share 1 a sliver).
                         let share = parts.get(at).map_or(1, |part| part.1);
-                        parts.extend(new.take().map(|(pane, _)| (pane, share)));
-                        parts.get_mut(at + 1..).into_iter().for_each(|rest| rest.rotate_right(1));
+                        parts.insert(at + 1, (Node::Pane(name.to_string()), share));
                     } else if let Some(part) = parts.get_mut(at) {
                         part.0 = Node::Split(row, vec![(part.0.clone(), 1), (Node::Pane(name.to_string()), 1)]);
                     }
