@@ -1018,6 +1018,8 @@ impl Term {
         }
         self.screen.cursor.wrap = false;
         self.uncover(row, from, to);
+        // (Its marks are where the erased part begins; the place right after it is its end too.)
+        self.move_marks(|r, c| At::Screen(r, if r == row && (from + 1..=to).contains(&c) { from } else { c }));
     }
 
     /// The pictures that lie on cells `from` to `to` of a row are written over: they go.

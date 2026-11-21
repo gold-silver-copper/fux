@@ -372,6 +372,13 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
     // Erased up to the cursor, an output's end right after the erased part is erased with it.
     let before = crate::tests::term(9, 3, &format!("{c}old!{d}\x1b[1;4H\x1b[1J\x1b[HNEW!"));
     assert_eq!(before.marks(), "0 0 output\n0 0 end 3\n");
+    // Erased in its line alone (to the line's end, from its start, all of it, so many cells), the
+    // same: the marks of what is gone mark nothing of what is written there next.
+    let erased = |how: &str| crate::tests::term(9, 3, &format!("ab{c}cde{d}{how}new")).marks();
+    assert_eq!(erased("\r\x1b[2K"), "0 0 output\n0 0 end 3\n");
+    assert_eq!(erased("\x1b[1;4H\x1b[K"), "0 2 output\n0 3 end 3\n");
+    assert_eq!(erased("\x1b[1;4H\x1b[1K"), "0 0 output\n0 5 end 3\n");
+    assert_eq!(erased("\x1b[1;2H\x1b[2X"), "0 1 output\n0 5 end 3\n");
     // A mark that waits at a row's end stays on that side of the wrap when only the height
     // changes; and marks on rows pushed off the bottom are after what stays, in their order.
     let mut waits = crate::tests::term(4, 3, &format!("{c}abcd{d}$"));
