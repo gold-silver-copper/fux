@@ -283,8 +283,6 @@ pub struct Out {
     pub refused: Vec<&'static str>,
     /// New pictures: the number of each and its bytes, a whole sixel string.
     pub pictures: Vec<(u32, Vec<u8>)>,
-    /// The window title the program set last, without control characters.
-    pub title: Option<String>,
     /// What the program put on the clipboard last.
     pub clipboard: Option<Vec<u8>>,
     /// The directory the program said it is in last (OSC 7): the host it named, and the path.
@@ -602,6 +600,11 @@ impl Term {
     /// The rows a resize sent to history stay there (it could not be written as it was given).
     pub fn keep_lent(&mut self) {
         self.lent = None;
+    }
+
+    /// The window title the program set last, without control characters (empty: none).
+    pub fn title(&self) -> &str {
+        &self.title
     }
 
     /// Everything produced since the last time this was asked.
@@ -1792,7 +1795,6 @@ impl Term {
                 if title.next().is_some() {
                     self.refuse("a title over 256 characters was cut");
                 }
-                self.out.title = Some(self.title.clone());
             }
             "4" | "10" | "11" | "12" => {
                 // `4` takes pairs of a palette number and what to do with it; `10`, `11` and `12`
@@ -2234,10 +2236,7 @@ impl Term {
                         self.titles.push(self.title.clone());
                     }
                     23 if self.arg(1, 0) != 1 => {
-                        if let Some(title) = self.titles.pop() {
-                            self.title = title;
-                            self.out.title = Some(self.title.clone());
-                        }
+                        self.titles.pop().into_iter().for_each(|title| self.title = title);
                     }
                     _ => {}
                 }

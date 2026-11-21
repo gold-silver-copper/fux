@@ -66,7 +66,7 @@ struct Holder {
     /// What became of the program once it ended (`exited CODE`, `killed SIGNAL`): the `state`
     /// file, which until then says `running`, or `hungup` once the pty is closed.
     ended: Option<String>,
-    /// What the emulator produced and the next publish writes: history, pictures, a title, a clipboard.
+    /// What the emulator produced and the next publish writes: history, pictures, a clipboard.
     pending: Out,
     /// The session's folder, where the files are that say what the terminal outside is like, and
     /// which `colours` and `keyboard` were read last.
@@ -191,8 +191,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
 impl Holder {
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
         // What an earlier holder of this pane left goes before this one's first
-        // screen is there: its title and clipboard, its history and its pictures.
-        for old in ["title", "clipboard", "cwd", "notice"] {
+        // screen is there: its clipboard, its history and its pictures (and its title, as it is a fact with none).
+        for old in ["clipboard", "cwd", "notice"] {
             let _ = fs::remove_file(old);
         }
         for history in ["history", "history.styled"] {
@@ -400,7 +400,6 @@ impl Holder {
         self.pending.styled.push_str(&out.styled);
         self.pending.history.push_str(&out.history);
         self.pending.pictures.append(&mut out.pictures);
-        self.pending.title = out.title.or(self.pending.title.take());
         self.pending.clipboard = out.clipboard.or(self.pending.clipboard.take());
         self.pending.cwd = out.cwd.or(self.pending.cwd.take());
         self.pending.notice = out.notice.or(self.pending.notice.take());
@@ -543,12 +542,13 @@ impl Holder {
         let colour = term.cursor_colour().map_or(String::new(), |[r, g, b]| format!(" #{r:02x}{g:02x}{b:02x}"));
         // While a program has the alternate screen, the main screen it covers has two files, as
         // the screens are written: that they are there is what says so. Which of its rows go on
-        // is a third line of `lines` meanwhile.
+        // is a third line of `lines` meanwhile. The title is one line: with none, or an empty one, no file.
         let (main, looks, under) = match term.covered() {
             Some((plain, styled, wraps)) => (Some(plain.into_bytes()), Some(styled.into_bytes()), wraps + "\n"),
             None => (None, None, String::new()),
         };
-        let covered = [("screen.main", main), ("screen.main.styled", looks)];
+        let title = Some(term.title()).filter(|title| !title.is_empty()).map(|title| format!("{title}\n").into_bytes());
+        let covered = [("screen.main", main), ("screen.main.styled", looks), ("title", title)];
         let state = self.ended.as_deref().unwrap_or(if self.master.is_some() { "running" } else { "hungup" });
         let texts = [
             // How the screen's rows are lines of the pane's text: the number of the first row's
@@ -564,10 +564,9 @@ impl Holder {
         ];
         let facts = covered.into_iter().chain(texts.into_iter().map(|(name, text)| (name, Some(text.into_bytes()))));
         // What the program said, facts as the others, each waiting until this round has written
-        // it: the title is one line; the clipboard is the bytes it set, and set again is written
+        // it: the clipboard is the bytes it set, and set again is written
         // again (what is on the terminal's clipboard may be another's by now).
         let mut said = Vec::new();
-        said.extend(self.pending.title.iter().map(|title| ("title", Some(format!("{title}\n").into_bytes()))));
         if let Some(bytes) = &self.pending.clipboard {
             self.facts.remove("clipboard");
             said.push(("clipboard", Some(bytes.clone())));
@@ -607,7 +606,7 @@ impl Holder {
             }
         }
         self.noticed = if self.pending.notice.is_some() { noticed } else { self.noticed };
-        (self.pending.title, self.pending.clipboard, self.pending.cwd) = (None, None, None);
+        (self.pending.clipboard, self.pending.cwd) = (None, None);
         (self.pending.notice, self.pending.notices) = (None, 0);
         // The screens are text and nothing else, written last of all, `screen.styled` at the very
         // end: who watches a pane watches that one file, and finds every fact already there.

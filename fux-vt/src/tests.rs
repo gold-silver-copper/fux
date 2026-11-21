@@ -552,11 +552,11 @@ fn a_title_and_a_clipboard_leave_as_text_and_bytes_and_a_string_has_one_bound() 
     // The title loses its control characters; the clipboard is what the base64 says; text goes on after both.
     let mut term = term(40, 2, "\x1b]2;my \u{9b}title\x07\x1b]52;c;aGVsbG8sIHdvcmxk\x1b\\after");
     let out = term.take();
-    assert_eq!((out.title.as_deref(), out.clipboard.as_deref()), (Some("my title"), Some(&b"hello, world"[..])));
+    assert_eq!((term.title(), out.clipboard.as_deref()), ("my title", Some(&b"hello, world"[..])));
     assert_eq!(term.plain(), "after\n\n");
     // A title put aside comes back, as a program that borrows the title for a while expects.
     term.feed(b"\x1b[22;2t\x1b]2;borrowed\x07\x1b[23;2t");
-    assert_eq!(term.take().title.as_deref(), Some("my title"));
+    assert_eq!(term.title(), "my title");
     // A program is never told what is on the clipboard, and is refused in words.
     term.feed(b"\x1b]52;c;?\x07\x1b]52;c;not base64!\x07");
     let out = term.take();
@@ -564,13 +564,13 @@ fn a_title_and_a_clipboard_leave_as_text_and_bytes_and_a_string_has_one_bound() 
     // Neither is padding in the middle base64, nor a command with nothing to set; a pop with nothing put aside changes nothing.
     term.feed(b"\x1b]52;c;QU=JD\x07\x1b]52;c\x07\x1b[23;2t\x1b[23;2t");
     let out = term.take();
-    assert!(out.clipboard.is_none() && out.title.is_none());
+    assert!(out.clipboard.is_none() && term.title() == "my title");
     // A string of any kind that never ends is dropped at its bound, and said; what follows is text again.
     term.feed(b"\x1b]0;");
     term.feed(&vec![b'x'; (4 << 20) + 2]);
     term.feed(b"\x07ok");
     let out = term.take();
-    assert!(out.title.is_none() && out.refused.len() == 1 && term.plain().contains("afterok"));
+    assert!(term.title() == "my title" && out.refused.len() == 1 && term.plain().contains("afterok"));
     // A string that never ends is still said to be dropped, when it passes its bound.
     term.feed(b"\x1b]0;");
     term.feed(&vec![b'x'; (4 << 20) + 2]);
