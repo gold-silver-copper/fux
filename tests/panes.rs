@@ -2136,3 +2136,22 @@ fn a_key_script_is_told_the_size_the_terminal_has_when_the_key_is_typed() {
     until("the key's script ran", || read(&inner.0.join("told")).ends_with('\n'));
     assert_eq!(read(&inner.0.join("told")), "83 27 41x27 83x13\n");
 }
+
+#[test]
+fn what_is_typed_before_a_workspace_with_no_pane_is_first_drawn_goes_to_its_shell() {
+    // A letter that waits on the terminal when the viewer starts in a workspace with no pane (`dd`
+    // took the byte before it): it is typed to the shell that workspace gets, not to nobody.
+    let (outer, inner) = (Session::new("fzouter"), Session::new("fzinner"));
+    let (dir, keys, fux) = (inner.0.display(), inner.0.join(".keys"), env!("CARGO_BIN_EXE_fux"));
+    let views = format!(
+        "stty raw -echo; dd bs=1 count=1 >/dev/null 2>&1; SHELL=/bin/sh FUXN_DIR='{dir}' FUXN_KEYS='{}' exec '{fux}' view",
+        keys.display()
+    );
+    let view = outer.start("view", &["sh", "-c", &views]);
+    fs::write(view.join("in"), "gZ").unwrap();
+    let shell = inner.0.join("main/1");
+    until("the workspace has its shell", || fact(&shell, "state") == "running");
+    let seen =
+        || format!(": the shell shows {:?}, the viewer {:?}", read(&shell.join("screen")), read(&view.join("screen")));
+    until_or("the letter is typed to the shell", seen, || read(&shell.join("screen")).contains('Z'));
+}

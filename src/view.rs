@@ -242,7 +242,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         tty,
         out,
         unwritten: 0,
-        // (The terminal's size is known from the start: a key typed before the first frame is told it.)
         size: Winsize { cols: size.cols.min(SIZE_MAX as u16), rows: size.rows.min(SIZE_MAX as u16), ..size },
         front: Vec::new(),
         from: None,
@@ -376,7 +375,8 @@ impl View {
             if self.colours.as_ref().is_some_and(|(since, _)| since.elapsed() > Duration::from_secs(10)) {
                 self.told();
             }
-            if self.waiting.is_none() && !self.carry.is_empty() {
+            // (Keys wait for the first look at a workspace: one with no pane gets its shell there, and they are its.)
+            if self.waiting.is_none() && !self.carry.is_empty() && self.looked.is_some() {
                 // When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
                 self.keys(heard.elapsed() >= ESCAPE_WAIT);
             }
