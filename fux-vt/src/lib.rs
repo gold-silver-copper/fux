@@ -1668,16 +1668,10 @@ impl Term {
         self.interrupt();
         match byte {
             0x07 => self.notice(""),
-            0x08 => {
-                self.screen.cursor.col = self.screen.cursor.col.saturating_sub(1);
-                self.screen.cursor.wrap = false;
-            }
+            0x08 => self.move_to_col(self.screen.cursor.col.saturating_sub(1)),
             0x09 => self.tab(1),
             0x0a..=0x0c => self.linefeed(),
-            0x0d => {
-                self.screen.cursor.col = 0;
-                self.screen.cursor.wrap = false;
-            }
+            0x0d => self.move_to_col(0),
             0x0e => self.screen.cursor.shift = true,
             0x0f => self.screen.cursor.shift = false,
             _ => {}
@@ -2051,8 +2045,7 @@ impl Term {
         for _ in 0..rows {
             self.linefeed();
         }
-        self.screen.cursor.col = 0;
-        self.screen.cursor.wrap = false;
+        self.move_to_col(0);
     }
 
     fn csi(&mut self, byte: u8) {
@@ -2197,8 +2190,7 @@ impl Term {
                 } else {
                     self.scroll_up(row, n);
                 }
-                self.screen.cursor.col = 0;
-                self.screen.cursor.wrap = false;
+                self.move_to_col(0);
             }
             (0, 0, b'S') => self.scroll_up(self.top, n),
             (0, 0, b'T') => self.scroll_down(self.top, n),
