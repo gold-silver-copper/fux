@@ -1,6 +1,6 @@
 # Start the default shell in the focused pane's directory if its program reported one.
 new_shell() {
-  IFS= read -r d 2>/dev/null < "$FUXN_PANE/cwd" && [ -d "$d" ] && cd "$d"
+  IFS= read -r d 2>/dev/null < "$FUXN_PANE/cwd" && cd "$d" 2>/dev/null
   p=$(
     # A split starts at the size predicted by the viewer. A new tab inherits its size.
     if [ "$#" -eq 2 ]; then export COLUMNS="${2%x*}" LINES="${2#*x}"; fi

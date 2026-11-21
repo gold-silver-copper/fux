@@ -2,11 +2,5 @@
 # What the viewer runs when the workspace it is to show has no pane: your shell
 # in a first pane, as the new-tab key starts one. Make it what you like (a
 # project's panes, a picker of workspaces, nothing at all).
-# Two viewers may find the workspace empty in the same moment: the folder made
-# here is the one's claim (a name with a dot is no pane), and the other leaves.
-claim=$FUXN_DIR/$FUXN_WS/.first
-mkdir "$claim" 2>/dev/null || exit 0
-trap 'rmdir "$claim"' EXIT
-ls -d "$FUXN_DIR/$FUXN_WS"/*/ >/dev/null 2>&1 && exit 0
-p=$(fux start "$FUXN_WS/" -- "$FUXN_KEYS/.shell") || exit
-fux layout pane "${p##*/}"
+. "$FUXN_KEYS/.new-shell"
+new_shell
