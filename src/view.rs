@@ -115,11 +115,11 @@ struct Pane {
     cursor_colour: Option<[u8; 3]>,
 }
 
-/// Where the press of a key went: to the viewer itself (and the script it ran, if it ran one),
-/// or to a pane (its directory and its program).
+/// Where the press of a key went, if its repeats or its release have somewhere to go: to a
+/// script the viewer ran for it, or to a pane (its directory and its program).
 #[derive(Clone)]
 enum Went {
-    Viewer(Option<PathBuf>),
+    Script(PathBuf),
     Pane(PathBuf, u32),
 }
 
@@ -158,7 +158,8 @@ struct View {
     /// The addresses of the links of the last frame: a cell's `link` in `front` less one is its
     /// place here. Each frame makes its own, of its tiles' panes' addresses in turn.
     links: Vec<String>,
-    /// The keys that are down, as far as the terminal tells, and where the press of each went.
+    /// The keys that are down, as far as the terminal tells, and where the press of each went:
+    /// those whose press went to a script or a pane. Any other is the viewer's own to its end.
     down: Vec<((u32, u8), Went)>,
     /// The terminal joins characters into clusters as fux does (its mode 2027), and whether
     /// this viewer was the one to turn that on.
@@ -676,7 +677,7 @@ impl View {
                 (2 | 3, Some(Went::Pane(directory, pid))) => return self.pass(&directory, pid, raw),
                 // Held, a key does again what its press did, there and only there: the script it
                 // ran in a menu that stays open (to resize, say), while that menu is the one open.
-                (2, Some(Went::Viewer(Some(script)))) => {
+                (2, Some(Went::Script(script))) => {
                     let menu = self.menu.as_ref().map(|(directory, _)| directory.as_path());
                     if menu.is_some() && menu == script.parent() && script.with_file_name(".repeat").exists() {
                         self.send();
@@ -697,14 +698,14 @@ impl View {
         let went = match fs::metadata(&file) {
             Ok(kind) if !name.is_empty() && kind.is_dir() => {
                 self.menu = Some((file.clone(), menu_entries(&file)));
-                Went::Viewer(None)
+                None
             }
             Ok(kind) if !name.is_empty() && kind.is_file() => {
                 self.send();
                 self.script(&file);
                 // A menu with a file `.repeat` in it stays for the next key (to resize, say), until a key it has not.
                 self.menu = menu.filter(|(directory, _)| directory.join(".repeat").exists());
-                Went::Viewer(Some(file))
+                Some(Went::Script(file))
             }
             _ if menu.is_none() => {
                 self.typed.extend_from_slice(raw);
@@ -712,10 +713,8 @@ impl View {
                 // (Its release is the pane's only if the program there asks to be told of
                 // releases now: a key typed to one that does not is typed, and no more.)
                 let directory = self.session.join(&self.workspace).join(self.focus.as_deref().unwrap_or_default());
-                match program(&directory) {
-                    (pid, true) if pid != 0 => Went::Pane(directory, pid),
-                    _ => Went::Viewer(None),
-                }
+                let (pid, releases) = program(&directory);
+                (pid != 0 && releases).then_some(Went::Pane(directory, pid))
             }
             // A key that a menu which stays open does not have ends it; if it is the key that
             // led there (the prefix), its own menu is open again, as when it is pressed anew.
@@ -726,12 +725,11 @@ impl View {
                 {
                     self.menu = Some((top.clone(), menu_entries(&top)));
                 }
-                Went::Viewer(None)
+                None
             }
         };
-        // Which keys are down is remembered for their releases: the last 64.
-        if let Some((id, ..)) = event {
-            self.down.retain(|(key, _)| !same(key));
+        // Which keys are down is remembered for their repeats and releases: the last 64.
+        if let Some(((id, ..), went)) = event.zip(went) {
             let extra = (self.down.len() + 1).saturating_sub(64);
             self.down.drain(..extra);
             self.down.push((id, went));
@@ -753,12 +751,12 @@ impl View {
     /// pane's flags or left to itself, may never tell of it, or tell of it in another form), and
     /// what the terminal still tells of that key reaches no pane.
     fn leave(&mut self, has: Option<&Path>) {
-        for at in 0..self.down.len() {
-            if let Some(((code, last), Went::Pane(directory, pid))) = self.down.get(at).cloned()
-                && Some(directory.as_path()) != has
-            {
-                self.pass(&directory, pid, format!("\x1b[{code};1:3{}", char::from(last)).as_bytes());
-                self.down.get_mut(at).into_iter().for_each(|(_, went)| *went = Went::Viewer(None));
+        for ((code, last), went) in std::mem::take(&mut self.down) {
+            match went {
+                Went::Pane(directory, pid) if Some(directory.as_path()) != has => {
+                    self.pass(&directory, pid, format!("\x1b[{code};1:3{}", char::from(last)).as_bytes());
+                }
+                went => self.down.push(((code, last), went)),
             }
         }
     }
