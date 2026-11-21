@@ -2281,6 +2281,26 @@ fn a_restore_leaves_what_a_pane_that_is_alive_has_kept_as_it_is() {
 }
 
 #[test]
+fn a_restore_that_cannot_make_the_copy_of_what_a_pane_printed_does_not_start_it_again() {
+    // A directory of the copy's name (which ends with the number of the shell that runs the script):
+    // the copy cannot be opened for writing, so there is none, and the pane is left as it is.
+    let session = Session::new("nocopy");
+    let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let pane = session.start("w/kept", &["seq", "1", "60"]);
+    assert!(session.fux().arg("wait").arg(&pane).status().unwrap().success());
+    let was = read(&pane.join("history"));
+    let mut restore = Command::new("sh");
+    restore.args(["-c", r#"mkdir "$1/before.$$" && exec sh "$0""#]).arg(keys.join(".restore")).arg(&pane);
+    restore.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+    restore.env("FUXN_DIR", &session.0).env_remove("FUXN_KEYS").env_remove("FUXN_PANE").env_remove("FUXN_WS");
+    let said = String::from_utf8_lossy(&restore.output().unwrap().stdout).into_owned();
+    let kept = read(&pane.join("history"));
+    assert!(said.is_empty() && kept == was && kept.contains("\n17\n"), "{said:?} {kept:?}");
+    assert!(!pane.join("before").exists());
+}
+
+#[test]
 fn the_focus_goes_to_the_pane_that_is_beside_it_in_the_terminal_a_key_is_pressed_in() {
     // Of `row(col(a b:99) col(c d:9999))` in 80 columns and 24 rows, a and c have the first row
     // each: c is the pane to the right of a, and a key's script is told the terminal's size.
