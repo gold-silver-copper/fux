@@ -459,7 +459,7 @@ impl Holder {
             ("lines", format!("{}\n{}\n{under}", term.top(), term.wraps())),
             ("marks", term.marks()),
             ("links", term.links()),
-            ("pictures", screen.pictures.iter().map(placed).collect()),
+            ("pictures", screen.pictures.iter().filter(|p| p.row < screen.rows).map(placed).collect()),
             ("size", format!("{} {}\n", screen.cols, screen.rows)),
             ("cursor", format!("{} {} {shown} {}{colour}\n", at.row, at.col, screen.cursor_shape)),
             ("modes", format!("{}\n", words)),

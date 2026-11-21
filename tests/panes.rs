@@ -1993,3 +1993,19 @@ fn what_is_typed_right_after_the_new_workspace_key_goes_to_its_shell() {
     };
     until_or("the letter is typed to the new shell", seen, || read(&shell.join("screen")).contains('Z'));
 }
+
+#[test]
+fn a_picture_below_a_shortened_alternate_screen_is_not_listed_until_its_row_is_back() {
+    // A picture on row 3 of the alternate screen, which is then two rows high: `pictures` has a line
+    // for each picture that has a row on the screen, and this one has none until the screen is higher again.
+    let session = Session::new("altpic");
+    let draws = "printf '\\033[?1049h\\033[4;1H\\033Pq\"1;1;10;20#0;2;100;0;0#0!10~-!10~-!10~\\033\\\\'; sleep 600";
+    let pane = session.start("p", &["sh", "-c", draws]);
+    until("the picture is listed", || fact(&pane, "pictures").starts_with("pic-1.sixel 3 "));
+    let listed = fact(&pane, "pictures");
+    fs::write(pane.join("ctl"), "resize 10 2\n").unwrap();
+    until("the screen is two rows", || fact(&pane, "size") == "10 2");
+    assert_eq!(fact(&pane, "pictures"), "");
+    fs::write(pane.join("ctl"), "resize 80 24\n").unwrap();
+    until("the picture is listed again", || fact(&pane, "pictures") == listed);
+}
