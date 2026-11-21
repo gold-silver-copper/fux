@@ -29,8 +29,8 @@ echo kill > "$D/main/build/ctl"             # hangs up the program; what Unix do
 `./example.sh` runs the first lines for real; CI runs it on both systems.
 Two notes on it: the screen is written a few milliseconds after the program
 prints, so a script looks again until it sees what it waits for; and the key
-scripts are written on the first `fux view`, to `$FUXN_KEYS`, else
-`$XDG_CONFIG_HOME/fux-next/keys`, else `~/.config/fux-next/keys`.
+scripts are written on the first `fux view`, to the keys directory ("Keys are
+scripts" says where that is).
 
 ## While fux 1 is the one you use daily
 
@@ -38,8 +38,7 @@ This is the fux that is to replace fux 1, on the branch `next`. Until fux 1
 is retired its names are temporary, so that the two never meet: the
 variables are `FUXN_…` (to become `FUX_…`), the session is
 `$FUXN_DIR`, else `$XDG_RUNTIME_DIR/fux-next`, else `~/.cache/fux-next`, the
-keys are `$FUXN_KEYS`, else `$XDG_CONFIG_HOME/fux-next/keys`, else
-`~/.config/fux-next/keys`, and a pane's program sees `TERM_PROGRAM=fux-next`.
+keys directory is a `fux-next/keys` too, and a pane's program sees `TERM_PROGRAM=fux-next`.
 Do not `cargo install` it meanwhile: `fux` on your `PATH` stays fux 1, and
 this one is run by its path (`target/release/fux`), as the example does with
 `PATH` for one shell.
@@ -53,7 +52,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` (from `status` and `state`). When it returns, every file of the pane is the last there will be: wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout, or edits it (below) |
-| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it (also so that a write cannot hang on a dead pane), read it, wait, get a command's output and exit code, tell a live pane from a dead one, rename (all in plain sh, with the risks said; exact forms for those who have perl in a section of their own), end and clean up, see what the viewer shows, with the manners and the hazards. It is `src/help-agents.txt`, in the binary; every command on it is run, in order, by `tools/help-agents.sh` (CI, both systems) |
+| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it, read it, wait, get a command's output and exit code, tell a live pane from a dead one, end and clean up, in plain sh, with the hazards said. It is `src/help-agents.txt`, in the binary; every command on it is run, in order, by `tools/help-agents.sh` (CI, both systems) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot, and not `-` alone, `layout`, `layout.new`, `colours` or `keyboard`
