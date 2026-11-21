@@ -1376,15 +1376,11 @@ impl Pane {
         // below 0 says how many of its rows are above the screen: the others start at row 0.
         self.pictures.clear();
         for line in fact("pictures", 4096).lines() {
-            let (name, place) = line.split_once(' ').unwrap_or_default();
-            let (above, place) = place.strip_prefix('-').map_or((false, place), |place| (true, place));
-            if let [row, col, cols, rows] = numbers(place).as_slice()
-                && [row, col, cols, rows].iter().all(|n| **n <= SIZE_MAX)
-                && is_name(name)
-            {
-                let off = if above { *row } else { 0 };
-                self.pictures.push((name.into(), [row - off, *col, off]));
-            }
+            let mut words = line.split_whitespace();
+            let Some(name) = words.next().filter(|name| is_name(name)) else { continue };
+            let mut cell = || words.next()?.parse::<i16>().ok().filter(|n| usize::from(n.unsigned_abs()) <= SIZE_MAX);
+            let (Some(row), Some(col @ 0..)) = (cell(), cell()) else { continue };
+            self.pictures.push((name.into(), [row.max(0) as usize, col as usize, row.min(0).unsigned_abs().into()]));
         }
         // The links (`links`: line, cells into it, how many cells, address) are put on the cells.
         // `lines` says which line each row is of (the first row's, then the rows that go on); a
