@@ -261,7 +261,7 @@ impl Tail {
     fn end(&mut self, out: &mut String, styled: &mut String) {
         out.push('\n');
         styled.push('\n');
-        (self.lines, self.open) = (self.lines + 1, None);
+        *self = Tail { lines: self.lines + 1, ..Tail::default() };
     }
 }
 
@@ -654,9 +654,6 @@ impl Term {
         }
         if !kept {
             return false;
-        }
-        if tail.open.is_none() {
-            tail.joiner = Joiner::default();
         }
         let start = out.len();
         Term::row_text(row, goes_on, out);
