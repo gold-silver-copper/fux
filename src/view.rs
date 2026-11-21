@@ -795,13 +795,9 @@ impl View {
             return;
         };
         // A button held stays that program's until it is let go: a drag out of the tile is reported at its edge.
-        self.held = if press {
-            Some(true)
-        } else if release {
-            None
-        } else {
-            self.held
-        };
+        if press || release {
+            self.held = press.then_some(true);
+        }
         let (x, y) = (x.clamp(body.x + 1, body.x + body.w) - body.x, y.clamp(body.y + 1, body.y + body.h) - body.y);
         // The oldest kind of report (9) knows only presses of the three buttons.
         if term.mouse == 0 || (term.mouse == 9 && !press) {
