@@ -415,8 +415,6 @@ pub struct Term {
     tail: Tail,
     /// The rows the last resize sent to history, while they are still its last lines.
     lent: Option<Lent>,
-    /// A line feed is the text wrapping into the next row.
-    wrapping: bool,
     state: State,
     csi: Csi,
     utf8: u32,
@@ -544,7 +542,6 @@ impl Term {
             link: 0,
             tail: Tail::default(),
             lent: None,
-            wrapping: false,
             state: State::Ground,
             csi: Csi::default(),
             utf8: 0,
@@ -1050,7 +1047,7 @@ impl Term {
     }
 
     /// Moves rows `from..=bottom` up by `n`, blank rows coming in below.
-    fn scroll_up(&mut self, from: usize, n: usize) {
+    fn scroll_up(&mut self, from: usize, n: usize, wrapping: bool) {
         let n = n.min(self.bottom + 1 - from.min(self.bottom));
         let blank = self.blank();
         let kept = from == 0 && !self.screen.alt;
@@ -1078,8 +1075,8 @@ impl Term {
         // program set one of its own.)
         let cut = blank == Cell::blank(Style::default()) && !self.own.contains_key(&BACKGROUND);
         for i in 0..n {
-            // (The row the text is just wrapping out of has no next row yet.)
-            let goes_on = region.get(i + 1).map_or(self.wrapping, |next| continues(next));
+            // (The row the text is just wrapping out of, which `wrapping` says, has no next row yet.)
+            let goes_on = region.get(i + 1).map_or(wrapping, |next| continues(next));
             let Some(row) = region.get_mut(i) else { break };
             // (Most of a row is the blanks at its end, as they will be again: one look finds
             // where they start, and they are neither read for history, which would cut them,
@@ -1125,10 +1122,10 @@ impl Term {
         self.parts(self.bottom + 1);
     }
 
-    fn linefeed(&mut self) {
+    fn linefeed(&mut self, wrapping: bool) {
         self.screen.cursor.wrap = false;
         if self.screen.cursor.row == self.bottom {
-            self.scroll_up(self.top, 1);
+            self.scroll_up(self.top, 1, wrapping);
         } else if self.screen.cursor.row + 1 < self.screen.rows {
             self.screen.cursor.row += 1;
         }
@@ -1238,9 +1235,7 @@ impl Term {
                     last.style.flags |= PAD;
                 }
                 self.screen.cursor.col = 0;
-                self.wrapping = true;
-                self.linefeed();
-                self.wrapping = false;
+                self.linefeed(true);
                 new.style.flags |= CONT;
             } else if wide {
                 return; // No room and no wrapping: it is dropped, as xterm drops it.
@@ -1600,7 +1595,7 @@ impl Term {
             0x07 => self.notice(""),
             0x08 => self.move_to_col(self.screen.cursor.col.saturating_sub(1)),
             0x09 => self.tab(1),
-            0x0a..=0x0c => self.linefeed(),
+            0x0a..=0x0c => self.linefeed(false),
             0x0d => self.move_to_col(0),
             0x0e => self.screen.cursor.shift = true,
             0x0f => self.screen.cursor.shift = false,
@@ -1634,10 +1629,10 @@ impl Term {
             0x20..=0x2f => self.state = State::EscapeInter(byte),
             b'7' => self.save_cursor(),
             b'8' => self.restore_cursor(),
-            b'D' => self.linefeed(),
+            b'D' => self.linefeed(false),
             b'E' => {
                 self.screen.cursor.col = 0;
-                self.linefeed();
+                self.linefeed(false);
             }
             b'M' => self.reverse_linefeed(),
             b'H' => {
@@ -1955,7 +1950,7 @@ impl Term {
         self.next_picture = self.next_picture.wrapping_add(1);
         // The picture scrolls with the text; of one taller than the screen the last rows stay.
         for _ in 0..rows {
-            self.linefeed();
+            self.linefeed(false);
         }
         self.move_to_col(0);
     }
@@ -2090,11 +2085,11 @@ impl Term {
                 if last == b'L' {
                     self.scroll_down(row, n);
                 } else {
-                    self.scroll_up(row, n);
+                    self.scroll_up(row, n, false);
                 }
                 self.move_to_col(0);
             }
-            (0, 0, b'S') => self.scroll_up(self.top, n),
+            (0, 0, b'S') => self.scroll_up(self.top, n, false),
             (0, 0, b'T') => self.scroll_down(self.top, n),
             (0, 0, b'b') => {
                 for _ in 0..n * usize::from(printed != '\0') {
