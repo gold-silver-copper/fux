@@ -480,7 +480,7 @@ key sends TERM to the pane's program, which in a default shell pane is
 `.shell`: that ignores TERM, as an interactive shell does, so the key does
 nothing there; it is for panes started with a program of their own. The close key moves the folder out of the
 workspace (the tile goes at once), removes its `in`, and removes the folder
-when `fux wait` says the holder has left (it looks for `in` every two seconds).
+when `fux wait` says the holder has left (a holder looks for its `in` every two seconds).
 
 In a menu's directory, a file `.about` holds the words shown for it in the
 menu above, and a file `.repeat` keeps the menu open after each key (until a
