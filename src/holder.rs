@@ -54,9 +54,6 @@ struct Holder {
     facts: HashMap<&'static str, Option<Vec<u8>>>,
     /// How many rounds of writing had a notice: the number in the `notice` file.
     noticed: u32,
-    /// Since when the program has been in the middle of drawing (mode 2026), and how many times
-    /// it had said so by then.
-    drawing: Option<(Instant, u32)>,
     input: Vec<u8>,
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
@@ -150,7 +147,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         _slave: slave,
         facts: HashMap::new(),
         noticed: 0,
-        drawing: None,
         input: Vec::new(),
         ctl_line: Vec::new(),
         pictures: BTreeSet::new(),
@@ -200,7 +196,8 @@ impl Holder {
         let _ = crate::say(b"");
 
         let mut buffer = vec![0u8; 64 << 10];
-        let (mut dirty, mut published, mut looked, mut budget) = (false, Instant::now(), Instant::now(), READ_BUDGET);
+        // Since when there has been something a round of writing has not written.
+        let (mut dirty, mut published, mut looked, mut budget) = (None, Instant::now(), Instant::now(), READ_BUDGET);
         // When the program last wrote anything, and when it was last given its read budget.
         let (mut heard, mut filled) = (Instant::now(), Instant::now());
         loop {
@@ -209,29 +206,23 @@ impl Holder {
             // the holder was woken for meanwhile), and not because it is not being read.
             let quiet = budget > 0 && heard.elapsed() >= QUIET;
             // A program in the middle of drawing (mode 2026) is not shown until it says it is done,
-            // or half a second has gone by: one that never says so cannot freeze its pane.
-            // (The half second runs from the first time it said so with no end since.)
-            let again = self.term.screen().syncs;
-            self.drawing = match self.drawing {
-                _ if !self.term.screen().sync => None,
-                Some((since, said)) if said == again => Some((since, said)),
-                _ => Some((Instant::now(), again)),
-            };
-            let left = self.drawing.map_or(Duration::ZERO, |(since, _)| DRAWING_MAX.saturating_sub(since.elapsed()));
-            let drawing = !left.is_zero() && self.master.is_some();
+            // or the oldest of what is not written is half a second old: nothing it wrote waits
+            // longer, so one that never says so, or says it again at once, cannot freeze its pane.
+            let left = dirty.map_or(Duration::ZERO, |first: Instant| DRAWING_MAX.saturating_sub(first.elapsed()));
+            let drawing = self.term.screen().sync && !left.is_zero() && self.master.is_some();
             let every = if quiet { PUBLISH_QUIET } else { PUBLISH_EVERY };
             // The budget is for what is read between two screens; while a program in the middle
             // of drawing is not shown, for what is read in the time of one.
             if drawing && filled.elapsed() >= PUBLISH_EVERY {
                 (budget, filled) = (READ_BUDGET, Instant::now());
             }
-            if since >= every && dirty && !drawing {
+            if since >= every && dirty.is_some() && !drawing {
                 // What could not be written waits, or is still changed: the next round writes it,
                 // which the program's next output, a command or its end brings; no timer does.
                 if let Err(e) = self.publish() {
                     self.log(&format!("cannot write the pane's files: {e}"));
                 }
-                (dirty, published) = (false, Instant::now());
+                (dirty, published) = (None, Instant::now());
                 (budget, filled) = (READ_BUDGET, published);
             }
             // The directory is the pane: when it is gone, so is this.
@@ -251,7 +242,7 @@ impl Holder {
                 (master.map(|_| input.as_fd()), if self.input.len() < INPUT_MAX { sys::POLLIN } else { 0 }),
             ];
             let look = LOOK_EVERY.saturating_sub(looked.elapsed());
-            let wait = match dirty || budget == 0 {
+            let wait = match dirty.is_some() {
                 // (While it draws there is nothing to write out, only more of it to read.)
                 true if drawing && budget > 0 => left.min(look),
                 true if drawing => PUBLISH_EVERY.saturating_sub(filled.elapsed()),
@@ -266,13 +257,13 @@ impl Holder {
                 sys::wait(wanted, wait).map_err(|e| format!("cannot wait: {e}"))?;
             if commanded != 0 {
                 self.commands(ctl, &mut buffer);
-                dirty = true;
+                dirty.get_or_insert_with(Instant::now);
             }
             if program & !sys::POLLOUT != 0 && budget > 0 {
                 let n = self.read_program(buffer.get_mut(..budget.min(64 << 10)).unwrap_or(&mut []));
                 budget -= n.min(budget);
-                dirty |= n > 0;
                 heard = if n > 0 { Instant::now() } else { heard };
+                dirty = dirty.or((n > 0).then_some(heard));
             }
             if typed != 0 && self.master.is_some() {
                 let room = INPUT_MAX.saturating_sub(self.input.len()).min(buffer.len());

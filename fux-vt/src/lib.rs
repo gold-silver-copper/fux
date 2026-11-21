@@ -372,8 +372,6 @@ pub struct Screen {
     pub focus: bool,
     /// The program is in the middle of drawing (mode 2026): what it has drawn so far is not to be shown yet.
     pub sync: bool,
-    /// How many times it has said so.
-    pub syncs: u32,
     /// The mouse reports the program asked for: 0 for none, else 9, 1000, 1002 or 1003; and whether as SGR (1006).
     pub mouse: u16,
     pub mouse_sgr: bool,
@@ -1653,18 +1651,16 @@ impl Term {
                 // numbers go on, so no file's name is used twice.
                 let (told, out, title) =
                     (std::mem::take(&mut self.told), std::mem::take(&mut self.out), std::mem::take(&mut self.title));
-                let (titles, syncs) = (std::mem::take(&mut self.titles), self.screen.syncs);
                 *self = Term {
                     told,
                     out,
                     title,
-                    titles,
+                    titles: std::mem::take(&mut self.titles),
                     next_picture: self.next_picture,
                     tail: self.tail,
                     marks: std::mem::take(&mut self.marks),
                     ..Term::new(self.screen.cols, self.screen.rows)
                 };
-                self.screen.syncs = syncs;
                 self.move_marks(|_, _| At::Screen(0, 0));
             }
             _ => {}
@@ -2262,10 +2258,9 @@ impl Term {
     }
 
     fn private_mode(&mut self, mode: usize, on: bool) {
-        let was = self.switch(mode).map(|switch| std::mem::replace(switch, on));
+        self.switch(mode).into_iter().for_each(|switch| *switch = on);
         match mode {
             6 => self.move_to(0, 0),
-            2026 => self.screen.syncs = self.screen.syncs.wrapping_add(u32::from(on && was == Some(false))),
             47 => self.set_alt(on, false),
             1047 => {
                 if !on && self.screen.alt {

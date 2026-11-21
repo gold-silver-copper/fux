@@ -468,6 +468,24 @@ fn a_flood_is_published_a_bounded_number_of_times_and_loses_no_line() {
 }
 
 #[test]
+fn a_program_that_draws_frame_after_frame_without_a_pause_is_shown_while_it_does() {
+    let session = Session::new("frames");
+    // Each frame says that it is being drawn and that it is done (mode 2026), and the next
+    // follows at once, faster than it is read. The frame's number is on the first row, which
+    // stays while the rest of the frame scrolls under it.
+    let frames = "f=$(head -c 200000 /dev/zero | tr '\\0' x); printf 'start\\033[?1049h\\033[2;24r'; i=0; while :; do i=$((i + 1)); printf '\\033[?2026h\\033[H%s\\033[2;1H%s\\033[?2026l' $i \"$f\"; done";
+    let pane = session.start("frames", &["sh", "-c", frames]);
+    let frame = || read(&pane.join("screen")).lines().next().and_then(|n| n.parse::<u32>().ok());
+    // (Not `until`: a pane that is never written again says so in a few seconds, not a minute.)
+    let (start, mut first) = (Instant::now(), None);
+    while first.is_none() || frame() == first {
+        first = first.or_else(frame);
+        assert!(start.elapsed() < Duration::from_secs(6), "no later frame than {first:?} was shown");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
 fn a_viewer_whose_panes_do_not_change_does_no_work_and_draws_the_next_change() {
     // The viewer on a terminal of 500 by 500 cells: putting a frame of that size together is
     // work that shows in its processor time, which `ps` tells (in whole seconds, on Linux).
