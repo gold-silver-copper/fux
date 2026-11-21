@@ -71,11 +71,11 @@ fn session() -> Result<PathBuf, String> {
 }
 
 /// The workspace meant when none is named: `$FUXN_WS` (a key script's); else,
-/// in a pane, the folder that holds the pane; else `main`.
-fn workspace() -> String {
+/// in a pane, the folder that holds the pane; else `main`. One that is no name is refused.
+fn workspace() -> Result<String, String> {
     let from_pane = || here()?.parent()?.file_name()?.to_str().map(String::from);
-    let named = std::env::var(name!("WS")).ok().or_else(from_pane);
-    named.filter(|name| is_name(name)).unwrap_or("main".into())
+    let named = std::env::var(name!("WS")).ok().or_else(from_pane).unwrap_or("main".into());
+    if is_name(&named) { Ok(named) } else { Err(format!("{named}: not a workspace's name")) }
 }
 
 /// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot, and not `-` alone
@@ -135,11 +135,11 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let (names, program) = (args.get(..split).unwrap_or(&[]), args.get(split + 1..).unwrap_or(&[]));
     let name = match names {
-        [] => format!("{}/", workspace()),
+        [] => format!("{}/", workspace()?),
         [name] => name.to_string_lossy().into_owned(),
         _ => return Err("start takes one NAME, then -- and the program".into()),
     };
-    let default = workspace();
+    let default = workspace()?;
     let (workspace, pane) = name.split_once('/').unwrap_or((&default, &name));
     if !is_name(workspace) || !(pane.is_empty() || is_name(pane)) {
         return Err(format!(
@@ -237,7 +237,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
         Some("start") => start(rest),
         Some("wait") => wait(rest),
         Some("view") => {
-            let workspace = rest.first().map_or(workspace(), |name| name.to_string_lossy().into_owned());
+            let workspace = rest.first().map_or_else(workspace, |name| Ok(name.to_string_lossy().into_owned()))?;
             if rest.len() > 1 || !is_name(&workspace) {
                 return Err("view takes one workspace's name".into());
             }
@@ -249,7 +249,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
         Some("layout") => {
             let words: Vec<String> = rest.iter().map(|word| word.to_string_lossy().into_owned()).collect();
             let text =
-                layout::command(&session()?.join(workspace()), &words.iter().map(String::as_str).collect::<Vec<_>>())?;
+                layout::command(&session()?.join(workspace()?), &words.iter().map(String::as_str).collect::<Vec<_>>())?;
             if words.is_empty() { say(text.trim_end().as_bytes()) } else { Ok(()) }
         }
         Some("hold") => match rest.split_first() {

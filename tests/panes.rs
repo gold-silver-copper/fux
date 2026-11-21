@@ -322,6 +322,9 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
         !session.fux().args(["start", "layout"]).output().unwrap().status.success(),
         "the layout file's name is taken"
     );
+    // A workspace's name that is none is refused: it is not taken to mean `main`.
+    let odd = session.fux().env("FUXN_WS", "main/").arg("layout").output().unwrap();
+    assert!(!odd.status.success() && String::from_utf8_lossy(&odd.stderr).contains("main/"), "{odd:?}");
 }
 
 #[test]
