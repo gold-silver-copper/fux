@@ -83,9 +83,7 @@ fn workspace() -> String {
 /// the session's files of what the terminal is like (its colours, its keyboard).
 fn is_name(name: &str) -> bool {
     !name.is_empty()
-        && name != "-"
-        && name != "colours"
-        && name != "keyboard"
+        && !["-", "colours", "keyboard"].contains(&name)
         && !name.starts_with('.')
         && name.len() <= 64
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
