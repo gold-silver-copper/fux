@@ -2108,6 +2108,8 @@ fn a_paste_ends_marked_as_it_began_whatever_the_program_asks_by_then() {
     let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
     until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
+    // (A terminal says what it is like before anything is pasted into it: its answers are not part of a paste.)
+    until("the terminal has said what it is like", || inner.0.join("keyboard").exists());
     fs::write(view.join("in"), "\x1b[200~a").unwrap();
     until("the program asks for them no more", || !fact(&pane, "modes").contains("paste"));
     fs::write(view.join("in"), "b\x1b[201~Z").unwrap();
