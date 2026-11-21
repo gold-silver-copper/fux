@@ -170,16 +170,13 @@ fn start(args: &[OsString]) -> Result<(), String> {
     // Making the directory is what claims a new name; a name that is taken is a pane to start
     // again in place, and a number that is taken is not free. A folder that was made stays,
     // also when the start fails: its `log` says why.
-    let named = |dir: PathBuf| match DirBuilder::new().mode(0o700).create(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(fail(&dir, e)),
-        made => Ok((made.is_ok() || !pane.is_empty()).then_some(dir)),
-    };
-    let dir = if pane.is_empty() {
-        let mut numbers = (1..10000).map(|n| named(workspace.join(n.to_string())));
-        numbers.find_map(Result::transpose).ok_or("no free number for a pane")??
-    } else {
-        named(workspace.join(pane))?.ok_or("no pane")?
-    };
+    let dir = (1..10000)
+        .map(|n| if pane.is_empty() { workspace.join(n.to_string()) } else { workspace.join(pane) })
+        .find_map(|dir| match DirBuilder::new().mode(0o700).create(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Some(Err(fail(&dir, e))),
+            made => (made.is_ok() || !pane.is_empty()).then_some(Ok(dir)),
+        })
+        .ok_or("no free number for a pane")??;
     // The lock on the pane's directory is the proof that a holder lives: the kernel drops it when the holder is
     // gone, however it went. We take it here and the holder inherits it, and the directory with it: entered
     // first, it is the one that is locked and the one the holder works in, even if it is renamed meanwhile.
