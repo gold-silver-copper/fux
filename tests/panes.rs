@@ -72,13 +72,15 @@ fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
     let mut turns = Vec::new();
     until("the program has ended", || {
         // (Each `history.1` is looked at as it appears: its last line is whole.)
+        // (Told apart by the number its first line begins with: two may be of one size.)
         let aside = fs::read(pane.join("history.1")).unwrap_or_default();
-        if aside.len() > 252 && turns.last().map(|(size, _)| *size) != Some(aside.len()) {
-            turns.push((aside.len(), aside.ends_with(b"\n") && aside.len() % 252 == 0));
+        let first = aside.get(..6).map(<[u8]>::to_vec);
+        if aside.len() > 252 && turns.last().map(|(_, _, first)| first) != Some(&first) {
+            turns.push((aside.len(), aside.ends_with(b"\n") && aside.len() % 252 == 0, first));
         }
         fact(&pane, "state") == "exited 0"
     });
-    assert!(turns.len() >= 2 && turns.iter().all(|(size, whole)| *whole && *size < 5 << 20), "{turns:?}");
+    assert!(turns.len() >= 2 && turns.iter().all(|(size, whole, _)| *whole && *size < 5 << 20), "{turns:?}");
     let (aside, history) = (read(&pane.join("history.1")), read(&pane.join("history")));
     let number = |line: Option<&str>| line.and_then(|line| line.get(..6)?.parse::<usize>().ok());
     let (last, next) = (number(aside.lines().last()), number(history.lines().next()));
