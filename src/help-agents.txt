@@ -99,7 +99,6 @@ modes   words, or an empty line: `alt` (a full-screen program has the alternate 
         paste, appcursor, keypad, focus, mouseN, mousesgr, keysN
 state   running | hungup | exited CODE | killed SIGNAL
 status  three lines: holder N / pid N (the program's) / command ...
-argv    the program and its arguments, each in single quotes: eval "set -- $(cat argv)"
 top     the number, from 0, of the screen's first row among all lines the pane printed
 wraps   the screen rows (from 0) that continue the row above: `1 2` is one line in 3 rows
 title   the window title the program set (absent until it does)

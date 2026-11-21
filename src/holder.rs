@@ -171,20 +171,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     });
     waiter.map_err(|e| format!("cannot start a thread: {e}"))?;
     // The command as `status` shows it: without control characters, and its first 4,096 characters.
-    let arguments = command;
     let command = plain(&command.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
     let command: String = command.chars().take(4096).collect();
-    // And as it was given, word for word, in the shell's own quoting (each argument between
-    // single quotes, one in it written `'\\''`): what `eval` gives back exactly, in any sh.
-    let mut argv: Vec<u8> = Vec::new();
-    for argument in arguments {
-        argv.extend_from_slice(if argv.is_empty() { b"'" } else { b" '" });
-        for byte in argument.as_encoded_bytes() {
-            argv.extend_from_slice(if *byte == b'\'' { b"'\\''" } else { std::slice::from_ref(byte) });
-        }
-        argv.push(b'\'');
-    }
-    argv.push(b'\n');
     let mut holder = Holder {
         term: Term::new(usize::from(cols), usize::from(rows)),
         master: Some(master),
@@ -215,8 +203,8 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     // The FIFOs are there for as long as this function runs, and not after.
     let fifos = fifo("in").and_then(|input| Ok((input, fifo("ctl")?)));
     let result = fifos.map_err(|e| format!("cannot make the FIFOs: {e}"));
-    let result = result
-        .and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended, &command, &argv));
+    let result =
+        result.and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended, &command));
     let _ = fs::remove_file("in");
     let _ = fs::remove_file("ctl");
     // A directory that is gone is how a pane is closed: no failure, and nothing to say.
@@ -224,18 +212,10 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
 }
 
 impl Holder {
-    fn run(
-        &mut self,
-        input: &File,
-        ctl: &File,
-        ended: &mut PipeReader,
-        command: &str,
-        argv: &[u8],
-    ) -> Result<(), String> {
+    fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader, command: &str) -> Result<(), String> {
         // Who holds the pane, the program's own number, and what it runs: a fact as the others
         // are, written once (it never changes), with them and before the first screen.
         self.status = format!("holder {}\npid {}\ncommand {command}\n", std::process::id(), self.pid);
-        replace("argv", argv).map_err(|e| format!("cannot write argv: {e}"))?;
         // What an earlier holder of this pane left goes before this one's first
         // screen is there: its title and clipboard, its history and its pictures.
         for old in ["title", "clipboard", "cwd", "notice"] {

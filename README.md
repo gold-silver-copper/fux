@@ -92,7 +92,6 @@ in `FUXN_WS`.
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
 | `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself: `pwd > "$FUXN_PANE/cwd"` |
 | `notice` | what was last to be noticed: a number that grows with each one, then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
-| `argv` | the program and its arguments as `fux start` was given them, each between single quotes as a shell writes them (one inside an argument is `'\''`), on one line, written once: what starts the pane again exactly, in any sh (`eval "set -- $(cat argv)"; fux start NAME -- "$@"`), where `status`'s `command` is for reading |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture over 4 MiB, history it could not write); stops at 64 KiB |
 
 **One fact, one file.** The screens are text and nothing else; everything
@@ -662,13 +661,23 @@ panes too), and opens the pane's text at the line you choose, in the editor.
 choice, `.edit` to open.
 
 **`sh "$FUXN_KEYS/.restore"` starts every ended pane again**, under its name,
-with its program and arguments as they were (`argv`) and in the directory the
+with the words of its command line (`status`) and in the directory the
 program last said it was in (`cwd`: a shell that announces it; else your home
 directory). What the pane had printed is kept beside it in `before`, since a
 start in place begins a pane's files anew. A pane that is alive is left
 alone, and the layouts are files, so tiles and tabs are as they were. It
 starts programs, it does not bring them back: a shell starts fresh in its
 directory, an editor without its open files.
+It is honest, not exact. `status` has the command as one line, its arguments
+joined by blanks, and the script starts the words between the blanks as they
+are, with nothing in them expanded and no shell reading them. An argument
+that had a blank in it cannot be told from two, an empty one is not there,
+and a quote is a character like any other: such a pane (`sh -c 'make && ls'`)
+starts wrongly or not at all, and so does one whose command was longer than
+the 4,096 characters `status` keeps. The panes the default keys start (a
+shell, by `keys/.shell`) and programs with plain arguments start as they
+were. A project that needs its panes back exactly keeps a start script of
+its own, which is a few lines of `fux start`.
 For that to be of use after a reboot, the session directory must outlast
 one. The default (`$XDG_RUNTIME_DIR/fux-next`) is in memory on Linux and
 gone at logout; set `FUXN_DIR` to a directory on disk, in your shell's

@@ -172,10 +172,10 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     // Two panes with text: one whose line has scrolled into history, one still running. And an
     // editor for the test, which notes the line it is to open at and the line it finds there.
     let old = session.start("w/old", &["sh", "-c", "echo 'a needle in old'; seq 1 60; exec sleep 600"]);
-    let argued = ["sh", "-c", "echo \"$1|$2|$#\"; echo 'the needle again'; sleep 600", "sh", "two words", ""];
-    let other = session.start("v/other", &argued);
+    // (The other's arguments have no blank in them, and what a shell would expand.)
+    let other = session.start("v/other", &["printf", "%s\\n", "*", "the-needle;$HOME"]);
     until("both have printed", || {
-        read(&old.join("history")).contains("needle") && read(&other.join("screen")).contains("again")
+        read(&old.join("history")).contains("needle") && read(&other.join("screen")).contains("$HOME")
     });
     fs::write(session.0.join("ed"), "#!/bin/sh\nsed -n \"${1#+}p\" \"$2\" > \"$OUT\"\n").unwrap();
     Command::new("chmod").arg("+x").arg(session.0.join("ed")).status().unwrap();
@@ -195,24 +195,25 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
         Command::new("sh").args(["-c", &format!("command -v {finder}")]).output().is_ok_and(|o| !o.status.success())
     }) {
         until("the lines found are listed", || read(&find.join("screen")).contains("w/old 1:a needle in old"));
-        assert!(read(&find.join("screen")).contains("v/other 2:the needle again"));
+        assert!(read(&find.join("screen")).contains("v/other 2:the-needle;$HOME"));
         fs::write(find.join("in"), "1\r").unwrap();
-        until("the editor was opened at the line", || read(&out) == "the needle again\n");
+        until("the editor was opened at the line", || read(&out) == "the-needle;$HOME\n");
     }
     let _ = fs::remove_dir_all(&find);
-    // A pane whose program has ended is started again by `.restore`: the same arguments, each
-    // as it was, and what it had printed kept beside it. The one that runs is left alone.
-    let (was, runs) = (read(&other.join("argv")), read(&old.join("status")));
-    assert_eq!(was, "'sh' '-c' 'echo \"$1|$2|$#\"; echo '\\''the needle again'\\''; sleep 600' 'sh' 'two words' ''\n");
-    fs::write(other.join("ctl"), "kill\n").unwrap();
+    // A pane whose program has ended is started again by `.restore`, from the command line in
+    // its `status` (no other file says what it ran): the words of it as they are, none of them
+    // expanded, and what it had printed kept beside it. The one that runs is left alone.
     assert!(session.fux().arg("wait").arg(&other).status().unwrap().success());
+    let (was, runs) = (read(&other.join("status")), read(&old.join("status")));
+    assert!(was.ends_with("\ncommand printf %s\\n * the-needle;$HOME\n"), "{was}");
+    assert!(!other.join("argv").exists(), "a pane has no argv file: its command is in status");
     let restored =
         Command::new("sh").arg(keys.join(".restore")).env("PATH", &path).env("FUXN_DIR", &session.0).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started v/other again\n");
-    until("it runs again", || {
-        fact(&other, "state") == "running" && read(&other.join("screen")).starts_with("two words||2\n")
+    until("it has run again", || {
+        read(&other.join("status")) != was && read(&other.join("screen")).starts_with("*\nthe-needle;$HOME\n")
     });
-    assert!(read(&other.join("before")).contains("the needle again") && read(&other.join("argv")) == was);
+    assert!(read(&other.join("before")).contains("the-needle;$HOME") && !other.join("argv").exists());
     assert_eq!(read(&old.join("status")), runs);
 }
 

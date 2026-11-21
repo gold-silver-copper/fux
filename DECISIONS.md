@@ -1381,14 +1381,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   every ended pane again; that a live one is left alone is `fux start`'s
   own refusal of a name a holder keeps, so the script needs no test of
   liveness (the pids in `status` mean nothing after a reboot).
-  - One new file per pane, `argv`: the arguments in the shell's own
-    quoting, each between single quotes, written once. `status` has the
-    command flattened with blanks for a person to read, and a script
-    cannot split `sh -c "a b" x` back out of it (a seat's restore re-ran
-    commands with wrong quoting). The first form, zero bytes between the
-    arguments for `xargs -0`, failed on macOS, whose xargs drops an
-    argument that is empty; quoting needs only `eval`, which every sh
-    has. Nothing else is new: no restart command, no saved environment.
+  - No new file. A file `argv` (the arguments in the shell's own quoting,
+    written once; before that, zero bytes between them, which macOS's
+    xargs could not read back) was added for this and taken out again by
+    the owner's word (message 26: "argv seems spurious"; D96). The script
+    starts the words of `status`'s `command` line, split at blanks, with
+    nothing expanded and no shell run over them. That line is the command
+    flattened for a person to read, so `sh -c "a b" x` cannot be split
+    back out of it: the recipe is honest rather than exact, and says so
+    (its comment, the README): an argument with a blank or a quote starts
+    wrongly or not at all, the default shell panes and plain arguments
+    start as they were, and a project that needs exactness keeps its own
+    start script. Given up: restoring every pane exactly. Kept: one fact
+    fewer to write, read and explain. No restart command, no saved
+    environment.
   - A start in place begins a pane's files anew, so the script keeps what
     the pane had printed in `before` first. Keeping `history` across a
     restart in the holder was a seat's wish; the script does it without.
