@@ -14,12 +14,8 @@ use std::fmt::Write as _;
 
 /// The most bytes one picture may have; a longer one is dropped and noted.
 pub const PICTURE_MAX: usize = 4 << 20;
-/// The longest title kept (in characters) and the largest clipboard (in bytes); more is cut or refused.
-const TITLE_MAX: usize = 256;
-const CLIPBOARD_MAX: usize = 1 << 20;
 /// The most pictures a screen keeps; a new one past it drops the oldest.
 pub const PICTURES_MAX: usize = 8;
-const PARAMS_MAX: usize = 32;
 /// The most columns and the most rows a screen may have.
 pub const SIZE_MAX: usize = 500;
 /// The most history kept between two looks by the holder; lines past it are dropped and noted.
@@ -50,8 +46,6 @@ pub const CAPS: &[(&str, &str)] = &[
     ("Ss", "\x1b[%p1%d q"),
     ("Se", "\x1b[0 q"),
 ];
-/// How many of a shell's marks are kept.
-const MARKS_MAX: usize = 1000;
 /// How many links' addresses are kept at a time.
 const LINKS_MAX: usize = 1000;
 /// How long the list of the links on the screen may be: what a reader reads of it.
@@ -1848,7 +1842,7 @@ impl Term {
         match number {
             "0" | "2" => {
                 let mut title = rest.chars().filter(|c| !c.is_control());
-                self.title = title.by_ref().take(TITLE_MAX).collect();
+                self.title = title.by_ref().take(256).collect();
                 if title.next().is_some() {
                     self.refuse("a title over 256 characters was cut");
                 }
@@ -1981,7 +1975,7 @@ impl Term {
                     }
                 }
                 self.marks.push((here, kind, code));
-                let extra = self.marks.len().saturating_sub(MARKS_MAX);
+                let extra = self.marks.len().saturating_sub(1000);
                 self.marks.drain(..extra);
             }
             // (Of kitty's form only plain words to show: no questions, no parts, nothing encoded.)
@@ -2005,7 +1999,7 @@ impl Term {
                 // Setting only: a program is never told what is on the clipboard.
                 Some("?") => self.refuse("a program asked to read the clipboard: that is refused"),
                 what => match what.and_then(base64_decode) {
-                    Some(bytes) if bytes.len() <= CLIPBOARD_MAX => self.out.clipboard = Some(bytes),
+                    Some(bytes) if bytes.len() <= 1 << 20 => self.out.clipboard = Some(bytes),
                     Some(_) => self.refuse("a clipboard over 1 MiB was dropped"),
                     None => self.refuse("a clipboard that was not base64 was dropped"),
                 },
@@ -2054,7 +2048,7 @@ impl Term {
             }
             b';' | b':' | 0x40..=0x7e => {
                 // More parameters than are kept: the whole sequence is ignored, and said so.
-                self.csi.too_long |= self.csi.params.len() >= PARAMS_MAX;
+                self.csi.too_long |= self.csi.params.len() >= 32;
                 if !self.csi.too_long {
                     // (A first number that was not given is 0 here; one sequence tells them apart.)
                     self.csi.bare = if self.csi.params.is_empty() { self.csi.param.is_none() } else { self.csi.bare };
