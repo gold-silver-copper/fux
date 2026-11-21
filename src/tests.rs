@@ -320,6 +320,15 @@ fn keys_have_the_names_of_their_files() {
     // as the character by itself does.
     assert_eq!(next(b"\x1b\xc3", false, false), None);
     assert_eq!(next("\x1bé".as_bytes(), false, false), Some((3, "M-é".to_string())));
+    // And so when nothing more came for a moment: half a character is no key, however late its rest
+    // is. A byte that is none of its ends the wait, and is a key of its own.
+    for half in [&b"\xc3"[..], b"\xe2\x82", b"\xf0\x9f\x98", b"\x1b\xc3"] {
+        assert_eq!(next(half, true, false), None, "{half:?}");
+    }
+    assert_eq!(
+        (next(b"\xe2a", true, false), next(b"\xff", true, false)),
+        (Some((1, String::new())), Some((1, String::new())))
+    );
 }
 
 #[test]

@@ -17,10 +17,10 @@ pub const DEFAULT: &[(&str, &str)] = scripts!(
 );
 
 /// The key at the start of `bytes`: how many bytes it is, its name, and what more it says. The
-/// name is empty for a sequence that is no key we know (it is passed on as
-/// it is). `None` when more bytes are needed to tell; with `whole`, no more
-/// are coming, and what is there is taken as it stands. With `answers`, the
-/// terminal was asked something it answers in a string, and such a string is read as one.
+/// name is empty for a sequence that is no key we know (it is passed on as it is). `None` when more bytes are
+/// needed to tell; with `whole`, no more are coming, and what is there is taken as it stands, but for a character
+/// not all of whose bytes have come: it waits for the next, which is its own or shows that it is none. With
+/// `answers`, the terminal was asked something it answers in a string, and such a string is read as one.
 pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String, Option<Event>)> {
     let first = *bytes.first()?;
     if first == 0x1b {
@@ -71,9 +71,9 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String, 
             }
         };
     }
-    let length = (first.leading_ones() as usize).clamp(1, 4);
-    let Some(text) = bytes.get(..length) else { return whole.then(|| (bytes.len(), String::new(), None)) };
-    let character = std::str::from_utf8(text).ok().and_then(|text| text.chars().next());
+    let text = std::str::from_utf8(bytes.get(..(first.leading_ones() as usize).clamp(1, 4)).unwrap_or(bytes));
+    let length = text.map_or_else(|none| none.error_len(), |text| Some(text.len()))?;
+    let character = text.ok().and_then(|text| text.chars().next());
     let small = |c: char| c.to_lowercase().next().unwrap_or(c);
     let name = match first {
         0x0d => "enter".into(),
