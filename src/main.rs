@@ -70,9 +70,9 @@ fn session() -> Result<PathBuf, String> {
 /// The workspace meant when none is named: `$FUXN_WS` (a key script's); else,
 /// in a pane, the folder that holds the pane; else `main`. One that is no name is refused.
 fn workspace() -> Result<String, String> {
-    let from_pane = || here()?.parent()?.file_name()?.to_str().map(String::from);
-    let named = std::env::var(name!("WS")).ok().or_else(from_pane).unwrap_or("main".into());
-    if is_name(&named) { Ok(named) } else { Err(format!("{named}: not a workspace's name")) }
+    let from_pane = || here()?.parent()?.file_name().map(OsString::from);
+    let name = std::env::var_os(name!("WS")).or_else(from_pane).unwrap_or("main".into()).to_string_lossy().into_owned();
+    if is_name(&name) { Ok(name) } else { Err(format!("{name}: not a workspace's name")) }
 }
 
 /// The names fux will not make: `-` (which marks a tab in the layout and is "the one before" to

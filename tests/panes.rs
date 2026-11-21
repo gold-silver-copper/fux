@@ -333,6 +333,10 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     // A workspace's name that is none is refused: it is not taken to mean `main`.
     let odd = session.fux().env("FUXN_WS", "main/").arg("layout").output().unwrap();
     assert!(!odd.status.success() && String::from_utf8_lossy(&odd.stderr).contains("main/"), "{odd:?}");
+    // Nor is one that is no text.
+    let none = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"\xff");
+    let odd = session.fux().env("FUXN_WS", none).arg("layout").output().unwrap();
+    assert!(!odd.status.success() && String::from_utf8_lossy(&odd.stderr).contains("workspace"), "{odd:?}");
 }
 
 #[test]
