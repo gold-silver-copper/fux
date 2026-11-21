@@ -387,6 +387,11 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
     assert_eq!(erased("\x1b[1;4H\x1b[K"), "0 2 output\n0 3 end 3\n");
     assert_eq!(erased("\x1b[1;4H\x1b[1K"), "0 0 output\n0 5 end 3\n");
     assert_eq!(erased("\x1b[1;2H\x1b[2X"), "0 1 output\n0 5 end 3\n");
+    // Cells put into a row or taken out of it take the marks after them along: a mark stays
+    // before its character, and one on a cell taken out is where the part taken out begins.
+    assert_eq!(erased("\r\x1b[@"), "0 3 output\n0 6 end 3\n");
+    assert_eq!(erased("\x1b[1;2H\x1b[2P"), "0 1 output\n0 3 end 3\n");
+    assert_eq!(erased("\x1b[1;2H\x1b[9@"), "0 9 output\n0 9 end 3\n");
     // A mark that waits at a row's end stays on that side of the wrap when only the height
     // changes; and marks on rows pushed off the bottom are after what stays, in their order.
     let mut waits = crate::tests::term(4, 3, &format!("{c}abcd{d}$"));

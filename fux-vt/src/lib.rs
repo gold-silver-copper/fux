@@ -2061,7 +2061,10 @@ impl Term {
                 if last == b'P' {
                     self.split(row, col.saturating_add(n));
                 }
-                let blank = self.blank();
+                let (blank, cols) = (self.blank(), self.screen.cols);
+                // (The marks from there on go with their cells: one on a cell taken out, to where that part begins.)
+                let to = |c: usize| if last == b'@' { (c + n).min(cols) } else { c.saturating_sub(n).max(col) };
+                self.move_marks(|r, c| At::Screen(r, if r == row && c >= col { to(c) } else { c }));
                 if let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
                     let n = n.min(rest.len());
                     let gap = if last == b'@' {
