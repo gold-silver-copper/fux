@@ -341,30 +341,19 @@ enum State {
     StrEscape,
 }
 
-pub struct Term {
+/// What is shown: the grid, the cursor and the modes. Whoever keeps a terminal reads its own
+/// by reference; a reader of a pane's files has one that `read` made of them.
+#[derive(Default)]
+pub struct Screen {
     pub cols: usize,
     pub rows: usize,
     grid: Vec<Vec<Cell>>,
-    other: Vec<Vec<Cell>>,
     pub alt: bool,
-    /// The cursor's row on the main screen while the alternate one is shown.
-    main_row: usize,
     /// The kitty keyboard protocol: the flags a program asked for on the main screen and on
-    /// the alternate one, with the flags it pushed aside on each; and which flags the terminal
-    /// that sends the keys takes (told by whoever keeps this terminal: none, until told).
+    /// the alternate one, with the flags it pushed aside on each.
     keys: [(u8, Vec<u8>); 2],
-    pub keyboard: u8,
-    /// What this terminal is called and its version, for a program that asks (XTVERSION).
-    pub name: String,
     pub row: usize,
     pub col: usize,
-    style: Style,
-    wrap_pending: bool,
-    top: usize,
-    bottom: usize,
-    origin: bool,
-    autowrap: bool,
-    insert: bool,
     pub cursor_shown: bool,
     pub cursor_shape: u8,
     pub app_cursor: bool,
@@ -379,6 +368,37 @@ pub struct Term {
     /// The mouse reports the program asked for: 0 for none, else 9, 1000, 1002 or 1003; and whether as SGR (1006).
     pub mouse: u16,
     pub mouse_sgr: bool,
+    pub pictures: Vec<Picture>,
+}
+
+/// What whoever keeps a terminal tells it of the world outside it.
+#[derive(Default)]
+pub struct Told {
+    /// What this terminal is called and its version, for a program that asks (XTVERSION).
+    pub name: String,
+    /// Which keyboard flags the terminal that sends the keys takes (none, until told).
+    pub keyboard: u8,
+    /// The size of a cell in pixels, to know how many cells a picture covers.
+    pub cell: (usize, usize),
+    /// What the colours are: lines of a name (`foreground`, `background`, a palette number) and
+    /// `#rrggbb`. A program that asks for a colour is answered from here, and not at all if its
+    /// line is missing.
+    pub colours: String,
+}
+
+pub struct Term {
+    screen: Screen,
+    told: Told,
+    other: Vec<Vec<Cell>>,
+    /// The cursor's row on the main screen while the alternate one is shown.
+    main_row: usize,
+    style: Style,
+    wrap_pending: bool,
+    top: usize,
+    bottom: usize,
+    origin: bool,
+    autowrap: bool,
+    insert: bool,
     tabs: Vec<bool>,
     graphics: [bool; 2],
     shift: bool,
@@ -387,7 +407,7 @@ pub struct Term {
     /// The character printed last, and what the next one needs to know to join it.
     cluster: Option<Last>,
     /// How many whole lines have gone into history: the number of the line the screen's first row is of.
-    pub gone: usize,
+    gone: usize,
     /// The addresses of the links on the two screens (OSC 8), by a cell's `link` less one; and
     /// the link that what is printed now is part of.
     links: Vec<String>,
@@ -413,19 +433,12 @@ pub struct Term {
     /// (A control byte came inside it and was dropped: what is left is not what was sent.)
     string_holed: bool,
     out: Out,
-    pub pictures: Vec<Picture>,
     /// The pictures of the screen not shown (the main one while the alternate is).
-    pub other_pictures: Vec<Picture>,
+    other_pictures: Vec<Picture>,
     next_picture: u32,
     /// The title now, and the titles a program put aside to bring back (`CSI 22 t`, `CSI 23 t`), at most 8.
     title: String,
     titles: Vec<String>,
-    /// The size of a cell in pixels, to know how many cells a picture covers.
-    pub cell: (usize, usize),
-    /// What the colours are, as whoever keeps this terminal was told: lines of a name
-    /// (`foreground`, `background`, a palette number) and `#rrggbb`. A program that asks for a
-    /// colour is answered from here, and not at all if its line is missing.
-    pub colours: String,
     /// The colours this pane's program set (OSC 4, 10, 11, 12), by palette number, `FOREGROUND`,
     /// `BACKGROUND` or `CURSOR`: 259 at most, and one set for both screens. They are the pane's:
     /// its cells are shown in them and a question is answered with them, until the program
@@ -433,22 +446,66 @@ pub struct Term {
     own: Own,
 }
 
+impl Screen {
+    pub fn cell_at(&self, row: usize, col: usize) -> Option<&Cell> {
+        self.grid.get(row)?.get(col)
+    }
+
+    /// Says of a cell which link it is part of (for a reader that has the links from a file).
+    pub fn set_link(&mut self, row: usize, col: usize, link: u16) {
+        if let Some(cell) = self.grid.get_mut(row).and_then(|cells| cells.get_mut(col)) {
+            cell.link = link;
+        }
+    }
+
+    /// The modes the `modes` file lists by name, and where each is kept.
+    fn modes(&mut self) -> [(&'static str, &mut bool); 5] {
+        [
+            ("appcursor", &mut self.app_cursor),
+            ("keypad", &mut self.app_keypad),
+            ("paste", &mut self.paste),
+            ("focus", &mut self.focus),
+            ("alt", &mut self.alt),
+        ]
+    }
+
+    /// The keyboard flags in force: what the program on the screen shown asked for, as far as
+    /// the terminal that sends the keys took it when the program asked.
+    pub fn keys(&self) -> u8 {
+        self.keys.get(usize::from(self.alt)).map_or(0, |(flags, _)| *flags)
+    }
+
+    fn words(&mut self) -> String {
+        // Which reports (`mouse1002`) and in what form (`mousesgr`) are two things a program sets apart.
+        let mouse = (self.mouse != 0).then(|| format!("mouse{}", self.mouse));
+        let sgr = self.mouse_sgr.then(|| "mousesgr".to_string());
+        // And the keyboard flags a program asked for (the kitty protocol), as a number.
+        let keys = (self.keys() != 0).then(|| format!("keys{}", self.keys()));
+        let on = self.modes().into_iter().filter(|m| *m.1).map(|m| m.0.to_string());
+        on.chain(mouse).chain(sgr).chain(keys).collect::<Vec<String>>().join(" ")
+    }
+
+    /// Takes the modes those words say (a reader's side of `words`).
+    pub fn set_words(&mut self, words: &str) {
+        let has = |mode: &str| words.split_whitespace().any(|m| m == mode);
+        self.modes().into_iter().for_each(|(name, on)| *on = has(name));
+        self.mouse = [9, 1000, 1002, 1003].into_iter().find(|m| has(&format!("mouse{m}"))).unwrap_or(0);
+        self.mouse_sgr = has("mousesgr");
+        // (Whichever screen is shown has the keyboard flags.)
+        let keys = words.split_whitespace().find_map(|m| m.strip_prefix("keys")?.parse().ok()).unwrap_or(0);
+        self.keys = [(keys, Vec::new()), (keys, Vec::new())];
+    }
+}
+
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Term {
         let (cols, rows) = (cols.clamp(1, SIZE_MAX), rows.clamp(1, SIZE_MAX));
         let grid = vec![vec![Cell::blank(Style::default()); cols]; rows];
         Term {
-            cols,
-            rows,
-            other: grid.clone(),
-            grid,
-            alt: false,
+            screen: Screen { cols, rows, grid: grid.clone(), cursor_shown: true, ..Screen::default() },
+            told: Told { cell: (10, 20), ..Told::default() },
+            other: grid,
             main_row: 0,
-            keys: [(0, Vec::new()), (0, Vec::new())],
-            keyboard: 0,
-            name: String::new(),
-            row: 0,
-            col: 0,
             style: Style::default(),
             wrap_pending: false,
             top: 0,
@@ -456,16 +513,6 @@ impl Term {
             origin: false,
             autowrap: true,
             insert: false,
-            cursor_shown: true,
-            cursor_shape: 0,
-            app_cursor: false,
-            app_keypad: false,
-            paste: false,
-            focus: false,
-            sync: false,
-            syncs: 0,
-            mouse: 0,
-            mouse_sgr: false,
             tabs: (0..SIZE_MAX).map(|c| c % 8 == 0).collect(),
             graphics: [false; 2],
             shift: false,
@@ -489,15 +536,43 @@ impl Term {
             string_over: false,
             string_holed: false,
             out: Out::default(),
-            pictures: Vec::new(),
             other_pictures: Vec::new(),
             next_picture: 1,
             title: String::new(),
             titles: Vec::new(),
-            cell: (10, 20),
-            colours: String::new(),
             own: BTreeMap::new(),
         }
+    }
+
+    /// What is shown.
+    pub fn screen(&self) -> &Screen {
+        &self.screen
+    }
+
+    /// How input is to be sent to the program, as words: what the `modes` file says.
+    pub fn words(&mut self) -> String {
+        self.screen.words()
+    }
+
+    /// What is shown and nothing else of the terminal, for a reader that made it of a pane's files.
+    pub fn into_screen(self) -> Screen {
+        self.screen
+    }
+
+    /// What the terminal is told of the world outside it: to be read, and to be said anew.
+    pub fn told(&mut self) -> &mut Told {
+        &mut self.told
+    }
+
+    /// Whether either screen has the picture of this number.
+    pub fn has_picture(&self, id: u32) -> bool {
+        self.screen.pictures.iter().chain(&self.other_pictures).any(|p| p.id == id)
+    }
+
+    /// Of the pictures on both screens, those whose number `keep` says to keep stay.
+    pub fn keep_pictures(&mut self, keep: impl Fn(u32) -> bool) {
+        self.screen.pictures.retain(|p| keep(p.id));
+        self.other_pictures.retain(|p| keep(p.id));
     }
 
     /// What waits to be taken, for the tests to look at.
@@ -519,17 +594,6 @@ impl Term {
     /// Everything produced since the last time this was asked.
     pub fn take(&mut self) -> Out {
         std::mem::take(&mut self.out)
-    }
-
-    /// Says of a cell which link it is part of (for a reader that has the links from a file).
-    pub fn set_link(&mut self, row: usize, col: usize, link: u16) {
-        if let Some(cell) = self.grid.get_mut(row).and_then(|cells| cells.get_mut(col)) {
-            cell.link = link;
-        }
-    }
-
-    pub fn cell_at(&self, row: usize, col: usize) -> Option<&Cell> {
-        self.grid.get(row)?.get(col)
     }
 
     // ---- files -----------------------------------------------------------
@@ -593,7 +657,8 @@ impl Term {
     /// before the cursor; and whether every wide character on both screens has both its cells.
     #[cfg(test)]
     pub fn lines(&self) -> (String, String, bool) {
-        let (main, row) = if self.alt { (&self.other, self.main_row) } else { (&self.grid, self.row) };
+        let (main, row) =
+            if self.screen.alt { (&self.other, self.main_row) } else { (&self.screen.grid, self.screen.row) };
         let (mut all, mut before, mut open) = (String::new(), String::new(), self.tail);
         for (y, (cells, goes_on)) in with_next(main).enumerate() {
             if y == row {
@@ -601,16 +666,16 @@ impl Term {
                 if open.open.is_some() && !continues(cells) {
                     before.push('\n');
                 }
-                let upto = self.col + usize::from(self.wrap_pending);
+                let upto = self.screen.col + usize::from(self.wrap_pending);
                 before.extend(cells.iter().take(upto).flat_map(Cell::chars));
             }
             open.joiner = Joiner::default();
             Term::row_history(cells, goes_on, &self.own, &mut open, &mut all, &mut String::new());
         }
-        let whole = [&self.grid, &self.other].iter().all(|grid| {
-            grid.len() == self.rows
+        let whole = [&self.screen.grid, &self.other].iter().all(|grid| {
+            grid.len() == self.screen.rows
                 && grid.iter().all(|cells| {
-                    cells.len() == self.cols
+                    cells.len() == self.screen.cols
                         && (0..=cells.len()).all(|x| {
                             let half = cells.get(x).is_some_and(|cell| cell.ch == '\0');
                             let lead = x.checked_sub(1).and_then(|x| cells.get(x));
@@ -623,13 +688,13 @@ impl Term {
 
     /// The screen as plain text, one line per row, blanks at the end cut.
     pub fn plain(&self) -> String {
-        Term::text(&self.grid)
+        Term::text(&self.screen.grid)
     }
 
     /// The main screen while the alternate screen covers it, as `plain`, `styled` and `wraps`
     /// would have it.
     pub fn covered(&self) -> Option<(String, String, String)> {
-        self.alt.then(|| (Term::text(&self.other), self.looks(&self.other), self.goes_on(&self.other, true)))
+        self.screen.alt.then(|| (Term::text(&self.other), self.looks(&self.other), self.goes_on(&self.other, true)))
     }
 
     fn text(grid: &[Vec<Cell>]) -> String {
@@ -652,7 +717,7 @@ impl Term {
     /// a cell has that number or that default: so with a background of its own every cell of
     /// the screen has it, the blank ones too, and every row is as long as the screen is wide.
     pub fn styled(&self) -> String {
-        self.looks(&self.grid)
+        self.looks(&self.screen.grid)
     }
 
     fn looks(&self, grid: &[Vec<Cell>]) -> String {
@@ -720,49 +785,10 @@ impl Term {
         }
     }
 
-    /// The modes the `modes` file lists by name, and where each is kept.
-    fn modes(&mut self) -> [(&'static str, &mut bool); 5] {
-        [
-            ("appcursor", &mut self.app_cursor),
-            ("keypad", &mut self.app_keypad),
-            ("paste", &mut self.paste),
-            ("focus", &mut self.focus),
-            ("alt", &mut self.alt),
-        ]
-    }
-
-    /// The keyboard flags in force: what the program on the screen shown asked for, as far as
-    /// the terminal that sends the keys took it when the program asked.
-    pub fn keys(&self) -> u8 {
-        self.keys.get(usize::from(self.alt)).map_or(0, |(flags, _)| *flags)
-    }
-
-    /// How input is to be sent to the program, as words: what the `modes` file says.
-    pub fn words(&mut self) -> String {
-        // Which reports (`mouse1002`) and in what form (`mousesgr`) are two things a program sets apart.
-        let mouse = (self.mouse != 0).then(|| format!("mouse{}", self.mouse));
-        let sgr = self.mouse_sgr.then(|| "mousesgr".to_string());
-        // And the keyboard flags a program asked for (the kitty protocol), as a number.
-        let keys = (self.keys() != 0).then(|| format!("keys{}", self.keys()));
-        let on = self.modes().into_iter().filter(|m| *m.1).map(|m| m.0.to_string());
-        on.chain(mouse).chain(sgr).chain(keys).collect::<Vec<String>>().join(" ")
-    }
-
-    /// Takes the modes those words say (a reader's side of `words`).
-    pub fn set_words(&mut self, words: &str) {
-        let has = |mode: &str| words.split_whitespace().any(|m| m == mode);
-        self.modes().into_iter().for_each(|(name, on)| *on = has(name));
-        self.mouse = [9, 1000, 1002, 1003].into_iter().find(|m| has(&format!("mouse{m}"))).unwrap_or(0);
-        self.mouse_sgr = has("mousesgr");
-        // (Whichever screen is shown has the keyboard flags.)
-        let keys = words.split_whitespace().find_map(|m| m.strip_prefix("keys")?.parse().ok()).unwrap_or(0);
-        (self.keys, self.keyboard) = ([(keys, Vec::new()), (keys, Vec::new())], KEYS);
-    }
-
     /// How many lines are before the main screen's first row: those gone into history whole,
     /// and one more that history has the start of, if what it went on in was erased.
     pub fn top(&self) -> usize {
-        let first = if self.alt { self.other.first() } else { self.grid.first() };
+        let first = if self.screen.alt { self.other.first() } else { self.screen.grid.first() };
         self.gone + usize::from(self.tail.open.is_some() && !first.is_some_and(|row| continues(row)))
     }
 
@@ -778,7 +804,7 @@ impl Term {
             // that may be put back under a character still being joined.)
             let under = self.cluster.and_then(|last| last.at).map(|(.., under)| under);
             let lent = self.lent.iter().flat_map(|lent| &lent.rows);
-            let cells = self.grid.iter().chain(&self.other).chain(lent).flatten().chain(&under);
+            let cells = self.screen.grid.iter().chain(&self.other).chain(lent).flatten().chain(&under);
             for cell in cells.filter(|cell| cell.link != 0) {
                 used.get_mut(usize::from(cell.link) - 1).into_iter().for_each(|used| *used = true);
             }
@@ -815,7 +841,7 @@ impl Term {
         };
         // (Of the screen shown: a program on the alternate screen has links too. Its lines are
         // numbered on from `top` as the main screen's are, though none of them goes to history.)
-        for (y, row) in self.grid.iter().enumerate() {
+        for (y, row) in self.screen.grid.iter().enumerate() {
             (line, base) = if y > 0 && !continues(row) { (line + 1, 0) } else { (line, base) };
             for (x, cell) in row.iter().enumerate() {
                 let at = base + x;
@@ -837,7 +863,7 @@ impl Term {
 
     /// The main screen's rows, whichever screen is shown.
     fn main(&self) -> &[Vec<Cell>] {
-        if self.alt { &self.other } else { &self.grid }
+        if self.screen.alt { &self.other } else { &self.screen.grid }
     }
 
     /// The place on the main screen of a line of the pane's text and so many bytes into it, if
@@ -922,7 +948,7 @@ impl Term {
     /// What is done to the main screen's rows is done to the marks on them: `to` says where a
     /// mark at a row and column goes.
     fn move_marks(&mut self, to: impl Fn(usize, usize) -> At) {
-        for mark in self.marks.iter_mut().filter(|_| !self.alt) {
+        for mark in self.marks.iter_mut().filter(|_| !self.screen.alt) {
             if let At::Screen(row, col) = mark.0 {
                 mark.0 = to(row, col);
             }
@@ -944,7 +970,7 @@ impl Term {
     /// The rows of the screen that go on from the row above (the text wrapped into them), as
     /// numbers from 0: what `plain` cannot say. The first row may go on from history's last line.
     pub fn wraps(&self) -> String {
-        self.goes_on(&self.grid, !self.alt)
+        self.goes_on(&self.screen.grid, !self.screen.alt)
     }
 
     fn goes_on(&self, grid: &[Vec<Cell>], main: bool) -> String {
@@ -961,7 +987,7 @@ impl Term {
 
     /// Repairs a row after cells moved: half of a wide character becomes a blank.
     fn tidy(&mut self, row: usize) {
-        let Some(cells) = self.grid.get_mut(row) else {
+        let Some(cells) = self.screen.grid.get_mut(row) else {
             return;
         };
         let mut lead = false;
@@ -979,7 +1005,7 @@ impl Term {
     /// Blanks a wide character that a boundary before column `at` would cut in two.
     fn split(&mut self, row: usize, at: usize) {
         let blank = self.blank();
-        if let Some(cells) = self.grid.get_mut(row).filter(|cells| cells.get(at).is_some_and(|c| c.ch == '\0'))
+        if let Some(cells) = self.screen.grid.get_mut(row).filter(|cells| cells.get(at).is_some_and(|c| c.ch == '\0'))
             && let Some(pair) = cells.get_mut(at.saturating_sub(1)..=at)
         {
             pair.fill(blank);
@@ -989,24 +1015,26 @@ impl Term {
     /// Blanks columns `from..to` of a row.
     /// Row `row` no longer goes on from the one above it: its neighbour is another now.
     fn parts(&mut self, row: usize) {
-        if let Some(first) = self.grid.get_mut(row).and_then(|cells| cells.first_mut()) {
+        if let Some(first) = self.screen.grid.get_mut(row).and_then(|cells| cells.first_mut()) {
             first.style.flags &= !CONT;
         }
     }
 
     fn erase(&mut self, row: usize, from: usize, to: usize) {
-        let (blank, to) = (self.blank(), to.min(self.cols));
-        if from == 0 && to == self.cols {
+        let (blank, to) = (self.blank(), to.min(self.screen.cols));
+        if from == 0 && to == self.screen.cols {
             // A row erased whole is an empty line: the next row does not go on from it.
             self.parts(row + 1);
         }
         self.split(row, from);
         self.split(row, to);
-        if let Some(cells) = self.grid.get_mut(row).and_then(|r| r.get_mut(from..to)) {
+        if let Some(cells) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(from..to)) {
             cells.fill(blank);
         }
         self.wrap_pending = false;
-        self.pictures.retain(|p| !((p.row..p.row + p.rows).contains(&row) && p.col < to && from < p.col + p.cols));
+        self.screen
+            .pictures
+            .retain(|p| !((p.row..p.row + p.rows).contains(&row) && p.col < to && from < p.col + p.cols));
     }
 
     /// Pictures move with rows `from..=bottom` when those scroll by `n`; one
@@ -1015,8 +1043,8 @@ impl Term {
     /// Past the screen's last row it is only not shown.
     fn scroll_pictures(&mut self, from: usize, n: usize, up: bool) {
         let bottom = self.bottom;
-        let low = if bottom + 1 == self.rows { usize::MAX } else { bottom + 1 };
-        self.pictures.retain_mut(|p| {
+        let low = if bottom + 1 == self.screen.rows { usize::MAX } else { bottom + 1 };
+        self.screen.pictures.retain_mut(|p| {
             let end = p.row + p.rows;
             if end <= from || p.row > bottom {
                 return true;
@@ -1038,7 +1066,7 @@ impl Term {
     fn scroll_up(&mut self, from: usize, n: usize) {
         let n = n.min(self.bottom + 1 - from.min(self.bottom));
         let blank = self.blank();
-        let kept = from == 0 && !self.alt;
+        let kept = from == 0 && !self.screen.alt;
         // A mark on a row that goes into history is from then on a place in the text; on a row
         // that is dropped, it is where the rows that stay begin; on a row that moves, it moves.
         let bottom = self.bottom;
@@ -1052,7 +1080,7 @@ impl Term {
             row if row >= from + n => At::Screen(row - n, col),
             _ => At::Screen(from, 0),
         });
-        let Some(region) = self.grid.get_mut(from..=self.bottom) else {
+        let Some(region) = self.screen.grid.get_mut(from..=self.bottom) else {
             return;
         };
         let (mut full, before) = (false, self.out.history.len());
@@ -1105,7 +1133,7 @@ impl Term {
             row if row + n > bottom => At::Screen(bottom, usize::MAX),
             row => At::Screen(row + n, col),
         });
-        let Some(region) = self.grid.get_mut(from..=self.bottom) else {
+        let Some(region) = self.screen.grid.get_mut(from..=self.bottom) else {
             return;
         };
         region.rotate_right(n);
@@ -1118,26 +1146,26 @@ impl Term {
 
     fn linefeed(&mut self) {
         self.wrap_pending = false;
-        if self.row == self.bottom {
+        if self.screen.row == self.bottom {
             self.scroll_up(self.top, 1);
-        } else if self.row + 1 < self.rows {
-            self.row += 1;
+        } else if self.screen.row + 1 < self.screen.rows {
+            self.screen.row += 1;
         }
     }
 
     fn reverse_linefeed(&mut self) {
         self.wrap_pending = false;
-        if self.row == self.top {
+        if self.screen.row == self.top {
             self.scroll_down(self.top, 1);
         } else {
-            self.row = self.row.saturating_sub(1);
+            self.screen.row = self.screen.row.saturating_sub(1);
         }
     }
 
     fn move_to(&mut self, row: usize, col: usize) {
-        let (low, high) = if self.origin { (self.top, self.bottom) } else { (0, self.rows - 1) };
-        self.row = (low + row).min(high);
-        self.col = col.min(self.cols - 1);
+        let (low, high) = if self.origin { (self.top, self.bottom) } else { (0, self.screen.rows - 1) };
+        self.screen.row = (low + row).min(high);
+        self.screen.col = col.min(self.screen.cols - 1);
         self.wrap_pending = false;
     }
 
@@ -1148,9 +1176,10 @@ impl Term {
         // Text goes on from the character printed last while the cursor is where that left it
         // and its cell is as it left it: a change of style or a title between a letter and its
         // accent moves nothing, a move or an erase does.
-        let here = (self.row, self.col, self.wrap_pending);
+        let here = (self.screen.row, self.screen.col, self.wrap_pending);
         let goes_on = self.cluster.is_some_and(|last| {
-            last.cursor == here && last.at.is_none_or(|(row, col, cell, _)| self.cell_at(row, col) == Some(&cell))
+            last.cursor == here
+                && last.at.is_none_or(|(row, col, cell, _)| self.screen.cell_at(row, col) == Some(&cell))
         });
         if !goes_on {
             (self.joiner, self.cluster) = (Joiner::default(), None);
@@ -1167,10 +1196,11 @@ impl Term {
             self.place(new, width(c, &[]) == 2, self.insert);
         }
         // What the next character must find to go on from this one.
-        let here = (self.row, self.col, self.wrap_pending);
+        let here = (self.screen.row, self.screen.col, self.wrap_pending);
         if let Some(last) = &mut self.cluster {
             last.cursor = here;
-            last.at = last.at.and_then(|(row, col, _, under)| Some((row, col, *self.grid.get(row)?.get(col)?, under)));
+            last.at =
+                last.at.and_then(|(row, col, _, under)| Some((row, col, *self.screen.grid.get(row)?.get(col)?, under)));
         }
     }
 
@@ -1178,7 +1208,7 @@ impl Term {
     fn join(&mut self, c: char) {
         let Some((row, col, _, under)) = self.cluster.and_then(|last| last.at) else { return };
         let insert = self.insert;
-        let Some(cell) = self.grid.get_mut(row).and_then(|r| r.get_mut(col)) else { return };
+        let Some(cell) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col)) else { return };
         let (whole, was_wide) = (*cell, cell.wide());
         let Some(slot) = cell.more.iter_mut().find(|m| **m == '\0') else {
             return self.refuse("a character lost its end: it had more than ten parts");
@@ -1188,18 +1218,18 @@ impl Term {
         if grown.wide() && !was_wide {
             // U+FE0F asked an emoji for its picture, which takes a second column: the
             // character is put again, and at a row's end it wraps whole.
-            if self.cols < 2 || (col + 2 > self.cols && !self.autowrap) {
+            if self.screen.cols < 2 || (col + 2 > self.screen.cols && !self.autowrap) {
                 *cell = whole;
                 return;
             }
-            if col + 2 > self.cols {
+            if col + 2 > self.screen.cols {
                 // It leaves the row's last cell as it found it.
                 *cell = under;
-            } else if insert && let Some(rest) = self.grid.get_mut(row).and_then(|r| r.get_mut(col + 1..)) {
+            } else if insert && let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col + 1..)) {
                 // In insert mode its second column is one more column put in.
                 rest.rotate_right(1);
             }
-            (self.col, self.wrap_pending) = (col, false);
+            (self.screen.col, self.wrap_pending) = (col, false);
             self.place(grown, true, false);
             if insert {
                 self.tidy(row);
@@ -1209,22 +1239,22 @@ impl Term {
 
     /// Puts a character at the cursor, on the next row if this one has no room, and moves on.
     fn place(&mut self, mut new: Cell, wide: bool, insert: bool) {
-        if wide && self.cols < 2 {
+        if wide && self.screen.cols < 2 {
             return;
         }
-        if self.wrap_pending || (wide && self.col + 2 > self.cols) {
+        if self.wrap_pending || (wide && self.screen.col + 2 > self.screen.cols) {
             if self.autowrap {
                 // The text goes on in the next row, whose first cell will say so. A wide
                 // character that had no room in this row's last cell leaves it as no text, if
                 // nothing is in it.
                 let waiting = self.wrap_pending;
-                if let Some(last) = self.grid.get_mut(self.row).and_then(|row| row.last_mut())
+                if let Some(last) = self.screen.grid.get_mut(self.screen.row).and_then(|row| row.last_mut())
                     && !waiting
                     && *last == Cell::blank(last.style)
                 {
                     last.style.flags |= PAD;
                 }
-                self.col = 0;
+                self.screen.col = 0;
                 self.wrapping = true;
                 self.linefeed();
                 self.wrapping = false;
@@ -1234,11 +1264,11 @@ impl Term {
             }
             self.wrap_pending = false;
         }
-        let (row, col) = (self.row, self.col);
+        let (row, col) = (self.screen.row, self.screen.col);
         let cells = 1 + usize::from(wide);
         let blank = self.blank();
         let mut under = blank;
-        if let Some(line) = self.grid.get_mut(row) {
+        if let Some(line) = self.screen.grid.get_mut(row) {
             // What this overwrites or parts may be half of a wide character: blank the other half.
             if line.get(col).is_some_and(|c| c.ch == '\0')
                 && let Some(lead) = col.checked_sub(1).and_then(|i| line.get_mut(i))
@@ -1265,16 +1295,17 @@ impl Term {
         if insert {
             self.tidy(row);
         }
-        if !self.pictures.is_empty() {
-            self.pictures
+        if !self.screen.pictures.is_empty() {
+            self.screen
+                .pictures
                 .retain(|p| !((p.row..p.row + p.rows).contains(&row) && p.col < col + cells && col < p.col + p.cols));
         }
         if let Some(last) = &mut self.cluster {
             last.at = Some((row, col, new, under));
         }
-        self.col += cells;
-        if self.col >= self.cols {
-            self.col = self.cols - 1;
+        self.screen.col += cells;
+        if self.screen.col >= self.screen.cols {
+            self.screen.col = self.screen.cols - 1;
             // The wrap waits even while wrapping is off, as in xterm: turned on again, it is done.
             self.wrap_pending = true;
         }
@@ -1282,38 +1313,38 @@ impl Term {
 
     fn save_cursor(&mut self) {
         let saved = Saved {
-            row: self.row,
-            col: self.col,
+            row: self.screen.row,
+            col: self.screen.col,
             style: self.style,
             origin: self.origin,
             graphics: self.graphics,
             shift: self.shift,
             wrap: self.wrap_pending,
         };
-        if let Some(slot) = self.saved.get_mut(usize::from(self.alt)) {
+        if let Some(slot) = self.saved.get_mut(usize::from(self.screen.alt)) {
             *slot = saved;
         }
     }
 
     fn restore_cursor(&mut self) {
-        let saved = self.saved.get(usize::from(self.alt)).copied().unwrap_or_default();
-        self.row = saved.row.min(self.rows - 1);
-        self.col = saved.col.min(self.cols - 1);
+        let saved = self.saved.get(usize::from(self.screen.alt)).copied().unwrap_or_default();
+        self.screen.row = saved.row.min(self.screen.rows - 1);
+        self.screen.col = saved.col.min(self.screen.cols - 1);
         self.style = saved.style;
         self.origin = saved.origin;
         self.graphics = saved.graphics;
         self.shift = saved.shift;
-        self.wrap_pending = saved.wrap && saved.col + 1 == self.cols;
+        self.wrap_pending = saved.wrap && saved.col + 1 == self.screen.cols;
     }
 
     fn set_alt(&mut self, alt: bool, clear: bool) {
-        if alt != self.alt {
-            std::mem::swap(&mut self.grid, &mut self.other);
+        if alt != self.screen.alt {
+            std::mem::swap(&mut self.screen.grid, &mut self.other);
             // (A character still being joined is of the screen it was printed on.)
             self.cluster = None;
-            std::mem::swap(&mut self.pictures, &mut self.other_pictures);
-            self.alt = alt;
-            self.main_row = self.row;
+            std::mem::swap(&mut self.screen.pictures, &mut self.other_pictures);
+            self.screen.alt = alt;
+            self.main_row = self.screen.row;
         }
         if alt && clear {
             self.clear();
@@ -1321,9 +1352,9 @@ impl Term {
     }
 
     fn clear(&mut self) {
-        let blank = vec![Cell::blank(Style::default()); self.cols];
-        self.grid.iter_mut().for_each(|row| row.clone_from(&blank));
-        self.pictures.clear();
+        let blank = vec![Cell::blank(Style::default()); self.screen.cols];
+        self.screen.grid.iter_mut().for_each(|row| row.clone_from(&blank));
+        self.screen.pictures.clear();
     }
 
     /// Takes a new size, or refuses it and changes nothing. The main screen's
@@ -1336,7 +1367,7 @@ impl Term {
             self.refuse("a size was refused: columns and rows are each 1 to 500");
             return false;
         }
-        if (cols, rows) == (self.cols, self.rows) {
+        if (cols, rows) == (self.screen.cols, self.screen.rows) {
             return true;
         }
         // A command is being typed if the shell's last two marks are a prompt and where its
@@ -1351,18 +1382,22 @@ impl Term {
         // (The marks on the screen are places in the text while it is wrapped anew.)
         self.mark_texts(0..usize::MAX);
         let blank = Cell::blank(Style::default());
-        let (main, other) = if self.alt { (&self.other, &self.grid) } else { (&self.grid, &self.other) };
-        let (main_pictures, other_pictures) =
-            if self.alt { (&self.other_pictures, &self.pictures) } else { (&self.pictures, &self.other_pictures) };
+        let (main, other) =
+            if self.screen.alt { (&self.other, &self.screen.grid) } else { (&self.screen.grid, &self.other) };
+        let (main_pictures, other_pictures) = if self.screen.alt {
+            (&self.other_pictures, &self.screen.pictures)
+        } else {
+            (&self.screen.pictures, &self.other_pictures)
+        };
         // Places on the main screen that stay on their character, each with whether it waits to
         // wrap at its row's end. First the cursor, whose line is taken to reach as far as it
         // stands (behind the alternate screen, the saved cursor is the one that will come back);
         // then the saved cursor, the row to come back to, the character printed last, and two
         // corners of each picture (the upper one on the highest of its rows that is kept still).
         let saved = self.saved.first().map_or((0, 0, false), |s| (s.row, s.col + usize::from(s.wrap), s.wrap));
-        let cursor = (self.row, self.col + usize::from(self.wrap_pending), self.wrap_pending);
-        let last = self.cluster.and_then(|last| last.at).filter(|_| !self.alt);
-        let mut places = vec![if self.alt { saved } else { cursor }, saved, (self.main_row, 0, false)];
+        let cursor = (self.screen.row, self.screen.col + usize::from(self.wrap_pending), self.wrap_pending);
+        let last = self.cluster.and_then(|last| last.at).filter(|_| !self.screen.alt);
+        let mut places = vec![if self.screen.alt { saved } else { cursor }, saved, (self.main_row, 0, false)];
         places.push(last.map_or(cursor, |(row, col, ..)| (row, col, false)));
         // (A picture's rows below the screen's last are counted on from the last.)
         let low = |p: &Picture| (p.row + p.rows - 1).min(main.len().saturating_sub(1));
@@ -1381,12 +1416,12 @@ impl Term {
         // that is sure to be the shell's own line: the cursor is at or after where the command
         // begins and on its line, and the prompt began that line or an earlier one (so nothing
         // before it on the line is finished output). Anything else is wrapped anew, whole.
-        let typed = pending.filter(|_| !self.alt && cols != self.cols).and_then(|(prompt, command)| {
+        let typed = pending.filter(|_| !self.screen.alt && cols != self.screen.cols).and_then(|(prompt, command)| {
             let goes_on = |y: usize| main.get(y).is_some_and(|row| continues(row));
             let first = (1..=command.0).rev().find(|&y| !goes_on(y)).unwrap_or(0);
             let end = (command.0 + 1..main.len()).find(|&y| !goes_on(y)).unwrap_or(main.len());
             let ours = prompt.0 < first || prompt == (first, 0);
-            let here = (self.row, self.col + usize::from(self.wrap_pending));
+            let here = (self.screen.row, self.screen.col + usize::from(self.wrap_pending));
             (ours && here >= command && here.0 < end).then_some(first + held..end + held)
         });
         let keep = typed.unwrap_or(0..0);
@@ -1404,7 +1439,7 @@ impl Term {
         let at = |i: usize| (place(i).0, if place(i).2 { place(i).1.min(cols - 1) } else { place(i).1 });
         // Blank rows below the cursor go first; a row with something on it is never dropped:
         // rows go to history from the top, and the cursor with them if text below it needs the room.
-        let lowest = at(0).0.max(if self.alt { at(2).0 } else { 0 });
+        let lowest = at(0).0.max(if self.screen.alt { at(2).0 } else { 0 });
         while wrapped.len() > rows.max(lowest + 1) && wrapped.last().is_some_and(|row| row.iter().all(|c| *c == blank))
         {
             wrapped.pop();
@@ -1474,19 +1509,20 @@ impl Term {
             (slot.row, slot.col) = (slot.row.min(rows - 1), slot.col.min(cols - 1));
         }
         self.interrupt();
-        if self.alt {
-            (self.grid, self.other, self.pictures, self.other_pictures) = (cut, wrapped, still, kept);
+        if self.screen.alt {
+            (self.screen.grid, self.other, self.screen.pictures, self.other_pictures) = (cut, wrapped, still, kept);
             (self.main_row, self.cluster) = (main_row, None);
-            (self.row, self.col, self.wrap_pending) = (self.row.min(rows - 1), self.col.min(cols - 1), false);
+            (self.screen.row, self.screen.col, self.wrap_pending) =
+                (self.screen.row.min(rows - 1), self.screen.col.min(cols - 1), false);
         } else {
-            (self.grid, self.other, self.pictures, self.other_pictures) = (wrapped, cut, kept, still);
+            (self.screen.grid, self.other, self.screen.pictures, self.other_pictures) = (wrapped, cut, kept, still);
             // A cursor past its row's last column is the one that waits to wrap there.
-            (self.row, self.col, self.wrap_pending) = (row, col.min(cols - 1), col >= cols);
+            (self.screen.row, self.screen.col, self.wrap_pending) = (row, col.min(cols - 1), col >= cols);
             // The character printed last is where it was in the text: what comes next may join it.
-            let here = (self.row, self.col, self.wrap_pending);
+            let here = (self.screen.row, self.screen.col, self.wrap_pending);
             let (at_row, at_col) = fit(at(3));
             self.cluster = last.filter(|_| at(3).0 >= up).and_then(|(.., under)| {
-                Some(Last { at: Some((at_row, at_col, *self.cell_at(at_row, at_col)?, under)), cursor: here })
+                Some(Last { at: Some((at_row, at_col, *self.screen.cell_at(at_row, at_col)?, under)), cursor: here })
             });
         }
         // (What history was given of the rows above, and has not yet taken, is taken back here.)
@@ -1511,7 +1547,7 @@ impl Term {
         if full {
             self.refuse(HISTORY_FULL);
         }
-        (self.cols, self.rows) = (cols, rows);
+        (self.screen.cols, self.screen.rows) = (cols, rows);
         (self.top, self.bottom) = (0, rows - 1);
         self.settle();
         let screen = |at: At| match at {
@@ -1627,13 +1663,13 @@ impl Term {
         match byte {
             0x07 => self.notice(""),
             0x08 => {
-                self.col = self.col.saturating_sub(1);
+                self.screen.col = self.screen.col.saturating_sub(1);
                 self.wrap_pending = false;
             }
             0x09 => self.tab(1),
             0x0a..=0x0c => self.linefeed(),
             0x0d => {
-                self.col = 0;
+                self.screen.col = 0;
                 self.wrap_pending = false;
             }
             0x0e => self.shift = true,
@@ -1644,8 +1680,8 @@ impl Term {
 
     fn tab(&mut self, n: usize) {
         for _ in 0..n {
-            let next = (self.col + 1..self.cols).find(|&c| self.tabs.get(c) == Some(&true));
-            self.col = next.unwrap_or(self.cols - 1);
+            let next = (self.screen.col + 1..self.screen.cols).find(|&c| self.tabs.get(c) == Some(&true));
+            self.screen.col = next.unwrap_or(self.screen.cols - 1);
         }
     }
 
@@ -1670,37 +1706,35 @@ impl Term {
             b'8' => self.restore_cursor(),
             b'D' => self.linefeed(),
             b'E' => {
-                self.col = 0;
+                self.screen.col = 0;
                 self.linefeed();
             }
             b'M' => self.reverse_linefeed(),
             b'H' => {
-                if let Some(stop) = self.tabs.get_mut(self.col) {
+                if let Some(stop) = self.tabs.get_mut(self.screen.col) {
                     *stop = true;
                 }
             }
-            b'=' => self.app_keypad = true,
-            b'>' => self.app_keypad = false,
+            b'=' => self.screen.app_keypad = true,
+            b'>' => self.screen.app_keypad = false,
             b'c' => {
                 // A full reset. What was produced stays to be taken, and picture
                 // numbers go on, so no file's name is used twice.
-                let (cell, out, title) = (self.cell, std::mem::take(&mut self.out), std::mem::take(&mut self.title));
-                let titles = std::mem::take(&mut self.titles);
+                let (told, out, title) =
+                    (std::mem::take(&mut self.told), std::mem::take(&mut self.out), std::mem::take(&mut self.title));
+                let (titles, syncs) = (std::mem::take(&mut self.titles), self.screen.syncs);
                 *self = Term {
-                    cell,
+                    told,
                     out,
                     title,
                     titles,
                     next_picture: self.next_picture,
                     tail: self.tail,
                     gone: self.gone,
-                    syncs: self.syncs,
                     marks: std::mem::take(&mut self.marks),
-                    colours: std::mem::take(&mut self.colours),
-                    keyboard: self.keyboard,
-                    name: std::mem::take(&mut self.name),
-                    ..Term::new(self.cols, self.rows)
+                    ..Term::new(self.screen.cols, self.screen.rows)
                 };
+                self.screen.syncs = syncs;
                 self.move_marks(|_, _| At::Screen(0, 0));
             }
             _ => {}
@@ -1720,9 +1754,9 @@ impl Term {
             }
             (b'#', b'8') => {
                 let fill = Cell { ch: 'E', ..Cell::blank(Style::default()) };
-                self.grid.iter_mut().for_each(|row| row.fill(fill));
+                self.screen.grid.iter_mut().for_each(|row| row.fill(fill));
                 // And, as in xterm, the whole screen scrolls again and the cursor goes home.
-                (self.top, self.bottom, self.origin) = (0, self.rows - 1, false);
+                (self.top, self.bottom, self.origin) = (0, self.screen.rows - 1, false);
                 self.move_to(0, 0);
             }
             _ => {}
@@ -1773,7 +1807,7 @@ impl Term {
                 body + "m"
             }
             b"r" => format!("{};{}r", self.top + 1, self.bottom + 1),
-            b" q" => format!("{} q", self.cursor_shape),
+            b" q" => format!("{} q", self.screen.cursor_shape),
             _ => {
                 self.respond("\x1bP0$r\x1b\\");
                 return;
@@ -1858,7 +1892,7 @@ impl Term {
                                 let told = |told: &str| Some(told).filter(|told| told.len() == 7).and_then(colour);
                                 (words.next() == Some(name.as_str())).then(|| words.next().and_then(told))
                             };
-                            let told = || self.colours.lines().rev().find_map(line).flatten();
+                            let told = || self.told.colours.lines().rev().find_map(line).flatten();
                             if let Some([r, g, b]) = self.own.get(&slot).copied().or_else(told) {
                                 let answer = format!("rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}");
                                 self.respond(&format!("\x1b]{which};{answer}{end}"));
@@ -1928,7 +1962,7 @@ impl Term {
             // A shell marks its prompts: `133;A` where a prompt starts, `B` where the command
             // typed begins, `C` where its output begins, `D[;CODE]` where it ended. Each is kept
             // as the place the cursor is at.
-            "133" if !self.alt => {
+            "133" if !self.screen.alt => {
                 let kind = match rest.split(';').next() {
                     Some("A") => "prompt",
                     Some("B") => "command",
@@ -1937,13 +1971,13 @@ impl Term {
                     _ => return,
                 };
                 let code = rest.split(';').nth(1).filter(|_| kind == "end").and_then(|code| code.parse::<u8>().ok());
-                let here = At::Screen(self.row, self.col + usize::from(self.wrap_pending));
+                let here = At::Screen(self.screen.row, self.screen.col + usize::from(self.wrap_pending));
                 // A prompt before a mark says that mark's text is there no more (the prompt was
                 // drawn again higher up): the mark is kept, at the prompt's place, so that what
                 // was marked before is still in its order, with nothing between. Only a prompt
                 // says so: a program that moved up and ended has erased nothing.
                 if kind == "prompt" {
-                    let (row, col) = (self.row, self.col + usize::from(self.wrap_pending));
+                    let (row, col) = (self.screen.row, self.screen.col + usize::from(self.wrap_pending));
                     self.move_marks(|r, c| if (r, c) > (row, col) { here } else { At::Screen(r, c) });
                     // (A prompt drawn again in its place is one prompt.)
                     while self.marks.last().is_some_and(|last| last.0 == here && matches!(last.1, "prompt" | "command"))
@@ -1988,14 +2022,14 @@ impl Term {
     /// Places a sixel picture at the cursor and moves the cursor below it.
     fn picture(&mut self, data: &[u8]) {
         let (width, height, _) = sixel::size(data);
-        let cols = width.div_ceil(self.cell.0.max(1)).max(1);
-        let rows = height.div_ceil(self.cell.1.max(1)).max(1);
+        let cols = width.div_ceil(self.told.cell.0.max(1)).max(1);
+        let rows = height.div_ceil(self.told.cell.1.max(1)).max(1);
         if cols > SIZE_MAX || rows > SIZE_MAX {
             self.refuse("a picture over 500 cells wide or high was dropped");
             return;
         }
-        if self.pictures.len() >= PICTURES_MAX {
-            let oldest = self.pictures.remove(0).id;
+        if self.screen.pictures.len() >= PICTURES_MAX {
+            let oldest = self.screen.pictures.remove(0).id;
             self.out.pictures.retain(|(id, _)| *id != oldest);
             self.refuse("a screen keeps 8 pictures: the oldest was dropped for a new one");
         }
@@ -2003,14 +2037,21 @@ impl Term {
         whole.extend_from_slice(b"\x1bP");
         whole.extend_from_slice(data);
         whole.extend_from_slice(b"\x1b\\");
-        self.pictures.push(Picture { id: self.next_picture, row: self.row, col: self.col, cols, rows, off: 0 });
+        self.screen.pictures.push(Picture {
+            id: self.next_picture,
+            row: self.screen.row,
+            col: self.screen.col,
+            cols,
+            rows,
+            off: 0,
+        });
         self.out.pictures.push((self.next_picture, whole));
         self.next_picture = self.next_picture.wrapping_add(1);
         // The picture scrolls with the text; of one taller than the screen the last rows stay.
         for _ in 0..rows {
             self.linefeed();
         }
-        self.col = 0;
+        self.screen.col = 0;
         self.wrap_pending = false;
     }
 
@@ -2063,14 +2104,14 @@ impl Term {
 
     fn dispatch(&mut self, last: u8) {
         let n = self.arg(0, 1);
-        let (row, col) = (self.row, self.col);
+        let (row, col) = (self.screen.row, self.screen.col);
         // What REP repeats: the character printed just before it, with nothing between (as xterm).
         let printed = self.interrupt();
         match (self.csi.private, self.csi.inter, last) {
             (0, 0, b'A') => self.move_rows(n, false),
             (0, 0, b'B') => self.move_rows(n, true),
             (0, 0, b'e') => {
-                self.row = row.saturating_add(n).min(self.rows - 1);
+                self.screen.row = row.saturating_add(n).min(self.screen.rows - 1);
                 self.wrap_pending = false;
             }
             (0, 0, b'C' | b'a') => self.move_to_col(col + n),
@@ -2091,7 +2132,8 @@ impl Term {
             (0, 0, b'I') => self.tab(n),
             (0, 0, b'Z') => {
                 for _ in 0..n {
-                    self.col = (0..self.col).rev().find(|&c| self.tabs.get(c) == Some(&true)).unwrap_or(0);
+                    self.screen.col =
+                        (0..self.screen.col).rev().find(|&c| self.tabs.get(c) == Some(&true)).unwrap_or(0);
                 }
                 self.wrap_pending = false;
             }
@@ -2099,30 +2141,30 @@ impl Term {
             // what they marked is gone, and they mark nothing of what is written there next.)
             (0 | b'?', 0, b'J') => match self.arg(0, 0) {
                 0 => {
-                    self.erase(row, col, self.cols);
-                    (row + 1..self.rows).for_each(|r| self.erase(r, 0, self.cols));
+                    self.erase(row, col, self.screen.cols);
+                    (row + 1..self.screen.rows).for_each(|r| self.erase(r, 0, self.screen.cols));
                     self.move_marks(|r, c| At::Screen(r.min(row), if (r, c) > (row, col) { col } else { c }));
                 }
                 1 => {
-                    (0..row).for_each(|r| self.erase(r, 0, self.cols));
+                    (0..row).for_each(|r| self.erase(r, 0, self.screen.cols));
                     self.erase(row, 0, col + 1);
                     // (The place right after what was erased is its end too.)
                     self.move_marks(|r, c| if (r, c) <= (row, col + 1) { At::Screen(0, 0) } else { At::Screen(r, c) });
                 }
                 2 => {
-                    (0..self.rows).for_each(|r| self.erase(r, 0, self.cols));
+                    (0..self.screen.rows).for_each(|r| self.erase(r, 0, self.screen.cols));
                     self.move_marks(|_, _| At::Screen(0, 0));
                     // A screen that was cleared is not given back what a resize took off its top.
-                    if !self.alt {
+                    if !self.screen.alt {
                         self.lent = None;
                     }
                 }
                 _ => {}
             },
             (0 | b'?', 0, b'K') => match self.arg(0, 0) {
-                0 => self.erase(row, col, self.cols),
+                0 => self.erase(row, col, self.screen.cols),
                 1 => self.erase(row, 0, col + 1),
-                2 => self.erase(row, 0, self.cols),
+                2 => self.erase(row, 0, self.screen.cols),
                 _ => {}
             },
             (0, 0, b'X') => self.erase(row, col, col.saturating_add(n)),
@@ -2132,7 +2174,7 @@ impl Term {
                     self.split(row, col.saturating_add(n));
                 }
                 let blank = self.blank();
-                if let Some(rest) = self.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
+                if let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col..)) {
                     let n = n.min(rest.len());
                     let gap = if last == b'@' {
                         rest.rotate_right(n);
@@ -2155,7 +2197,7 @@ impl Term {
                 } else {
                     self.scroll_up(row, n);
                 }
-                self.col = 0;
+                self.screen.col = 0;
                 self.wrap_pending = false;
             }
             (0, 0, b'S') => self.scroll_up(self.top, n),
@@ -2170,7 +2212,7 @@ impl Term {
             }
             (0, 0, b'c') => self.respond("\x1b[?62;4;22c"),
             (b'>', 0, b'q') if self.csi.params.len() == 1 && self.arg(0, 0) == 0 => {
-                let answer = format!("\x1bP>|{}\x1b\\", self.name);
+                let answer = format!("\x1bP>|{}\x1b\\", self.told.name);
                 self.respond(&answer);
             }
             (b'>', 0, b'c') if self.csi.params.len() == 1 && self.arg(0, 0) == 0 => self.respond("\x1b[>70;0;0c"),
@@ -2205,16 +2247,16 @@ impl Term {
             (b'?', b'$', b'p') => {
                 let mode = self.arg(0, 0);
                 let set = match mode {
-                    1 => Some(self.app_cursor),
+                    1 => Some(self.screen.app_cursor),
                     6 => Some(self.origin),
                     7 => Some(self.autowrap),
-                    25 => Some(self.cursor_shown),
-                    47 | 1047 | 1049 => Some(self.alt),
-                    9 | 1000 | 1002 | 1003 => Some(usize::from(self.mouse) == mode),
-                    1006 => Some(self.mouse_sgr),
-                    2004 => Some(self.paste),
-                    1004 => Some(self.focus),
-                    2026 => Some(self.sync),
+                    25 => Some(self.screen.cursor_shown),
+                    47 | 1047 | 1049 => Some(self.screen.alt),
+                    9 | 1000 | 1002 | 1003 => Some(usize::from(self.screen.mouse) == mode),
+                    1006 => Some(self.screen.mouse_sgr),
+                    2004 => Some(self.screen.paste),
+                    1004 => Some(self.screen.focus),
+                    2026 => Some(self.screen.sync),
                     _ => None,
                 };
                 // Text is always cut into grapheme clusters (2027): permanently set.
@@ -2223,15 +2265,16 @@ impl Term {
             }
             (0, b'!', b'p') => {
                 // A soft reset: modes and the scroll region back to how they start.
-                (self.insert, self.origin, self.autowrap, self.cursor_shown) = (false, false, true, true);
-                (self.app_cursor, self.app_keypad, self.graphics, self.shift) = (false, false, [false; 2], false);
-                (self.mouse, self.mouse_sgr) = (0, false);
-                (self.top, self.bottom, self.style, self.link) = (0, self.rows - 1, Style::default(), 0);
+                (self.insert, self.origin, self.autowrap, self.screen.cursor_shown) = (false, false, true, true);
+                (self.screen.app_cursor, self.screen.app_keypad, self.graphics, self.shift) =
+                    (false, false, [false; 2], false);
+                (self.screen.mouse, self.screen.mouse_sgr) = (0, false);
+                (self.top, self.bottom, self.style, self.link) = (0, self.screen.rows - 1, Style::default(), 0);
                 self.saved = [Saved::default(); 2];
             }
-            (0, b' ', b'q') if self.arg(0, 0) <= 6 => self.cursor_shape = self.arg(0, 0) as u8,
+            (0, b' ', b'q') if self.arg(0, 0) <= 6 => self.screen.cursor_shape = self.arg(0, 0) as u8,
             (0, 0, b'r') => {
-                let (top, bottom) = (n - 1, self.arg(1, self.rows).min(self.rows) - 1);
+                let (top, bottom) = (n - 1, self.arg(1, self.screen.rows).min(self.screen.rows) - 1);
                 if top < bottom {
                     (self.top, self.bottom) = (top, bottom);
                     self.move_to(0, 0);
@@ -2245,15 +2288,15 @@ impl Term {
             // takes is put in force, as that is known when the program asks: with no such
             // terminal known, nothing is, and the answer is 0. What a program was told stays so.
             (b'=' | b'>' | b'<' | b'?', 0, b'u') => {
-                let alt = usize::from(self.alt);
+                let alt = usize::from(self.screen.alt);
                 // (A number too large to be flags is no flags, not the largest number kept.)
                 let given = if self.csi.huge { 0 } else { self.arg(0, 0) };
-                let (asked, how) = ((given & usize::from(KEYS & self.keyboard)) as u8, self.arg(1, 1));
+                let (asked, how) = ((given & usize::from(KEYS & self.told.keyboard)) as u8, self.arg(1, 1));
                 // (A flag in force may be put out of force whatever the terminal takes by now.)
                 let out = (given & usize::from(KEYS)) as u8;
                 // (Going back takes a count: one if none is given, none if it is 0.)
                 let (back, which) = (if self.csi.bare { 1 } else { self.arg(0, 0) }, self.csi.private);
-                let Some((flags, kept)) = self.keys.get_mut(alt) else { return };
+                let Some((flags, kept)) = self.screen.keys.get_mut(alt) else { return };
                 match which {
                     b'=' => {
                         *flags =
@@ -2274,7 +2317,7 @@ impl Term {
                 }
             }
             (0, 0, b't') => {
-                let (cols, rows, (w, h)) = (self.cols, self.rows, self.cell);
+                let (cols, rows, (w, h)) = (self.screen.cols, self.screen.rows, self.told.cell);
                 match self.arg(0, 0) {
                     14 => self.respond(&format!("\x1b[4;{};{}t", rows * h, cols * w)),
                     16 => self.respond(&format!("\x1b[6;{h};{w}t")),
@@ -2303,39 +2346,42 @@ impl Term {
 
     fn move_rows(&mut self, n: usize, down: bool) {
         // The cursor stops at the scroll region's edge, unless it is already past it.
-        self.row = if down {
-            let limit = if self.row <= self.bottom { self.bottom } else { self.rows - 1 };
-            self.row.saturating_add(n).min(limit)
+        self.screen.row = if down {
+            let limit = if self.screen.row <= self.bottom { self.bottom } else { self.screen.rows - 1 };
+            self.screen.row.saturating_add(n).min(limit)
         } else {
-            let limit = if self.row >= self.top { self.top } else { 0 };
-            self.row.saturating_sub(n).max(limit)
+            let limit = if self.screen.row >= self.top { self.top } else { 0 };
+            self.screen.row.saturating_sub(n).max(limit)
         };
         self.wrap_pending = false;
     }
 
     fn move_to_col(&mut self, col: usize) {
-        self.col = col.min(self.cols - 1);
+        self.screen.col = col.min(self.screen.cols - 1);
         self.wrap_pending = false;
     }
 
     fn private_mode(&mut self, mode: usize, on: bool) {
         match mode {
-            1 => self.app_cursor = on,
+            1 => self.screen.app_cursor = on,
             6 => {
                 self.origin = on;
                 self.move_to(0, 0);
             }
             7 => self.autowrap = on,
-            25 => self.cursor_shown = on,
-            1004 => self.focus = on,
-            2026 => (self.sync, self.syncs) = (on, self.syncs.wrapping_add(u32::from(on && !self.sync))),
+            25 => self.screen.cursor_shown = on,
+            1004 => self.screen.focus = on,
+            2026 => {
+                (self.screen.sync, self.screen.syncs) =
+                    (on, self.screen.syncs.wrapping_add(u32::from(on && !self.screen.sync)))
+            }
             47 => self.set_alt(on, false),
             1047 => {
-                if !on && self.alt {
+                if !on && self.screen.alt {
                     self.clear();
                 }
                 // Asked for while already there, it is left as it is (as in xterm).
-                self.set_alt(on, on && !self.alt);
+                self.set_alt(on, on && !self.screen.alt);
             }
             1048 if on => self.save_cursor(),
             1048 => self.restore_cursor(),
@@ -2347,9 +2393,9 @@ impl Term {
                 self.set_alt(false, false);
                 self.restore_cursor();
             }
-            2004 => self.paste = on,
-            9 | 1000 | 1002 | 1003 => self.mouse = if on { mode as u16 } else { 0 },
-            1006 => self.mouse_sgr = on,
+            2004 => self.screen.paste = on,
+            9 | 1000 | 1002 | 1003 => self.screen.mouse = if on { mode as u16 } else { 0 },
+            1006 => self.screen.mouse_sgr = on,
             _ => {}
         }
     }

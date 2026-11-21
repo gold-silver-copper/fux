@@ -21,7 +21,7 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     // Told, it answers in the order asked, each answer ended as its question was, and is silent
     // about what it was not told (a palette entry, a number that is no entry).
     let mut told = Term::new(20, 2);
-    told.colours = "foreground #d0d0d0\nbackground #1c1c1c\n1 #cc0000\nnonsense\n".into();
+    told.told().colours = "foreground #d0d0d0\nbackground #1c1c1c\n1 #cc0000\nnonsense\n".into();
     told.feed(asks.as_bytes());
     let answers = "\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]4;1;rgb:cccc/0000/0000\x1b\\";
     assert_eq!(String::from_utf8(told.take().reply).unwrap(), answers.to_string() + &da);
@@ -31,14 +31,14 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     told.feed(b"\x1b]10;?;?\x07\x1b]11;?;?\x07");
     let both = "\x1b]10;rgb:d0d0/d0d0/d0d0\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07";
     assert_eq!(String::from_utf8(told.take().reply).unwrap(), both);
-    told.colours.push_str("cursor #ff8000\n");
+    told.told().colours.push_str("cursor #ff8000\n");
     told.feed(b"\x1b]12;?\x07");
     assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]12;rgb:ffff/8080/0000\x07");
-    told.colours = "background #+12345\nforeground #d0d0d\n7 cc0000\n".into();
+    told.told().colours = "background #+12345\nforeground #d0d0d\n7 cc0000\n".into();
     told.feed(b"\x1b]11;?\x07\x1b]10;?\x07\x1b]4;7;?\x07");
     assert!(told.take().reply.is_empty());
     // A person's file: blanks do not matter, capitals neither, and of two lines for a colour the last counts.
-    told.colours = "background #000000\n  background\t#FDF6E3  # paper\r\n".into();
+    told.told().colours = "background #000000\n  background\t#FDF6E3  # paper\r\n".into();
     told.feed(b"\x1b]11;?\x07");
     assert_eq!(String::from_utf8(told.take().reply).unwrap(), "\x1b]11;rgb:fdfd/f6f6/e3e3\x07");
     assert_eq!(told.plain(), "\n\n");
@@ -64,15 +64,15 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     // program that was told so is not given the flags later, when a terminal that takes them
     // comes: what it was told stays true until it asks again.
     let mut early = term(9, 2, "\x1b[>1u\x1b[?u");
-    early.keyboard = crate::term::KEYS;
+    early.told().keyboard = crate::term::KEYS;
     early.feed(b"\x1b[?u");
-    assert_eq!((early.take().reply.as_slice(), early.keys()), (&b"\x1b[?0u\x1b[?0u"[..], 0));
+    assert_eq!((early.take().reply.as_slice(), early.screen().keys()), (&b"\x1b[?0u\x1b[?0u"[..], 0));
     early.feed(b"\x1b[=1u\x1b[?u");
-    early.keyboard = 0;
-    assert_eq!((early.take().reply.as_slice(), early.keys()), (&b"\x1b[?1u"[..], 1));
+    early.told().keyboard = 0;
+    assert_eq!((early.take().reply.as_slice(), early.screen().keys()), (&b"\x1b[?1u"[..], 1));
     let asked = |bytes: &str| {
         let mut term = Term::new(9, 2);
-        term.keyboard = crate::term::KEYS;
+        term.told().keyboard = crate::term::KEYS;
         term.feed(bytes.as_bytes());
         (String::from_utf8(term.take().reply).unwrap(), term.words())
     };
@@ -86,7 +86,7 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     assert_eq!(asked("\x1b[>31u\x1b[?u\x1b[=256u\x1b[?u\x1b[=127u\x1b[?u").0, "\x1b[?31u\x1b[?0u\x1b[?31u");
     // A flag the terminal that sends the keys lacks is not in force, and the program is told so.
     let mut lacking = Term::new(4, 1);
-    lacking.keyboard = 5;
+    lacking.told().keyboard = 5;
     lacking.feed(b"\x1b[>31u\x1b[?u\x1b[=2;2u\x1b[?u");
     assert_eq!(lacking.take().reply, b"\x1b[?5u\x1b[?5u");
     // What a key's sequence says beyond its name: which key, pressed, held or let go, and
@@ -118,7 +118,7 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     // The flags in force are a word among the modes, and a reader of those words has them.
     for screen in ["", "\x1b[?1049h"] {
         let words = asked(&format!("{screen}\x1b[>5u")).1;
-        let mut reader = Term::new(1, 1);
+        let mut reader = crate::term::Screen::default();
         reader.set_words(&words);
         assert!(words.ends_with("keys5") && reader.keys() == 5, "{words}");
     }

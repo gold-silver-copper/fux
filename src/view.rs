@@ -7,7 +7,7 @@
 use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
 use crate::term::{
-    BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Style, Term, base64_encode,
+    BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Screen, Style, Term, base64_encode,
 };
 use crate::width::Joiner;
 use crate::{is_name, keys, sixel, text};
@@ -96,7 +96,7 @@ type From = (String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)),
 struct Pane {
     /// The screen's file when it was last read.
     seen: Stamp,
-    term: Term,
+    screen: Screen,
     /// The size the pane says it has (`size`), if it says one.
     size: (usize, usize),
     pid: u32,
@@ -994,15 +994,15 @@ impl View {
             }
             for y in 0..body.h {
                 for x in 0..body.w {
-                    let mut cell = pane.term.cell_at(y, x).copied().unwrap_or(Cell::blank(Style::default()));
+                    let mut cell = pane.screen.cell_at(y, x).copied().unwrap_or(Cell::blank(Style::default()));
                     // Half a wide character at the tile's edge is drawn as a blank.
-                    let cut = x + 1 == body.w && pane.term.cell_at(y, x + 1).is_some_and(|next| next.ch == '\0');
+                    let cut = x + 1 == body.w && pane.screen.cell_at(y, x + 1).is_some_and(|next| next.ch == '\0');
                     cell = if cut { Cell::blank(cell.style) } else { cell };
                     // A character your terminal may draw wider than fux counts it (it may not join what
                     // fux joins) would there reach past the tile's edge: a `?` stands in each of its columns.
                     let first = x - usize::from(cell.ch == '\0' && x > 0);
                     // (A terminal that says it joins characters as fux does draws it as fux counts it.)
-                    if let Some(whole) = pane.term.cell_at(y, first).filter(|c| c.spill() > 0 && !self.joins)
+                    if let Some(whole) = pane.screen.cell_at(y, first).filter(|c| c.spill() > 0 && !self.joins)
                         && first + 1 + usize::from(whole.wide()) + whole.spill() > body.w
                     {
                         cell = Cell { ch: '?', more: ['\0'; MORE], ..cell };
@@ -1053,28 +1053,28 @@ impl View {
             if focused && !pane.title.is_empty() {
                 title = Some(pane.title.clone());
             }
-            if focused && pane.term.cursor_shown && pane.term.row < body.h && pane.term.col < body.w {
-                let (row, col) = (body.y + pane.term.row + 1, body.x + pane.term.col + 1);
-                cursor = format!("\x1b[{row};{col}H\x1b[{} q\x1b[?25h", pane.term.cursor_shape);
+            if focused && pane.screen.cursor_shown && pane.screen.row < body.h && pane.screen.col < body.w {
+                let (row, col) = (body.y + pane.screen.row + 1, body.x + pane.screen.col + 1);
+                cursor = format!("\x1b[{row};{col}H\x1b[{} q\x1b[?25h", pane.screen.cursor_shape);
             }
             // The outer terminal sends cursor and keypad keys the way the focused program asked for.
             if focused {
                 // (The cursor's colour is a living program's, as the cursor is.)
                 cursor_colour = pane.cursor_colour.filter(|_| live);
-                let (cursor_keys, keypad) = (pane.term.app_cursor, pane.term.app_keypad);
+                let (cursor_keys, keypad) = (pane.screen.app_cursor, pane.screen.app_keypad);
                 cursor.push_str(if cursor_keys { "\x1b[?1h" } else { "\x1b[?1l" });
                 cursor.push_str(if keypad { "\x1b=" } else { "\x1b>" });
                 // And reports the mouse when, and as far as, a living program asked (always in the SGR form).
-                if pane.term.mouse != 0 && live {
-                    modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.term.mouse));
+                if pane.screen.mouse != 0 && live {
+                    modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.screen.mouse));
                 }
                 // And is told when this terminal's window gains and loses the keys, if it asked.
-                if pane.term.focus && live {
+                if pane.screen.focus && live {
                     wants_focus = Some(pane_directory.clone());
                 }
                 // And tells keys as that program asked (the kitty protocol), if the terminal can.
                 if live {
-                    keys = pane.term.keys() & self.keyboard;
+                    keys = pane.screen.keys() & self.keyboard;
                 }
             }
             for (file, [row, col, _, _, off]) in &pane.pictures {
@@ -1408,7 +1408,7 @@ fn cells(text: &str, style: Style) -> Vec<Cell> {
     // One row with room for all of it and a column to spare, so that nothing wraps.
     let mut row = Term::new(2 * text.len() + 1, 1);
     row.feed(bytes.as_bytes());
-    (0..row.col).filter_map(|x| row.cell_at(0, x).copied()).collect()
+    (0..row.screen().col).filter_map(|x| row.screen().cell_at(0, x).copied()).collect()
 }
 
 /// The address of a link of the given number in a frame's table of them.
@@ -1451,10 +1451,10 @@ fn screen_stamp(m: fs::Metadata) -> (u64, i64, i64, u64) {
 
 /// How a pane's program asks for its input (pastes marked, the mouse, the focus, keys), as its
 /// `modes` file says now: what is typed is sent by this, not by what was last drawn.
-fn asks(directory: &Path) -> Term {
-    let mut term = Term::new(1, 1);
-    term.set_words(&text(&directory.join("modes"), 256));
-    term
+fn asks(directory: &Path) -> Screen {
+    let mut screen = Screen::default();
+    screen.set_words(&text(&directory.join("modes"), 256));
+    screen
 }
 
 /// Who a pane's program is: the pid in its `status`, as the file says now.
@@ -1472,7 +1472,7 @@ impl Pane {
     fn new() -> Pane {
         Pane {
             seen: None,
-            term: Term::new(1, 1),
+            screen: Screen::default(),
             size: (0, 0),
             pid: 0,
             state: String::new(),
@@ -1506,8 +1506,8 @@ impl Pane {
         let cols = if self.size.0 == 0 { SIZE_MAX } else { self.size.0 };
         // (One column more than the pane is said to have, where there is room for one: there a
         // line that is longer ends, and is cut off.)
-        self.term = Term::new((cols + 1).min(SIZE_MAX), styled.lines().count().clamp(1, SIZE_MAX));
-        self.term.feed(b"\x1b[?7l");
+        let mut term = Term::new((cols + 1).min(SIZE_MAX), styled.lines().count().clamp(1, SIZE_MAX));
+        term.feed(b"\x1b[?7l");
         for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
             // The rows are text and colours, as the holder writes them: anything else in a
             // file of someone's own making is shown as `?`.
@@ -1524,19 +1524,21 @@ impl Pane {
                 rest = after.get(colour.unwrap_or(1)..).unwrap_or_default();
             }
             text.push_str(rest);
-            self.term.feed(format!("\x1b[{};1H\x1b[m{text}", row + 1).as_bytes());
-            if cols < self.term.cols {
-                self.term.feed(format!("\x1b[{};{}H\x1b[m\x1b[K", row + 1, cols + 1).as_bytes());
+            term.feed(format!("\x1b[{};1H\x1b[m{text}", row + 1).as_bytes());
+            if cols < term.screen().cols {
+                term.feed(format!("\x1b[{};{}H\x1b[m\x1b[K", row + 1, cols + 1).as_bytes());
             }
         }
-        self.term.set_words(&fact("modes", 256));
+        self.screen = term.into_screen();
+        self.screen.set_words(&fact("modes", 256));
         let cursor = fact("cursor", 64);
         let mut cursor = cursor.split_whitespace();
         let mut place = || cursor.next().and_then(|n| n.parse::<usize>().ok());
         let at = (place(), place());
-        self.term.cursor_shown = cursor.next() == Some("shown") && at.0.is_some_and(|row| row < self.term.rows);
-        (self.term.row, self.term.col) = (at.0.unwrap_or(0).min(self.term.rows - 1), at.1.unwrap_or(0).min(cols - 1));
-        self.term.cursor_shape =
+        self.screen.cursor_shown = cursor.next() == Some("shown") && at.0.is_some_and(|row| row < self.screen.rows);
+        (self.screen.row, self.screen.col) =
+            (at.0.unwrap_or(0).min(self.screen.rows - 1), at.1.unwrap_or(0).min(cols - 1));
+        self.screen.cursor_shape =
             cursor.next().and_then(|shape| shape.parse().ok()).filter(|shape| *shape <= 6).unwrap_or(0);
         self.cursor_colour = cursor.next().filter(|colour| colour.len() == 7).and_then(crate::term::colour);
         self.state = fact("state", 64).trim_end().to_string();
@@ -1563,7 +1565,7 @@ impl Pane {
         let mut lines = lines.lines().map(&numbers);
         let (top, rows) = (lines.next().unwrap_or_default(), lines.next().unwrap_or_default());
         let (mut line, mut base, mut starts) = (top.first().copied().unwrap_or(0), 0, Vec::new());
-        for row in 0..self.term.rows {
+        for row in 0..self.screen.rows {
             (line, base) = if row > 0 && !rows.contains(&row) { (line.saturating_add(1), 0) } else { (line, base) };
             starts.push((line, base));
             base += cols;
@@ -1573,7 +1575,7 @@ impl Pane {
         // addresses, as a holder keeps, and no more cells than the screen has.)
         let list = fact("links", LINKS_LIST_MAX as u64);
         let whole = list.rfind('\n').and_then(|end| list.get(..end)).unwrap_or_default();
-        let (mut known, mut cells): (HashMap<&str, u16>, usize) = (HashMap::new(), self.term.rows * cols);
+        let (mut known, mut cells): (HashMap<&str, u16>, usize) = (HashMap::new(), self.screen.rows * cols);
         for run in whole.lines() {
             let mut fields = run.splitn(4, ' ');
             let mut number = || fields.next().and_then(|n| n.parse::<usize>().ok());
@@ -1593,7 +1595,7 @@ impl Pane {
             };
             for (row, (_, base)) in starts.iter().enumerate().filter(|(_, (of, _))| *of == line) {
                 for col in (from.max(*base)..(from.saturating_add(length)).min(base + cols)).take(cells) {
-                    self.term.set_link(row, col - base, link);
+                    self.screen.set_link(row, col - base, link);
                     cells -= 1;
                 }
             }

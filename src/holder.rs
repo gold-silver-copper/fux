@@ -196,7 +196,7 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         styled_lost: false,
         logged: 0,
     };
-    holder.term.name = format!("{} {}", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION"));
+    holder.term.told().name = format!("{} {}", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION"));
     for name in odd {
         holder.log(&format!("{name} is not a number from 1 to {SIZE_MAX}: the pane starts at {cols}x{rows}"));
     }
@@ -240,9 +240,9 @@ impl Holder {
             // A program in the middle of drawing (mode 2026) is not shown until it says it is done,
             // or half a second has gone by: one that never says so cannot freeze its pane.
             // (The half second runs from the first time it said so with no end since.)
-            let again = std::mem::replace(&mut self.syncs, self.term.syncs) != self.term.syncs;
+            let again = std::mem::replace(&mut self.syncs, self.term.screen().syncs) != self.term.screen().syncs;
             self.drawing = match self.drawing {
-                _ if !self.term.sync => None,
+                _ if !self.term.screen().sync => None,
                 Some(since) if !again => Some(since),
                 _ => Some(Instant::now()),
             };
@@ -377,8 +377,8 @@ impl Holder {
                 let text = stamp.map_or_else(String::new, |_| crate::text(&file, 16 << 10));
                 *known = stamp;
                 match name {
-                    "colours" => self.term.colours = text,
-                    _ => self.term.keyboard = text.trim().parse().unwrap_or(0),
+                    "colours" => self.term.told().colours = text,
+                    _ => self.term.told().keyboard = text.trim().parse().unwrap_or(0),
                 }
             }
         }
@@ -516,7 +516,8 @@ impl Holder {
                     [cols @ 1..=500, rows @ 1..=500, w @ 1..=100, h @ 1..=100] => (*cols, *rows, Some((*w, *h))),
                     _ => return Err("resize takes COLS ROWS, each 1 to 500, then perhaps a cell's WIDTH HEIGHT in pixels, each 1 to 100".into()),
                 };
-                let old = (self.term.cell.0 as u16, self.term.cell.1 as u16);
+                let old = self.term.told().cell;
+                let old = (old.0 as u16, old.1 as u16);
                 let cell = cell.unwrap_or(old);
                 if self.master.is_none() {
                     return Err("the program was hung up".into());
@@ -536,9 +537,8 @@ impl Holder {
                 sys::set_winsize(master, size).map_err(|e| e.to_string())?;
                 if cell != old {
                     // Pictures were laid out in cells of the old size.
-                    self.term.pictures.clear();
-                    self.term.other_pictures.clear();
-                    self.term.cell = (usize::from(cell.0), usize::from(cell.1));
+                    self.term.keep_pictures(|_| false);
+                    self.term.told().cell = (usize::from(cell.0), usize::from(cell.1));
                 }
                 self.term.resize(usize::from(cols), usize::from(rows));
                 self.collect();
@@ -598,14 +598,13 @@ impl Holder {
             // One that left the screen before it was written has no reader. One that
             // cannot be written is not on the screen either: it goes, and the log says why.
             let name = format!("pic-{id}.sixel");
-            if !self.term.pictures.iter().chain(&self.term.other_pictures).any(|p| p.id == id) {
+            if !self.term.has_picture(id) {
                 continue;
             }
             self.pictures.insert(id);
             if let Err(e) = fs::write(&name, data) {
                 let _ = fs::remove_file(&name);
-                self.term.pictures.retain(|p| p.id != id);
-                self.term.other_pictures.retain(|p| p.id != id);
+                self.term.keep_pictures(|kept| kept != id);
                 self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
             }
         }
@@ -617,8 +616,9 @@ impl Holder {
             let row = if p.off > 0 { format!("-{}", p.off) } else { p.row.to_string() };
             format!("pic-{}.sixel {row} {} {} {}\n", p.id, p.col, p.cols, p.rows + p.off)
         };
-        let term = &mut self.term;
-        let shown = if term.cursor_shown { "shown" } else { "hidden" };
+        let words = self.term.words();
+        let (term, screen) = (&self.term, self.term.screen());
+        let shown = if screen.cursor_shown { "shown" } else { "hidden" };
         // (The cursor's colour, if the program set one: a fifth word.)
         let colour = term.cursor_colour().map_or(String::new(), |[r, g, b]| format!(" #{r:02x}{g:02x}{b:02x}"));
         // While a program has the alternate screen, the main screen it covers has two files, as
@@ -635,10 +635,10 @@ impl Holder {
             ("lines", format!("{}\n{}\n{under}", term.top(), term.wraps())),
             ("marks", term.marks()),
             ("links", term.links()),
-            ("pictures", term.pictures.iter().map(placed).collect()),
-            ("size", format!("{} {}\n", term.cols, term.rows)),
-            ("cursor", format!("{} {} {shown} {}{colour}\n", term.row, term.col, term.cursor_shape)),
-            ("modes", format!("{}\n", term.words())),
+            ("pictures", screen.pictures.iter().map(placed).collect()),
+            ("size", format!("{} {}\n", screen.cols, screen.rows)),
+            ("cursor", format!("{} {} {shown} {}{colour}\n", screen.row, screen.col, screen.cursor_shape)),
+            ("modes", format!("{}\n", words)),
             ("state", format!("{}\n", self.state)),
             ("status", self.status.clone()),
         ];
@@ -696,7 +696,7 @@ impl Holder {
         replace("screen.styled", term.styled().as_bytes())?;
         // A picture neither screen has any more (the one shown, the one behind) has no reader left.
         self.pictures.retain(|id| {
-            let kept = self.term.pictures.iter().chain(&self.term.other_pictures).any(|p| p.id == *id);
+            let kept = self.term.has_picture(*id);
             if !kept {
                 let _ = fs::remove_file(format!("pic-{id}.sixel"));
             }
