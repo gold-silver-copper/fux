@@ -6,9 +6,7 @@
 list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
 for p in "$FUXN_DIR/$FUXN_WS"/*/; do
   [ -e "$p/screen" ] || continue
-  row=0
-  read -r row _ 2>/dev/null < "$p/cursor"
-  case $row in '' | *[!0-9]*) row=0 ;; esac
+  read -r row _ 2>/dev/null < "$p/cursor" || row=0
   printf '%s\t%s  %s\n' "$(basename "$p")" "$(head -n 1 "$p/title" 2>/dev/null)" "$(sed -n "$((row + 1))p" "$p/screen")"
 done > "$list"
 exec "$FUXN_KEYS/.pick" --tab "$list"

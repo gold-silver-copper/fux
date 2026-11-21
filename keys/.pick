@@ -12,9 +12,8 @@ if [ "$1" = --tab ]; then
   fux layout pane "${p##*/}" 2> /dev/null; exit 0
 fi
 list=$1; shift
-# (The list is in this pane's own folder from here on: it goes with the pane however that is closed.)
-# (One that cannot be moved there stays where it is: mv has said why.)
-mv "$list" "$FUXN_PANE/list" || { echo "the list stays where it is: Enter closes this"; read -r _; exit; }
+# (The list is in this pane's own folder from here on, and goes with it; if it cannot be moved there, mv has said why.)
+mv "$list" "$FUXN_PANE/list" || exit
 list=$FUXN_PANE/list
 finder=
 for f in fzf sk fzy; do command -v "$f" >/dev/null 2>&1 && { finder=$f; break; }; done
