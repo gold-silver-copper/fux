@@ -1605,4 +1605,6 @@ fn a_picture_kept_past_the_edge_of_a_smaller_screen_goes_with_what_is_erased_up_
         (below("\x1b[2;3H\x1b[J"), below("\x1b[2;1H\x1b[2K"), below("\x1b[2;1H\x1b[99X")),
         (None, Some(4), Some(4))
     );
+    // (Erased up to the first half of a wide character in the last cells, the display is erased to its end.)
+    assert_eq!(below("\x1b[2;9H\u{754c}\x1b[2;9H\x1b[1J"), None);
 }

@@ -1017,8 +1017,8 @@ impl Term {
         }
     }
 
-    /// Blanks the cells from `from` up to `to`, each a row and a column: the rows between whole.
-    fn erase(&mut self, mut from: (usize, usize), mut to: (usize, usize)) {
+    /// Blanks the cells from `from` up to `to`, each a row and a column: the rows between whole. Says where its end came to be.
+    fn erase(&mut self, mut from: (usize, usize), mut to: (usize, usize)) -> (usize, usize) {
         let (blank, cols) = (self.blank(), self.screen.cols);
         // (Half a wide character erased is the character erased: its other cell is of the erased part.)
         let half = |(row, at)| usize::from(self.screen.cell_at(row, at).is_some_and(|cell| cell.ch == '\0'));
@@ -1041,6 +1041,7 @@ impl Term {
         // they marked is gone, and they mark nothing of what is written there next. The place
         // right after it is its end too.)
         self.move_marks(|r, c| if (from..=to).contains(&(r, c)) { from } else { (r, c) });
+        to
     }
 
     /// The pictures that lie on cells `from` to `to` of the rows `rows` are written over: they go. (A row erased to its
@@ -1694,7 +1695,7 @@ impl Term {
             }
             (b'#', b'8') => {
                 // (A screen erased whole, as by every other erase of it, then written over.)
-                self.erase((0, 0), (self.screen.rows - 1, self.screen.cols));
+                _ = self.erase((0, 0), (self.screen.rows - 1, self.screen.cols));
                 self.fill(Cell { ch: 'E', ..Cell::blank(Style::default()) });
                 // And, as in xterm, the whole screen scrolls again and the cursor goes home.
                 (self.top, self.bottom, self.screen.cursor.origin) = (0, self.screen.rows - 1, false);
@@ -2034,11 +2035,10 @@ impl Term {
                     2 => (first, end),
                     _ => return,
                 };
-                self.erase(from, to);
-                let below = if last == b'J' && to == end { usize::MAX } else { 0 };
+                let below = if self.erase(from, to) == end && last == b'J' { usize::MAX } else { 0 };
                 self.uncover(self.screen.rows..below, 0, usize::MAX);
             }
-            (0, 0, b'X') => self.erase((row, col), (row, col.saturating_add(n).min(self.screen.cols))),
+            (0, 0, b'X') => _ = self.erase((row, col), (row, col.saturating_add(n).min(self.screen.cols))),
             (0, 0, b'@' | b'P') => {
                 self.shift(row, col, n, last == b'@', col);
                 self.screen.cursor.wrap = false;
