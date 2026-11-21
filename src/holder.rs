@@ -517,9 +517,6 @@ impl Holder {
                 let old = self.term.told().cell;
                 let old = (old.0 as u16, old.1 as u16);
                 let cell = cell.unwrap_or(old);
-                if self.master.is_none() {
-                    return Err("the program was hung up".into());
-                }
                 // What the program has written so far, it wrote for the old size:
                 // it is drawn at that size first (up to 1 MiB of it).
                 let mut buffer = vec![0u8; 64 << 10];
