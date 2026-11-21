@@ -1149,11 +1149,9 @@ impl View {
             put(&mut back, w, w.saturating_sub(right.len() + 1), last, right.len(), &right);
             // The keys, under their headings; what does not fit above the bar is counted, not shown.
             let key_width = entries.iter().map(|(key, ..)| key.chars().count()).max().unwrap_or(0);
-            let mut lines = vec![(typed, BOLD)];
-            for (i, (key, about, group)) in entries.iter().enumerate() {
-                if !group.is_empty()
-                    && i.checked_sub(1).and_then(|before| entries.get(before)).is_none_or(|before| before.2 != *group)
-                {
+            let (mut lines, mut heading) = (vec![(typed, BOLD)], "");
+            for (key, about, group) in entries {
+                if std::mem::replace(&mut heading, group) != group && !group.is_empty() {
                     lines.push((group.clone(), BOLD));
                 }
                 lines.push((format!("{key:>key_width$}  {about}"), 0));
@@ -1166,27 +1164,25 @@ impl View {
                 .iter()
                 .map(|(text, flags)| cells(&format!(" {text}"), Style { flags: *flags, ..panel }))
                 .collect();
-            let widths = |boxes: &[&[Vec<Cell>]]| {
-                boxes.iter().map(|part| part.iter().map(Vec::len).max().unwrap_or(0) + 1).sum::<usize>()
-            };
-            let mut boxes: Vec<&[Vec<Cell>]> = lines.chunks(last.max(1)).collect();
-            let all = boxes.len();
-            while boxes.len() > 1 && widths(&boxes) > w {
-                boxes.pop();
+            // (A box is kept, with its width, while there is room for it; the first is cut to the terminal's width.)
+            let (mut right, mut boxes) = (w, Vec::new());
+            for part in lines.chunks(last.max(1)) {
+                let width = (part.iter().map(Vec::len).max().unwrap_or(0) + 1).min(w);
+                let Some(rest) = right.checked_sub(width) else { break };
+                boxes.push((part, width, w - right));
+                right = rest;
             }
             // The last line shown gives its place to the count, so it is counted too.
-            let hidden: usize = lines.chunks(last.max(1)).skip(boxes.len()).map(<[_]>::len).sum::<usize>() + 1;
-            let more = cells(&format!(" ▼ {hidden} more"), Style { flags: DIM, ..panel });
-            let (height, mut right) = (boxes.first().map_or(0, |part| part.len()), w);
-            for (n, part) in boxes.iter().enumerate().rev() {
-                let width = (part.iter().map(Vec::len).max().unwrap_or(0) + 1).min(right);
-                right -= width;
+            let over = lines.len().saturating_sub(boxes.len() * last.max(1));
+            let more = cells(&format!(" ▼ {} more", over + 1), Style { flags: DIM, ..panel });
+            let height = boxes.first().map_or(0, |(part, ..)| part.len());
+            for (n, (part, width, from)) in boxes.iter().enumerate().rev() {
                 for i in 0..height {
                     let y = last.saturating_sub(height) + i;
-                    let hides = n + 1 == boxes.len() && boxes.len() < all && i + 1 == height;
+                    let hides = n + 1 == boxes.len() && over > 0 && i + 1 == height;
                     let line = if hides { Some(&more) } else { part.get(i) };
-                    put(&mut back, w, right, y, width, &vec![Cell::blank(panel); width]);
-                    put(&mut back, w, right, y, width, line.map_or(&[], |line| line));
+                    put(&mut back, w, right + from, y, *width, &vec![Cell::blank(panel); *width]);
+                    put(&mut back, w, right + from, y, *width, line.map_or(&[], |line| line));
                 }
             }
             (cursor, cursor_colour, covered) = (String::new(), None, Some((right, last.saturating_sub(height))));
