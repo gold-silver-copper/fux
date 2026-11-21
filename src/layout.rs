@@ -332,6 +332,11 @@ impl Layout {
         self.tabs.get(self.current)
     }
 
+    /// The tab a pane is in.
+    fn tab_with(&self, name: &str) -> Result<usize, String> {
+        self.tabs.iter().position(|tab| tab.panes().contains(&name)).ok_or(format!("no pane {name} here"))
+    }
+
     fn tab_mut(&mut self) -> Result<&mut Tab, String> {
         self.tabs.get_mut(self.current).ok_or_else(|| "there are no panes here".into())
     }
@@ -358,21 +363,16 @@ impl Layout {
         };
         match words {
             ["split", way @ ("row" | "col"), name, tail @ ..] => {
-                if !self.tabs.iter().any(|tab| tab.panes().contains(name)) {
-                    return Err(format!("no pane {name} here"));
-                }
+                self.tab_with(name)?;
                 let row = *way == "row";
                 let beside = match tail {
                     [] => self.tab().map(|tab| tab.focus.clone()).filter(|focus| focus != name),
-                    ["beside", pane] if pane != name && self.tabs.iter().any(|tab| tab.panes().contains(pane)) => {
-                        Some(pane.to_string())
-                    }
+                    ["beside", pane] if pane != name && self.tab_with(pane).is_ok() => Some(pane.to_string()),
                     ["beside", pane] => return Err(format!("cannot split pane {name} beside {pane}")),
                     _ => return Err("split takes row|col PANE [beside ANCHOR]".into()),
                 };
                 self.retain_panes(|pane| pane != *name);
-                let at =
-                    self.tabs.iter().position(|tab| beside.as_deref().is_some_and(|pane| tab.panes().contains(&pane)));
+                let at = beside.as_deref().and_then(|pane| self.tab_with(pane).ok());
                 let Some((tab, beside)) = at.and_then(|at| self.tabs.get_mut(at)).zip(beside) else {
                     self.tabs.push(tab_of(name));
                     self.current = self.tabs.len() - 1;
@@ -429,11 +429,7 @@ impl Layout {
             }
             // `pane NAME` is `focus NAME` for a pane whose name is a direction's word.
             ["focus" | "pane", name] => {
-                self.current = self
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.panes().contains(name))
-                    .ok_or(format!("no pane {name} here"))?;
+                self.current = self.tab_with(name)?;
                 self.tab_mut()?.focus = name.to_string();
             }
             ["tab", way @ ("next" | "prev")] => self.current = step(self.current, count, *way == "prev"),
