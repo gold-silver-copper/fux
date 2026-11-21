@@ -1562,3 +1562,32 @@ fn a_program_that_asks_about_a_mode_that_is_not_private_is_answered() {
     let asked = term(8, 1, "\x1b[4$p\x1b[4h\x1b[4$p\x1b[4l\x1b[4$p\x1b[2$p\x1b[1049$p");
     assert_eq!(String::from_utf8_lossy(&asked.peek().reply), "\x1b[4;2$y\x1b[4;1$y\x1b[4;2$y\x1b[2;0$y\x1b[1049;0$y");
 }
+
+#[test]
+fn a_picture_kept_past_the_edge_of_a_smaller_screen_goes_with_what_is_erased_up_to_that_edge() {
+    // A picture at column 70 of 80 is kept when the screen has 40: each erase is fed there, and
+    // what is left is asked on 80 columns again.
+    let after = |erase: &str| {
+        let mut term = term(80, 4, "\x1b[1;71H\x1bPq~\x1b\\");
+        term.resize(40, 4);
+        term.feed(erase.as_bytes());
+        let narrow = term.screen.pictures.len();
+        term.resize(80, 4);
+        (narrow, term.screen.pictures.first().map(|p| (p.row, p.col)))
+    };
+    // The whole screen cleared (`clear` sends this) and its row erased to the end: it is gone, and stays gone.
+    assert_eq!(after("\x1b[H\x1b[2J"), (0, None));
+    assert_eq!(after("\x1b[1;5H\x1b[K"), (0, None));
+    // Not erased, it comes back: another row's erase, an erase that ends before its row's end and
+    // a character on its row's last cell do not reach it.
+    assert_eq!(after("\x1b[2;1H\x1b[K\x1b[1;5H\x1b[1K\x1b[1;40Hx"), (1, Some((0, 70))));
+    // On the alternate screen, one below the last row of a screen made lower: an erase up to the
+    // cursor leaves it, the whole screen cleared takes it.
+    let mut term = term(10, 6, "\x1b[?1049h\x1b[5;1H\x1bPq~\x1b\\");
+    term.resize(10, 2);
+    term.feed(b"\x1b[2;3H\x1b[1J");
+    assert_eq!(term.screen.pictures.first().map(|p| p.row), Some(4));
+    term.feed(b"\x1b[2J");
+    term.resize(10, 6);
+    assert_eq!(term.screen.pictures.first().map(|p| p.row), None);
+}

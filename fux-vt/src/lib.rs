@@ -1034,7 +1034,8 @@ impl Term {
             if let Some(cells) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(start..end)) {
                 cells.fill(blank);
             }
-            self.uncover(row, start, end);
+            let past = |edge: bool, at: usize| if edge { usize::MAX } else { at };
+            self.uncover(row..past(end == cols && row + 1 == self.screen.rows, row + 1), start, past(end == cols, end));
         }
         self.screen.cursor.wrap = false;
         // (The marks on what is erased are, in their order, where the erased part begins: what
@@ -1043,10 +1044,10 @@ impl Term {
         self.move_marks(|r, c| if (from..=to).contains(&(r, c)) { from } else { (r, c) });
     }
 
-    /// The pictures that lie on cells `from` to `to` of a row are written over: they go.
-    /// (Asked first, here and in `scroll_pictures`: a flood prints and scrolls millions of times over none.)
-    fn uncover(&mut self, row: usize, from: usize, to: usize) {
-        let on = |p: &Picture| (p.row..p.row + p.rows).contains(&row) && p.col < to && from < p.col + p.cols;
+    /// The pictures that lie on cells `from` to `to` of the rows `rows` are written over: they go. (A row erased to its
+    /// end is erased past it, and the last row below it too. Asked first, as in `scroll_pictures`: a flood prints over none.)
+    fn uncover(&mut self, rows: std::ops::Range<usize>, from: usize, to: usize) {
+        let on = |p: &Picture| p.row < rows.end && rows.start < p.row + p.rows && p.col < to && from < p.col + p.cols;
         let Some(_) = self.screen.pictures.iter().position(on) else { return };
         self.screen.pictures.retain(|p| !on(p));
     }
@@ -1300,7 +1301,7 @@ impl Term {
                 *cell = Cell { ch: '\0', more: ['\0'; MORE], style: new.style, link: new.link };
             }
         }
-        self.uncover(row, col, col + cells);
+        self.uncover(row..row + 1, col, col + cells);
         if let Some(last) = &mut self.cluster {
             last.at = Some((row, col, new, under));
         }
@@ -1339,7 +1340,7 @@ impl Term {
 
     fn fill(&mut self, cell: Cell) {
         self.screen.grid.iter_mut().for_each(|row| row.fill(cell));
-        self.screen.pictures.clear();
+        self.uncover(0..usize::MAX, 0, usize::MAX);
     }
 
     /// Takes a new size (the nearest a terminal may have, as `new`). The main screen's
