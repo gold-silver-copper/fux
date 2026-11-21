@@ -215,7 +215,7 @@ To see what a person would, run the viewer in a pane of ANOTHER workspace and re
     printf '\033' > "$V/in"; unseen ' agent-demo ' "$V/screen"            # (a key right after Escape would join it)
     cat "$V/screen"; printf '\002d' > "$V/in"; fux wait "$V"       # C-b d: the viewer leaves
 A viewer sets the size of the panes it shows to their tiles. A notice (`notify`, a bell)
-of a pane in the workspace shown is passed on to the viewer's terminal as `PANE: WORDS`,
+of a pane in the workspace shown, made after it first looked, goes to the viewer's terminal as `PANE: WORDS`,
 and its tab is marked; a viewer in a pane has that in its own pane's `notice`, as above
 (`N broad: look here`; a bell is passed on as a bell, so there it is the number alone).
 From inside a pane: printf 'notify %s\n' 'done' > "$FUXN_PANE/ctl".

@@ -401,12 +401,12 @@ The viewer looks at the `notice` of every pane of the workspace it shows,
 four times a second. A new one is passed on to your terminal once (the bell
 as a bell; the pane's name and the first 200 characters of the words as OSC 9), said in the
 corner, and its tab has a `!` in the bar (which is there while a prefix is
-held: `C-b`) until its pane has had the keys. Of two within a quarter of a
-second the last is passed on. Another workspace's notices are not looked at. What was there when the viewer started only marks its tab. A program
+held: `C-b`) until its pane has had the keys. Of two of one pane between two
+looks the last is passed on; of two panes', both, the last in the corner. Another workspace's notices are not looked at. What is there at the first look at a workspace only marks its tab. A program
 that asked to be told about focus (mode 1004) is told when its pane gains
 and loses the keys, and when your terminal's window does.
 
-The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile changes. Two
+The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile, the terminal's cell size or the pane's program changes. Two
 viewers with different sizes do not fight: the last to ask wins, and the
 other shows what fits.
 
@@ -595,8 +595,8 @@ coming back to it, never sends an old clipboard again. Without a viewer the
 `clipboard` file is still there to read.
 
 **The mouse** passes through. When the focused pane's program asks for mouse
-reports, the viewer asks your terminal for the same (and for releases too when the program asked for presses alone, mode 9: a click on another tile ends with its release, and the program is still told of presses only) and forwards each one to
-that pane, counted from its tile's corner; a drag that leaves the tile is
+reports, the viewer asks your terminal for the same in the SGR form (and for releases too when the program asked for presses alone, mode 9: a click on another tile ends with its release, and the program is still told of presses only) and forwards each one over
+that pane's tile to it, in the form it asked for, counted from the tile's corner; a drag that leaves the tile is
 reported at its edge until the button is let go. A click on another tile
 gives that tile the keys and is not passed on. The viewer uses the mouse for nothing else, and when the
 focused program does not ask, your terminal's own selection works as ever.

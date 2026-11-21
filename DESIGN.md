@@ -66,9 +66,9 @@ its path each time, so that the pane typed into is the pane of that name
 now. There is no header and no version: a reader that
 takes a fact and a text one write apart is wrong for one frame, and the next
 look puts it right; it keeps the cursor inside the rows it read. It sets the
-outer terminal's cursor-key, keypad and mouse modes to the focused program's,
-so key bytes pass through untouched and mouse reports need only their
-coordinates moved. Pictures are files the viewer passes on after
+outer terminal's cursor-key and keypad modes to the focused program's, so key
+bytes pass through untouched; mouse reports it asks for in the SGR form, and
+gives the program in its own, counted from the tile's corner. Pictures are files the viewer passes on after
 checking that each is one sixel string and that its pixels, measured by
 the viewer in its own terminal's cells, are all in its tile; of any other
 it writes the part inside the tile (`fux-vt/src/sixel.rs`).
