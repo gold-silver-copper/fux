@@ -760,7 +760,8 @@ impl View {
         // and its program is never drawn at one size and then at another.
         // (A terminal that says it has no columns or no rows has told no size, and a script is told
         // none: what it starts is as large as `fux start` makes a pane it is told no size for.)
-        let told = [("COLUMNS", self.size.cols, 80), ("LINES", self.size.rows, 24)];
+        let now = sys::winsize(&self.tty).unwrap_or(self.size);
+        let told = [("COLUMNS", now.cols.min(SIZE_MAX as u16), 80), ("LINES", now.rows.min(SIZE_MAX as u16), 24)];
         let [w, h] = told.map(|(name, size, or)| {
             let _ = if size > 0 { script.env(name, size.to_string()) } else { script.env_remove(name) };
             usize::from(if size > 0 { size } else { or })

@@ -2114,3 +2114,25 @@ fn a_paste_ends_marked_as_it_began_whatever_the_program_asks_by_then() {
     until("the rest arrives", || read(&pane.join("screen")).contains('Z'));
     assert_eq!(read(&pane.join("screen")).trim_end(), "b^[[201~Z", "a paste that began marked did not end marked");
 }
+
+#[test]
+fn a_key_script_is_told_the_size_the_terminal_has_when_the_key_is_typed() {
+    // The terminal is made larger and a key typed at once, before the viewer has looked at its size
+    // again (the holder reads `ctl` before `in`): the key's script is told the size the terminal has now.
+    let (outer, inner) = (Session::new("szouter"), Session::new("szinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let tells = "#!/bin/sh\necho \"$COLUMNS $LINES $FUXN_ROW $FUXN_COL\" > \"$FUXN_DIR/told\"\n";
+    fs::write(keys.join("x"), tells).unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("x")).status().unwrap();
+    let pane = inner.start("one", &["sleep", "600"]);
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
+    // (At rest the viewer looks at its files, and at its terminal's size, every 50 ms.)
+    std::thread::sleep(Duration::from_millis(3200));
+    fs::write(view.join("ctl"), "resize 83 27\n").unwrap();
+    fs::write(view.join("in"), "x").unwrap();
+    until("the key's script ran", || read(&inner.0.join("told")).ends_with('\n'));
+    assert_eq!(read(&inner.0.join("told")), "83 27 41x27 83x13\n");
+}
