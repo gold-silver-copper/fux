@@ -385,6 +385,10 @@ fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour(
     layout.edit(&["split", "col", "n", "beside", "a"]).expect("split");
     assert_eq!(layout.print(), "* row(col(a n) b) focus=n\n  d focus=d\n");
     assert!(layout.edit(&["split", "col", "n", "beside", "nobody"]).is_err());
+    // With no anchor named the focused pane is the anchor: a pane is put beside itself neither way.
+    let mut own = parse("* row(a b) focus=a\n").expect("a layout");
+    assert!(own.edit(&["split", "row", "a"]).is_err() && own.edit(&["split", "row", "a", "beside", "a"]).is_err());
+    assert_eq!(own.print(), "* row(a b) focus=a\n");
     // In a view with room for one of three, the one drawn is the one that has the keys.
     let crowded = parse("* row(a b c) focus=c\n").expect("a layout");
     let tiles = crowded.tabs.first().expect("a tab").tiles(Rect { x: 0, y: 0, w: 1, h: 3 });

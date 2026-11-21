@@ -358,19 +358,17 @@ impl Layout {
                 self.tab_with(name)?;
                 let row = *way == "row";
                 let beside = match tail {
-                    [] => self.tab().map(|tab| tab.focus.clone()).filter(|focus| focus != name),
-                    ["beside", pane] if pane != name && self.tab_with(pane).is_ok() => Some(pane.to_string()),
-                    ["beside", pane] => return Err(format!("cannot split pane {name} beside {pane}")),
+                    [] => self.tab_mut()?.focus.clone(),
+                    ["beside", pane] => pane.to_string(),
                     _ => return Err("split takes row|col PANE [beside ANCHOR]".into()),
                 };
-                marks = self.retain_panes(|pane| pane != *name);
-                // With no pane to go beside, it gets a tab of its own, the last.
-                let at = beside.as_deref().and_then(|pane| self.tab_with(pane).ok());
-                self.current = at.unwrap_or(self.tabs.len());
-                match self.tabs.get_mut(self.current).zip(beside) {
-                    Some((tab, beside)) => tab.beside(&beside, name, row),
-                    None => self.tabs.push(tab_of(name)),
+                // (The anchor is another pane that is there, named or not: a pane is not put beside itself.)
+                if beside == *name || self.tab_with(&beside).is_err() {
+                    return Err(format!("cannot split pane {name} beside {beside}"));
                 }
+                marks = self.retain_panes(|pane| pane != *name);
+                self.current = self.tab_with(&beside)?;
+                self.tab_mut()?.beside(&beside, name, row);
             }
             ["focus", way @ ("left" | "right" | "up" | "down")] => {
                 let tab = self.tab_mut()?;
