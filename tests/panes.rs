@@ -2438,3 +2438,53 @@ fn a_start_from_a_directory_that_is_gone_claims_no_name() {
         .unwrap();
     assert!(!out.status.success() && !session.0.join("w/1").exists(), "{out:?}");
 }
+
+#[test]
+fn two_files_of_a_pane_that_floods_are_read_as_of_one_moment() {
+    // Line n of the pane's text (from 0) is the number n + 1: the screen's first row reads one more
+    // than the lines `lines` says are before it, if the two files are of one round of writing.
+    let session = Session::new("moment");
+    let pane = session.start("seq", &["sh", "-c", "seq 1 100000000"]);
+    let number = |name: &str| read(&pane.join(name)).lines().next().and_then(|line| line.parse::<u64>().ok());
+    until("the flood scrolls", || number("lines") > Some(1000));
+    let (start, mut reads, mut apart) = (Instant::now(), 0, 0);
+    while start.elapsed() < Duration::from_secs(2) && apart == 0 {
+        let (top, first) = (number("lines"), number("screen"));
+        reads += 1;
+        apart += u32::from(top.map(|top| top + 1) != first);
+    }
+    assert_eq!(apart, 0, "of {reads} reads of `lines` then `screen`, one was of two rounds of writing");
+}
+
+#[test]
+fn a_mark_in_a_line_that_never_ends_is_found_in_the_text_after_history_was_put_aside() {
+    // One line of 3,200,000 characters in rows of two, each row a colour: `history.styled` is past
+    // twice its size twice, so the line's start is in no file any more. Then a command's output
+    // with its marks, in that same line.
+    let session = Session::new("endless");
+    let prints = "printf '\\033[44m'; head -c 3200000 /dev/zero | tr '\\0' x; \
+        printf '\\033]133;C\\007MARKED-TAIL\\033]133;D;0\\007yy\\r\\nafter\\r\\n'";
+    let mut start = session.fux();
+    start.env("COLUMNS", "2").env("LINES", "2").args(["start", "line", "--", "sh", "-c", prints]);
+    let pane = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    until("the program has ended", || fact(&pane, "state") == "exited 0");
+    assert!(session.fux().arg("wait").arg(&pane).status().unwrap().success());
+    assert!(pane.join("history.styled.1").exists() && read(&pane.join("log")).is_empty());
+    // The pane's text as the keys make it, and the marks' places in it.
+    let text = session.0.join("text");
+    let mut script = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.text"));
+    let add = script.arg(&text).env("FUXN_PANE", &pane).output().unwrap().stdout;
+    let add: i64 = String::from_utf8(add).unwrap().trim().parse().unwrap();
+    let marks = read(&pane.join("marks"));
+    let place = |kind: &str| {
+        let mark = marks.lines().find(|mark| mark.split(' ').nth(2) == Some(kind)).unwrap_or_default();
+        let mut numbers = mark.split(' ').map(|n| n.parse::<i64>().unwrap_or(-1));
+        (numbers.next().unwrap_or(-1), numbers.next().unwrap_or(-1) as usize)
+    };
+    let ((line, from), (last, to)) = (place("output"), place("end"));
+    assert_eq!(line, last, "{marks}");
+    let text = fs::read(&text).unwrap();
+    let marked = text.split(|byte| *byte == b'\n').nth((line + add - 1) as usize).unwrap_or_default();
+    let marked = String::from_utf8_lossy(marked.get(from..to).unwrap_or_default());
+    assert_eq!(marked, "MARKED-TAIL", "the marks ({marks:?}) are not where the text has what was marked");
+}
