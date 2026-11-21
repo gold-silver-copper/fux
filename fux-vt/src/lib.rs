@@ -2436,9 +2436,7 @@ fn reflow(
     keep: std::ops::Range<usize>,
 ) -> Vec<Vec<Cell>> {
     let blank = Cell::blank(Style::default());
-    let text = |cell: &Cell| {
-        cell.ch != ' ' || cell.more.first() != Some(&'\0') || cell.style.flags & !MARKS != 0 || cell.link != 0
-    };
+    let plain = |cell: &Cell| Cell { style: Style { flags: cell.style.flags & !MARKS, ..cell.style }, ..*cell };
     // The lines, what fills the rest of each one's last row (the colour of the blanks it ended
     // in), and whether its first row goes on from the row before still (history's last, or a row
     // that is kept as it is); and for each old row the line it is part of and where in it the row starts.
@@ -2449,9 +2447,11 @@ fn reflow(
             lines.push((Vec::new(), blank, continues(row)));
         }
         let goes_on = old.get(y + 1).is_some_and(|next| continues(next)) && !keep.contains(&y);
+        // (What is cut off a line's end is what is the same as the fill, and nothing else.)
+        let end = row.last().map_or(blank, |last| Cell::blank(last.style));
         let mut used = match goes_on {
             true => text_cells(row).len(),
-            false => row.iter().rposition(text).map_or(0, |last| last + 1),
+            false => row.iter().rposition(|cell| plain(cell) != end).map_or(0, |last| last + 1),
         };
         if places.first().is_some_and(|cursor| cursor.0 == y) && !goes_on {
             used = used.max(places.first().map_or(0, |cursor| cursor.1).min(row.len()));
@@ -2463,9 +2463,8 @@ fn reflow(
         let number = lines.len().saturating_sub(1);
         let Some((line, fill, _)) = lines.last_mut() else { continue };
         origin.push((number, line.len()));
-        let plain = |cell: &Cell| Cell { style: Style { flags: cell.style.flags & !MARKS, ..cell.style }, ..*cell };
         line.extend(row.iter().take(used).map(plain));
-        *fill = row.last().filter(|_| used < row.len()).map_or(blank, |last| Cell::blank(last.style));
+        *fill = if used < row.len() { end } else { blank };
     }
     // The new rows, and for each the line it is part of and where in it the row starts.
     let (mut rows, mut starts): (Vec<Vec<Cell>>, Vec<(usize, usize)>) = (Vec::new(), Vec::new());

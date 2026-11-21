@@ -834,6 +834,9 @@ fn a_resize_wraps_the_main_screen_anew_and_loses_nothing() {
     assert!(bar.resize(4, 3) && bar.plain() == "\nx\n\n" && bar.peek().history.is_empty());
     assert_eq!(bar.styled().lines().next(), Some("\x1b[0;44m    \x1b[m"));
     assert!(term(4, 1, "\x1b[31m \x1b[m").styled().starts_with("\x1b[0;31m "));
+    let mut painted = term(4, 2, "\x1b[41m \x1b[m\r\n");
+    assert!(painted.resize(5, 2));
+    assert_eq!(painted.styled(), "\x1b[0;41m \x1b[m\n\n");
     for seed in 0..300 {
         let next = &mut numbers(seed);
         let text = some_text(next);
