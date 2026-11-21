@@ -1122,6 +1122,55 @@ fn a_shell_that_ends_with_127_closes_its_pane_and_a_command_that_cannot_be_run_s
 }
 
 #[test]
+fn the_workspace_chosen_is_told_to_the_viewer_that_is_there_and_no_file_is_made_for_one_that_has_gone() {
+    // `C-b f w`'s picker writes its choice to the FIFO of the viewer that started it. A viewer
+    // that has gone by then (detached, and attached again under another number) has none: the
+    // choice is lost, and no plain file of the FIFO's name is left in the session.
+    let session = Session::new("chosen");
+    let keys = session.0.join(".keys");
+    fs::create_dir_all(session.0.join("main")).unwrap();
+    assert!(
+        Command::new("cp")
+            .arg("-R")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"))
+            .arg(&keys)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let view = session.0.join(".view.0");
+    let choose = || {
+        let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+        let mut script = Command::new(keys.join("C-b/f/w"));
+        script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("FUXN_VIEW", &view);
+        script.env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main").env_remove("FUXN_PANE");
+        assert!(script.status().unwrap().success());
+        let pane = session.0.join("main/1");
+        until("the list is shown", || read(&pane.join("screen")).contains("main"));
+        // (A finder takes a moment to narrow its list to what was typed; with none it is the name.)
+        std::thread::sleep(Duration::from_millis(300));
+        fs::write(pane.join("in"), "main").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        fs::write(pane.join("in"), "\r").unwrap();
+        until("the picker's pane is gone", || !pane.exists());
+    };
+    // A viewer that is there is told (here the test holds its FIFO, and reads it).
+    assert!(Command::new("mkfifo").arg(&view).status().unwrap().success());
+    let mut fifo = fs::OpenOptions::new().read(true).write(true).open(&view).unwrap();
+    choose();
+    let (told, tells) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = [0; 64];
+        let n = std::io::Read::read(&mut fifo, &mut line).unwrap();
+        told.send(String::from_utf8_lossy(&line[..n]).into_owned())
+    });
+    assert_eq!(tells.recv_timeout(Duration::from_secs(60)).as_deref(), Ok("workspace main\n"));
+    fs::remove_file(&view).unwrap();
+    choose();
+    assert!(!view.exists(), "a file was made in place of the FIFO of a viewer that has gone");
+}
+
+#[test]
 fn an_editor_that_ends_while_its_key_runs_has_taken_its_pane_and_the_key_says_nothing() {
     // The editor's pane removes its own folder when the editor ends. When that is before the
     // key's script asks the layout to show the pane, there is none to show: no error of the

@@ -8,5 +8,5 @@ for w in "$FUXN_DIR"/*/; do
   w=${w%/}
   printf '%s\t%s\n' "${w##*/}" "$(ls "$w" | grep -v -x -e layout -e layout.new | tr '\n' ' ')"
 done > "$list"
-# (The pane has no word for the viewer: it is given the viewer's FIFO to write to.)
-exec "$FUXN_KEYS/.pick" --tab "$list" sh -c 'echo "workspace $1" > "$0"' "$FUXN_VIEW"
+# (The pane has no word for the viewer: it is given the viewer's FIFO to write to, if that is still there.)
+exec "$FUXN_KEYS/.pick" --tab "$list" sh -c '[ -p "$0" ] && echo "workspace $1" 1<>"$0"' "$FUXN_VIEW"
