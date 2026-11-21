@@ -1237,18 +1237,12 @@ impl Term {
             if col + 2 > self.screen.cols {
                 // It leaves the row's last cell as it found it.
                 *cell = under;
-            } else if insert && let Some(rest) = self.screen.grid.get_mut(row).and_then(|r| r.get_mut(col + 1..)) {
-                // In insert mode its second column is one more column put in.
-                rest.rotate_right(1);
+            } else if insert {
+                // In insert mode its second column is one more column put in: the marks after it go with their cells.
+                self.shift(row, col + 1, 1, true, col + 1);
             }
             (self.screen.cursor.col, self.screen.cursor.wrap) = (col, false);
             self.place(grown, true, false);
-            if insert {
-                // (The marks after it go one column on with their cells.)
-                let cols = self.screen.cols;
-                self.move_marks(|r, c| (r, if r == row && c > col { (c + 1).min(cols) } else { c }));
-                self.tidy(row);
-            }
         }
     }
 
