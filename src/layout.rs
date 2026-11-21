@@ -152,7 +152,7 @@ impl Node {
         let total: u32 = parts.iter().map(|p| p.1.max(1)).sum();
         parts.iter_mut().for_each(|p| p.1 = (p.1.max(1) * 100 / total).max(1));
         if let Some((_, share)) = parts.get_mut(at) {
-            *share = i64::from(*share).saturating_add(change).clamp(5, 10000) as u32;
+            *share = i64::from(*share).saturating_add(change).clamp(5.min(i64::from(*share)), 10000) as u32;
         }
         true
     }

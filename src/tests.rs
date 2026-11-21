@@ -351,6 +351,14 @@ fn a_share_changes_the_same_way_however_deep_and_a_split_can_name_its_neighbour(
         (flat.print(), deep.print()),
         ("* row(a:21 b:16 c:66) focus=a\n".into(), "* col(d row(a:21 b:16 c:66)) focus=a\n".into())
     );
+    // A share asked to shrink never grows, and one asked to grow never shrinks: a pane at a hundredth
+    // stays there when it is made narrower, and is not brought up to the least a step leaves.
+    let mut thin = parse("* row(a:1 b:99) focus=a\n").expect("thin");
+    thin.edit(&["size", "row", "-5"]).expect("size");
+    assert_eq!(thin.print(), "* row(a b:99) focus=a\n");
+    thin.edit(&["size", "row", "+5"]).expect("size");
+    thin.edit(&["size", "row", "-3"]).expect("size");
+    assert_eq!(thin.print(), "* row(a:5 b:94) focus=a\n");
     // The focus is on d by now; the new pane still goes beside the pane it was asked for.
     let mut layout = parse("* row(a b) focus=b\n  d focus=d\n  n focus=n\n").expect("a layout");
     layout.edit(&["split", "col", "n", "beside", "a"]).expect("split");
