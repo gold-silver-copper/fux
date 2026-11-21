@@ -448,6 +448,7 @@ start their pane at that size, so its program is not drawn twice), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; one that
 takes longer runs on while keys are taken again (the defaults put such work in the background).
+Keys that waited (for a script, or for a workspace's first frame) are read as one run of bytes when they are taken: Escape and then a letter typed meanwhile are Alt with that letter, however long lay between them.
 What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key (its first 200 characters; a line over 4096 bytes is dropped whole, and the corner says so). A key with no file, pressed in an
@@ -492,7 +493,7 @@ A script's third line may be `# group: NAME` (and so may the second line of
 an `.about`): the menu lists keys under their group's name, groups in
 alphabetical order, keys with no group first (the menu reads a script's
 first kilobyte for its caption and group). A menu taller than the
-terminal goes on in more columns; what has no room is counted in its last line.
+terminal goes on in more columns; what has no room is counted in its last line (a `▼` alone where the count itself has none).
 
 There is no copy mode: `C-b c` puts the pane's older history, its history and
 its screen in one private file and opens it in `$EDITOR` (which may hold
@@ -619,7 +620,7 @@ have, a step for each byte) and counts for nothing else. The part is at most
 8,388,608 pixels (a screen of 3840 by 2160 has fewer); what is painted in it
 may name colour registers 0 to 255 and 256 different colours, and may paint
 each of its pixels 16 times over on average; 4 MiB of sixel are written for
-it. All the pictures on the terminal are 16 MiB together at most (counted as the panes are drawn, under a menu too). A picture
+it. All the pictures on the terminal are 16 MiB together at most (counted as the panes are drawn, under a menu too; one left out for this stays out when others go, until its file or its tile changes or its tab is shown anew). A picture
 past one of these is not drawn (no stand-in is), and the viewer's corner
 says which, until the next key: once for each part, and every one of a
 frame. So is every picture in a terminal that does not say how many pixels a
@@ -750,7 +751,7 @@ Differences are left as they are:
 
 `ls -d "$(fux dir)"/*/` lists the workspaces (tmux's sessions); `fux view NAME`
 attaches to one and `C-b d` detaches; a workspace with no pane gets a shell
-each time a viewer comes to show it (`keys/.empty` does that, and is yours to change; a
+each time a viewer comes to show it (`keys/.empty` does that, and is yours to change; with 32 key scripts still running it is not started, the corner says so, and it is not tried again until the workspace is shown anew; a
 keys directory an earlier build wrote has none, and nothing is started), and
 `C-b t n`, in the keys as they come, starts one in a workspace whose last
 pane has ended. Tabs are tmux's windows. The choosers are `C-b f p`, `f t` and
@@ -852,7 +853,7 @@ takes a desktop's number removes the desktop's socket when it ends).
 <!-- referee:end -->
 
 **Links.** A cell that is part of a link in its pane (the pane's `links`) is
-drawn as part of one on your terminal (of 65,535 different addresses in one frame at most: a cell of one more is drawn without its link), with the same address and no other
+drawn as part of one on your terminal (of 65,535 different addresses in one frame at most, those under a menu or a notice counted too: a cell of one more is drawn without its link), with the same address and no other
 word of the program's: the link is closed before the next cell that is not
 part of it and before the cursor is moved, so it ends at its tile's edge and
 at the line between tiles, and a viewer that draws a link has closed it
