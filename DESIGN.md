@@ -59,7 +59,7 @@ are text and nothing else. When the program ends the holder writes `state` and i
 is a hangup, and the rest is the kernel's and the program's business. If the
 folder is gone, the pane is gone: the holder leaves, which hangs up too.
 
-**Viewing.** The viewer has no channel to holders. It looks at files (often just after something happened, seldom at rest), reads a pane's
+**Viewing.** The viewer has no channel to holders but each pane's `in` and `ctl`. It looks at files (often just after something happened, seldom at rest), reads a pane's
 facts and its `screen.styled` when that file changed (it is written last), and
 parses it with the same emulator that wrote it. It sends keys with a write to `in` that never waits, opening it by
 its path each time, so that the pane typed into is the pane of that name
@@ -80,7 +80,7 @@ change like anyone else.
 
 ## What it deliberately has not
 
-No guard against `mv`, `rm` or `kill -9`; no staging names, markers or sweeps;
+No guard against `mv`, `rm` or `kill -9`; no staging folders, markers or sweeps;
 no pane ids; no recipes or restart; no kill of process trees; no embedded
 language; no socket. See `DECISIONS.md` for why, and for which of the old
 fux's bugs this removes.

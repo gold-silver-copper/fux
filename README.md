@@ -52,7 +52,7 @@ this one is run by its path (`target/release/fux`), as the example does with
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. Wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE]` | the viewer |
 | `fux layout [EDIT…]` | prints the workspace's layout as the folders make it (and writes it, if they changed it), or edits it (below) |
-| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it, read it, wait, get a command's output and exit code, tell a live pane from a dead one, end and clean up, in plain sh, with the hazards said. It is `src/help-agents.txt`, in the binary; every command on it is run, in order, by `tools/help-agents.sh` (CI, both systems) |
+| `fux help agents` | prints one page for a program (an agent, a script) that drives panes and has nothing else to read: how to start a pane, type into it, read it, wait, get a command's output and exit code, tell a live pane from a dead one, end and clean up, in plain sh, with the hazards said. It is `src/help-agents.txt`, in the binary; its indented lines are run, in order, as one sh session by `tools/help-agents.sh` (CI, both systems; the perl section where perl is) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot, and not `-` alone, `layout`, `layout.new`, `colours` or `keyboard`
@@ -141,9 +141,9 @@ about a minute and a half on two cores, and leaves nothing behind:
 
     cargo build --release && tools/perf.py target/release/fux
 
-On the machine this was written on (Linux, arm64, two cores of twelve, tmux
-3.8), the median of each (least to most), before the changes it was written
-for (at 21cf936b4) and after them:
+One run of 2026-11-20, at 5a5cdbea8, on the machine this was written on (Linux, arm64,
+two cores of twelve, tmux 3.8): the median of each (least to most), before the changes it was written
+for (at 21cf936b4) and after them. fux has changed since: the script gives today's.
 
 | | fux before | fux after | tmux |
 |---|---|---|---|
@@ -157,14 +157,14 @@ for (at 21cf936b4) and after them:
 | Meanwhile: the holder (tmux: the server) | 55% of a core (52 to 57) | 54% (54 to 55) | 98% |
 | Read at 100 KiB a second: a key until the program reads it | 52 ms (0.2 to 264) | 0.17 ms (0.05 to 3.4) | 0.11 ms (0.07 to 1.8) |
 
-(The middle and right columns are one run of the script as it is now, on fux as it is
-now; the left column is the same steps on the binary built at 21cf936b4. CPU is the time
-the scheduler says all of a process's threads ran, from `/proc/PID/task/*/schedstat`; the
+(The middle and right columns are that run; the left column is the same steps on the
+binary built at 21cf936b4. CPU is the time the scheduler says all of a process's threads
+ran, from `/proc/PID/task/*/schedstat` (the script takes `ps`'s where there is none); the
 left column's is that of each process's first thread only, which in that binary did all
 the work: its viewer had one thread, its holder a second that only waits for the program's
 end. tmux's server writes to the terminal itself, so its client does nothing; and
 fux's holder reads only so much between two screens (Bounds), which is what bounds
-the frames a program can write. A key's four milliseconds are the holder
+the frames a program can write. A key's four milliseconds were the holder
 waiting a millisecond to see that the program is done, the viewer's look at
 the files every millisecond after a key that went to a pane, and its putting the frame
 together. From run to run the key rows move by a millisecond and the flood by a few
@@ -791,8 +791,8 @@ stays while any of them differs, and the referee notes the rows that do not
 differ from the ones you have. To replay a row: `cargo build --release &&
 cargo build --release --manifest-path tools/referee/old/Cargo.toml &&
 tools/referee/referee.py -v CASE` (`--witness tmux` if you have only tmux).
-It needs `xterm`, `Xvfb` and `tmux`; its files go under `$TMPDIR` (or
-`$XDG_RUNTIME_DIR`), and Xvfb, as every X server, puts its socket in
+It needs `xterm`, `Xvfb` and `tmux`; its files go under `$TMPDIR` (else
+`$XDG_RUNTIME_DIR`, else `~/.cache`), and Xvfb, as every X server, puts its socket in
 `/tmp/.X11-unix`: under a number from 90 to 99 that the referee asks for and
 that has no socket or lock there, never one the server picks (a server that
 takes a desktop's number removes the desktop's socket when it ends).

@@ -245,5 +245,6 @@ look at what it is (`status` names the command). When done, remove what you star
 nothing else; removing a workspace ends every pane in it:
     cat "$D"/agent-demo/*/status | grep '^command'
     rm -r "$D/agent-demo" "$D/agent-view"
-A session holds nothing else but the viewer's files named above. In a container with no
+A session holds nothing else but the viewer's files named above (and, where a person's key
+script was cut short, a dot-named file or folder of its own). In a container with no
 init, ended holders stay as zombies (dead, holding nothing): use docker --init.
