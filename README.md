@@ -34,8 +34,8 @@ scripts" says where that is).
 
 ## While fux 1 is the one you use daily
 
-This is the fux that is to replace fux 1: the branch `next` (the one CI runs
-for), and `next-minimal` until it is merged there. Until fux 1 is retired its names are temporary, so that the two never meet: the
+This is the fux that replaces fux 1: the branch `master` (fux 1 is on
+`old-main`; `HANDOFF.md` says where things are). Until fux 1 is retired its names are temporary, so that the two never meet: the
 variables are `FUXN_…` (to become `FUX_…`), the session is
 `$FUXN_DIR`, else `$XDG_RUNTIME_DIR/fux-next`, else `~/.cache/fux-next`, the
 keys directory is a `fux-next/keys` too, and a pane's program sees `TERM_PROGRAM=fux-next`.
