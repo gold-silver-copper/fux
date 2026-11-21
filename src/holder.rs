@@ -169,20 +169,15 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
 
 impl Holder {
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
-        // What an earlier holder of this pane left goes before this one's first
-        // screen is there: its clipboard, its history and its pictures (and its title, as it is a fact with none).
+        // What an earlier holder of this pane left goes before this one's first screen is there: its
+        // clipboard and its history (and its title, as it is a fact with none). Not its pictures'
+        // files: `pictures` names none of them, and each stays until a picture of its number is written.
         for old in ["clipboard", "cwd", "notice"] {
             let _ = fs::remove_file(old);
         }
         for history in ["history", "history.styled"] {
             let _ = fs::remove_file(format!("{history}.1"));
             File::create(history).map_err(|e| format!("cannot make {history}: {e}"))?;
-        }
-        for old in fs::read_dir(".").into_iter().flatten().flatten().map(|entry| entry.file_name()) {
-            let number = old.to_str().and_then(|name| name.strip_prefix("pic-")?.strip_suffix(".sixel"));
-            if number.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
-                let _ = fs::remove_file(old);
-            }
         }
         self.publish(None).map_err(|e| format!("cannot write the screen: {e}"))?;
         // (The pane is up: `fux start` waits for this line.)
