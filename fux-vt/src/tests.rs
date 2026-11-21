@@ -1555,3 +1555,10 @@ fn a_picture_drawn_at_the_bottom_of_a_scroll_region_is_above_the_cursor_as_at_th
     assert_eq!(placed("\x1b[1;9r", 9, 200), (None, 8));
     assert_eq!(placed("\x1b[1;9r", 10, 40), (Some((9, 2, 0)), 9));
 }
+
+#[test]
+fn a_program_that_asks_about_a_mode_that_is_not_private_is_answered() {
+    // Insert mode (4) has a state, 2 for reset and 1 for set; no other is known (0). Unanswered, the program waits.
+    let asked = term(8, 1, "\x1b[4$p\x1b[4h\x1b[4$p\x1b[4l\x1b[4$p\x1b[2$p\x1b[1049$p");
+    assert_eq!(String::from_utf8_lossy(&asked.peek().reply), "\x1b[4;2$y\x1b[4;1$y\x1b[4;2$y\x1b[2;0$y\x1b[1049;0$y");
+}
