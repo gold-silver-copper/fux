@@ -189,10 +189,14 @@ pub fn no_reader(error: &Error) -> bool {
     error.raw_os_error() == Some(6)
 }
 
-pub fn make_fifo(path: &Path) -> io::Result<()> {
-    let path = CString::new(path.as_os_str().as_bytes())?;
-    // SAFETY: the path is a valid NUL-terminated string for the call.
-    check(unsafe { mkfifo(path.as_ptr(), 0o600) }).map(drop)
+/// A FIFO of the caller's own, made anew (what was there of that name goes) and opened once, to
+/// read and to write without waiting: a writer leaving is then never the end of the file.
+pub fn fifo(path: impl AsRef<Path>) -> io::Result<File> {
+    let _ = std::fs::remove_file(&path);
+    let name = CString::new(path.as_ref().as_os_str().as_bytes())?;
+    // SAFETY: the name is a valid NUL-terminated string for the call.
+    check(unsafe { mkfifo(name.as_ptr(), 0o600) })?;
+    OpenOptions::new().read(true).write(true).custom_flags(os::O_NONBLOCK).open(path)
 }
 
 /// A terminal in raw mode. Dropped, it writes the terminal what it was given to say on leaving

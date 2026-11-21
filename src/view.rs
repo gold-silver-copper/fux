@@ -198,8 +198,6 @@ struct View {
     /// The script the keys wait for: its pid and when it started.
     waiting: Option<(u32, Instant)>,
     ctl_path: PathBuf,
-    /// A writer of our own on the viewer's FIFO, so that a script leaving is never its end.
-    _ctl_writer: File,
     ctl_line: Vec<u8>,
     quit: bool,
 }
@@ -226,11 +224,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         }
     }
     let ctl_path = session.join(format!(".view.{}", std::process::id()));
-    // (One of that name is a dead viewer's, whose number this process has now.)
-    let _ = fs::remove_file(&ctl_path);
-    sys::make_fifo(&ctl_path).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
-    let ctl = sys::open(&ctl_path, false).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
-    let ctl_writer = sys::open(&ctl_path, true).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
+    // (One of that name is a dead viewer's, whose number this process has now: it goes.)
+    let ctl = sys::fifo(&ctl_path).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
     let restore = sys::raw_mode(tty.try_clone().map_err(|e| e.to_string())?, LEAVING);
     let restore = restore.map_err(|e| format!("cannot set the terminal: {e}"))?;
     size.rows = 0; // the first frame sees a new size and draws everything
@@ -294,7 +289,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         scripts: Vec::new(),
         waiting: None,
         ctl_path,
-        _ctl_writer: ctl_writer,
         ctl_line: Vec::new(),
         quit: false,
     };

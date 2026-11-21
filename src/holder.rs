@@ -73,14 +73,6 @@ struct Holder {
     logged: usize,
 }
 
-/// A FIFO of ours, made anew (what an earlier holder left of that name goes), opened to read
-/// without waiting, and with a writer of our own so that a writer leaving is never the end of the file.
-fn fifo(name: &str) -> io::Result<(File, File)> {
-    let _ = fs::remove_file(name);
-    sys::make_fifo(name.as_ref())?;
-    Ok((sys::open(name, false)?, sys::open(name, true)?))
-}
-
 /// Keeps the pane whose directory is the working directory until its program
 /// ends. `fux start` locked the directory and handed the lock over as this
 /// process's standard input: it is held for exactly as long as the holder lives.
@@ -172,14 +164,15 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
     for name in odd {
         holder.log(&format!("{name} is not a number from 1 to {SIZE_MAX}: the pane starts at {cols}x{rows}"));
     }
-    // The FIFOs are there for as long as this function runs, and not after.
-    let fifos = fifo("in").and_then(|input| Ok((input, fifo("ctl")?)));
+    // The FIFOs are there for as long as this function runs, and not after (what an earlier
+    // holder left of those names goes).
+    let fifos = sys::fifo("in").and_then(|input| Ok((input, sys::fifo("ctl")?)));
     // Who holds the pane, the program's own number, and what it runs: written once, as it
     // never changes, before the first screen.
     let status = format!("holder {}\npid {pid}\ncommand {command}\n", std::process::id());
     let result = fifos.and_then(|fifos| replace("status", status.as_bytes()).map(|()| fifos));
     let result = result.map_err(|e| format!("cannot make the FIFOs or the status: {e}"));
-    let result = result.and_then(|((input, _in_writer), (ctl, _ctl_writer))| holder.run(&input, &ctl, &mut ended));
+    let result = result.and_then(|(input, ctl)| holder.run(&input, &ctl, &mut ended));
     let _ = fs::remove_file("in");
     let _ = fs::remove_file("ctl");
     result
