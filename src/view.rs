@@ -202,7 +202,7 @@ const LEAVING: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l
 
 pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), String> {
     let tty = io::stdin().as_fd().try_clone_to_owned().map(File::from).map_err(|e| format!("standard input: {e}"))?;
-    sys::winsize(&tty).map_err(|_| "the viewer needs a terminal on its standard input")?;
+    let size = sys::winsize(&tty).map_err(|_| "the viewer needs a terminal on its standard input")?;
     // What is made is the owner's alone; what is there already is left as it is.
     let made = fs::DirBuilder::new().mode(0o700).recursive(true).create(session.join(&workspace));
     made.map_err(|e| format!("{}: {e}", session.display()))?;
@@ -242,7 +242,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         tty,
         out,
         unwritten: 0,
-        size: Winsize::default(), // the first frame sees a new size and draws everything
+        // (The terminal's size is known from the start: a key typed before the first frame is told it.)
+        size: Winsize { cols: size.cols.min(SIZE_MAX as u16), rows: size.rows.min(SIZE_MAX as u16), ..size },
         front: Vec::new(),
         from: None,
         panes: HashMap::new(),
@@ -758,8 +759,14 @@ impl View {
         // size a tile would have if the focused pane were split is given too, side by side
         // (ROW) and one above the other (COL): a script that splits passes it on to `fux start`,
         // and its program is never drawn at one size and then at another.
-        script.env("COLUMNS", self.size.cols.to_string()).env("LINES", self.size.rows.to_string());
-        let area = Rect { x: 0, y: 0, w: usize::from(self.size.cols), h: usize::from(self.size.rows) };
+        // (A terminal that says it has no columns or no rows has told no size, and a script is told
+        // none: what it starts is as large as `fux start` makes a pane it is told no size for.)
+        let told = [("COLUMNS", self.size.cols, 80), ("LINES", self.size.rows, 24)];
+        let [w, h] = told.map(|(name, size, or)| {
+            let _ = if size > 0 { script.env(name, size.to_string()) } else { script.env_remove(name) };
+            usize::from(if size > 0 { size } else { or })
+        });
+        let area = Rect { x: 0, y: 0, w, h };
         for (name, row) in [(name!("ROW"), true), (name!("COL"), false)] {
             // A pane no folder can be named after is put, in a copy of the tab shown, beside the
             // pane the script is told of, as the split keys split.
@@ -811,7 +818,8 @@ impl View {
         (size.cols, size.rows) = (size.cols.min(SIZE_MAX as u16), size.rows.min(SIZE_MAX as u16));
         let (w, h) = (usize::from(size.cols), usize::from(size.rows));
         let mut out = String::new();
-        if size != self.size {
+        // (The first frame has nothing drawn before it, and draws everything as at a new size.)
+        if size != self.size || self.front.len() != w * h {
             self.size = size;
             self.front = vec![Cell { ch: '\u{1}', ..Cell::blank(Style::default()) }; w * h];
             self.drawn.clear();

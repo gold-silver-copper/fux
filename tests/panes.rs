@@ -1934,3 +1934,34 @@ fn a_line_of_ctl_that_has_not_ended_writes_no_screen() {
     until("the whole line is taken", || fact(&pane, "notice") == "1 the first half");
     until("the screen follows the notice", || screen() != first);
 }
+
+#[test]
+fn a_key_script_is_told_the_terminals_size_before_the_first_frame_and_none_where_there_is_none() {
+    // A key typed before the viewer has drawn anything: it is waiting on the terminal when the viewer
+    // starts (`dd` took the byte before it). Its script is told the terminal's size, not 0.
+    let (outer, inner) = (Session::new("souter"), Session::new("sinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    fs::write(keys.join("x"), "#!/bin/sh\necho \"$COLUMNS $LINES\" > \"$FUXN_DIR/told\"\n").unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("x")).status().unwrap();
+    inner.start("one", &["sleep", "600"]);
+    let views = |session: &Session, keys: &Path, first: &str| {
+        let (dir, keys, fux) = (session.0.display(), keys.display(), env!("CARGO_BIN_EXE_fux"));
+        format!("{first}; SHELL=/bin/sh FUXN_DIR='{dir}' FUXN_KEYS='{keys}' exec '{fux}' view")
+    };
+    let view =
+        outer.start("view", &["sh", "-c", &views(&inner, &keys, "stty raw -echo; dd bs=1 count=1 >/dev/null 2>&1")]);
+    fs::write(view.join("in"), "gx").unwrap();
+    until("the key's script ran", || read(&inner.0.join("told")).ends_with('\n'));
+    assert_eq!(read(&inner.0.join("told")), "80 24\n");
+    // A terminal that says it has no rows (a pty whose size nobody set) has told no size: the workspace's
+    // first shell is started all the same, at 80 by 24, as `fux start` has it when it is told none.
+    let (outer, inner) = (Session::new("zouter"), Session::new("zinner"));
+    let view = outer.start("view", &["sh", "-c", &views(&inner, &inner.0.join(".keys"), "stty rows 0")]);
+    let first = inner.0.join("main/1");
+    let log = || format!(": its log says {:?}, the viewer's {:?}", read(&first.join("log")), read(&view.join("log")));
+    until_or("the first pane was started", log, || {
+        fact(&first, "state") == "running" || !read(&first.join("log")).is_empty()
+    });
+    assert_eq!((fact(&first, "state").as_str(), fact(&first, "size").as_str()), ("running", "80 24"), "{}", log());
+}
