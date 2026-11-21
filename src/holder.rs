@@ -10,7 +10,7 @@ use crate::{plain, replace};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, ErrorKind, PipeReader, Read, Seek, Write};
+use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::process::ExitStatusExt;
@@ -80,10 +80,6 @@ struct Holder {
     /// which `colours` and `keyboard` were read last.
     session: PathBuf,
     told: (Option<Stamp>, Option<Stamp>),
-    /// The `history` file ends in the middle of a line.
-    history_open: bool,
-    /// `history.styled` could not be begun anew yet (see `split`): nothing is written to it.
-    styled_lost: bool,
     logged: usize,
 }
 
@@ -190,8 +186,6 @@ pub fn hold(command: &[OsString], cwd: &OsString) -> Result<(), String> {
         pending: Out::default(),
         session,
         told: (None, None),
-        history_open: false,
-        styled_lost: false,
         logged: 0,
     };
     holder.term.told().name = format!("{} {}", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION"));
@@ -410,8 +404,7 @@ impl Holder {
             ("history", &mut self.pending.history, out.unhistory),
             ("history.styled", &mut self.pending.styled, out.unstyled),
         ];
-        let lost = self.styled_lost;
-        let taken = files.map(|(name, waiting, back)| {
+        let kept = files.map(|(name, waiting, back)| {
             let keep = waiting.len().saturating_sub(back);
             let written = (back - (waiting.len() - keep)) as u64;
             if waiting.is_char_boundary(keep) {
@@ -419,15 +412,9 @@ impl Holder {
             }
             let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(written));
             let cut = OpenOptions::new().write(true).open(name).and_then(cut);
-            (written > 0 && !(lost && name == "history.styled")).then_some(cut.map_err(|e| (name, e)))
+            cut.err().filter(|_| written > 0).map(|e| format!("{name} keeps bytes that are on the screen again: {e}"))
         });
-        if taken.iter().any(Option::is_some) {
-            self.history_open = Holder::open_end();
-        }
-        for (name, e) in taken.into_iter().flatten().filter_map(Result::err) {
-            self.log(&format!("{name} keeps bytes that are on the screen again: {e}"));
-            self.split();
-        }
+        kept.into_iter().flatten().for_each(|kept| self.log(&kept));
         self.pending.styled.push_str(&out.styled);
         self.pending.history.push_str(&out.history);
         self.pending.pictures.append(&mut out.pictures);
@@ -440,36 +427,6 @@ impl Holder {
         if self.pending.history.len().max(self.pending.styled.len()) > READ_BUDGET {
             self.history();
         }
-    }
-
-    /// Whether `history` ends in the middle of a line: what its last byte says.
-    fn open_end() -> bool {
-        let mut last = *b"\n";
-        let end = File::open("history").and_then(|mut file| {
-            file.seek(io::SeekFrom::End(-1))?;
-            file.read_exact(&mut last)
-        });
-        end.is_ok() && last != *b"\n"
-    }
-
-    /// Something could not be done to one of the two history files, so they no longer have the
-    /// same lines. `history` keeps what it has; `history.styled` is begun anew, empty and with
-    /// no older file, so that it never has the colours of other lines: from here on it has
-    /// `history`'s lines again. (While it cannot be emptied it is not written, and this is tried
-    /// again before the next lines.) The rows a resize sent to history stay there: how many of
-    /// their bytes are in the files is no longer known.
-    fn split(&mut self) {
-        let gone = fs::remove_file("history.styled.1").or_else(|e| match e.kind() {
-            ErrorKind::NotFound => Ok(()),
-            _ => Err(e),
-        });
-        let anew = gone.and_then(|()| File::create("history.styled"));
-        if let (Err(e), false) = (&anew, self.styled_lost) {
-            self.log(&format!("history.styled cannot be begun anew, and is not written until it can: {e}"));
-        }
-        self.styled_lost = anew.is_err();
-        self.term.keep_lent();
-        self.history_open = Holder::open_end();
     }
 
     fn commands(&mut self, mut ctl: &File, buffer: &mut [u8]) {
@@ -544,41 +501,29 @@ impl Holder {
     }
 
     /// Appends the lines that scrolled off to `history`, and the same lines with their looks to
-    /// `history.styled`. Lines that cannot be written are lost, and the log says so: they are
-    /// not kept to try again, and `history.styled` is begun anew (see `split`).
+    /// `history.styled`. What cannot be written to a file is lost to that file, and the log says
+    /// so: it is not kept to try again, and what a resize sent there is no longer taken back.
     fn history(&mut self) {
-        let (lines, styled) = (std::mem::take(&mut self.pending.history), std::mem::take(&mut self.pending.styled));
-        if self.styled_lost {
-            self.split();
-        }
-        let files = [("history", &lines), ("history.styled", &styled)];
-        let files = files.get(..if self.styled_lost { 1 } else { 2 }).unwrap_or_default();
-        // A file past its size is put aside where a line ends, so that no line is in two files:
-        // before these lines if the file ends with a whole one, and else after the first line
-        // end among them (a line that never ends is cut when the file is twice its size). Both
-        // files are put aside when either is past its size, at the same line; and neither while
-        // their last rows are a resize's to take back, which it takes from these files.
+        let files = [
+            ("history", std::mem::take(&mut self.pending.history)),
+            ("history.styled", std::mem::take(&mut self.pending.styled)),
+        ];
+        // Once either file is past its size both are put aside, where the last of these lines
+        // ends: no line is in two files, and the two have the same lines. (A line that never
+        // ends is cut when a file is twice its size.) Neither while their last rows are a
+        // resize's to take back, which it takes from these files.
         let size = files.iter().filter_map(|(name, _)| fs::metadata(name).ok()).map(|m| m.len()).max().unwrap_or(0);
-        let whole = match (size > HISTORY_MAX && !self.term.lent(), self.history_open) {
-            (false, _) => None,
-            (true, false) => Some(true),
-            (true, true) => lines.contains('\n').then_some(false).or((size > 2 * HISTORY_MAX).then_some(true)),
-        };
-        self.history_open = !lines.ends_with('\n');
-        let mut split = false;
-        for (name, text) in files {
-            let cut = whole.map(|whole| if whole { 0 } else { text.find('\n').map_or(text.len(), |end| end + 1) });
-            let (old, new) = text.split_at_checked(cut.unwrap_or(text.len())).unwrap_or((text, ""));
+        let aside = size > HISTORY_MAX && !self.term.lent();
+        for (name, text) in &files {
+            let end = text.rfind('\n').map(|end| end + 1).or((size > 2 * HISTORY_MAX).then_some(0));
+            let (old, new) = text.split_at_checked(end.filter(|_| aside).unwrap_or(text.len())).unwrap_or((text, ""));
             let append =
                 |text: &str| OpenOptions::new().append(true).create(true).open(name)?.write_all(text.as_bytes());
-            let aside = |()| fs::rename(name, format!("{name}.1")).and_then(|()| append(new));
-            if let Err(e) = append(old).and_then(|()| if cut.is_some() { aside(()) } else { Ok(()) }) {
+            let turn = || fs::rename(name, format!("{name}.1")).and_then(|()| append(new));
+            if let Err(e) = append(old).and_then(|()| if aside && end.is_some() { turn() } else { Ok(()) }) {
                 self.log(&format!("{name} was lost (some or all of {} bytes): {e}", text.len()));
-                split = true;
+                self.term.keep_lent();
             }
-        }
-        if split {
-            self.split();
         }
     }
 

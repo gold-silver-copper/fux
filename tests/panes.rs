@@ -123,9 +123,8 @@ fn the_two_histories_keep_their_bounds_and_the_same_lines() {
     let styled = read(&pane.join("history.styled"));
     assert!(!pane.join("history.1").exists() && !pane.join("history.styled.1").exists());
     assert!(bare(&styled) == texts(&pane).1 && styled.ends_with("\x1b[0;31maa\x1b[m"), "{}", styled.len());
-    // When one of the two cannot be written, `history` keeps what it can, the log says what
-    // was lost, and `history.styled` is begun anew: it has `history`'s last lines, and not
-    // older ones with a hole after them.
+    // When one of the two cannot be written, the other is written all the same and the log
+    // says what was lost: the file that could not be written lacks those lines, and no others.
     let lines = "p() { i=0; while [ $i -lt 40 ]; do printf '\\033[3%dm%s\\033[m\\n' $((i % 8)) $1$i; i=$((i + 1)); done; }; \
         w() { until [ -e \"$FUXN_PANE/$1\" ]; do sleep 0.05; done; }; p one; w go1; p two; w go2; p three; sleep 600";
     let pane = session.start("lost", &["sh", "-c", lines]);
@@ -144,9 +143,12 @@ fn the_two_histories_keep_their_bounds_and_the_same_lines() {
         let (plain, styled) = (texts(&pane).1, bare(&read(&pane.join("history.styled"))));
         plain.ends_with("three16\n") && styled.ends_with("three16\n")
     });
-    let (plain, styled) = (texts(&pane).1, read(&pane.join("history.styled")));
-    assert!(plain.starts_with("one0\none1\n") && plain.contains("two0\n") && plain.ends_with(&bare(&styled)));
-    assert!(!styled.contains("one10") && styled.starts_with("\x1b[0;3"), "{styled}");
+    let (plain, styled) = (texts(&pane).1, bare(&read(&pane.join("history.styled"))));
+    assert!(plain.starts_with("one0\none1\n") && plain.contains("one39\ntwo0\n") && plain.contains("two39\nthree0\n"));
+    assert!(
+        styled.starts_with("one0\none1\n") && styled.contains("one10\n") && !styled.contains("two10\n"),
+        "{styled}"
+    );
 }
 
 #[test]
