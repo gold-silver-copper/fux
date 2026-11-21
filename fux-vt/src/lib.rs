@@ -1748,9 +1748,9 @@ impl Term {
 
     /// Something the program wants noticed: text without control characters, a kibibyte at most.
     pub fn notice(&mut self, text: &str) {
-        let text: String = text.chars().filter(|c| !c.is_control()).collect();
-        let cut = (0..=text.len().min(1024)).rev().find(|at| text.is_char_boundary(*at)).unwrap_or(0);
-        self.out.notice = text.get(..cut).map(str::to_string);
+        let mut text: String = text.chars().filter(|c| !c.is_control()).collect();
+        text.truncate(text.floor_char_boundary(1024));
+        self.out.notice = Some(text);
     }
 
     /// An operating system command: a title (0, 2), the clipboard (52), or a question about a
