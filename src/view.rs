@@ -809,7 +809,7 @@ impl View {
     /// Looks at the files and draws what changed. Says whether anything did.
     fn frame(&mut self) -> io::Result<bool> {
         // One frame at a time: while the terminal is still reading the last, the next one waits
-        // (and is then of what the panes show by then), and the keys do not.
+        // (and is then of what the panes show by then), and the keys do not, but for a workspace's first frame.
         if self.unwritten > 0 {
             return Ok(false);
         }
