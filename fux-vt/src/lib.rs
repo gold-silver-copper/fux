@@ -2179,8 +2179,7 @@ impl Term {
             }
             (0, 0, b'c') => self.respond("\x1b[?62;4;22c"),
             (b'>', 0, b'q') if self.csi.params.len() == 1 && self.arg(0, 0) == 0 => {
-                let answer = format!("\x1bP>|{}\x1b\\", self.told.name);
-                self.respond(&answer);
+                self.respond(&format!("\x1bP>|{}\x1b\\", self.told.name));
             }
             (b'>', 0, b'c') if self.csi.params.len() == 1 && self.arg(0, 0) == 0 => self.respond("\x1b[>70;0;0c"),
             (0, 0, b'g') => match self.arg(0, 0) {
