@@ -1594,6 +1594,43 @@ fn a_click_whose_release_the_terminal_never_told_of_does_not_take_the_next_click
 }
 
 #[test]
+fn a_press_after_the_program_asked_for_no_mouse_for_a_while_is_a_new_click() {
+    // A program that asks for the mouse gets a press, asks for no reports before the button is
+    // let go (the release is never told of) and then asks again. A press on the other tile is a
+    // new click: it gives that tile the keys, and is not the first program's.
+    let (outer, inner) = (Session::new("xouter"), Session::new("xinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let asks = "printf '\\033[?1000h\\033[?1006h'; until [ -e \"$FUXN_PANE/off\" ]; do sleep 0.05; done; \
+                printf '\\033[?1000l'; until [ -e \"$FUXN_PANE/on\" ]; do sleep 0.05; done; \
+                printf '\\033[?1000h'; sleep 600";
+    let a = inner.start("a", &["sh", "-c", asks]);
+    inner.start("b", &["sh", "-c", "stty raw -echo; exec cat -v"]);
+    until("the first asks for the mouse", || fact(&a, "modes") == "mousesgr mouse1000");
+    lay(&inner.0, "* row(a b) focus=a\n");
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer asked its terminal for the mouse", || fact(&view, "modes").contains("mouse1000"));
+    fs::write(view.join("in"), "\x1b[<0;5;3M").unwrap();
+    until("the press is the program's", || read(&a.join("screen")).contains("<0;5;3M"));
+    fs::write(a.join("off"), "").unwrap();
+    until("the viewer asks for the mouse no more", || !fact(&view, "modes").contains("mouse1000"));
+    fs::write(a.join("on"), "").unwrap();
+    until("the viewer asks for the mouse again", || fact(&view, "modes").contains("mouse1000"));
+    fs::write(view.join("in"), "\x1b[<0;50;3M\x1b[<0;50;3m").unwrap();
+    let start = Instant::now();
+    let layout = || read(&inner.0.join("main/layout"));
+    until_or("the click moved the focus", layout, || {
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "the press was the first program's: {:?}",
+            read(&a.join("screen"))
+        );
+        layout().contains("focus=b")
+    });
+}
+
+#[test]
 fn a_menu_opens_whatever_kind_of_file_a_key_is() {
     // A FIFO where a key's script would be, and one where a menu's caption would be: nobody
     // writes to either, and the menu opens all the same.

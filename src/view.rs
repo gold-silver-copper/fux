@@ -965,6 +965,9 @@ impl View {
                 // (Releases too for one that asked for presses alone, 9: a click that only moves the focus ends with one.)
                 if pane.screen.mouse != 0 && live {
                     modes.push_str(&format!("\x1b[?{}h\x1b[?1006h", pane.screen.mouse.max(1000)));
+                } else {
+                    // (And a button held when it asks no more is let go: its release is never told of.)
+                    self.held = None;
                 }
                 // And is told when this terminal's window gains and loses the keys, if it asked.
                 if pane.screen.focus && live {
