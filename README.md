@@ -486,7 +486,7 @@ at most), so `C-b t n` and then text types into the new shell; one that
 takes longer runs on while keys are taken again (the defaults put such work in the background).
 Keys that waited (for a script, or for a workspace's first frame) are read as one run of bytes when they are taken: Escape and then a letter typed meanwhile are Alt with that letter, however long lay between them (in the old form of keys; in the kitty form Escape is a key of its own).
 What it prints goes to the viewer, a line at a time: `quit` leaves the
-viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), and anything else (an error
+viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), `workspaces` opens an overlay list of the session's workspaces (up to 1,000; `j`/`k`/arrows move, `Enter`/`y` chooses, `q`/`n`/`Escape` cancels), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key (its first 200 characters; a line over 4096 bytes is dropped whole, and the corner says so). A key with no file, pressed in an
 open menu, closes the menu and goes nowhere (in a menu that stays open, as resize and move do, the prefix opens its own menu again: `C-b r l l C-b v` resizes and then splits). Writing the same lines to the FIFO
 `$FUXN_VIEW` does the same from anywhere.
@@ -504,7 +504,7 @@ the part that had scrolled into history is all there is, and it opens that) and 
 program's own screen, as `c`, `M-c` and the search are: the text is the main screen's and its history, whichever screen is drawn. For bash from 4.4 on, `PS1='\[\e]133;A\a\]'$PS1'\[\e]133;B\a\]'; PS0='\e]133;C\a';
 PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'`, the `printf` put first in a
 `PROMPT_COMMAND` you have already), `C-b` send C-b itself; `t` then `n` a new tab, `w`
-workspaces (`n` new, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
+workspaces (`n` new, `g` choose a workspace, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h` earlier, `l` later, repeating), `a` pane actions (`n` to a new tab, `k` hang
 up the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
 (`p` a pane, `t` a tab, `w` a workspace: a list in a pane of its own, chosen

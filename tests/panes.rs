@@ -2676,3 +2676,54 @@ fn a_menu_shades_its_group_headings() {
         "non-headings shaded:\n{styled}"
     );
 }
+
+#[test]
+fn the_workspace_picker_lists_cancels_and_switches_workspaces() {
+    let (outer, inner) = (Session::new("wpouter"), Session::new("wpinner"));
+    let keys = inner.0.join(".keys");
+    let alpha = inner.start("alpha/one", &["sh", "-c", "printf 'in-alpha\\n'; cat"]);
+    inner.start("beta/one", &["sh", "-c", "printf 'in-beta\\n'; sleep 600"]);
+    inner.start("gamma/one", &["sh", "-c", "printf 'in-gamma\\n'; sleep 600"]);
+    until("alpha printed", || read(&alpha.join("shown/screen")).contains("in-alpha"));
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let mut start = outer.fux();
+    start.env("COLUMNS", "80").env("LINES", "12").args(["start", "view", "--"]).args(command);
+    start.args([env!("CARGO_BIN_EXE_fux"), "view", "alpha"]);
+    let view = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let screen = || read(&view.join("shown/screen"));
+    until_or("viewer shows alpha", screen, || screen().contains("in-alpha"));
+    // C-b w g opens the overlay workspace picker with `* alpha` selected.
+    fs::write(view.join("in"), "\x02wg").unwrap();
+    until_or("picker shows workspaces", screen, || {
+        screen().contains("workspaces")
+            && screen().contains("* alpha")
+            && screen().contains("  beta")
+            && screen().contains("  gamma")
+    });
+    assert!(fact(&view, "cursor").contains(" hidden"), "cursor should be hidden: {}", fact(&view, "cursor"));
+    // Unbound keys and q stay inside the picker and never leak to alpha's `cat`.
+    fs::write(view.join("in"), "zq").unwrap();
+    until_or("picker closes on q", screen, || !screen().contains("enter select"));
+    assert!(screen().contains("in-alpha") && !screen().contains("z"), "key leaked to pane:\n{}", screen());
+    // Open again, move down twice to gamma, up once to beta, and press Enter to switch.
+    fs::write(view.join("in"), "\x02wg").unwrap();
+    until_or("picker reopens", screen, || screen().contains("* alpha"));
+    fs::write(view.join("in"), "jjk\r").unwrap();
+    until_or("viewer switched to beta", screen, || screen().contains("in-beta") && !screen().contains("enter select"));
+    // Verify windowing on a short terminal (many workspaces).
+    for i in 0..8 {
+        fs::create_dir_all(inner.0.join(format!("w{i:02}"))).unwrap();
+    }
+    let mut short = outer.fux();
+    short.env("COLUMNS", "50").env("LINES", "6").args(["start", "short", "--"]).args(command);
+    short.args([env!("CARGO_BIN_EXE_fux"), "view", "alpha"]);
+    let short_view = PathBuf::from(String::from_utf8(short.output().unwrap().stdout).unwrap().trim());
+    let short_screen = || read(&short_view.join("shown/screen"));
+    until_or("short viewer shows alpha", short_screen, || short_screen().contains("in-alpha"));
+    fs::write(short_view.join("in"), "\x02wg").unwrap();
+    until_or("short picker shows down overflow", short_screen, || {
+        short_screen().contains("* alpha") && short_screen().contains("▼")
+    });
+    fs::write(short_view.join("in"), "jjjj").unwrap();
+    until_or("short picker scrolls with up overflow", short_screen, || short_screen().contains("▲"));
+}

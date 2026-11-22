@@ -27,6 +27,8 @@ const SCRIPTS_MAX: usize = 32;
 const LINE_MAX: usize = 4096;
 /// The most keys a menu lists.
 const MENU_MAX: usize = 200;
+/// The most workspaces the picker lists.
+const WORKSPACES_MAX: usize = 1000;
 /// More than the largest screen a holder writes: 500 by 500 cells, each with its own colours.
 const STYLED_MAX: u64 = 32 << 20;
 const TYPED_MAX: usize = 64 << 10;
@@ -144,6 +146,8 @@ struct View {
     pause: bool,
     /// The open menu: its directory and its entries.
     menu: Option<(PathBuf, Vec<Entry>)>,
+    /// The open workspace picker: workspace names and the selected row.
+    picker: Option<(Vec<String>, usize)>,
     message: String,
     /// Whether the terminal said it draws sixel pictures.
     sixel: bool,
@@ -251,6 +255,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         held: None,
         pause: false,
         menu: None,
+        picker: None,
         message: String::new(),
         sixel: false,
         parts: Vec::new(),
@@ -403,6 +408,17 @@ impl View {
                 self.workspace = name.into();
                 self.forget();
             }
+            ("workspaces", "") => {
+                self.menu = None;
+                let mut list = workspaces(&self.session);
+                if list.is_empty() {
+                    self.message = "no workspaces".into();
+                } else {
+                    list.truncate(WORKSPACES_MAX);
+                    let at = list.iter().position(|name| *name == self.workspace).unwrap_or(0);
+                    self.picker = Some((list, at));
+                }
+            }
             _ => self.message = line.chars().filter(|c| !c.is_control()).take(200).collect(),
         }
     }
@@ -430,13 +446,17 @@ impl View {
                 // The start of an end mark at the very end is kept until the rest of it comes.
                 let held = (1..END.len()).rev().find(|&k| END.get(..k).is_some_and(|part| rest.ends_with(part)));
                 let text = end.unwrap_or(rest.len() - held.unwrap_or(0));
-                self.typed.extend_from_slice(rest.get(..text).unwrap_or(&[]));
+                if self.picker.is_none() {
+                    self.typed.extend_from_slice(rest.get(..text).unwrap_or(&[]));
+                }
                 at += text;
                 if end.is_none() {
                     break;
                 }
                 self.pasting = None;
-                self.typed.extend_from_slice(if marked { END } else { &[] });
+                if self.picker.is_none() {
+                    self.typed.extend_from_slice(if marked { END } else { &[] });
+                }
                 at += END.len();
                 continue;
             }
@@ -451,7 +471,9 @@ impl View {
                     // (Whether its program wants a paste marked is read when the paste begins, and kept: it ends as it began.)
                     let marked = has.as_deref().is_some_and(|pane| asks(pane).paste);
                     self.pasting = Some(marked);
-                    self.typed.extend_from_slice(if marked { raw } else { &[] });
+                    if self.picker.is_none() {
+                        self.typed.extend_from_slice(if marked { raw } else { &[] });
+                    }
                 }
                 ("mouse", report) => self.mouse(report),
                 ("terminal", told) => {
@@ -611,7 +633,8 @@ impl View {
                 (1, _) => {}
                 (2 | 3, Some(Went::Pane(directory, pid))) => return self.pass(&directory, pid, raw),
                 // Held, a key does again what its press did, there and only there: the script it
-                // ran in a menu that stays open (to resize, say), while that menu is the one open.
+                // ran in a menu that stays open (to resize, say), while that menu is the one open,
+                // or a movement key in the workspace picker.
                 (2, Some(Went::Script(script))) => {
                     let menu = self.menu.as_ref().map(|(directory, _)| directory.as_path());
                     if menu.is_some() && menu == script.parent() && script.with_file_name(".repeat").exists() {
@@ -619,14 +642,37 @@ impl View {
                     }
                     return;
                 }
+                (2, None) if self.picker.is_some() => {}
                 // (And what is no press, repeat or release is nothing.)
                 _ => return,
             }
-            if modifier && self.menu.is_some() {
+            if modifier && (self.menu.is_some() || self.picker.is_some()) {
                 return;
             }
         }
         self.message.clear();
+        if let Some((list, selected)) = &mut self.picker {
+            let last = list.len().saturating_sub(1);
+            match name {
+                "up" | "k" => *selected = selected.saturating_sub(1),
+                "down" | "j" => *selected = selected.saturating_add(1).min(last),
+                "pgup" => *selected = selected.saturating_sub(10),
+                "pgdn" => *selected = selected.saturating_add(10).min(last),
+                "home" => *selected = 0,
+                "end" => *selected = last,
+                "enter" | "y" => {
+                    let chosen = list.get(*selected).cloned();
+                    self.picker = None;
+                    if let Some(name) = chosen.filter(|name| *name != self.workspace) {
+                        self.workspace = name;
+                        self.forget();
+                    }
+                }
+                "esc" | "q" | "n" => self.picker = None,
+                _ => {}
+            }
+            return;
+        }
         let menu = self.menu.take();
         let file = menu.as_ref().map_or(&self.keys, |(directory, _)| directory).join(name);
         let went = match fs::metadata(&file) {
@@ -697,6 +743,9 @@ impl View {
     /// program, counted from its own tile's corner and in the form it asked
     /// for. A press on another tile gives that one the keys, and nothing more.
     fn mouse(&mut self, report: &str) {
+        if self.picker.is_some() {
+            return;
+        }
         let release = report.ends_with('m');
         let mut numbers = report.trim_end_matches(['M', 'm']).split(';').filter_map(|n| n.parse::<usize>().ok());
         let (Some(button), Some(x), Some(y)) = (numbers.next(), numbers.next(), numbers.next()) else { return };
@@ -872,7 +921,8 @@ impl View {
         let known: Vec<Stamp> = known.map(|(name, file)| picture(directory.join(name).join(file))).collect();
         let message = self.message.clone();
         let from = (layout.print(), wrong.clone(), message, terminal, panes, clipboard, known);
-        if out.is_empty() && self.menu.is_none() && self.from.as_ref() == Some(&from) {
+        let overlay = self.menu.is_some() || self.picker.is_some();
+        if out.is_empty() && !overlay && self.from.as_ref() == Some(&from) {
             return Ok(false);
         }
         let colour = |fg: u8, bg: Option<u8>, flags: u16| Style {
@@ -1026,7 +1076,7 @@ impl View {
                 parts.push((key, part));
             }
         }
-        (self.parts, self.from) = (parts, self.menu.is_none().then_some(from));
+        (self.parts, self.from) = (parts, (!overlay).then_some(from));
         if !refused.is_empty() {
             refused.dedup();
             self.message = refused.join("; ");
@@ -1083,18 +1133,20 @@ impl View {
         // one cannot write on the other, nor past a row's end.)
         let (last, mut covered) = (h.saturating_sub(1), None);
         let (above, foot) = back.split_at_mut_checked(last * w).unwrap_or_default();
-        if !note.is_empty() && self.menu.is_none() {
+        if !note.is_empty() && !overlay {
             let note = cells(&format!(" {note} "), style);
             let room = note.len().min(w.saturating_sub(1));
             put(foot, w.saturating_sub(room + 1), room, &note);
         }
-        if let Some((directory, entries)) = &self.menu {
-            // While a prefix is in use: the bar over the last row (the workspace, its tabs, the keys typed so far),
-            // and above it, in the corner, the keys that can follow.
+        if overlay {
+            // While a prefix or picker is open: the bar over the last row (the workspace, its tabs, what is open),
+            // and above it, in the corner, the menu or picker box.
             let (bar, panel, head) =
                 (colour(250, Some(236), 0), colour(255, Some(238), 0), colour(255, Some(235), BOLD));
-            let path = directory.strip_prefix(&self.keys).unwrap_or(Path::new(""));
-            let typed = path.iter().map(|key| key.to_string_lossy()).collect::<Vec<_>>().join(" ");
+            let typed = self.menu.as_ref().map(|(directory, _)| {
+                let path = directory.strip_prefix(&self.keys).unwrap_or(Path::new(""));
+                path.iter().map(|key| key.to_string_lossy()).collect::<Vec<_>>().join(" ")
+            });
             let mut left = cells(&format!(" {} ", self.workspace), colour(250, Some(236), BOLD));
             let labels = layout.tabs.iter().enumerate().map(|(i, tab)| {
                 // (A tab with a notice not seen yet has a mark.)
@@ -1108,11 +1160,13 @@ impl View {
                 )
             });
             let labels: Vec<Vec<Cell>> = labels.collect();
-            // On the right: what there is to say, or else the keys typed so far.
-            let right = if note.is_empty() {
+            // On the right: what there is to say, or else the keys typed so far (or the picker's name).
+            let right = if !note.is_empty() {
+                cells(&format!(" {note} "), style)
+            } else if let Some(typed) = &typed {
                 cells(&format!("{typed} …"), colour(0, Some(11), BOLD))
             } else {
-                cells(&format!(" {note} "), style)
+                cells(" workspaces ", colour(0, Some(11), BOLD))
             };
             let said = right.len().min(w * 3 / 4);
             foot.fill(Cell::blank(bar));
@@ -1125,44 +1179,89 @@ impl View {
             left.extend(labels.iter().skip(first).flatten());
             put(foot, 0, room, &left);
             put(foot, w.saturating_sub(said + 1), said, &right);
-            // The keys, under their headings; what does not fit above the bar is counted, not shown.
-            let key_width = entries.iter().map(|(key, ..)| key.chars().count()).max().unwrap_or(0);
-            let (mut lines, mut heading) = (vec![(typed, Style { flags: BOLD, ..panel })], "");
-            for (key, about, group) in entries {
-                if std::mem::replace(&mut heading, group) != group && !group.is_empty() {
-                    lines.push((group.clone(), head));
+            if let Some((_, entries)) = &self.menu {
+                // The keys, under their headings; what does not fit above the bar is counted, not shown.
+                let key_width = entries.iter().map(|(key, ..)| key.chars().count()).max().unwrap_or(0);
+                let (mut lines, mut heading) = (vec![(typed.unwrap_or_default(), Style { flags: BOLD, ..panel })], "");
+                for (key, about, group) in entries {
+                    if std::mem::replace(&mut heading, group) != group && !group.is_empty() {
+                        lines.push((group.clone(), head));
+                    }
+                    lines.push((format!("{key:>key_width$}  {about}"), panel));
                 }
-                lines.push((format!("{key:>key_width$}  {about}"), panel));
-            }
-            // A box as wide as its longest line, in cells, and a cell more on each
-            // side. A menu taller than the room above the bar goes on in a
-            // second box to the right of the first, and so on; what still does
-            // not fit is counted (lines, headings among them), not shown.
-            let lines: Vec<Vec<Cell>> = lines.iter().map(|(text, style)| cells(&format!(" {text}"), *style)).collect();
-            // (A box is kept, with its width, while there is room for it; the first is cut to the terminal's width.)
-            let (mut right, mut boxes) = (w, Vec::new());
-            for part in lines.chunks(last.max(1)) {
-                let width = (part.iter().map(Vec::len).max().unwrap_or(0) + 1).min(w);
-                let Some(rest) = right.checked_sub(width).filter(|_| last > 0) else { break };
-                boxes.push((part, width, w - right));
-                right = rest;
-            }
-            // The last line shown gives its place to the count, so is counted too; a count with no room is a mark.
-            let over = lines.len().saturating_sub(boxes.len() * last.max(1));
-            let more = format!(" ▼ {} more", over + 1);
-            let fits = boxes.last().is_some_and(|(_, width, _)| more.chars().count() <= *width);
-            let more = cells(if fits { &more } else { "▼" }, Style { flags: DIM, ..panel });
-            let height = boxes.first().map_or(0, |(part, ..)| part.len());
-            for (n, (part, width, from)) in boxes.iter().enumerate().rev() {
-                for (i, row) in above.chunks_exact_mut(w.max(1)).skip(last.saturating_sub(height)).enumerate() {
-                    let hides = n + 1 == boxes.len() && over > 0 && i + 1 == height;
-                    let line = if hides { Some(&more) } else { part.get(i) };
-                    let fill = line.and_then(|line| line.first()).map_or(panel, |cell| cell.style);
-                    put(row, right + from, *width, &vec![Cell::blank(fill); *width]);
-                    put(row, right + from, *width, line.map_or(&[], |line| line));
+                // A box as wide as its longest line, in cells, and a cell more on each
+                // side. A menu taller than the room above the bar goes on in a
+                // second box to the right of the first, and so on; what still does
+                // not fit is counted (lines, headings among them), not shown.
+                let lines: Vec<Vec<Cell>> =
+                    lines.iter().map(|(text, style)| cells(&format!(" {text}"), *style)).collect();
+                // (A box is kept, with its width, while there is room for it; the first is cut to the terminal's width.)
+                let (mut right, mut boxes) = (w, Vec::new());
+                for part in lines.chunks(last.max(1)) {
+                    let width = (part.iter().map(Vec::len).max().unwrap_or(0) + 1).min(w);
+                    let Some(rest) = right.checked_sub(width).filter(|_| last > 0) else { break };
+                    boxes.push((part, width, w - right));
+                    right = rest;
                 }
+                // The last line shown gives its place to the count, so is counted too; a count with no room is a mark.
+                let over = lines.len().saturating_sub(boxes.len() * last.max(1));
+                let more = format!(" ▼ {} more", over + 1);
+                let fits = boxes.last().is_some_and(|(_, width, _)| more.chars().count() <= *width);
+                let more = cells(if fits { &more } else { "▼" }, Style { flags: DIM, ..panel });
+                let height = boxes.first().map_or(0, |(part, ..)| part.len());
+                for (n, (part, width, from)) in boxes.iter().enumerate().rev() {
+                    for (i, row) in above.chunks_exact_mut(w.max(1)).skip(last.saturating_sub(height)).enumerate() {
+                        let hides = n + 1 == boxes.len() && over > 0 && i + 1 == height;
+                        let line = if hides { Some(&more) } else { part.get(i) };
+                        let fill = line.and_then(|line| line.first()).map_or(panel, |cell| cell.style);
+                        put(row, right + from, *width, &vec![Cell::blank(fill); *width]);
+                        put(row, right + from, *width, line.map_or(&[], |line| line));
+                    }
+                }
+                (cursor, cursor_colour, covered) = (String::new(), None, Some((right, last.saturating_sub(height))));
+            } else if let Some((list, selected)) = &self.picker {
+                let mut rows: Vec<(String, Style)> = Vec::new();
+                if last >= 2 {
+                    rows.push(("workspaces".into(), Style { flags: BOLD, ..panel }));
+                }
+                let room = last.saturating_sub(usize::from(last >= 2) + usize::from(last >= 3)).max(1);
+                let chosen = colour(238, Some(255), BOLD);
+                if list.len() <= room {
+                    for (i, name) in list.iter().enumerate() {
+                        let mark = if *name == self.workspace { '*' } else { ' ' };
+                        rows.push((format!("{mark} {name}"), if i == *selected { chosen } else { panel }));
+                    }
+                } else {
+                    let shown = room.saturating_sub(2).max(1);
+                    let end = (*selected + 1).max(shown).min(list.len());
+                    let start = end.saturating_sub(shown);
+                    let after = list.len().saturating_sub(end);
+                    if start > 0 && room >= 2 {
+                        rows.push((format!("▲ {start} more"), Style { flags: DIM, ..panel }));
+                    }
+                    for (i, name) in list.iter().enumerate().skip(start).take(shown) {
+                        let mark = if *name == self.workspace { '*' } else { ' ' };
+                        rows.push((format!("{mark} {name}"), if i == *selected { chosen } else { panel }));
+                    }
+                    if after > 0 && rows.len() < last.saturating_sub(usize::from(last >= 3)) {
+                        rows.push((format!("▼ {after} more"), Style { flags: DIM, ..panel }));
+                    }
+                }
+                if last >= 3 {
+                    rows.push(("enter select · q esc cancel".into(), Style { flags: DIM, ..panel }));
+                }
+                let lines: Vec<Vec<Cell>> =
+                    rows.iter().map(|(text, style)| cells(&format!(" {text}"), *style)).collect();
+                let width = (lines.iter().map(Vec::len).max().unwrap_or(0) + 1).min(w);
+                let height = lines.len().min(last);
+                let left = w.saturating_sub(width);
+                for (row, line) in above.chunks_exact_mut(w.max(1)).skip(last.saturating_sub(height)).zip(&lines) {
+                    let fill = line.first().map_or(panel, |cell| cell.style);
+                    put(row, left, width, &vec![Cell::blank(fill); width]);
+                    put(row, left, width, line);
+                }
+                (cursor, cursor_colour, covered) = (String::new(), None, Some((left, last.saturating_sub(height))));
             }
-            (cursor, cursor_colour, covered) = (String::new(), None, Some((right, last.saturating_sub(height))));
         }
         modes.push_str(if wants_focus.is_some() { "\x1b[?1004h" } else { "\x1b[?1004l" });
         self.tell(wants_focus);
@@ -1477,4 +1576,14 @@ fn menu_entries(directory: &Path) -> Vec<Entry> {
     entries.sort_by(|a, b| (&a.2, &a.0).cmp(&(&b.2, &b.0)));
     entries.extend(names.next().map(|_| ("…".to_string(), "more keys than a menu lists".to_string(), String::new())));
     entries
+}
+
+/// The workspaces of a session: its folders whose names are valid, sorted.
+fn workspaces(session: &Path) -> Vec<String> {
+    let folders = fs::read_dir(session).into_iter().flatten().flatten();
+    let names = folders.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()));
+    let mut names: Vec<String> =
+        names.filter_map(|entry| entry.file_name().into_string().ok()).filter(|name| is_name(name)).collect();
+    names.sort();
+    names
 }
