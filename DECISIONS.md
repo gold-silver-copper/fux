@@ -2237,6 +2237,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   `~/.config/fux/keys`, `/tmp/fux-$USER`). The temporary coexistence section
   is removed from `README.md`.
 
+- **D117. Kitty graphics protocol and frozen v1 pane-folder format** (the owner,
+  2026-11-22, overruling the earlier panel per `HANDOFF.md`). `fux-vt` implements
+  the Kitty graphics protocol (`ESC _ G ... ESC \`) with zero external dependencies
+  (including bounded RFC 1950/1951 inflate and PNG decode/encode): query (`a=q`
+  and feature query `e=`), direct chunked transmission (`a=t`, `a=T`, `t=d`,
+  `f=24|32|100`, `o=z`, `m=0|1`), placement (`a=p`, `i`/`I`, `p`, `x,y,w,h`,
+  `c,r`, `C=0|1`, `z`), and deletion (`a=d`, `d=a|A|i|I|n|N|c|C|p|P|q|Q|r|R|x|X|y|Y|z|Z`).
+  File/shared-memory transmission (`t=f|t|s`) and animation (`a=f|a|c`) are refused.
+  Kitty placements are stored in the pane folder as standard `pic-N.png` files beside
+  `pic-N.sixel`, using the existing `shown/pictures` 7-column format. The viewer probes
+  outer-terminal Kitty graphics support before DA1 and bridges both ways (native protocol
+  when supported, sixel ↔ Kitty transcoding when the outer terminal supports only the
+  other). The pane-folder layout is now frozen as v1.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

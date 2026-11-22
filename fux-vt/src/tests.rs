@@ -1731,3 +1731,202 @@ fn in_memory_vt_api_for_external_consumers() {
     let out = no_hist.take(0);
     assert!(out.history.is_empty() && out.styled.is_empty() && out.refused.is_empty());
 }
+
+#[test]
+fn inflate_and_png_roundtrip_and_bounds() {
+    use crate::{inflate, png};
+    // Stored zlib round-trip.
+    let sample = b"hello kitty graphics protocol hello kitty graphics protocol!";
+    let stored = inflate::zlib_store(sample);
+    assert_eq!(inflate::zlib(&stored, 1024).unwrap(), sample);
+    // Real zlib stream compressed with fixed Huffman (BTYPE=1, Python zlib.compress(b"ABCD" * 32)).
+    let compressed: &[u8] = &[0x78, 0x9c, 0x73, 0x74, 0x72, 0x76, 0x71, 0x1c, 0x40, 0x0c, 0x00, 0x60, 0xf8, 0x21, 0x41];
+    let expected = b"ABCD".repeat(32);
+    assert_eq!(inflate::zlib(compressed, 1024).unwrap(), expected);
+    // Real zlib stream compressed with dynamic Huffman (BTYPE=2, Python Z_HUFFMAN_ONLY).
+    let dynamic: &[u8] = &[
+        0x78, 0x01, 0x05, 0xc1, 0x01, 0x01, 0x00, 0x00, 0x00, 0x82, 0x20, 0xd3, 0xff, 0x9f, 0x03, 0x66, 0x23, 0x8d,
+        0xe5, 0x60, 0x36, 0xd2, 0x58, 0x0e, 0x66, 0x23, 0x8d, 0xe5, 0x60, 0x36, 0xd2, 0x58, 0x0e, 0x66, 0x23, 0x8d,
+        0xe5, 0x60, 0x36, 0xd2, 0x58, 0x0e, 0x66, 0x23, 0x8d, 0xe5, 0x60, 0x36, 0xd2, 0x58, 0x8e, 0x03, 0x30, 0xe0,
+        0x00, 0xc1,
+    ];
+    let dyn_expected: Vec<u8> = (0..128usize).map(|i| ((i * 17) ^ (i >> 2)) as u8 & 3).collect();
+    assert_eq!(inflate::zlib(dynamic, 1024).unwrap(), dyn_expected);
+    // Zip-bomb limit enforced before allocating unbounded output.
+    assert!(inflate::zlib(compressed, 16).is_err());
+    // Corrupted Adler-32 checksum rejected.
+    let mut bad_crc = compressed.to_vec();
+    *bad_crc.last_mut().unwrap() ^= 1;
+    assert!(inflate::zlib(&bad_crc, 1024).is_err());
+
+    // PNG encode/decode round-trip (4x3 RGBA with alpha).
+    let rgba: Vec<u8> = (0..4 * 3)
+        .flat_map(|i| [(i * 20) as u8, 128, (255 - i * 20) as u8, if i % 2 == 0 { 255 } else { 0 }])
+        .collect();
+    let encoded = png::encode_rgba(4, 3, &rgba, 65536).unwrap();
+    assert_eq!(png::dimensions(&encoded), Some((4, 3)));
+    assert_eq!(png::decode(&encoded, 1024).unwrap(), (4, 3, rgba.clone()));
+    // Bad PNG CRC rejected.
+    let mut bad_png = encoded.clone();
+    bad_png[25] ^= 0xff;
+    assert!(png::decode(&bad_png, 1024).is_err());
+
+    // Build a PNG exercising all 5 scanline filters (0=None, 1=Sub, 2=Up, 3=Avg, 4=Paeth) + indexed PLTE/tRNS.
+    let mut raw = Vec::new();
+    // 2x5 indexed (color_type=3, bit_depth=8), palette: [0]=red(opaque), [1]=green(transparent), [2]=blue(opaque)
+    // Row 0 (None): [0, 1]
+    raw.extend_from_slice(&[0, 0, 1]);
+    // Row 1 (Sub): want [1, 2] -> [1, 2-1=1]
+    raw.extend_from_slice(&[1, 1, 1]);
+    // Row 2 (Up): prev=[1, 2], want [2, 0] -> [2-1=1, 0u8.wrapping_sub(2)=254]
+    raw.extend_from_slice(&[2, 1, 254]);
+    // Row 3 (Avg): prev=[2, 0], want [1, 2] -> x0: 1 - (0+2)/2 = 0; x1: 2 - (1+0)/2 = 2
+    raw.extend_from_slice(&[3, 0, 2]);
+    // Row 4 (Paeth): prev=[1, 2], want [2, 1] -> x0: paeth(0,1,0)=1 -> 2-1=1; x1: paeth(2,2,1)=2 -> 1u8.wrapping_sub(2)=255
+    raw.extend_from_slice(&[4, 1, 255]);
+    let crc = |data: &[u8]| {
+        let mut c = 0xffff_ffffu32;
+        for &b in data {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 { (c >> 1) ^ 0xedb8_8320 } else { c >> 1 };
+            }
+        }
+        !c
+    };
+    let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]| {
+        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(body);
+        out.extend_from_slice(&crc(&out[start..]).to_be_bytes());
+    };
+    let mut idx_png = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut idx_png, b"IHDR", &[0, 0, 0, 2, 0, 0, 0, 5, 8, 3, 0, 0, 0]);
+    chunk(&mut idx_png, b"PLTE", &[255, 0, 0, 0, 255, 0, 0, 0, 255]);
+    chunk(&mut idx_png, b"tRNS", &[255, 0, 255]);
+    chunk(&mut idx_png, b"IDAT", &inflate::zlib_store(&raw));
+    chunk(&mut idx_png, b"IEND", &[]);
+    let (w, h, out_rgba) = png::decode(&idx_png, 1024).unwrap();
+    assert_eq!((w, h), (2, 5));
+    let r = [255, 0, 0, 255];
+    let g = [0, 255, 0, 0];
+    let b = [0, 0, 255, 255];
+    let want: Vec<u8> = [r, g, g, b, b, r, g, b, b, g].into_iter().flatten().collect();
+    assert_eq!(out_rgba, want);
+}
+
+#[test]
+fn kitty_graphics_protocol_query_transmit_chunk_place_delete_and_encode() {
+    use crate::{PictureFormat, inflate, kitty, png};
+    let b64 = |bytes: &[u8]| {
+        let mut s = String::new();
+        kitty::encode_base64(bytes, &mut s);
+        s
+    };
+
+    let mut t = Term::new(20, 10);
+    t.told().cell = (10, 20);
+
+    // 1. Standard Kitty detection query (a=q) returns OK without storing anything.
+    t.feed(b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\");
+    assert_eq!(String::from_utf8(t.take(0).reply).unwrap(), "\x1b_Gi=31;OK\x1b\\");
+    assert!(t.shown().pictures.is_empty());
+
+    // Feature query (e=T,C=1,f=100,o=z) reports supported keys; unsupported animation (e=f) omits e.
+    t.feed(b"\x1b_Ga=q,i=32,e=T,C=1,f=100,o=z\x1b\\");
+    assert_eq!(String::from_utf8(t.take(0).reply).unwrap(), "\x1b_Gi=32,e=T,f=100,o=z,C=1;OK\x1b\\");
+    t.feed(b"\x1b_Ga=q,i=33,e=f,r=1\x1b\\");
+    assert_eq!(String::from_utf8(t.take(0).reply).unwrap(), "\x1b_Gi=33;OK\x1b\\");
+
+    // Mutually exclusive i and I returns EINVAL; q=2 suppresses errors; q=1 suppresses OK.
+    t.feed(b"\x1b_Gi=1,I=2,a=t,f=24,s=1,v=1;AAAA\x1b\\");
+    assert!(String::from_utf8(t.take(0).reply).unwrap().contains("EINVAL"));
+    t.feed(b"\x1b_Gi=1,I=2,q=2,a=t,f=24,s=1,v=1;AAAA\x1b\\");
+    assert!(t.take(0).reply.is_empty());
+    t.feed(b"\x1b_Gi=1,q=1,a=q,f=24,s=1,v=1;AAAA\x1b\\");
+    assert!(t.take(0).reply.is_empty());
+
+    // Unsupported mediums (t=f, t=t, t=s) and animation (a=f) are cleanly refused.
+    t.feed(b"\x1b_Gi=4,a=t,t=f,f=100;L3RtcC9hLnBuZw==\x1b\\");
+    assert!(String::from_utf8(t.take(0).reply).unwrap().contains("EINVAL"));
+    t.feed(b"\x1b_Gi=4,a=f,f=32,s=1,v=1;AAAAAA==\x1b\\");
+    assert!(String::from_utf8(t.take(0).reply).unwrap().contains("ENOTSUPPORTED"));
+
+    // 2. Chunked zlib-compressed RGB transmit + display (a=T,f=24,o=z,m=1/0,C=0) on a 20x40 image (2x2 cells).
+    let rgb = [255u8, 0, 0].repeat(20 * 40);
+    let z = inflate::zlib_store(&rgb);
+    let enc = b64(&z);
+    let mid = (enc.len() / 2) & !3;
+    t.feed(format!("\x1b[2;3H\x1b_Ga=T,i=10,p=1,f=24,s=20,v=40,o=z,m=1;{}\x1b\\", &enc[..mid]).as_bytes());
+    assert!(t.take(0).reply.is_empty() && t.shown().pictures.is_empty());
+    // Move cursor before final chunk: Kitty spec requires final chunk's cursor position to be used!
+    t.feed(format!("\x1b[3;4H\x1b_Gm=0;{}\x1b\\", &enc[mid..]).as_bytes());
+    assert_eq!(String::from_utf8(t.take(0).reply).unwrap(), "\x1b_Gi=10,p=1;OK\x1b\\");
+    assert_eq!(t.shown().pictures.len(), 1);
+    let pic = &t.shown().pictures[0];
+    assert_eq!((pic.format, pic.row, pic.col, pic.cols, pic.rows), (PictureFormat::Png, 2, 3, 2, 2));
+    // Cursor moved down (rows-1=1) and right (cols=2) -> row 3, col 5.
+    assert_eq!((t.shown().cursor.row, t.shown().cursor.col), (3, 5));
+    let new_pics = t.new_pictures();
+    assert_eq!(new_pics.len(), 1);
+    assert_eq!(png::dimensions(&new_pics[0].2), Some((20, 40)));
+
+    // Normal text printed over a Kitty placement does NOT remove it (unlike sixel).
+    t.feed(b"\x1b[3;4Hhello");
+    assert_eq!(t.shown().pictures.len(), 1);
+
+    // 3. Re-place stored image i=10 with source crop + explicit c,r + C=1 (no cursor move), replacing p=1!
+    t.feed(b"\x1b[1;1H\x1b_Ga=p,i=10,p=1,x=0,y=0,w=10,h=20,c=4,r=3,C=1\x1b\\");
+    assert_eq!(String::from_utf8(t.take(0).reply).unwrap(), "\x1b_Gi=10,p=1;OK\x1b\\");
+    assert_eq!(t.shown().pictures.len(), 1);
+    assert_eq!(
+        (t.shown().pictures[0].row, t.shown().pictures[0].col, t.shown().pictures[0].cols, t.shown().pictures[0].rows),
+        (0, 0, 4, 3)
+    );
+    assert_eq!((t.shown().cursor.row, t.shown().cursor.col), (0, 0));
+    let cropped = t.new_pictures();
+    assert_eq!(png::dimensions(&cropped[0].2), Some((10, 20)));
+
+    // 4. Transmit PNG (f=100) by image number I=77: terminal assigns id and echoes both i and I.
+    let png_bytes = png::encode_rgba(10, 20, &[0, 255, 0, 255].repeat(200), 65536).unwrap();
+    t.feed(format!("\x1b[5;2H\x1b_Ga=T,I=77,f=100,C=1,z=-1;{}\x1b\\", b64(&png_bytes)).as_bytes());
+    let reply = String::from_utf8(t.take(0).reply).unwrap();
+    assert!(reply.starts_with("\x1b_Gi=") && reply.ends_with(",I=77;OK\x1b\\"), "{reply}");
+    assert_eq!(t.shown().pictures.len(), 2);
+
+    // 5. Delete selectors: z-index, placement id, column, row, range, all.
+    t.feed(b"\x1b_Ga=d,d=z,z=-1\x1b\\");
+    assert_eq!(t.shown().pictures.len(), 1);
+    // Image I=77 was soft-deleted (lowercase z), so re-placing by I=77 still works!
+    t.feed(b"\x1b[6;6H\x1b_Ga=p,I=77,C=1\x1b\\");
+    assert!(String::from_utf8(t.take(0).reply).unwrap().ends_with(",I=77;OK\x1b\\"));
+    assert_eq!(t.shown().pictures.len(), 2);
+    // Hard-delete by cell (p=P at 1-based col 6, row 6 -> 0-based (5,5)) frees I=77.
+    t.feed(b"\x1b_Ga=d,d=P,x=6,y=6\x1b\\");
+    assert_eq!(t.shown().pictures.len(), 1);
+    t.feed(b"\x1b_Ga=p,I=77,C=1\x1b\\");
+    assert!(String::from_utf8(t.take(0).reply).unwrap().contains("ENOENT"));
+    // Delete all remaining placements & free (d=A).
+    t.feed(b"\x1b_Ga=d,d=A\x1b\\");
+    assert!(t.shown().pictures.is_empty());
+    t.feed(b"\x1b_Ga=p,i=10,C=1\x1b\\");
+    assert!(String::from_utf8(t.take(0).reply).unwrap().contains("ENOENT"));
+
+    // 6. Disabling kitty_graphics makes a=q completely silent.
+    t.told().kitty_graphics = false;
+    t.feed(b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\");
+    assert!(t.take(0).reply.is_empty());
+
+    // 7. Sixel <-> Kitty encoders round-trip cleanly.
+    let six = b"q\"1;1;4;4#1;2;100;0;0!4~";
+    let part = crate::sixel::read(six, [0, 0, 4, 4]).unwrap();
+    let rgba = kitty::sixel_to_rgba(&part);
+    assert_eq!(rgba.len(), 4 * 4 * 4);
+    assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);
+    let kitty_seq = kitty::encode_rgba(4, 4, &rgba, None, 4096).unwrap();
+    assert!(kitty_seq.starts_with("\x1b_Ga=T,f=32,s=4,v=4,C=1,q=2;") && kitty_seq.ends_with("\x1b\\"));
+    let back_six = kitty::rgba_to_sixel(4, 4, &rgba, [0, 0, 4, 4], 4096).unwrap();
+    let back_part = crate::sixel::read(back_six.as_bytes(), [0, 0, 4, 4]).unwrap();
+    assert_eq!((back_part.w, back_part.h), (4, 4));
+}

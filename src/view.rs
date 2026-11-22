@@ -8,7 +8,7 @@ use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
 use crate::term::{
     BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Screen, Style, Term, base64_encode,
-    files,
+    files, kitty, png,
 };
 use crate::width::Joiner;
 use crate::{Stamp, is_name, keys, sixel, stamp, text};
@@ -52,9 +52,17 @@ type Part = (PathBuf, Stamp, [usize; 3]);
 /// What is drawn of a picture: the sixel, and how many pixels wide and high it is; or nothing.
 type Sixel = Option<(String, usize, usize)>;
 
-/// A picture on the terminal: its part, and the column, row, columns and rows of what is drawn
+/// Cache key for a rendered picture: file path, file stamp, outer protocol (`true` = Kitty,
+/// `false` = sixel), layout `[off_rows, total_cols, total_rows, laid_cell_w, laid_cell_h]`,
+/// and tile room `[beside, below, cell_w, cell_h]`.
+type RenderKey = (PathBuf, Stamp, bool, [usize; 5], [usize; 4]);
+
+/// Rendered picture: complete escape sequence (`\x1bP...\x1b\\` or `\x1b_G...\x1b\\`) and drawn `(cols, rows)`.
+type Rendered = Option<(String, usize, usize)>;
+
+/// A picture on the terminal: its render key, and the column, row, columns and rows of what is drawn
 /// of it.
-type Drawn = (Part, usize, usize, usize, usize);
+type Drawn = (RenderKey, usize, usize, usize, usize);
 
 /// What is drawn of a picture in the pixels its tile has for it, and how many pixels wide and
 /// high that is: the picture as it is, unread, if its pixels are square and all of them are in
@@ -81,12 +89,106 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
     Ok((wide > 0 && high > 0 && !sixel.is_empty()).then_some((sixel, wide, high)))
 }
 
+/// Renders one picture file (`.sixel` or `.png`) for either a Kitty-capable (`kitty_out = true`)
+/// or sixel-capable (`kitty_out = false`) outer terminal, clipped to its tile.
+pub fn render_picture(
+    (path, _, kitty_out, [off_rows, total_cols, total_rows, laid_w, laid_h], [beside, below, cell_w, cell_h]): &RenderKey,
+) -> Result<Rendered, &'static str> {
+    if *cell_w == 0 || *cell_h == 0 {
+        return Err("the terminal does not say how many pixels a cell has");
+    }
+    let is_png = path.extension().and_then(|e| e.to_str()) == Some("png");
+    let is_sixel = path.extension().and_then(|e| e.to_str()) == Some("sixel");
+    let above_px = off_rows.saturating_mul(*laid_h);
+    let (avail_w, avail_h) = (beside.saturating_mul(*cell_w), below.saturating_mul(*cell_h));
+
+    if is_sixel && !*kitty_out {
+        let Some((sixel, wide, high)) = part(&(path.clone(), None, [above_px, avail_w, avail_h]))? else {
+            return Ok(None);
+        };
+        return Ok(Some((format!("\x1bP{sixel}\x1b\\"), wide.div_ceil(*cell_w), high.div_ceil(*cell_h))));
+    }
+
+    let (bytes, Ok(_)) = crate::read(sys::open(path, false), PICTURE_MAX as u64 + 9) else { return Ok(None) };
+    if bytes.len() > PICTURE_MAX + 8 {
+        return Err("its file is over 4 MiB");
+    }
+
+    if is_sixel {
+        let inside = bytes
+            .strip_prefix(b"\x1bP")
+            .and_then(|rest| rest.strip_suffix(b"\x1b\\"))
+            .filter(|inside| Term::is_sixel(inside));
+        let Some(inside) = inside else { return Ok(None) };
+        let (w, h, _) = sixel::size(inside);
+        let (wide, high) = (w.min(avail_w), h.saturating_sub(above_px).min(avail_h));
+        if wide == 0 || high == 0 {
+            return Ok(None);
+        }
+        let decoded = sixel::read(inside, [0, above_px, wide, high])?;
+        if decoded.w == 0 || decoded.h == 0 {
+            return Ok(None);
+        }
+        let rgba = kitty::sixel_to_rgba(&decoded);
+        let seq = kitty::encode_rgba(decoded.w, decoded.h, &rgba, None, PICTURE_MAX)?;
+        return Ok((!seq.is_empty()).then_some((seq, decoded.w.div_ceil(*cell_w), decoded.h.div_ceil(*cell_h))));
+    }
+
+    if is_png {
+        if *kitty_out {
+            let Some((w, h)) = png::dimensions(&bytes) else { return Ok(None) };
+            let (w, h) = (w as usize, h as usize);
+            let native =
+                *laid_w > 0 && *laid_h > 0 && *total_cols == w.div_ceil(*laid_w) && *total_rows == h.div_ceil(*laid_h);
+            if native {
+                let (wide, high) = (w.min(avail_w), h.saturating_sub(above_px).min(avail_h));
+                if wide == 0 || high == 0 {
+                    return Ok(None);
+                }
+                let crop = (above_px != 0 || wide != w || high != h).then_some([0, above_px, wide, high]);
+                let seq = kitty::encode_png(&bytes, crop, None, PICTURE_MAX)?;
+                return Ok((!seq.is_empty()).then_some((seq, wide.div_ceil(*cell_w), high.div_ceil(*cell_h))));
+            }
+            let vis_cols = (*total_cols).min(*beside);
+            let vis_rows = total_rows.saturating_sub(*off_rows).min(*below);
+            if vis_cols == 0 || vis_rows == 0 || *total_cols == 0 || *total_rows == 0 {
+                return Ok(None);
+            }
+            let crop = if *off_rows == 0 && vis_cols == *total_cols && vis_rows == *total_rows {
+                None
+            } else {
+                let sy = (h.saturating_mul(*off_rows)) / *total_rows;
+                let sw = ((w.saturating_mul(vis_cols)) / *total_cols).max(1).min(w);
+                let sh = ((h.saturating_mul(vis_rows)) / *total_rows).max(1).min(h.saturating_sub(sy));
+                Some([0, sy, sw, sh])
+            };
+            let seq = kitty::encode_png(&bytes, crop, Some((vis_cols, vis_rows)), PICTURE_MAX)?;
+            return Ok((!seq.is_empty()).then_some((seq, vis_cols, vis_rows)));
+        }
+        let (w, h, rgba) = png::decode(&bytes, sixel::PIXELS_MAX)?;
+        let (w, h) = (w as usize, h as usize);
+        let (wide, high) = (w.min(avail_w), h.saturating_sub(above_px).min(avail_h));
+        if wide == 0 || high == 0 {
+            return Ok(None);
+        }
+        let sixel = kitty::rgba_to_sixel(w, h, &rgba, [0, above_px, wide, high], PICTURE_MAX)?;
+        return Ok((!sixel.is_empty()).then_some((
+            format!("\x1bP{sixel}\x1b\\"),
+            wide.div_ceil(*cell_w),
+            high.div_ceil(*cell_h),
+        )));
+    }
+
+    Ok(None)
+}
+
 /// What a frame is drawn from, other than the terminal's size and the workspace (another one
 /// forgets it): the layout and what is wrong with it, the message, what the terminal is like and
 /// whether its window has the keys, each tile's `generation` file (as `Pane::seen`: a holder writes
 /// it anew last in each round of writing, after every file it changed) and whether its holder lives,
 /// the focused pane's `clipboard` file, and each picture's file.
-type From = (String, Option<String>, String, (bool, bool, u8, bool, (u16, u16)), Vec<(Stamp, bool)>, Stamp, Vec<Stamp>);
+type From =
+    (String, Option<String>, String, (bool, bool, bool, u8, bool, (u16, u16)), Vec<(Stamp, bool)>, Stamp, Vec<Stamp>);
 
 /// What the viewer knows of a pane: its last screen, read from the file.
 #[derive(Default)]
@@ -102,8 +204,8 @@ struct Pane {
     state: String,
     /// The addresses of the links on the screen: a cell's `link` less one is its place here.
     addresses: Vec<String>,
-    /// Pictures on the screen: file, row, column, and how many rows of its pixels are above the screen.
-    pictures: Vec<(String, [usize; 3])>,
+    /// Pictures on the screen: file, `[row, col, off_rows, total_cols, total_rows, laid_cell_w, laid_cell_h]`.
+    pictures: Vec<(String, [usize; 7])>,
     /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
     asked: (u32, usize, usize, (u16, u16)),
     /// The title its program set (the `title` file), without control characters.
@@ -148,6 +250,8 @@ struct View {
     message: String,
     /// Whether the terminal said it draws sixel pictures.
     sixel: bool,
+    /// Whether the terminal said it draws Kitty graphics protocol pictures.
+    kitty: bool,
     /// The kitty keyboard flags the terminal takes, of those fux passes on.
     keyboard: u8,
     /// The addresses of the links of the last frame: a cell's `link` in `front` less one is its
@@ -170,10 +274,9 @@ struct View {
     colours: Option<(Instant, String)>,
     /// The pictures on the terminal now.
     drawn: Vec<Drawn>,
-    /// What the last frame had of each picture of its tiles, by its part: the sixel to draw (the
-    /// picture's own if all of it is in the tile, else what was cut out of it) and how many
-    /// pixels wide and high that is; or nothing, if nothing of it is drawn.
-    parts: Vec<(Part, Sixel)>,
+    /// What the last frame had of each picture of its tiles, by its render key: the escape
+    /// sequence to draw and how many columns and rows it covers; or nothing, if nothing is drawn.
+    parts: Vec<(RenderKey, Rendered)>,
     cursor: String,
     /// The colour this viewer gave its terminal's cursor, if any: the focused pane's own.
     cursor_colour: Option<[u8; 3]>,
@@ -254,6 +357,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         menu: None,
         message: String::new(),
         sixel: false,
+        kitty: false,
         parts: Vec::new(),
         keyboard: 0,
         links: Vec::new(),
@@ -286,12 +390,16 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // (First a link is closed: whatever ran before may have left one open, and no cell here is part of it.)
     const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[2J\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
     let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
-    view.write(START.to_string() + &asked + "\x1b[c");
+    // Query Kitty graphics support before DA1 (the Kitty graphics protocol standard detection sequence).
+    view.write(START.to_string() + &asked + "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
     let result = view.run(&ctl, &wrote);
     // The keys leave with the viewer: a key that is down in a pane is let go there.
     view.leave(None);
     // The pane that was told it has the keys is told that it has them no more.
     view.tell(None);
+    if view.kitty {
+        view.write("\x1b_Ga=d,d=A,q=2\x1b\\".into());
+    }
     if view.joins == Some(true) {
         view.write("\x1b[?2027l".into());
     }
@@ -469,6 +577,11 @@ impl View {
                     self.told();
                 }
                 ("answer", answer) => self.colour(answer),
+                ("graphics", reply) => {
+                    if reply == "Gi=31;OK" {
+                        self.kitty = true;
+                    }
+                }
                 // The terminal takes the kitty keyboard protocol, and these of the flags it was asked for.
                 ("keyboard", flags) => self.keyboard = flags.parse::<u8>().unwrap_or(0) & KEYS,
                 // The window's own focus: for the pane that has the keys, if it asked to be told.
@@ -876,7 +989,7 @@ impl View {
             .collect();
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
         let clipboard = clipboard.map(stamp);
-        let terminal = (self.sixel, self.joins.is_some(), self.keyboard, self.window, cell_size);
+        let terminal = (self.sixel, self.kitty, self.joins.is_some(), self.keyboard, self.window, cell_size);
         let picture = |file: PathBuf| fs::metadata(file).ok().map(stamp);
         let known = tiles.iter().filter_map(|(name, _)| Some((name, self.panes.get(name)?)));
         let known = known.flat_map(|(name, pane)| pane.pictures.iter().map(move |(file, _)| (name, file)));
@@ -1011,7 +1124,7 @@ impl View {
                     keys = pane.screen.keys() & self.keyboard;
                 }
             }
-            for (file, [row, col, above]) in &pane.pictures {
+            for (file, [row, col, off_rows, total_cols, total_rows, laid_w, laid_h]) in &pane.pictures {
                 // The cells the tile has for it, from its corner on, and what they are in pixels
                 // of this terminal's cells: what the pane counted its cells from is not asked.
                 // None is drawn on the terminal's last row: a terminal may put the cursor under a
@@ -1019,16 +1132,26 @@ impl View {
                 let below = body.h.min(h.saturating_sub(body.y + 1)).saturating_sub(*row);
                 let (beside, cell) =
                     (body.w.saturating_sub(*col), (usize::from(cell_size.0), usize::from(cell_size.1)));
-                if !self.sixel || !file.ends_with(".sixel") || beside == 0 || below == 0 {
+                let supported = file.ends_with(".sixel") || file.ends_with(".png");
+                if !(self.kitty || self.sixel) || !supported || beside == 0 || below == 0 {
                     continue;
                 }
+                // Prefer the picture's native protocol when the outer terminal supports both;
+                // transcode only when the outer terminal supports only the other protocol.
+                let use_kitty = if file.ends_with(".png") { self.kitty } else { self.kitty && !self.sixel };
                 let path = pane_directory.join(file);
-                let key: Part = (path.clone(), picture(path), [*above, beside * cell.0, below * cell.1]);
+                let key: RenderKey = (
+                    path.clone(),
+                    picture(path),
+                    use_kitty,
+                    [*off_rows, *total_cols, *total_rows, *laid_w, *laid_h],
+                    [beside, below, cell.0, cell.1],
+                );
                 // A part of this file made before is drawn again as it was made then, and one
                 // refused is not looked at again. What is refused is said in the corner, each once.
                 let known = self.parts.iter().position(|(known, _)| *known == key);
-                let mut part = known.map_or_else(|| part(&key), |known| Ok(self.parts.swap_remove(known).1));
-                bytes += part.as_ref().ok().and_then(Option::as_ref).map_or(0, |(sixel, ..)| sixel.len());
+                let mut part = known.map_or_else(|| render_picture(&key), |known| Ok(self.parts.swap_remove(known).1));
+                bytes += part.as_ref().ok().and_then(Option::as_ref).map_or(0, |(seq, ..)| seq.len());
                 if bytes > FRAME_PICTURES_MAX && part.as_ref().is_ok_and(Option::is_some) {
                     part = Err("the pictures on the terminal are over 16 MiB together");
                 }
@@ -1036,9 +1159,8 @@ impl View {
                     refused.push(format!("{name}: a picture is not drawn: {why}"));
                 }
                 let part = part.ok().flatten();
-                if let Some((_, wide, high)) = &part {
-                    let cells = (wide.div_ceil(cell.0.max(1)), high.div_ceil(cell.1.max(1)));
-                    pictures.push((key.clone(), body.x + col, body.y + row, cells.0, cells.1));
+                if let Some((_, cols, rows)) = &part {
+                    pictures.push((key.clone(), body.x + col, body.y + row, *cols, *rows));
                 }
                 parts.push((key, part));
             }
@@ -1274,9 +1396,12 @@ impl View {
         link(&mut out, 0);
         self.links = links;
         if redraw {
+            if self.kitty && (self.drawn.iter().any(|d| d.0.2) || pictures.iter().any(|p| p.0.2)) {
+                out.push_str("\x1b_Ga=d,d=A,q=2\x1b\\");
+            }
             for (key, x, y, ..) in &pictures {
-                if let Some((_, Some((sixel, ..)))) = self.parts.iter().find(|(known, _)| known == key) {
-                    out.push_str(&format!("\x1b[{};{}H\x1bP{sixel}\x1b\\", y + 1, x + 1));
+                if let Some((_, Some((seq, ..)))) = self.parts.iter().find(|(known, _)| known == key) {
+                    out.push_str(&format!("\x1b[{};{}H{seq}", y + 1, x + 1));
                 }
             }
             self.drawn = pictures;
@@ -1419,10 +1544,18 @@ impl Pane {
             let Some(name) = words.next().filter(|name| is_name(name)) else { continue };
             let mut cell = || words.next()?.parse::<i16>().ok().filter(|n| usize::from(n.unsigned_abs()) <= SIZE_MAX);
             let (Some(row), Some(col @ 0..)) = (cell(), cell()) else { continue };
-            let high = words.nth(3).and_then(|high| high.parse().ok()).filter(|high| (1..=100).contains(high));
-            let Some(high) = high.or((row >= 0).then_some(0)) else { continue };
-            let above = usize::from(row.min(0).unsigned_abs()) * high;
-            self.pictures.push((name.into(), [row.max(0) as usize, col as usize, above]));
+            let total_cols =
+                words.next().and_then(|n| n.parse().ok()).filter(|n| (1..=SIZE_MAX).contains(n)).unwrap_or(0);
+            let total_rows =
+                words.next().and_then(|n| n.parse().ok()).filter(|n| (1..=SIZE_MAX).contains(n)).unwrap_or(0);
+            let laid_w = words.next().and_then(|n| n.parse().ok()).filter(|n| (1..=100).contains(n)).unwrap_or(0);
+            let laid_h = words.next().and_then(|n| n.parse().ok()).filter(|n| (1..=100).contains(n));
+            let Some(laid_h) = laid_h.or((row >= 0).then_some(0)) else { continue };
+            let off_rows = usize::from(row.min(0).unsigned_abs());
+            self.pictures.push((
+                name.into(),
+                [row.max(0) as usize, col as usize, off_rows, total_cols, total_rows, laid_w, laid_h],
+            ));
         }
         // The links (`links`: line, cells into it, how many cells, address) are put on the cells.
         // `lines` says which line each row is of (the first row's, then the rows that go on); a

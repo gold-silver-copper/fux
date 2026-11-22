@@ -201,6 +201,39 @@ fn a_picture_is_passed_on_unread_only_if_its_own_pixels_are_square_and_all_in_it
     std::fs::remove_file(&file).unwrap();
 }
 
+#[test]
+fn render_picture_bridges_sixel_and_kitty_both_ways() {
+    let dir = std::env::temp_dir();
+    let pid = std::process::id();
+    let six_path = dir.join(format!("fux-bridge-{pid}.sixel"));
+    let png_path = dir.join(format!("fux-bridge-{pid}.png"));
+    std::fs::write(&six_path, "\x1bPq\"1;1;20;20#1;2;100;0;0!20~-!20~-!20~\x1b\\").unwrap();
+    let rgba = [0u8, 255, 0, 255].repeat(20 * 20);
+    let png_bytes = crate::term::png::encode_rgba(20, 20, &rgba, 65536).unwrap();
+    std::fs::write(&png_path, &png_bytes).unwrap();
+
+    // Sixel file rendered for Kitty outer terminal -> Kitty f=32 RGBA escape sequence.
+    let key = (six_path.clone(), None, true, [0, 2, 1, 10, 20], [10, 10, 10, 20]);
+    let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("sixel->kitty");
+    assert!(seq.starts_with("\x1b_Ga=T,f=32,s=20,v=20,C=1,q=2;") && seq.ends_with("\x1b\\"));
+    assert_eq!((cols, rows), (2, 1));
+
+    // PNG file rendered for Kitty outer terminal (explicitly scaled c=5,r=3) -> Kitty f=100 with c=5,r=3.
+    let key = (png_path.clone(), None, true, [0, 5, 3, 10, 20], [10, 10, 10, 20]);
+    let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("png->kitty scaled");
+    assert!(seq.starts_with("\x1b_Ga=T,f=100,C=1,q=2,c=5,r=3;") && seq.ends_with("\x1b\\"));
+    assert_eq!((cols, rows), (5, 3));
+
+    // PNG file rendered for sixel-only outer terminal -> sixel escape sequence.
+    let key = (png_path.clone(), None, false, [0, 2, 1, 10, 20], [10, 10, 10, 20]);
+    let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("png->sixel");
+    assert!(seq.starts_with("\x1bP") && seq.ends_with("\x1b\\"));
+    assert_eq!((cols, rows), (2, 1));
+
+    let _ = std::fs::remove_file(&six_path);
+    let _ = std::fs::remove_file(&png_path);
+}
+
 /// A sixel picture written from a rule (the colour of each pixel, or none), plainly: for each
 /// band each colour's row, every run with its count. And its pixels, as the rule gives them.
 
