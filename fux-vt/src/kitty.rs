@@ -1,0 +1,1298 @@
+//! Kitty terminal graphics protocol: APC command parsing, image storage,
+//! chunked direct transmission, placement/deletion, and Kitty/sixel pixel encoders.
+
+use std::fmt::Write as _;
+
+use crate::sixel::{self, Colour, Part};
+use crate::{PICTURE_MAX, PICTURES_MAX, Picture, PictureFormat, SIZE_MAX, png};
+
+const STORED_IMAGES_MAX: usize = 16;
+const STORED_BYTES_MAX: usize = 16 << 20;
+const PIXELS_MAX: usize = sixel::PIXELS_MAX;
+const CHUNK_RAW_BYTES: usize = 3072; // 3072 raw bytes == 4096 base64 characters
+
+const B64_ENC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Decodes RFC 4648 base64 bytes, failing if invalid or if decoded size exceeds `max_out`.
+pub fn decode_base64(input: &[u8], max_out: usize) -> Result<Vec<u8>, &'static str> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::with_capacity((input.len() / 4).saturating_mul(3).min(max_out));
+    let mut buf = 0u32;
+    let mut bits = 0u8;
+    let mut pad = 0u8;
+    for &b in input {
+        if b == b'=' {
+            pad += 1;
+            if pad > 2 {
+                return Err("invalid base64 padding");
+            }
+            continue;
+        }
+        if pad > 0 {
+            return Err("data after base64 padding");
+        }
+        let val = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err("invalid base64 byte"),
+        };
+        buf = (buf << 6) | u32::from(val);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            if out.len() >= max_out {
+                return Err("decoded payload exceeds limit");
+            }
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    if bits == 6 || (pad == 1 && bits != 2) || (pad == 2 && bits != 4) {
+        return Err("truncated base64 payload");
+    }
+    Ok(out)
+}
+
+/// Appends RFC 4648 base64 encoding of `input` to `out`.
+pub fn encode_base64(input: &[u8], out: &mut String) {
+    let (chunks, rem) = input.as_chunks::<3>();
+    for &[a, b, d] in chunks {
+        let n = (u32::from(a) << 16) | (u32::from(b) << 8) | u32::from(d);
+        for shift in [18, 12, 6, 0] {
+            if let Some(&ch) = B64_ENC.get(((n >> shift) & 63) as usize) {
+                out.push(char::from(ch));
+            }
+        }
+    }
+    match rem {
+        [a] => {
+            let n = u32::from(*a) << 16;
+            for shift in [18, 12] {
+                if let Some(&ch) = B64_ENC.get(((n >> shift) & 63) as usize) {
+                    out.push(char::from(ch));
+                }
+            }
+            out.push_str("==");
+        }
+        [a, b] => {
+            let n = (u32::from(*a) << 16) | (u32::from(*b) << 8);
+            for shift in [18, 12, 6] {
+                if let Some(&ch) = B64_ENC.get(((n >> shift) & 63) as usize) {
+                    out.push(char::from(ch));
+                }
+            }
+            out.push('=');
+        }
+        _ => {}
+    }
+}
+
+/// Encodes a PNG byte slice into chunked Kitty graphics APC sequences (`a=T,f=100,C=1,q=2`).
+pub fn encode_png(
+    png_bytes: &[u8],
+    crop: Option<[usize; 4]>,
+    cells: Option<(usize, usize)>,
+    max: usize,
+) -> Result<String, &'static str> {
+    let mut header = String::from("a=T,f=100,C=1,q=2");
+    if let Some([x, y, w, h]) = crop {
+        let _ = write!(header, ",x={x},y={y},w={w},h={h}");
+    }
+    if let Some((c, r)) = cells {
+        if c > 0 {
+            let _ = write!(header, ",c={c}");
+        }
+        if r > 0 {
+            let _ = write!(header, ",r={r}");
+        }
+    }
+    encode_chunks(&header, png_bytes, max)
+}
+
+/// Encodes raw 32-bit RGBA pixels into chunked Kitty graphics APC sequences (`a=T,f=32,C=1,q=2`).
+pub fn encode_rgba(
+    w: usize,
+    h: usize,
+    rgba: &[u8],
+    cells: Option<(usize, usize)>,
+    max: usize,
+) -> Result<String, &'static str> {
+    if w == 0 || h == 0 || rgba.len() != w.saturating_mul(h).saturating_mul(4) {
+        return Err("invalid RGBA dimensions");
+    }
+    let mut header = format!("a=T,f=32,s={w},v={h},C=1,q=2");
+    if let Some((c, r)) = cells {
+        if c > 0 {
+            let _ = write!(header, ",c={c}");
+        }
+        if r > 0 {
+            let _ = write!(header, ",r={r}");
+        }
+    }
+    encode_chunks(&header, rgba, max)
+}
+
+fn encode_chunks(header: &str, payload: &[u8], max: usize) -> Result<String, &'static str> {
+    if payload.is_empty() {
+        return Ok(String::new());
+    }
+    let b64_len = payload.len().div_ceil(3).saturating_mul(4);
+    let n_chunks = payload.len().div_ceil(CHUNK_RAW_BYTES);
+    let est = b64_len + header.len() + n_chunks * 16;
+    if est > max {
+        return Err("its part in the tile is over the picture byte limit");
+    }
+    let mut out = String::with_capacity(est);
+    let mut chunks = payload.chunks(CHUNK_RAW_BYTES).enumerate().peekable();
+    while let Some((idx, chunk)) = chunks.next() {
+        let more = chunks.peek().is_some();
+        out.push_str("\x1b_G");
+        if idx == 0 {
+            out.push_str(header);
+            if more {
+                out.push_str(",m=1");
+            }
+        } else if more {
+            out.push_str("m=1");
+        } else {
+            out.push_str("m=0");
+        }
+        out.push(';');
+        encode_base64(chunk, &mut out);
+        out.push_str("\x1b\\");
+        if out.len() > max {
+            return Err("its part in the tile is over the picture byte limit");
+        }
+    }
+    Ok(out)
+}
+
+/// Converts a decoded `sixel::Part` into 32-bit RGBA (`part.w * part.h * 4` bytes).
+/// Unpainted pixels (pen 0) become transparent (`[0, 0, 0, 0]`).
+pub fn sixel_to_rgba(part: &Part) -> Vec<u8> {
+    let mut rgba = vec![0u8; part.w.saturating_mul(part.h).saturating_mul(4)];
+    let palette: Vec<[u8; 4]> = part
+        .colours
+        .iter()
+        .map(|c| match *c {
+            Colour::Rgb([r, g, b]) => [
+                ((u16::from(r) * 255 + 50) / 100) as u8,
+                ((u16::from(g) * 255 + 50) / 100) as u8,
+                ((u16::from(b) * 255 + 50) / 100) as u8,
+                255,
+            ],
+            Colour::Register(n) => {
+                let [r, g, b] = xterm_256(n);
+                [r, g, b, 255]
+            }
+        })
+        .collect();
+    for y in 0..part.h {
+        let row_start = y.saturating_mul(part.stride);
+        for x in 0..part.w {
+            let pen = part.pixels.get(row_start + x).copied().unwrap_or(0);
+            if pen == 0 {
+                continue;
+            }
+            if let Some(color) = palette.get(usize::from(pen - 1)) {
+                let dst = (y * part.w + x) * 4;
+                if let Some(slot) = rgba.get_mut(dst..dst + 4) {
+                    slot.copy_from_slice(color);
+                }
+            }
+        }
+    }
+    rgba
+}
+
+/// Crops `[left, top, wide, high]` from an RGBA buffer and encodes it as sixel (quantized to the 6x6x6 RGB cube).
+pub fn rgba_to_sixel(
+    w: usize,
+    h: usize,
+    rgba: &[u8],
+    [left, top, wide, high]: [usize; 4],
+    max: usize,
+) -> Result<String, &'static str> {
+    let cw = w.saturating_sub(left).min(wide);
+    let ch = h.saturating_sub(top).min(high);
+    if cw == 0 || ch == 0 {
+        return Ok(String::new());
+    }
+    let area =
+        cw.checked_mul(ch).filter(|a| *a <= PIXELS_MAX).ok_or("its part in the tile is over 8 million pixels")?;
+    let mut pixels = vec![0u16; area];
+    let mut colours: Vec<Colour> = Vec::new();
+    let mut map = [0u16; 216];
+    for y in 0..ch {
+        for x in 0..cw {
+            let src = ((top + y) * w + (left + x)) * 4;
+            let Some([r, g, b, a]) = rgba.get(src..src + 4).and_then(|s| <[u8; 4]>::try_from(s).ok()) else {
+                continue;
+            };
+            if a < 128 {
+                continue;
+            }
+            let ri = ((u16::from(r) * 5 + 127) / 255) as usize;
+            let gi = ((u16::from(g) * 5 + 127) / 255) as usize;
+            let bi = ((u16::from(b) * 5 + 127) / 255) as usize;
+            let idx = ri * 36 + gi * 6 + bi;
+            let Some(slot) = map.get_mut(idx) else { continue };
+            if *slot == 0 {
+                let pct = |i: usize| (i * 20) as u8;
+                colours.push(Colour::Rgb([pct(ri), pct(gi), pct(bi)]));
+                *slot = colours.len() as u16;
+            }
+            if let Some(dst) = pixels.get_mut(y * cw + x) {
+                *dst = *slot;
+            }
+        }
+    }
+    Part { w: cw, h: ch, stride: cw, colours, pixels }.write(max)
+}
+
+fn xterm_256(n: u8) -> [u8; 3] {
+    const ANSI16: [[u8; 3]; 16] = [
+        [0, 0, 0],
+        [205, 0, 0],
+        [0, 205, 0],
+        [205, 205, 0],
+        [0, 0, 238],
+        [205, 0, 205],
+        [0, 205, 205],
+        [229, 229, 229],
+        [127, 127, 127],
+        [255, 0, 0],
+        [0, 255, 0],
+        [255, 255, 0],
+        [92, 92, 255],
+        [255, 0, 255],
+        [0, 255, 255],
+        [255, 255, 255],
+    ];
+    match n {
+        0..=15 => ANSI16.get(usize::from(n)).copied().unwrap_or([0, 0, 0]),
+        16..=231 => {
+            let v = n - 16;
+            let c = |i: u8| if i == 0 { 0 } else { 55 + i * 40 };
+            [c(v / 36), c((v / 6) % 6), c(v % 6)]
+        }
+        232..=255 => {
+            let g = 8 + (n - 232) * 10;
+            [g, g, g]
+        }
+    }
+}
+
+// ---- Kitty APC command parser & screen storage --------------------------------
+
+/// Dense key-value table for single-ASCII-letter Kitty control keys (`a`..`z`, `A`..`Z`).
+#[derive(Clone, Copy)]
+struct Kv {
+    values: [u32; 52],
+    present: u64,
+}
+
+impl Default for Kv {
+    fn default() -> Self {
+        Self { values: [0; 52], present: 0 }
+    }
+}
+
+impl Kv {
+    fn index(key: u8) -> Option<usize> {
+        match key {
+            b'a'..=b'z' => Some(usize::from(key - b'a')),
+            b'A'..=b'Z' => Some(26 + usize::from(key - b'A')),
+            _ => None,
+        }
+    }
+
+    fn get(&self, key: u8) -> Option<u32> {
+        let idx = Self::index(key)?;
+        (self.present & (1u64 << idx) != 0).then(|| self.values.get(idx).copied().unwrap_or(0))
+    }
+
+    fn put(&mut self, key: u8, val: u32) {
+        if let Some(idx) = Self::index(key)
+            && let Some(slot) = self.values.get_mut(idx)
+        {
+            *slot = val;
+            self.present |= 1u64 << idx;
+        }
+    }
+
+    fn parse(control: &[u8]) -> Result<Self, &'static str> {
+        let mut kv = Self::default();
+        if control.is_empty() {
+            return Ok(kv);
+        }
+        for pair in control.split(|&b| b == b',') {
+            let eq = pair.iter().position(|&b| b == b'=').ok_or("EINVAL: malformed control key")?;
+            let key_bytes = pair.get(..eq).ok_or("EINVAL: malformed control key")?;
+            let val_bytes = pair.get(eq + 1..).ok_or("EINVAL: malformed control value")?;
+            if val_bytes.is_empty() {
+                return Err("EINVAL: empty control value");
+            }
+            if key_bytes.len() != 1 {
+                continue;
+            }
+            let key = *key_bytes.first().ok_or("EINVAL: malformed control key")?;
+            if Self::index(key).is_none() {
+                continue;
+            }
+            let val = if let [c] = val_bytes
+                && !c.is_ascii_digit()
+            {
+                u32::from(*c)
+            } else {
+                let s = std::str::from_utf8(val_bytes).map_err(|_| "EINVAL: non-ascii control value")?;
+                match key {
+                    b'z' | b'H' | b'V' => {
+                        s.parse::<i32>().map_err(|_| "EINVAL: invalid signed integer")?.cast_unsigned()
+                    }
+                    _ => s.parse::<u32>().map_err(|_| "EINVAL: invalid integer")?,
+                }
+            };
+            kv.put(key, val);
+        }
+        Ok(kv)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quiet {
+    No,
+    Ok,
+    Failures,
+}
+
+impl Quiet {
+    fn from_val(v: Option<u32>) -> Self {
+        match v {
+            None | Some(0) => Self::No,
+            Some(1) => Self::Ok,
+            Some(_) => Self::Failures,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Rgb,
+    Rgba,
+    Png,
+    Unsupported,
+}
+
+impl Format {
+    fn from_val(v: Option<u32>) -> Self {
+        match v {
+            None | Some(32) => Self::Rgba,
+            Some(24) => Self::Rgb,
+            Some(100) => Self::Png,
+            Some(_) => Self::Unsupported,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Medium {
+    Direct,
+    Unsupported,
+}
+
+impl Medium {
+    fn from_val(v: Option<u32>) -> Self {
+        match v {
+            None => Self::Direct,
+            Some(x) if x == u32::from(b'd') => Self::Direct,
+            Some(_) => Self::Unsupported,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Compression {
+    None,
+    Zlib,
+    Unsupported,
+}
+
+impl Compression {
+    fn from_val(v: Option<u32>) -> Self {
+        match v {
+            None => Self::None,
+            Some(x) if x == u32::from(b'z') => Self::Zlib,
+            Some(_) => Self::Unsupported,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct DisplaySpec {
+    image_id: u32,
+    image_number: u32,
+    placement_id: u32,
+    src_x: u32,
+    src_y: u32,
+    src_w: u32,
+    src_h: u32,
+    cols: u32,
+    rows: u32,
+    move_cursor: bool,
+    z: i32,
+}
+
+impl DisplaySpec {
+    fn from_kv(kv: &Kv) -> Self {
+        Self {
+            image_id: kv.get(b'i').unwrap_or(0),
+            image_number: kv.get(b'I').unwrap_or(0),
+            placement_id: kv.get(b'p').unwrap_or(0),
+            src_x: kv.get(b'x').unwrap_or(0),
+            src_y: kv.get(b'y').unwrap_or(0),
+            src_w: kv.get(b'w').unwrap_or(0),
+            src_h: kv.get(b'h').unwrap_or(0),
+            cols: kv.get(b'c').unwrap_or(0),
+            rows: kv.get(b'r').unwrap_or(0),
+            move_cursor: kv.get(b'C') != Some(1),
+            z: kv.get(b'z').map_or(0, u32::cast_signed),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Response {
+    id: u32,
+    number: u32,
+    placement_id: u32,
+    message: &'static str,
+}
+
+impl Response {
+    fn ok(id: u32, number: u32, placement_id: u32) -> Self {
+        Self { id, number, placement_id, message: "OK" }
+    }
+
+    fn err(id: u32, number: u32, placement_id: u32, message: &'static str) -> Self {
+        Self { id, number, placement_id, message }
+    }
+
+    fn encode(self, quiet: Quiet) -> Option<String> {
+        let is_ok = self.message == "OK";
+        match quiet {
+            Quiet::Failures => return None,
+            Quiet::Ok if is_ok => return None,
+            _ => {}
+        }
+        if self.id == 0 && self.number == 0 {
+            return None;
+        }
+        let mut out = String::from("\x1b_G");
+        let mut prior = false;
+        if self.id > 0 {
+            let _ = write!(out, "i={}", self.id);
+            prior = true;
+        }
+        if self.number > 0 {
+            if prior {
+                out.push(',');
+            }
+            let _ = write!(out, "I={}", self.number);
+            prior = true;
+        }
+        if self.placement_id > 0 {
+            if prior {
+                out.push(',');
+            }
+            let _ = write!(out, "p={}", self.placement_id);
+        }
+        let _ = write!(out, ";{}\x1b\\", self.message);
+        Some(out)
+    }
+}
+
+struct StoredImage {
+    id: u32,
+    number: u32,
+    w: u32,
+    h: u32,
+    rgba: Vec<u8>,
+    png: Option<Vec<u8>>,
+}
+
+impl StoredImage {
+    fn byte_len(&self) -> usize {
+        self.rgba.len() + self.png.as_ref().map_or(0, Vec::len)
+    }
+}
+
+struct Loading {
+    id: u32,
+    number: u32,
+    implicit_id: bool,
+    replaces: Option<u32>,
+    format: Format,
+    compression: Compression,
+    width: u32,
+    height: u32,
+    display: Option<DisplaySpec>,
+    quiet: Quiet,
+    placement_id: u32,
+    data: Vec<u8>,
+}
+
+/// Cursor movement requested after placing a Kitty image (when `C=0`).
+pub(crate) struct CursorAdvance {
+    pub linefeeds: usize,
+    pub target_col: usize,
+}
+
+/// Result of executing one Kitty graphics APC command.
+#[derive(Default)]
+pub(crate) struct Outcome {
+    pub reply: Option<String>,
+    pub cursor: Option<CursorAdvance>,
+    pub refused: Option<&'static str>,
+}
+
+/// Per-screen Kitty graphics image store and chunked-upload state.
+pub(crate) struct Storage {
+    images: Vec<StoredImage>,
+    loading: Option<Loading>,
+    next_id: u32,
+}
+
+impl Default for Storage {
+    fn default() -> Self {
+        Self { images: Vec::new(), loading: None, next_id: 1 << 31 }
+    }
+}
+
+impl Storage {
+    pub(crate) fn clear(&mut self) {
+        self.images.clear();
+        self.loading = None;
+    }
+
+    pub(crate) fn execute(
+        &mut self,
+        data: &[u8],
+        cell: (usize, usize),
+        screen_cols: usize,
+        cursor: (usize, usize),
+        pictures: &mut Vec<Picture>,
+        next_picture: &mut u32,
+    ) -> Outcome {
+        let (control, payload) = match data.iter().position(|&b| b == b';') {
+            Some(sep) => (data.get(..sep).unwrap_or_default(), data.get(sep + 1..).unwrap_or_default()),
+            None => (data, &[][..]),
+        };
+        let kv = match Kv::parse(control) {
+            Ok(kv) => kv,
+            Err(msg) => {
+                return Outcome { reply: Response::err(0, 0, 0, msg).encode(Quiet::No), ..Outcome::default() };
+            }
+        };
+        let mut quiet = Quiet::from_val(kv.get(b'q'));
+        let id = kv.get(b'i').unwrap_or(0);
+        let number = kv.get(b'I').unwrap_or(0);
+        let placement_id = kv.get(b'p').unwrap_or(0);
+
+        if id > 0 && number > 0 {
+            return Outcome {
+                reply: Response::err(id, number, placement_id, "EINVAL: image ID and number are mutually exclusive")
+                    .encode(quiet),
+                ..Outcome::default()
+            };
+        }
+
+        let action = kv.get(b'a').and_then(|v| u8::try_from(v).ok()).unwrap_or(b't');
+        match action {
+            b'q' => self.query(&kv, payload, quiet),
+            b't' | b'T' => {
+                // Non-direct transmission abandons any in-progress chunked load.
+                if self.loading.is_some() && Medium::from_val(kv.get(b't')) != Medium::Direct {
+                    self.abandon_load(pictures);
+                }
+                // Continuation chunks inherit `q` from the initial chunk unless `q >= 1` is set.
+                if let Some(loading) = self.loading.as_mut() {
+                    match quiet {
+                        Quiet::No => quiet = loading.quiet,
+                        Quiet::Ok | Quiet::Failures => loading.quiet = quiet,
+                    }
+                }
+                self.transmit(&kv, action == b'T', payload, quiet, cell, screen_cols, cursor, pictures, next_picture)
+            }
+            b'p' => {
+                let spec = DisplaySpec::from_kv(&kv);
+                self.place(&spec, quiet, cell, screen_cols, cursor, pictures, next_picture, false)
+            }
+            b'd' => {
+                self.abandon_load(pictures);
+                self.delete(&kv, cursor, pictures);
+                Outcome::default()
+            }
+            b'f' | b'a' | b'c' => Outcome {
+                reply: Response::err(id, number, placement_id, "ENOTSUPPORTED: animation not supported").encode(quiet),
+                ..Outcome::default()
+            },
+            _ => Outcome {
+                reply: Response::err(id, number, placement_id, "EINVAL: unsupported action").encode(quiet),
+                ..Outcome::default()
+            },
+        }
+    }
+
+    fn query(&self, kv: &Kv, payload: &[u8], quiet: Quiet) -> Outcome {
+        let id = kv.get(b'i').unwrap_or(0);
+        let number = kv.get(b'I').unwrap_or(0);
+        let placement_id = kv.get(b'p').unwrap_or(0);
+        if id == 0 {
+            return Outcome::default();
+        }
+        // Feature query (`e=` key, Kitty 0.50+): report supported non-default keys without loading data.
+        if let Some(feat) = kv.get(b'e').and_then(|v| u8::try_from(v).ok()) {
+            if quiet == Quiet::Ok || quiet == Quiet::Failures {
+                return Outcome::default();
+            }
+            let mut reply = format!("\x1b_Gi={id}");
+            if matches!(feat, b'q' | b't' | b'T' | b'p' | b'd') {
+                let _ = write!(reply, ",e={}", char::from(feat));
+                if matches!(feat, b't' | b'T' | b'q') {
+                    if let Some(f @ (24 | 100)) = kv.get(b'f') {
+                        let _ = write!(reply, ",f={f}");
+                    }
+                    if kv.get(b'o') == Some(u32::from(b'z')) {
+                        reply.push_str(",o=z");
+                    }
+                }
+                if matches!(feat, b'T' | b'p') && kv.get(b'C') == Some(1) {
+                    reply.push_str(",C=1");
+                }
+            }
+            reply.push_str(";OK\x1b\\");
+            return Outcome { reply: Some(reply), ..Outcome::default() };
+        }
+
+        let resp = match decode_image(
+            Format::from_val(kv.get(b'f')),
+            Medium::from_val(kv.get(b't')),
+            Compression::from_val(kv.get(b'o')),
+            kv.get(b's').unwrap_or(0),
+            kv.get(b'v').unwrap_or(0),
+            payload,
+            true,
+        ) {
+            Ok(_) => Response::ok(id, number, placement_id),
+            Err(msg) => Response::err(id, number, placement_id, msg),
+        };
+        Outcome { reply: resp.encode(quiet), ..Outcome::default() }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transmit(
+        &mut self,
+        kv: &Kv,
+        and_display: bool,
+        payload: &[u8],
+        quiet: Quiet,
+        cell: (usize, usize),
+        screen_cols: usize,
+        cursor: (usize, usize),
+        pictures: &mut Vec<Picture>,
+        next_picture: &mut u32,
+    ) -> Outcome {
+        let more = kv.get(b'm') == Some(1);
+        if self.loading.is_some() {
+            let chunk = match decode_base64(payload, PICTURE_MAX) {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    let (id, num, pid) = self.loading.as_ref().map_or((0, 0, 0), |l| (l.id, l.number, l.placement_id));
+                    self.abandon_load(pictures);
+                    return Outcome {
+                        reply: Response::err(id, num, pid, "EINVAL: invalid base64").encode(quiet),
+                        ..Outcome::default()
+                    };
+                }
+            };
+            let overflow =
+                self.loading.as_ref().is_some_and(|l| l.data.len().saturating_add(chunk.len()) > PICTURE_MAX);
+            if overflow {
+                let (id, num, pid) = self.loading.as_ref().map_or((0, 0, 0), |l| (l.id, l.number, l.placement_id));
+                self.abandon_load(pictures);
+                return Outcome {
+                    reply: Response::err(id, num, pid, "ENOMEM: image payload exceeds 4 MiB").encode(quiet),
+                    refused: Some("a kitty picture over 4 MiB was dropped"),
+                    ..Outcome::default()
+                };
+            }
+            if let Some(loading) = self.loading.as_mut() {
+                loading.data.extend_from_slice(&chunk);
+            }
+            if more {
+                return Outcome::default();
+            }
+            let Some(loading) = self.loading.take() else { return Outcome::default() };
+            return self.finish_load(loading, quiet, cell, screen_cols, cursor, pictures, next_picture);
+        }
+
+        // First (or only) chunk of a new transmission.
+        let medium = Medium::from_val(kv.get(b't'));
+        let req_id = kv.get(b'i').unwrap_or(0);
+        let number = kv.get(b'I').unwrap_or(0);
+        let placement_id = kv.get(b'p').unwrap_or(0);
+        if medium != Medium::Direct {
+            return Outcome {
+                reply: Response::err(req_id, number, placement_id, "EINVAL: unsupported medium").encode(quiet),
+                ..Outcome::default()
+            };
+        }
+        let format = Format::from_val(kv.get(b'f'));
+        if format == Format::Unsupported {
+            return Outcome {
+                reply: Response::err(req_id, number, placement_id, "EINVAL: unsupported format").encode(quiet),
+                ..Outcome::default()
+            };
+        }
+        let compression = Compression::from_val(kv.get(b'o'));
+        if compression == Compression::Unsupported {
+            return Outcome {
+                reply: Response::err(req_id, number, placement_id, "EINVAL: unsupported compression").encode(quiet),
+                ..Outcome::default()
+            };
+        }
+        let raw = match decode_base64(payload, PICTURE_MAX) {
+            Ok(raw) => raw,
+            Err(_) => {
+                if req_id > 0 && number == 0 {
+                    self.remove_image_and_placements(req_id, pictures);
+                }
+                return Outcome {
+                    reply: Response::err(req_id, number, placement_id, "EINVAL: invalid base64").encode(quiet),
+                    ..Outcome::default()
+                };
+            }
+        };
+        let (id, implicit_id, replaces) = if req_id > 0 {
+            (req_id, false, Some(req_id))
+        } else if number > 0 {
+            (self.alloc_id(), false, None)
+        } else {
+            (self.alloc_id(), true, None)
+        };
+        let display = and_display.then(|| {
+            let mut spec = DisplaySpec::from_kv(kv);
+            spec.image_id = id;
+            spec.image_number = number;
+            spec
+        });
+        let loading = Loading {
+            id,
+            number,
+            implicit_id,
+            replaces,
+            format,
+            compression,
+            width: kv.get(b's').unwrap_or(0),
+            height: kv.get(b'v').unwrap_or(0),
+            display,
+            quiet,
+            placement_id,
+            data: raw,
+        };
+        if more {
+            self.loading = Some(loading);
+            return Outcome::default();
+        }
+        self.finish_load(loading, quiet, cell, screen_cols, cursor, pictures, next_picture)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_load(
+        &mut self,
+        loading: Loading,
+        quiet: Quiet,
+        cell: (usize, usize),
+        screen_cols: usize,
+        cursor: (usize, usize),
+        pictures: &mut Vec<Picture>,
+        next_picture: &mut u32,
+    ) -> Outcome {
+        let decoded = match decode_image(
+            loading.format,
+            Medium::Direct,
+            loading.compression,
+            loading.width,
+            loading.height,
+            &loading.data,
+            false,
+        ) {
+            Ok(decoded) => decoded,
+            Err(msg) => {
+                if let Some(old_id) = loading.replaces {
+                    self.remove_image_and_placements(old_id, pictures);
+                }
+                return Outcome {
+                    reply: (!loading.implicit_id)
+                        .then(|| Response::err(loading.id, loading.number, loading.placement_id, msg).encode(quiet))
+                        .flatten(),
+                    ..Outcome::default()
+                };
+            }
+        };
+        if let Some(old_id) = loading.replaces {
+            self.remove_image_and_placements(old_id, pictures);
+        }
+        let img = StoredImage {
+            id: loading.id,
+            number: loading.number,
+            w: decoded.w,
+            h: decoded.h,
+            rgba: decoded.rgba,
+            png: decoded.png,
+        };
+        self.store_image(img, pictures);
+
+        if let Some(spec) = loading.display {
+            return self.place(&spec, quiet, cell, screen_cols, cursor, pictures, next_picture, loading.implicit_id);
+        }
+        let reply = (!loading.implicit_id)
+            .then(|| Response::ok(loading.id, loading.number, loading.placement_id).encode(quiet))
+            .flatten();
+        Outcome { reply, ..Outcome::default() }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn place(
+        &mut self,
+        spec: &DisplaySpec,
+        quiet: Quiet,
+        cell: (usize, usize),
+        screen_cols: usize,
+        cursor: (usize, usize),
+        pictures: &mut Vec<Picture>,
+        next_picture: &mut u32,
+        implicit_id: bool,
+    ) -> Outcome {
+        if spec.image_id == 0 && spec.image_number == 0 {
+            return Outcome {
+                reply: Response::err(0, 0, spec.placement_id, "EINVAL: image ID or number required").encode(quiet),
+                ..Outcome::default()
+            };
+        }
+        let img = if spec.image_id > 0 {
+            self.images.iter().find(|img| img.id == spec.image_id)
+        } else {
+            self.images.iter().rev().find(|img| img.number == spec.image_number)
+        };
+        let Some(img) = img else {
+            return Outcome {
+                reply: Response::err(spec.image_id, spec.image_number, spec.placement_id, "ENOENT: image not found")
+                    .encode(quiet),
+                ..Outcome::default()
+            };
+        };
+        let img_id = img.id;
+        let sx = spec.src_x.min(img.w);
+        let sy = spec.src_y.min(img.h);
+        let sw = if spec.src_w > 0 { spec.src_w } else { img.w }.min(img.w - sx);
+        let sh = if spec.src_h > 0 { spec.src_h } else { img.h }.min(img.h - sy);
+        if sw == 0 || sh == 0 {
+            return Outcome {
+                reply: (!implicit_id)
+                    .then(|| {
+                        Response::err(img_id, spec.image_number, spec.placement_id, "EINVAL: empty source rectangle")
+                            .encode(quiet)
+                    })
+                    .flatten(),
+                ..Outcome::default()
+            };
+        }
+        let (cell_w, cell_h) = (cell.0.max(1), cell.1.max(1));
+        let (cols, rows) = grid_size(sw as usize, sh as usize, spec.cols as usize, spec.rows as usize, cell_w, cell_h);
+        if cols == 0 || rows == 0 || cols > SIZE_MAX || rows > SIZE_MAX {
+            return Outcome {
+                reply: (!implicit_id)
+                    .then(|| {
+                        Response::err(img_id, spec.image_number, spec.placement_id, "EINVAL: image too large")
+                            .encode(quiet)
+                    })
+                    .flatten(),
+                refused: Some("a picture over 500 cells wide or high was dropped"),
+                ..Outcome::default()
+            };
+        }
+
+        // Encode PNG for the pane folder: reuse validated original PNG when uncropped, else encode cropped RGBA.
+        let full = sx == 0 && sy == 0 && sw == img.w && sh == img.h;
+        let png_bytes = if full && let Some(orig) = img.png.as_ref().filter(|b| b.len() <= PICTURE_MAX) {
+            Ok(orig.clone())
+        } else if full {
+            png::encode_rgba(img.w, img.h, &img.rgba, PICTURE_MAX)
+        } else {
+            let cropped = crop_rgba(img.w as usize, &img.rgba, sx as usize, sy as usize, sw as usize, sh as usize);
+            png::encode_rgba(sw, sh, &cropped, PICTURE_MAX)
+        };
+        let png_bytes = match png_bytes {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return Outcome {
+                    reply: (!implicit_id)
+                        .then(|| {
+                            Response::err(img_id, spec.image_number, spec.placement_id, "ENOMEM: image exceeds 4 MiB")
+                                .encode(quiet)
+                        })
+                        .flatten(),
+                    refused: Some("a kitty picture over 4 MiB was dropped"),
+                    ..Outcome::default()
+                };
+            }
+        };
+
+        // Explicit placement ID replaces any existing placement with the same (image_id, placement_id).
+        if spec.placement_id > 0 {
+            pictures.retain(|p| !(p.kitty_id == img_id && p.placement_id == spec.placement_id));
+        }
+        let mut refused = None;
+        if pictures.len() >= PICTURES_MAX {
+            pictures.remove(0);
+            refused = Some("a screen keeps 8 pictures: the oldest was dropped for a new one");
+        }
+        let pic_id = *next_picture;
+        *next_picture = next_picture.wrapping_add(1);
+        pictures.push(Picture {
+            id: pic_id,
+            format: PictureFormat::Png,
+            row: cursor.0,
+            col: cursor.1,
+            cols,
+            rows,
+            off: 0,
+            cell,
+            z: spec.z,
+            kitty_id: img_id,
+            placement_id: spec.placement_id,
+            bytes: Some(png_bytes),
+        });
+
+        let cursor_advance = spec.move_cursor.then(|| {
+            let target_x = cursor.1.saturating_add(cols);
+            let wraps = target_x >= screen_cols;
+            let linefeeds = rows.saturating_sub(1).saturating_add(usize::from(wraps));
+            CursorAdvance { linefeeds, target_col: if wraps { 0 } else { target_x } }
+        });
+        let reply =
+            (!implicit_id).then(|| Response::ok(img_id, spec.image_number, spec.placement_id).encode(quiet)).flatten();
+        Outcome { reply, cursor: cursor_advance, refused }
+    }
+
+    fn delete(&mut self, kv: &Kv, cursor: (usize, usize), pictures: &mut Vec<Picture>) {
+        let what = kv.get(b'd').and_then(|v| u8::try_from(v).ok()).unwrap_or(b'a');
+        let free = what.is_ascii_uppercase();
+        let mut touched_ids: Vec<u32> = Vec::new();
+        let intersects = |p: &Picture, row: usize, col: usize| {
+            p.format == PictureFormat::Png
+                && row >= p.row
+                && row < p.row.saturating_add(p.rows)
+                && col >= p.col
+                && col < p.col.saturating_add(p.cols)
+        };
+        match what.to_ascii_lowercase() {
+            b'a' => {
+                pictures.retain(|p| {
+                    if p.format == PictureFormat::Png {
+                        touched_ids.push(p.kitty_id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if free {
+                    self.images.clear();
+                    return;
+                }
+            }
+            b'i' => {
+                let id = kv.get(b'i').unwrap_or(0);
+                let pid = kv.get(b'p').unwrap_or(0);
+                if id == 0 {
+                    return;
+                }
+                pictures.retain(|p| {
+                    let hit = p.format == PictureFormat::Png && p.kitty_id == id && (pid == 0 || p.placement_id == pid);
+                    !hit
+                });
+                if free && !pictures.iter().any(|p| p.format == PictureFormat::Png && p.kitty_id == id) {
+                    self.images.retain(|img| img.id != id);
+                }
+                return;
+            }
+            b'n' => {
+                let num = kv.get(b'I').unwrap_or(0);
+                let pid = kv.get(b'p').unwrap_or(0);
+                if num == 0 {
+                    return;
+                }
+                let Some(id) = self.images.iter().rev().find(|img| img.number == num).map(|img| img.id) else {
+                    return;
+                };
+                pictures.retain(|p| {
+                    !(p.format == PictureFormat::Png && p.kitty_id == id && (pid == 0 || p.placement_id == pid))
+                });
+                if free && !pictures.iter().any(|p| p.format == PictureFormat::Png && p.kitty_id == id) {
+                    self.images.retain(|img| img.id != id);
+                }
+                return;
+            }
+            b'c' => {
+                pictures.retain(|p| {
+                    if intersects(p, cursor.0, cursor.1) {
+                        touched_ids.push(p.kitty_id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            b'p' | b'q' => {
+                let x = kv.get(b'x').unwrap_or(0);
+                let y = kv.get(b'y').unwrap_or(0);
+                if x == 0 || y == 0 {
+                    return;
+                }
+                let (col, row) = ((x - 1) as usize, (y - 1) as usize);
+                let z_filter = what.eq_ignore_ascii_case(&b'q').then(|| kv.get(b'z').map_or(0, u32::cast_signed));
+                pictures.retain(|p| {
+                    let hit = intersects(p, row, col) && z_filter.is_none_or(|z| p.z == z);
+                    if hit {
+                        touched_ids.push(p.kitty_id);
+                    }
+                    !hit
+                });
+            }
+            b'r' => {
+                let first = kv.get(b'x').unwrap_or(0);
+                let last = kv.get(b'y').unwrap_or(0);
+                if first == 0 || first > last {
+                    return;
+                }
+                pictures.retain(|p| {
+                    let hit = p.format == PictureFormat::Png && (first..=last).contains(&p.kitty_id);
+                    !hit
+                });
+                if free {
+                    self.images.retain(|img| !(first..=last).contains(&img.id));
+                }
+                return;
+            }
+            b'x' => {
+                let x = kv.get(b'x').unwrap_or(0);
+                if x == 0 {
+                    return;
+                }
+                let col = (x - 1) as usize;
+                pictures.retain(|p| {
+                    let hit = p.format == PictureFormat::Png && col >= p.col && col < p.col.saturating_add(p.cols);
+                    if hit {
+                        touched_ids.push(p.kitty_id);
+                    }
+                    !hit
+                });
+            }
+            b'y' => {
+                let y = kv.get(b'y').unwrap_or(0);
+                if y == 0 {
+                    return;
+                }
+                let row = (y - 1) as usize;
+                pictures.retain(|p| {
+                    let hit = p.format == PictureFormat::Png && row >= p.row && row < p.row.saturating_add(p.rows);
+                    if hit {
+                        touched_ids.push(p.kitty_id);
+                    }
+                    !hit
+                });
+            }
+            b'z' => {
+                let z = kv.get(b'z').map_or(0, u32::cast_signed);
+                pictures.retain(|p| {
+                    let hit = p.format == PictureFormat::Png && p.z == z;
+                    if hit {
+                        touched_ids.push(p.kitty_id);
+                    }
+                    !hit
+                });
+            }
+            _ => return,
+        }
+        if free {
+            for id in touched_ids {
+                if !pictures.iter().any(|p| p.format == PictureFormat::Png && p.kitty_id == id) {
+                    self.images.retain(|img| img.id != id);
+                }
+            }
+        }
+    }
+
+    fn abandon_load(&mut self, pictures: &mut Vec<Picture>) {
+        if let Some(loading) = self.loading.take()
+            && let Some(old_id) = loading.replaces
+        {
+            self.remove_image_and_placements(old_id, pictures);
+        }
+    }
+
+    fn remove_image_and_placements(&mut self, id: u32, pictures: &mut Vec<Picture>) {
+        pictures.retain(|p| !(p.format == PictureFormat::Png && p.kitty_id == id));
+        self.images.retain(|img| img.id != id);
+    }
+
+    fn alloc_id(&mut self) -> u32 {
+        loop {
+            let id = self.next_id;
+            self.next_id = self.next_id.wrapping_add(1);
+            if id != 0 && !self.images.iter().any(|img| img.id == id) {
+                return id;
+            }
+        }
+    }
+
+    fn store_image(&mut self, img: StoredImage, pictures: &mut Vec<Picture>) {
+        let needed = img.byte_len();
+        let total = |imgs: &[StoredImage]| imgs.iter().map(StoredImage::byte_len).sum::<usize>();
+        while self.images.len() >= STORED_IMAGES_MAX || total(&self.images).saturating_add(needed) > STORED_BYTES_MAX {
+            // Prefer evicting oldest unplaced image first, then oldest placed image (matches Kitty/Ghostty).
+            let pos = self
+                .images
+                .iter()
+                .position(|cand| !pictures.iter().any(|p| p.format == PictureFormat::Png && p.kitty_id == cand.id))
+                .or_else(|| (!self.images.is_empty()).then_some(0));
+            let Some(pos) = pos else { break };
+            let evicted = self.images.remove(pos);
+            pictures.retain(|p| !(p.format == PictureFormat::Png && p.kitty_id == evicted.id));
+        }
+        self.images.push(img);
+    }
+}
+
+struct DecodedImage {
+    w: u32,
+    h: u32,
+    rgba: Vec<u8>,
+    png: Option<Vec<u8>>,
+}
+
+fn decode_image(
+    format: Format,
+    medium: Medium,
+    compression: Compression,
+    width: u32,
+    height: u32,
+    payload: &[u8],
+    is_base64: bool,
+) -> Result<DecodedImage, &'static str> {
+    if medium != Medium::Direct {
+        return Err("EINVAL: unsupported medium");
+    }
+    if format == Format::Unsupported {
+        return Err("EINVAL: unsupported format");
+    }
+    if compression == Compression::Unsupported {
+        return Err("EINVAL: unsupported compression");
+    }
+    let raw = if is_base64 {
+        decode_base64(payload, PICTURE_MAX).map_err(|_| "EINVAL: invalid base64")?
+    } else {
+        payload.to_vec()
+    };
+    let max_uncompressed = match format {
+        Format::Png => PICTURE_MAX,
+        Format::Rgb | Format::Rgba => {
+            let bpp = if format == Format::Rgb { 3usize } else { 4usize };
+            if width == 0 || height == 0 {
+                return Err("EINVAL: dimensions required");
+            }
+            if width > png::DIMENSION_MAX || height > png::DIMENSION_MAX {
+                return Err("EINVAL: dimensions too large");
+            }
+            let pixels = (width as usize).checked_mul(height as usize).ok_or("EINVAL: dimensions too large")?;
+            if pixels > PIXELS_MAX {
+                return Err("EINVAL: dimensions too large");
+            }
+            pixels.checked_mul(bpp).ok_or("EINVAL: dimensions too large")?
+        }
+        Format::Unsupported => return Err("EINVAL: unsupported format"),
+    };
+    let data = match compression {
+        Compression::None => raw,
+        Compression::Zlib => {
+            crate::inflate::zlib(&raw, max_uncompressed).map_err(|_| "EINVAL: decompression failed")?
+        }
+        Compression::Unsupported => return Err("EINVAL: unsupported compression"),
+    };
+
+    match format {
+        Format::Png => {
+            let (w, h, rgba) = png::decode(&data, PIXELS_MAX).map_err(|_| "EINVAL: invalid PNG data")?;
+            Ok(DecodedImage { w, h, rgba, png: Some(data) })
+        }
+        Format::Rgba => {
+            if data.len() != max_uncompressed {
+                return Err("EINVAL: invalid data");
+            }
+            Ok(DecodedImage { w: width, h: height, rgba: data, png: None })
+        }
+        Format::Rgb => {
+            if data.len() != max_uncompressed {
+                return Err("EINVAL: invalid data");
+            }
+            let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+            for &[r, g, b] in data.as_chunks::<3>().0 {
+                rgba.extend_from_slice(&[r, g, b, 255]);
+            }
+            Ok(DecodedImage { w: width, h: height, rgba, png: None })
+        }
+        Format::Unsupported => Err("EINVAL: unsupported format"),
+    }
+}
+
+fn grid_size(src_w: usize, src_h: usize, cols: usize, rows: usize, cell_w: usize, cell_h: usize) -> (usize, usize) {
+    if cols > 0 && rows > 0 {
+        return (cols, rows);
+    }
+    if cols > 0 {
+        let px_w = cols.saturating_mul(cell_w);
+        let px_h = scale_dim(px_w, src_h, src_w);
+        return (cols, px_h.div_ceil(cell_h).max(1));
+    }
+    if rows > 0 {
+        let px_h = rows.saturating_mul(cell_h);
+        let px_w = scale_dim(px_h, src_w, src_h);
+        return (px_w.div_ceil(cell_w).max(1), rows);
+    }
+    (src_w.div_ceil(cell_w).max(1), src_h.div_ceil(cell_h).max(1))
+}
+
+fn scale_dim(target: usize, num: usize, den: usize) -> usize {
+    if den == 0 {
+        return 0;
+    }
+    ((target as u128 * num as u128) / (den as u128)).min(usize::MAX as u128) as usize
+}
+
+fn crop_rgba(img_w: usize, rgba: &[u8], sx: usize, sy: usize, sw: usize, sh: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(sw.saturating_mul(sh).saturating_mul(4));
+    for y in sy..sy + sh {
+        let start = (y * img_w + sx) * 4;
+        let end = start + sw * 4;
+        if let Some(row) = rgba.get(start..end) {
+            out.extend_from_slice(row);
+        }
+    }
+    out
+}

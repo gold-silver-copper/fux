@@ -2898,3 +2898,53 @@ PY
     assert!(inner.fux().arg("wait").arg(&cancel_pane).status().unwrap().success());
     assert!(!marker.exists(), "command must not run when finder exits non-zero");
 }
+
+#[test]
+fn kitty_graphics_pane_files_and_viewer_passthrough() {
+    // Program inside an inner pane queries Kitty graphics support, displays a 200x40 PNG
+    // (20x2 cells at 10x20), waits for a keypress, then deletes it with a=d,d=A.
+    let (outer, inner) = (Session::new("kouter"), Session::new("kinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let rgba = [255u8, 64, 0, 255].repeat(200 * 40);
+    let png_bytes = fux_vt::png::encode_rgba(200, 40, &rgba, 65536).unwrap();
+    let mut b64 = String::new();
+    fux_vt::kitty::encode_base64(&png_bytes, &mut b64);
+    let b64_file = inner.0.join("img.b64");
+    fs::write(&b64_file, &b64).unwrap();
+    let script = format!(
+        "stty raw -echo; \
+         printf '\\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\\033\\\\'; \
+         dd bs=1 count=12 2>/dev/null > '{}/reply'; \
+         printf '\\033[H\\033_Ga=T,i=7,f=100,C=1,q=2;%s\\033\\\\' \"$(cat '{}')\"; \
+         dd bs=1 count=1 >/dev/null 2>&1; \
+         printf '\\033_Ga=d,d=A,q=2\\033\\\\'; \
+         sleep 60",
+        inner.0.display(),
+        b64_file.display()
+    );
+    let pane = inner.start("pic", &["sh", "-c", &script]);
+    until("pane received query OK and placed pic-1.png", || {
+        fs::read(inner.0.join("reply")).ok().as_deref() == Some(b"\x1b_Gi=31;OK\x1b\\")
+            && fact(&pane, "shown/pictures") == "pic-1.png 0 0 20 2 10 20"
+            && pane.join("pic-1.png").is_file()
+    });
+    assert_eq!(fux_vt::png::dimensions(&fs::read(pane.join("pic-1.png")).unwrap()), Some((200, 40)));
+
+    // Viewer running in a Kitty-capable outer terminal draws the PNG natively.
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("viewer drew kitty png", || {
+        fact(&view, "shown/pictures").starts_with("pic-") && fact(&view, "shown/pictures").contains(".png 0 0 20 2 ")
+    });
+    let pic_name = fact(&view, "shown/pictures").split_whitespace().next().unwrap().to_string();
+    assert_eq!(fux_vt::png::dimensions(&fs::read(view.join(&pic_name)).unwrap()), Some((200, 40)));
+
+    // Deleting the image in the inner pane removes pic-1.png and clears it from the viewer.
+    fs::write(pane.join("in"), "x").unwrap();
+    until("kitty picture deleted in pane and viewer", || {
+        fact(&pane, "shown/pictures").is_empty()
+            && !pane.join("pic-1.png").exists()
+            && fact(&view, "shown/pictures").is_empty()
+    });
+}
