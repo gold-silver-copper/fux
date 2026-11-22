@@ -12,6 +12,7 @@ use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsFd;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -51,7 +52,7 @@ struct Holder {
     /// what is then read from `in` is dropped.
     pty: Option<(File, Vec<u8>)>,
     /// The files as they were written last (a folder too, with nothing): one is written again only when it changes.
-    facts: HashMap<&'static str, Option<Vec<u8>>>,
+    written: HashMap<&'static str, Option<Vec<u8>>>,
     /// The number in `generation`: odd from a round's first change to its end, even while the files
     /// agree. It goes on from what an earlier holder of this pane left, from the next even number.
     generation: u64,
@@ -72,6 +73,14 @@ struct Holder {
 /// process's standard input: it is held for exactly as long as the holder lives.
 pub fn hold(args: &[OsString]) -> Result<(), String> {
     let [cwd, program, program_args @ ..] = args else { return Err("hold is started by `fux start`".into()) };
+    // Refuse bare invocations whose stdin is not the pane directory handed over by `fux start`.
+    let lock = io::stdin().as_fd().try_clone_to_owned().map(File::from).and_then(|file| file.metadata());
+    let same = lock.and_then(|lock| {
+        fs::metadata(".").map(|here| lock.is_dir() && (lock.dev(), lock.ino()) == (here.dev(), here.ino()))
+    });
+    if !matches!(same, Ok(true)) {
+        return Err("hold is started by `fux start`".into());
+    }
     // The first size is COLUMNS x LINES when the starter set them (the viewer
     // does, for key scripts), and 80x24 otherwise. `resize` changes it later.
     let number = |name: &str, or: u16| {
@@ -127,7 +136,7 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
     let mut holder = Holder {
         term: Term::new(usize::from(cols), usize::from(rows)),
         pty: Some((master, Vec::new())),
-        facts: HashMap::new(),
+        written: HashMap::new(),
         generation: crate::text(Path::new("generation"), 32).trim().parse().map_or(0, |n: u64| n.saturating_add(n % 2)),
         noticed: 0,
         ctl_line: Vec::new(),
@@ -508,11 +517,11 @@ impl Holder {
         };
         // (One that cannot be written fails the round: it is written in a later one, the newest of each.)
         for (name, bytes) in files {
-            if self.facts.get(name) != Some(&bytes) {
+            if self.written.get(name) != Some(&bytes) {
                 // (What was in a folder that goes is forgotten first: removing it may fail with its files gone.)
-                self.facts.retain(|file, _| bytes.is_some() || !file.starts_with(name));
+                self.written.retain(|file, _| bytes.is_some() || !file.starts_with(name));
                 write(name, bytes.as_deref())?;
-                self.facts.insert(name, bytes);
+                self.written.insert(name, bytes);
             }
         }
         // What the program said once is this round's to write, as history is: what a round that

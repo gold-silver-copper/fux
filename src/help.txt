@@ -1,6 +1,7 @@
-fux for agents: driving panes from a program. Everything is files; you need no viewer.
-The lines indented by four blanks are one shell session, top to bottom: they are run as
-written by tools/help-agents.sh. Names here (agent-demo, job) are examples: choose your own.
+fux: a terminal multiplexer where every pane is a directory (for people, scripts and agents).
+Everything is files; you need no viewer. The lines indented by four blanks are one shell session,
+top to bottom: they are run as written by tools/help-agents.sh. Names here (agent-demo, job) are
+examples: choose your own.
 
 WHAT THERE IS
 A pane is a directory. One small process (its holder) runs a program on a terminal of its

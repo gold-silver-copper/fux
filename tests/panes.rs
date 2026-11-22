@@ -2627,7 +2627,7 @@ fn nothing_of_a_pane_changes_under_an_even_generation_also_when_the_odd_one_cann
 #[test]
 fn the_readme_and_the_agents_page_list_the_capabilities_the_emulator_answers() {
     // The README's table is this table, row for row, and the agents' page lists the same names.
-    let (readme, page) = (include_str!("../README.md"), include_str!("../src/help-agents.txt"));
+    let (readme, page) = (include_str!("../README.md"), include_str!("../src/help.txt"));
     let rows: Vec<String> = fux_vt::CAPS
         .iter()
         .map(|(name, value)| match value.replace('\x1b', "\\E").as_str() {
@@ -2726,4 +2726,138 @@ fn the_workspace_picker_lists_cancels_and_switches_workspaces() {
     });
     fs::write(short_view.join("in"), "jjjj").unwrap();
     until_or("short picker scrolls with up overflow", short_screen, || short_screen().contains("▲"));
+}
+
+#[test]
+fn hold_refuses_running_without_its_pane_directory_on_stdin() {
+    let session = Session::new("holdguard");
+    let pane = session.start("p", &["sleep", "60"]);
+    let project = session.0.join(".project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("history"), "precious\n").unwrap();
+    fs::write(project.join("state"), "keep\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_fux"))
+        .args(["hold", ".", "true"])
+        .current_dir(&project)
+        .env("FUXN_PANE", &pane)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "bare fux hold should refuse to run");
+    assert_eq!(read(&project.join("history")), "precious\n");
+    assert_eq!(read(&project.join("state")), "keep\n");
+}
+
+#[test]
+fn workspace_prev_next_wrap_skip_invalid_names_and_new_workspace_is_0700() {
+    use std::os::unix::fs::PermissionsExt;
+    let session = Session::new("wswrap");
+    let keys = Path::new(env!("CARGO_MANIFEST_DIR")).join("keys");
+    for name in ["Alpha", "beta", "bad space", "colours"] {
+        fs::create_dir_all(session.0.join(name)).unwrap();
+    }
+    let run = |script: &str, ws: &str| {
+        let out = Command::new(keys.join(script))
+            .env("FUXN_DIR", &session.0)
+            .env("FUXN_WS", ws)
+            .env("LC_ALL", "en_US.UTF-8")
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    // Wrapping and skipping invalid directory names (`bad space`, `colours`), in byte order (`Alpha` < `beta`).
+    assert_eq!(run("C-b/w/l", "Alpha"), "workspace beta\n");
+    assert_eq!(run("C-b/w/l", "beta"), "workspace Alpha\n");
+    assert_eq!(run("C-b/w/h", "Alpha"), "workspace beta\n");
+    assert_eq!(run("C-b/w/h", "beta"), "workspace Alpha\n");
+    // New workspace folder has mode 0700 like `fux start` creates.
+    let mut path = std::ffi::OsString::from(Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap());
+    let out = Command::new(keys.join("C-b/w/n"))
+        .env("FUXN_DIR", &session.0)
+        .env("FUXN_KEYS", &keys)
+        .env("FUXN_WS", "Alpha")
+        .env("PATH", path)
+        .env("SHELL", "/bin/sh")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mode = fs::metadata(session.0.join("w1")).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700, "w1 mode was {mode:o}");
+}
+
+#[test]
+fn restore_skips_viewer_and_helper_panes() {
+    let session = Session::new("restoreskip");
+    let keys = Path::new(env!("CARGO_MANIFEST_DIR")).join("keys");
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display();
+    for (name, cmd) in [
+        ("v1", format!("{} view w", env!("CARGO_BIN_EXE_fux"))),
+        ("v2", "fux view w".to_string()),
+        ("ed", format!("{}/.shell {}/.edit --in /tmp/x 1", keys.display(), keys.display())),
+        ("pk", format!("{}/.shell {}/.pick /tmp/x", keys.display(), keys.display())),
+    ] {
+        let dir = session.0.join("w").join(name);
+        fs::create_dir_all(dir.join("main")).unwrap();
+        fs::write(dir.join("status"), format!("holder 99999\npid 99998\ncommand {cmd}\n")).unwrap();
+        fs::write(dir.join("state"), "exited 0\n").unwrap();
+        fs::write(dir.join("main/screen"), "\n").unwrap();
+    }
+    let out = Command::new("sh")
+        .arg(keys.join(".restore"))
+        .env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()))
+        .env("FUXN_DIR", &session.0)
+        .env_remove("FUXN_KEYS")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "should skip viewer and helper panes");
+}
+
+#[test]
+fn bracketed_paste_does_not_leak_while_prefix_menu_is_open() {
+    let (outer, inner) = (Session::new("pmouter"), Session::new("pminner"));
+    let keys = inner.0.join(".keys");
+    let pane = inner.start("main/one", &["sh", "-c", "printf 'READY\\n'; cat"]);
+    until("pane ready", || read(&pane.join("shown/screen")).contains("READY"));
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let mut start = outer.fux();
+    start.env("COLUMNS", "80").env("LINES", "12").args(["start", "view", "--"]).args(command);
+    start.args([env!("CARGO_BIN_EXE_fux"), "view", "main"]);
+    let view = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let screen = || read(&view.join("shown/screen"));
+    until_or("viewer shows READY", screen, || screen().contains("READY"));
+    // Open prefix menu, paste text, close menu, then type a marker so we know the paste was processed.
+    fs::write(view.join("in"), "\x02").unwrap();
+    until_or("menu open", screen, || screen().contains("C-b …"));
+    fs::write(view.join("in"), "\x1b[200~LEAKED\x1b[201~").unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    fs::write(view.join("in"), "\x1b").unwrap();
+    until_or("menu closed", screen, || !screen().contains("C-b …"));
+    fs::write(view.join("in"), "AFTER\r").unwrap();
+    until_or(
+        "AFTER arrived",
+        || read(&pane.join("shown/screen")),
+        || read(&pane.join("shown/screen")).contains("AFTER"),
+    );
+    assert!(
+        !read(&pane.join("shown/screen")).contains("LEAKED"),
+        "paste leaked through open menu:\n{}",
+        read(&pane.join("shown/screen"))
+    );
+}
+
+#[test]
+fn single_unified_help_serves_humans_and_agents() {
+    let bin = env!("CARGO_BIN_EXE_fux");
+    let long = Command::new(bin).arg("--help").output().unwrap();
+    let short = Command::new(bin).arg("-h").output().unwrap();
+    let word = Command::new(bin).arg("help").output().unwrap();
+    assert!(long.status.success() && short.status.success() && word.status.success());
+    assert_eq!(long.stdout, short.stdout);
+    assert_eq!(long.stdout, word.stdout);
+    let text = String::from_utf8(long.stdout).unwrap();
+    assert!(text.contains("fux start") && text.contains("WHAT THERE IS") && !text.contains("fux help agents"));
+    let old = Command::new(bin).args(["help", "agents"]).output().unwrap();
+    assert!(!old.status.success(), "`fux help agents` should be removed in favor of one unified help");
 }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# history in colour, in less
+# pane text in colour, in less
 # group: Panes
 # `.text` makes the file from the styled files, `.edit` opens it: in `less -R`
 # whatever `$EDITOR` is, with `-+F` so that a short text stays open too.

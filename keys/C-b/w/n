@@ -2,6 +2,6 @@
 # new workspace
 # group: Workspaces
 n=1
-until said=$(mkdir "$FUXN_DIR/w$n" 2>&1); do [ -e "$FUXN_DIR/w$n" ] || { echo "$said" >&2; exit 1; }; n=$((n + 1)); done # (the folder made is the claim to the name)
+until said=$(umask 077 && mkdir "$FUXN_DIR/w$n" 2>&1); do [ -e "$FUXN_DIR/w$n" ] || { echo "$said" >&2; exit 1; }; n=$((n + 1)); done # (the folder made is the claim to the name)
 # (Its first shell is started before the viewer is told of it: what is typed after the key is that shell's.)
 FUXN_WS="w$n" FUXN_PANE= "$FUXN_KEYS/.new-shell" && echo "workspace w$n"

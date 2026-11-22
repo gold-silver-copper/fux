@@ -41,9 +41,9 @@ fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or 
 fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and the state it left
 fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: $FUXN_WS; else in a pane its own; else main)
 fux layout [EDIT…]              print the layout of the workspace (the same default), or edit it
-fux help agents                 start here: the files of a pane, and how to start, type, read, wait and end, on one page";
-/// The page for agents: complete by itself, and every command on it is run by `tools/help-agents.sh`.
-const AGENTS: &str = include_str!("help-agents.txt");
+fux --help                      this summary and the complete guide (for people, scripts and agents)";
+/// The single help page for people, scripts and agents; every command on it is run by `tools/help-agents.sh`.
+const HELP: &str = include_str!("help.txt");
 
 /// A variable of the environment that is set and not empty, as a path.
 fn var(name: &str) -> Option<PathBuf> {
@@ -254,8 +254,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             if words.is_empty() { say(layout.print().trim_end().as_bytes()) } else { Ok(()) }
         }
         Some("hold") => holder::hold(rest),
-        Some("help") if rest == ["agents"] => say(AGENTS.trim_end().as_bytes()),
-        Some("help" | "--help" | "-h") => say(USAGE.as_bytes()),
+        Some("help" | "--help" | "-h") if rest.is_empty() => say(format!("{USAGE}\n\n{}", HELP.trim_end()).as_bytes()),
         _ => Err(format!("usage:\n{USAGE}")),
     }
 }
