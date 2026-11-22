@@ -1,6 +1,6 @@
 [package]
 name = "fux"
-version = "0.40.0"
+version = "0.41.0"
 edition = "2024"
 description = "A terminal multiplexer that is a view over directories: a pane is a directory kept by one small process"
 license = "MIT"
@@ -18,7 +18,7 @@ opt-level = 2
 lto = "thin"
 
 [dependencies]
-fux-vt = { path = "fux-vt", version = "0.18.0" }
+fux-vt = { path = "fux-vt", version = "0.19.0" }
 fuxix = { path = "fuxix", version = "0.11.0" }
 
 # The emulator and the system calls are crates beside this one. The referee's old emulator is no member.
