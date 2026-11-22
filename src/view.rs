@@ -1091,7 +1091,8 @@ impl View {
         if let Some((directory, entries)) = &self.menu {
             // While a prefix is in use: the bar over the last row (the workspace, its tabs, the keys typed so far),
             // and above it, in the corner, the keys that can follow.
-            let (bar, panel) = (colour(250, Some(236), 0), colour(255, Some(238), 0));
+            let (bar, panel, head) =
+                (colour(250, Some(236), 0), colour(255, Some(238), 0), colour(238, Some(255), BOLD));
             let path = directory.strip_prefix(&self.keys).unwrap_or(Path::new(""));
             let typed = path.iter().map(|key| key.to_string_lossy()).collect::<Vec<_>>().join(" ");
             let mut left = cells(&format!(" {} ", self.workspace), colour(250, Some(236), BOLD));
@@ -1126,21 +1127,18 @@ impl View {
             put(foot, w.saturating_sub(said + 1), said, &right);
             // The keys, under their headings; what does not fit above the bar is counted, not shown.
             let key_width = entries.iter().map(|(key, ..)| key.chars().count()).max().unwrap_or(0);
-            let (mut lines, mut heading) = (vec![(typed, BOLD)], "");
+            let (mut lines, mut heading) = (vec![(typed, Style { flags: BOLD, ..panel })], "");
             for (key, about, group) in entries {
                 if std::mem::replace(&mut heading, group) != group && !group.is_empty() {
-                    lines.push((group.clone(), BOLD));
+                    lines.push((group.clone(), head));
                 }
-                lines.push((format!("{key:>key_width$}  {about}"), 0));
+                lines.push((format!("{key:>key_width$}  {about}"), panel));
             }
             // A box as wide as its longest line, in cells, and a cell more on each
             // side. A menu taller than the room above the bar goes on in a
             // second box to the right of the first, and so on; what still does
             // not fit is counted (lines, headings among them), not shown.
-            let lines: Vec<Vec<Cell>> = lines
-                .iter()
-                .map(|(text, flags)| cells(&format!(" {text}"), Style { flags: *flags, ..panel }))
-                .collect();
+            let lines: Vec<Vec<Cell>> = lines.iter().map(|(text, style)| cells(&format!(" {text}"), *style)).collect();
             // (A box is kept, with its width, while there is room for it; the first is cut to the terminal's width.)
             let (mut right, mut boxes) = (w, Vec::new());
             for part in lines.chunks(last.max(1)) {
@@ -1159,7 +1157,8 @@ impl View {
                 for (i, row) in above.chunks_exact_mut(w.max(1)).skip(last.saturating_sub(height)).enumerate() {
                     let hides = n + 1 == boxes.len() && over > 0 && i + 1 == height;
                     let line = if hides { Some(&more) } else { part.get(i) };
-                    put(row, right + from, *width, &vec![Cell::blank(panel); *width]);
+                    let fill = line.and_then(|line| line.first()).map_or(panel, |cell| cell.style);
+                    put(row, right + from, *width, &vec![Cell::blank(fill); *width]);
                     put(row, right + from, *width, line.map_or(&[], |line| line));
                 }
             }
