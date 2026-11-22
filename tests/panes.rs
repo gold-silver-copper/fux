@@ -2645,3 +2645,34 @@ fn the_readme_and_the_agents_page_list_the_capabilities_the_emulator_answers() {
         "the agents' page"
     );
 }
+
+#[test]
+fn a_menu_shades_its_group_headings() {
+    let (outer, inner) = (Session::new("mghouter"), Session::new("mghinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    fs::write(keys.join("C-b/v"), "#!/bin/sh\n# split side by side\n# group: Panes\n").unwrap();
+    fs::write(keys.join("C-b/n"), "#!/bin/sh\n# next tab\n# group: Tabs\n").unwrap();
+    inner.start("one", &["sleep", "600"]);
+    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
+    let mut start = outer.fux();
+    start.env("COLUMNS", "80").env("LINES", "12").args(["start", "view", "--"]).args(command);
+    start.args([env!("CARGO_BIN_EXE_fux"), "view"]);
+    let view = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let screen = || read(&view.join("shown/screen"));
+    until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
+    fs::write(view.join("in"), "\x02").unwrap();
+    until_or("the menu shows", screen, || screen().contains("Panes") && screen().contains("Tabs"));
+    let styled = read(&view.join("shown/screen.styled"));
+    let row = |needle: &str| styled.lines().find(|line| line.contains(needle)).unwrap_or_default();
+    let (title, panes, split, tabs, next) = (row("C-b"), row("Panes"), row("split"), row("Tabs"), row("next"));
+    assert!(
+        panes.contains("38;5;255;48;5;235m Panes\x1b[0;48;5;235m")
+            && tabs.contains("38;5;255;48;5;235m Tabs\x1b[0;48;5;235m"),
+        "headings not shaded across box width:\n{styled}"
+    );
+    assert!(
+        !title.contains("48;5;235") && !split.contains("48;5;235") && !next.contains("48;5;235"),
+        "non-headings shaded:\n{styled}"
+    );
+}
