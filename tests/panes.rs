@@ -2648,7 +2648,7 @@ fn the_readme_and_the_agents_page_list_the_capabilities_the_emulator_answers() {
 
 #[test]
 fn a_menu_reverses_its_group_headings() {
-    let (outer, inner) = (Session::new("gouter"), Session::new("ginner"));
+    let (outer, inner) = (Session::new("mghouter"), Session::new("mghinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b")).unwrap();
     fs::write(keys.join("C-b/v"), "#!/bin/sh\n# split side by side\n# group: Panes\n").unwrap();
