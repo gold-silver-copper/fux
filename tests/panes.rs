@@ -2647,7 +2647,7 @@ fn the_readme_and_the_agents_page_list_the_capabilities_the_emulator_answers() {
 }
 
 #[test]
-fn a_menu_reverses_its_group_headings() {
+fn a_menu_shades_its_group_headings() {
     let (outer, inner) = (Session::new("mghouter"), Session::new("mghinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b")).unwrap();
@@ -2667,12 +2667,12 @@ fn a_menu_reverses_its_group_headings() {
     let row = |needle: &str| styled.lines().find(|line| line.contains(needle)).unwrap_or_default();
     let (title, panes, split, tabs, next) = (row("C-b"), row("Panes"), row("split"), row("Tabs"), row("next"));
     assert!(
-        panes.contains("38;5;238;48;5;255m Panes\x1b[0;48;5;255m")
-            && tabs.contains("38;5;238;48;5;255m Tabs\x1b[0;48;5;255m"),
-        "headings not reversed across box width:\n{styled}"
+        panes.contains("38;5;255;48;5;235m Panes\x1b[0;48;5;235m")
+            && tabs.contains("38;5;255;48;5;235m Tabs\x1b[0;48;5;235m"),
+        "headings not shaded across box width:\n{styled}"
     );
     assert!(
-        !title.contains("48;5;255") && !split.contains("48;5;255") && !next.contains("48;5;255"),
-        "non-headings reversed:\n{styled}"
+        !title.contains("48;5;235") && !split.contains("48;5;235") && !next.contains("48;5;235"),
+        "non-headings shaded:\n{styled}"
     );
 }

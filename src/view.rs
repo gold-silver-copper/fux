@@ -1092,7 +1092,7 @@ impl View {
             // While a prefix is in use: the bar over the last row (the workspace, its tabs, the keys typed so far),
             // and above it, in the corner, the keys that can follow.
             let (bar, panel, head) =
-                (colour(250, Some(236), 0), colour(255, Some(238), 0), colour(238, Some(255), BOLD));
+                (colour(250, Some(236), 0), colour(255, Some(238), 0), colour(255, Some(235), BOLD));
             let path = directory.strip_prefix(&self.keys).unwrap_or(Path::new(""));
             let typed = path.iter().map(|key| key.to_string_lossy()).collect::<Vec<_>>().join(" ");
             let mut left = cells(&format!(" {} ", self.workspace), colour(250, Some(236), BOLD));
