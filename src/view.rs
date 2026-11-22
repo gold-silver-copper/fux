@@ -8,6 +8,7 @@ use crate::layout::{self, Layout, Rect};
 use crate::sys::{self, Winsize};
 use crate::term::{
     BOLD, Cell, Color, DIM, KEYS, LINKS_LIST_MAX, MORE, PICTURE_MAX, SIZE_MAX, Screen, Style, Term, base64_encode,
+    files,
 };
 use crate::width::Joiner;
 use crate::{Stamp, is_name, keys, sixel, stamp, text};
@@ -857,7 +858,7 @@ impl View {
         self.copied = self.copied.take().filter(|_| self.focus.is_some());
         let first_look = self.looked.is_none();
         // (Before its first screen is read, a pane is one blank cell with the cursor shown on it.)
-        let unread = || Pane { screen: Screen::read("", 0), ..Pane::default() };
+        let unread = Pane::default;
         self.notices(&layout, &directory);
         // A frame drawn from what the last one was drawn from is the last one: nothing is put
         // together and nothing compared. (A menu is drawn from more than this: with one open,
@@ -1317,7 +1318,7 @@ fn cells(text: &str, style: Style) -> Vec<Cell> {
     // One row with room for all of it and a column to spare, so that nothing wraps.
     let mut row = Term::new(2 * text.len() + 1, 1);
     row.feed(bytes.as_bytes());
-    (0..row.screen().cursor.col).filter_map(|x| row.screen().cell_at(0, x).copied()).collect()
+    (0..row.shown().cursor.col).filter_map(|x| row.shown().cell_at(0, x).copied()).collect()
 }
 
 /// The address of a link of the given number in a frame's table of them.
@@ -1351,7 +1352,7 @@ fn send_to(path: &Path, bytes: &[u8]) -> io::Result<usize> {
 /// `modes` file says now: what is typed is sent by this, not by what was last drawn.
 fn asks(directory: &Path) -> Screen {
     let mut screen = Screen::default();
-    screen.set_words(&text(&directory.join("modes"), 256));
+    files::parse_modes(&mut screen, &text(&directory.join("modes"), 256));
     screen
 }
 
@@ -1396,8 +1397,8 @@ impl Pane {
             _ => (0, 0),
         };
         let cols = if self.size.0 == 0 { SIZE_MAX } else { self.size.0 };
-        self.screen = Screen::read(&styled, cols);
-        self.screen.set_words(&fact("modes", 256));
+        self.screen = files::read_screen(&styled, cols);
+        files::parse_modes(&mut self.screen, &fact("modes", 256));
         let cursor = fact("cursor", 64);
         let mut cursor = cursor.split_whitespace();
         let mut place = || cursor.next().and_then(|n| n.parse::<usize>().ok());
@@ -1460,7 +1461,7 @@ impl Pane {
             };
             for (row, (_, base)) in starts.iter().enumerate().filter(|(_, (of, _))| *of == line) {
                 for col in (from.max(*base)..(from.saturating_add(length)).min(base + cols)).take(cells) {
-                    self.screen.set_link(row, col - base, link);
+                    files::set_link(&mut self.screen, row, col - base, link);
                     cells -= 1;
                 }
             }

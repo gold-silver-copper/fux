@@ -4,7 +4,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
 use crate::layout::{Layout, Rect, parse};
-use crate::term::Term;
+use crate::term::{Term, files};
 
 /// The key at the start of the bytes, as the one parser tells it: how long it is and its name.
 fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String)> {
@@ -26,7 +26,7 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     // Told, it answers in the order asked, each answer ended as its question was, and is silent
     // about what it was not told (a palette entry, a number that is no entry).
     let mut told = Term::new(20, 2);
-    told.told().colours = "foreground #d0d0d0\nbackground #1c1c1c\n1 #cc0000\nnonsense\n".into();
+    files::parse_colours("foreground #d0d0d0\nbackground #1c1c1c\n1 #cc0000\nnonsense\n", told.told());
     told.feed(asks.as_bytes());
     let answers = "\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]4;1;rgb:cccc/0000/0000\x1b\\";
     assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), answers.to_string() + &da);
@@ -36,17 +36,17 @@ fn a_question_about_a_colour_is_answered_from_what_was_told_and_never_made_up() 
     told.feed(b"\x1b]10;?;?\x07\x1b]11;?;?\x07");
     let both = "\x1b]10;rgb:d0d0/d0d0/d0d0\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b]11;rgb:1c1c/1c1c/1c1c\x07";
     assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), both);
-    told.told().colours.push_str("cursor #ff8000\n");
+    told.told().cursor = Some([0xff, 0x80, 0x00]);
     told.feed(b"\x1b]12;?\x07");
     assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), "\x1b]12;rgb:ffff/8080/0000\x07");
-    told.told().colours = "background #+12345\nforeground #d0d0d\n7 cc0000\n".into();
+    files::parse_colours("background #+12345\nforeground #d0d0d\n7 cc0000\n", told.told());
     told.feed(b"\x1b]11;?\x07\x1b]10;?\x07\x1b]4;7;?\x07");
     assert!(told.take(0).reply.is_empty());
     // A person's file: blanks do not matter, capitals neither, and of two lines for a colour the last counts.
-    told.told().colours = "background #000000\n  background\t#FDF6E3  # paper\r\n".into();
+    files::parse_colours("background #000000\n  background\t#FDF6E3  # paper\r\n", told.told());
     told.feed(b"\x1b]11;?\x07");
     assert_eq!(String::from_utf8(told.take(0).reply).unwrap(), "\x1b]11;rgb:fdfd/f6f6/e3e3\x07");
-    assert_eq!(told.files(false).map_or(String::new(), |files| files.screen), "\n\n");
+    assert_eq!(files::render(&told, false).map_or(String::new(), |files| files.screen), "\n\n");
     // The viewer reads its terminal's answers as answers, not as keys.
     assert_eq!(
         next(b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\x", false, true),
@@ -70,15 +70,15 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     let mut early = term(9, 2, "\x1b[>1u\x1b[?u");
     early.told().keyboard = crate::term::KEYS;
     early.feed(b"\x1b[?u");
-    assert_eq!((early.take(0).reply.as_slice(), early.screen().keys()), (&b"\x1b[?0u\x1b[?0u"[..], 0));
+    assert_eq!((early.take(0).reply.as_slice(), early.shown().keys()), (&b"\x1b[?0u\x1b[?0u"[..], 0));
     early.feed(b"\x1b[=1u\x1b[?u");
     early.told().keyboard = 0;
-    assert_eq!((early.take(0).reply.as_slice(), early.screen().keys()), (&b"\x1b[?1u"[..], 1));
+    assert_eq!((early.take(0).reply.as_slice(), early.shown().keys()), (&b"\x1b[?1u"[..], 1));
     let asked = |bytes: &str| {
         let mut term = Term::new(9, 2);
         term.told().keyboard = crate::term::KEYS;
         term.feed(bytes.as_bytes());
-        (String::from_utf8(term.take(0).reply).unwrap(), term.words())
+        (String::from_utf8(term.take(0).reply).unwrap(), files::modes(&mut term))
     };
     // The protocol's own examples: flags are set, set aside and come back; setting adds or
     // takes bits; going back past the first is no flags; the two screens have their own.
@@ -125,7 +125,7 @@ fn a_program_says_how_it_wants_keys_told_and_is_answered_no_more_than_the_termin
     for screen in ["", "\x1b[?1049h"] {
         let words = asked(&format!("{screen}\x1b[>5u")).1;
         let mut reader = crate::term::Screen::default();
-        reader.set_words(&words);
+        files::parse_modes(&mut reader, &words);
         assert!(words.ends_with("keys5") && reader.keys() == 5, "{words}");
     }
     assert!(!asked("x").1.contains("keys"));
