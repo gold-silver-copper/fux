@@ -1,7 +1,7 @@
 #!/bin/sh
 # Starts again every pane of the session whose program is not running (after a reboot, say): every one
-# with a command in `status`. Run it by hand or from your login, by its path: sh "$FUXN_KEYS/.restore"
-# (`fux` on PATH; FUXN_DIR set if you set it for the viewer; with no FUXN_KEYS the panes are told this
+# with a command in `status`. Run it by hand or from your login, by its path: sh "$FUX_KEYS/.restore"
+# (`fux` on PATH; FUX_DIR set if you set it for the viewer; with no FUX_KEYS the panes are told this
 # script's folder). The session directory must be one that outlasts a reboot.
 # Each pane is started under its name, with the words of its command line (`status`: those between the
 # line's blanks, nothing expanded, no shell) and in the directory its program last said it was in (`cwd`,
@@ -9,7 +9,7 @@
 # begins the pane's files anew, also one that then fails; a start that was refused, as that of a pane that
 # is alive, made no new `log` and changed nothing; one whose text cannot be copied is not started). Which panes that starts wrongly, and how a session
 # outlasts a reboot: the README, "Search every pane, and after a reboot".
-D=$(fux dir) && export FUXN_DIR="$D" FUXN_KEYS="${FUXN_KEYS:-$(CDPATH= cd "$(dirname "$0")" && pwd)}" || exit
+D=$(fux dir) && export FUX_DIR="$D" FUX_KEYS="${FUX_KEYS:-$(CDPATH= cd "$(dirname "$0")" && pwd)}" || exit
 for p in "$D"/*/*/; do
   p=${p%/}
   command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)

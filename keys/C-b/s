@@ -1,4 +1,4 @@
 #!/bin/sh
 # split stacked
 # group: Panes
-exec "$FUXN_KEYS/.new-shell" col "$FUXN_COL"
+exec "$FUX_KEYS/.new-shell" col "$FUX_COL"

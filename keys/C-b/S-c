@@ -6,10 +6,10 @@
 # the pane's first line and how many bytes into the line's text it is. The text
 # from the last `output` mark to the `end` after it (or to the end of the text,
 # if the command still runs) is opened in the editor.
-[ -s "$FUXN_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
-f=$(mktemp "$FUXN_DIR/.text.XXXXXX") || exit
+[ -s "$FUX_PANE/marks" ] || { echo "no marks here: the shell does not mark its prompts (OSC 133)"; exit; }
+f=$(mktemp "$FUX_DIR/.text.XXXXXX") || exit
 umask 077
-add=$("$FUXN_KEYS/.text" "$f" '' "$f.marks") || { rm -f "$f" "$f.marks"; exit; }
+add=$("$FUX_KEYS/.text" "$f" '' "$f.marks") || { rm -f "$f" "$f.marks"; exit; }
 set -- $(awk '$3 == "output" { from = $1 " " $2; to = "" } $3 == "end" && from != "" && to == "" { to = $1 " " $2 } END { print from, to }' "$f.marks"; rm -f "$f.marks")
 [ -n "$1" ] || { rm -f "$f"; echo "no command has run here yet"; exit; }
 [ "$1 $2" != "$3 $4" ] || { rm -f "$f"; echo "nothing of the last command's output is here (it printed none, or the screen was cleared)"; exit; }
@@ -25,4 +25,4 @@ LC_ALL=C awk -v first="$first" -v from="$2" -v last="${last:-0}" -v to="${4:-0}"
   { print line }
   END { for (i = (NR < first ? first : NR + 1); i < last; i++) print "" }' "$f" > "$f.out" && mv "$f.out" "$f" || { rm -f "$f" "$f.out"; exit; }
 [ -s "$f" ] || { rm -f "$f"; echo "nothing of the last command's output is here (it printed none, or the screen was cleared)"; exit; }
-exec "$FUXN_KEYS/.edit" "$f" 1
+exec "$FUX_KEYS/.edit" "$f" 1

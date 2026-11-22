@@ -1,4 +1,4 @@
 #!/bin/sh
 # new tab
 # group: Tabs
-exec "$FUXN_KEYS/.new-shell"
+exec "$FUX_KEYS/.new-shell"

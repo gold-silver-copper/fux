@@ -2,9 +2,9 @@
 # .new-shell [row|col SIZE]: your shell in a new pane, in the focused pane's directory if its
 # program said one: in a tab of its own, or split from the pane the key was pressed on (also
 # when another has the keys by now), started at SIZE, which the viewer foretold (COLSxROWS).
-IFS= read -r d 2>/dev/null < "$FUXN_PANE/cwd" && cd "$d" 2>/dev/null
+IFS= read -r d 2>/dev/null < "$FUX_PANE/cwd" && cd "$d" 2>/dev/null
 [ $# -lt 2 ] || export COLUMNS="${2%x*}" LINES="${2#*x}"
-p=$(fux start -- "$FUXN_KEYS/.shell") || exit
+p=$(fux start -- "$FUX_KEYS/.shell") || exit
 # (A pane to split from that has gone meanwhile: the layout says so, and the new shell is shown in its own tab.)
-[ $# -eq 2 ] && [ -n "$FUXN_PANE" ] && fux layout split "$1" "${p##*/}" beside "${FUXN_PANE##*/}" ||
+[ $# -eq 2 ] && [ -n "$FUX_PANE" ] && fux layout split "$1" "${p##*/}" beside "${FUX_PANE##*/}" ||
   fux layout pane "${p##*/}"

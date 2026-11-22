@@ -4,8 +4,8 @@
 # A list of the session's workspaces (name, and what is in each but its layout) in a pane of its
 # own; the viewer is told to show the one chosen.
 LC_ALL=C; export LC_ALL
-list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
-cd "$FUXN_DIR" || { rm -f "$list"; exit; }
+list=$(mktemp "$FUX_DIR/.pick.XXXXXX") || exit
+cd "$FUX_DIR" || { rm -f "$list"; exit; }
 for w in */; do
   w=${w%/}
   case $w in ''|-|colours|keyboard|layout|layout.new|.*|*[!A-Za-z0-9._-]*) continue ;; esac
@@ -13,4 +13,4 @@ for w in */; do
   printf '%s\t%s\n' "$w" "$(ls "$w" | grep -v -x -e layout -e layout.new | tr '\n' ' ')"
 done > "$list"
 # (The pane has no word for the viewer: it is given the viewer's FIFO to write to, if that is still there.)
-exec "$FUXN_KEYS/.pick" --tab "$list" sh -c '[ -p "$0" ] && echo "workspace $1" 1<>"$0"' "$FUXN_VIEW"
+exec "$FUX_KEYS/.pick" --tab "$list" sh -c '[ -p "$0" ] && echo "workspace $1" 1<>"$0"' "$FUX_VIEW"
