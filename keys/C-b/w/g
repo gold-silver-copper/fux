@@ -1,0 +1,4 @@
+#!/bin/sh
+# choose a workspace
+# group: Workspaces
+echo workspaces
