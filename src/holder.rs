@@ -5,7 +5,7 @@
 //! its program.
 
 use crate::sys::{self, Winsize};
-use crate::term::{Out, Picture, SIZE_MAX, TERM, Term};
+use crate::term::{Out, Picture, SIZE_MAX, TERM, Term, files};
 use crate::{plain, replace};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
@@ -192,7 +192,7 @@ impl Holder {
             // at once, cannot freeze its pane. Any other is shown this long after the last round, or
             // sooner once it has gone quiet: nothing more from it for a millisecond (whatever else
             // the holder was woken for meanwhile), and not because it is not being read.
-            let drawing = self.term.screen().sync && self.pty.is_some();
+            let drawing = self.term.shown().sync && self.pty.is_some();
             let round = dirty.map(|first: Instant| match budget {
                 _ if drawing => left(first, DRAWING_MAX),
                 0 => left(published, PUBLISH_EVERY),
@@ -300,7 +300,7 @@ impl Holder {
                 let text = stamp.map_or_else(String::new, |_| crate::text(&file, 16 << 10));
                 *known = stamp;
                 match name {
-                    "colours" => self.term.told().colours = text,
+                    "colours" => files::parse_colours(&text, self.term.told()),
                     _ => self.term.told().keyboard = text.trim().parse().unwrap_or(0),
                 }
             }
@@ -472,8 +472,8 @@ impl Holder {
             let row = if p.off > 0 { format!("-{}", p.off) } else { p.row.to_string() };
             format!("pic-{}.sixel {row} {} {} {} {} {}\n", p.id, p.col, p.cols, p.rows + p.off, p.cell.0, p.cell.1)
         };
-        let words = self.term.words();
-        let (term, screen, at) = (&self.term, self.term.screen(), self.term.screen().cursor);
+        let words = files::modes(&mut self.term);
+        let (term, screen, at) = (&self.term, self.term.shown(), self.term.shown().cursor);
         let shown = if screen.cursor_shown { "shown" } else { "hidden" };
         // (The cursor's colour, if the program set one: a fifth word.)
         let colour = term.cursor_colour().map_or(String::new(), |[r, g, b]| format!(" #{r:02x}{g:02x}{b:02x}"));
@@ -482,7 +482,7 @@ impl Holder {
         let state = ended.unwrap_or(if self.pty.is_some() { "running" } else { "hungup" });
         let pane = [
             ("title", title),
-            ("marks", Some(term.marks())),
+            ("marks", Some(files::marks(term))),
             ("size", Some(format!("{} {}\n", screen.cols, screen.rows))),
             ("cursor", Some(format!("{} {} {shown} {}{colour}\n", at.row, at.col, screen.cursor_shape))),
             ("modes", Some(format!("{}\n", words))),
@@ -491,7 +491,7 @@ impl Holder {
         // Each screen has a folder, the same five names in each: `main` always, `alt` while a program
         // has that screen. (`lines`: how many lines are before the first row, then the rows that go on.)
         let folder = |names: [&'static str; 6], alt: bool| {
-            let files = term.files(alt)?;
+            let files = files::render(term, alt)?;
             let pictures = files.pictures.iter().filter(|p| p.row < screen.rows).map(placed).collect();
             let texts = [String::new(), files.lines, files.links, pictures, files.screen, files.styled];
             Some(names.into_iter().zip(texts.map(Some)))

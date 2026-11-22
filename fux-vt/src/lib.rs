@@ -3,6 +3,7 @@
 //! takes sixel pictures whole. It knows nothing of files or processes.
 #![forbid(unsafe_code)]
 
+pub mod files;
 pub mod sixel;
 #[cfg(test)]
 mod tests;
@@ -64,12 +65,12 @@ pub enum Color {
 
 pub const BOLD: u16 = 1;
 pub const DIM: u16 = 2;
-const ITALIC: u16 = 4;
-const UNDERLINE: u16 = 8;
-const BLINK: u16 = 16;
-const REVERSE: u16 = 32;
-const HIDDEN: u16 = 64;
-const STRIKE: u16 = 128;
+pub const ITALIC: u16 = 4;
+pub const UNDERLINE: u16 = 8;
+pub const BLINK: u16 = 16;
+pub const REVERSE: u16 = 32;
+pub const HIDDEN: u16 = 64;
+pub const STRIKE: u16 = 128;
 /// The kind of an underline that is not one plain line (with `UNDERLINE`).
 const DOUBLE: u16 = 1024;
 const CURLY: u16 = 2048;
@@ -77,6 +78,16 @@ const DOTTED: u16 = 4096;
 const DASHED: u16 = 8192;
 const KIND: [u16; 4] = [DOUBLE, CURLY, DOTTED, DASHED];
 const KINDS: u16 = DOUBLE | CURLY | DOTTED | DASHED;
+
+/// The underline style of a cell, when underlined.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Underline {
+    Single,
+    Double,
+    Curly,
+    Dotted,
+    Dashed,
+}
 /// The looks that are one bit each: the SGR code that sets it, the bit, the code that takes it away.
 /// (In the order a style's codes are written in, which is xterm's: 1, 4, 5, 7, 8, 2, 3, 9.)
 const LOOKS: [(u16, u16, u16); 8] = [
@@ -107,6 +118,40 @@ pub struct Style {
 }
 
 impl Style {
+    pub fn is_bold(self) -> bool {
+        self.flags & BOLD != 0
+    }
+    pub fn is_dim(self) -> bool {
+        self.flags & DIM != 0
+    }
+    pub fn is_italic(self) -> bool {
+        self.flags & ITALIC != 0
+    }
+    pub fn is_blink(self) -> bool {
+        self.flags & BLINK != 0
+    }
+    pub fn is_reverse(self) -> bool {
+        self.flags & REVERSE != 0
+    }
+    pub fn is_hidden(self) -> bool {
+        self.flags & HIDDEN != 0
+    }
+    pub fn is_strike(self) -> bool {
+        self.flags & STRIKE != 0
+    }
+    pub fn underline(self) -> Option<Underline> {
+        if self.flags & UNDERLINE == 0 {
+            return None;
+        }
+        Some(match self.kind() {
+            Some(2) => Underline::Double,
+            Some(3) => Underline::Curly,
+            Some(4) => Underline::Dotted,
+            Some(5) => Underline::Dashed,
+            _ => Underline::Single,
+        })
+    }
+
     /// Which of the kinds of underline that are not one plain line it has: 2 to 5, as SGR `4:N` counts them.
     fn kind(self) -> Option<usize> {
         KIND.iter().position(|kind| self.flags & kind != 0).map(|kind| kind + 2)
@@ -238,15 +283,22 @@ pub struct Picture {
     bytes: Option<Vec<u8>>,
 }
 
-/// A screen as its files tell it: its rows as plain text (a line each, blanks at the end cut) and with
-/// their looks; `lines`, how many lines are before its first row (the pane's text's, on the main screen;
-/// 0 on the alternate one, which is in no text), then the rows that go on; its links; its pictures.
-pub struct Files<'a> {
-    pub screen: String,
-    pub styled: String,
-    pub lines: String,
-    pub links: String,
-    pub pictures: &'a [Picture],
+/// The kind of an OSC 133 shell prompt mark.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarkKind {
+    Prompt,
+    Command,
+    Output,
+    End,
+}
+
+/// One OSC 133 shell mark, in the pane text's line/byte numbering.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Mark {
+    pub line: usize,
+    pub byte: usize,
+    pub kind: MarkKind,
+    pub exit: Option<u8>,
 }
 
 /// Where a mark is: on the main screen, a row and a column, for as long as its row is there
@@ -372,8 +424,7 @@ enum State {
 }
 
 /// What is shown: the grid, the cursor and the modes. Whoever keeps a terminal reads its own
-/// by reference; a reader of a pane's files has one that `read` made of them.
-#[derive(Default)]
+/// by reference; a reader of a pane's files has one that `files::read_screen` made of them.
 pub struct Screen {
     pub cols: usize,
     pub rows: usize,
@@ -399,8 +450,32 @@ pub struct Screen {
     pub pictures: Vec<Picture>,
 }
 
+impl Default for Screen {
+    /// One blank cell with the cursor shown: a screen always has at least one row and one column.
+    fn default() -> Self {
+        Screen {
+            cols: 1,
+            rows: 1,
+            grid: vec![vec![Cell::blank(Style::default())]],
+            alt: false,
+            keys: [(0, Vec::new()), (0, Vec::new())],
+            cursor: Cursor::default(),
+            cursor_shown: true,
+            cursor_shape: 0,
+            app_cursor: false,
+            app_keypad: false,
+            paste: false,
+            focus: false,
+            sync: false,
+            mouse: 0,
+            mouse_sgr: false,
+            autowrap: false,
+            pictures: Vec::new(),
+        }
+    }
+}
+
 /// What whoever keeps a terminal tells it of the world outside it.
-#[derive(Default)]
 pub struct Told {
     /// What this terminal is called and its version, for a program that asks (XTVERSION).
     pub name: String,
@@ -408,10 +483,28 @@ pub struct Told {
     pub keyboard: u8,
     /// The size of a cell in pixels, to know how many cells a picture covers.
     pub cell: (usize, usize),
-    /// What the colours are: lines of a name (`foreground`, `background`, a palette number) and
-    /// `#rrggbb`. A program that asks for a colour is answered from here, and not at all if its
-    /// line is missing.
-    pub colours: String,
+    /// Whether DA1 advertises sixel graphics (4).
+    pub sixel: bool,
+    /// Host default foreground, background, cursor and 0..=255 palette colours for OSC 4/10/11/12 queries.
+    pub fg: Option<[u8; 3]>,
+    pub bg: Option<[u8; 3]>,
+    pub cursor: Option<[u8; 3]>,
+    pub palette: BTreeMap<u8, [u8; 3]>,
+}
+
+impl Default for Told {
+    fn default() -> Self {
+        Told {
+            name: String::new(),
+            keyboard: 0,
+            cell: (10, 20),
+            sixel: true,
+            fg: None,
+            bg: None,
+            cursor: None,
+            palette: BTreeMap::new(),
+        }
+    }
 }
 
 pub struct Term {
@@ -431,9 +524,13 @@ pub struct Term {
     links: Vec<String>,
     link: u16,
     /// The marks a shell put at its prompts (OSC 133): where, kind, exit code. The last thousand.
-    marks: Vec<(At, &'static str, Option<u8>)>,
+    marks: Vec<(At, MarkKind, Option<u8>)>,
     /// Where history ends.
     tail: Tail,
+    /// The most pending history bytes buffered in `Out` (0 disables string history buffering).
+    history_max: usize,
+    /// Monotonic revision bumped on `feed`, `resize`, and `notice`.
+    version: u64,
     /// The rows the last resize sent to history, while they are still its last lines.
     lent: Option<Lent>,
     state: State,
@@ -459,42 +556,21 @@ pub struct Term {
 }
 
 impl Screen {
+    pub fn is_alt(&self) -> bool {
+        self.alt
+    }
+
+    pub fn row(&self, row: usize) -> Option<&[Cell]> {
+        self.grid.get(row).map(Vec::as_slice)
+    }
+
+    /// Whether `row` continues from the row above it (soft-wrapped).
+    pub fn row_wraps(&self, row: usize) -> bool {
+        self.grid.get(row).is_some_and(|cells| continues(cells))
+    }
+
     pub fn cell_at(&self, row: usize, col: usize) -> Option<&Cell> {
         self.grid.get(row)?.get(col)
-    }
-
-    /// The screen a `styled` text says, `cols` wide and of as many rows as it has lines (a reader's
-    /// side of `Term::styled`): cells and looks, and none of what `set_words` and `set_link` say.
-    pub fn read(styled: &str, cols: usize) -> Screen {
-        let mut term = Term::sized(cols, styled.lines().count(), false);
-        for (row, line) in styled.lines().enumerate().take(SIZE_MAX) {
-            // The rows are text and colours, as the holder writes them: anything else in a
-            // file of someone's own making is shown as `?`.
-            let mut text = String::with_capacity(line.len());
-            let mut rest = line;
-            while let Some(at) = rest.find(|c: char| c.is_control()) {
-                let (before, after) = rest.split_at(at);
-                let colour = after.strip_prefix("\x1b[").and_then(|sgr| {
-                    let end = sgr.find(|c: char| !(c.is_ascii_digit() || c == ';' || c == ':'))?;
-                    sgr.get(end..)?.starts_with('m').then_some(2 + end + 1)
-                });
-                text.push_str(before);
-                text.push_str(colour.and_then(|length| after.get(..length)).unwrap_or("?"));
-                let length = colour.or(after.chars().next().map(char::len_utf8)).unwrap_or(1);
-                rest = after.get(length..).unwrap_or_default();
-            }
-            text.push_str(rest);
-            term.feed(format!("\x1b[{};1H\x1b[m{text}", row + 1).as_bytes());
-            term.feed(format!("\x1b[{};{}H\x1b[m\x1b[K", row + 1, term.screen.cols).as_bytes());
-        }
-        term.screen
-    }
-
-    /// Says of a cell which link it is part of (for a reader that has the links from a file).
-    pub fn set_link(&mut self, row: usize, col: usize, link: u16) {
-        if let Some(cell) = self.grid.get_mut(row).and_then(|cells| cells.get_mut(col)) {
-            cell.link = link;
-        }
     }
 
     /// The modes that are one switch: the DEC mode that sets it and answers for it (the keypad has
@@ -519,24 +595,6 @@ impl Screen {
     pub fn keys(&self) -> u8 {
         self.keys.get(usize::from(self.alt)).map_or(0, |(flags, _)| *flags)
     }
-
-    fn words(&mut self) -> String {
-        let mouse = (self.mouse != 0).then(|| format!("mouse{}", self.mouse));
-        // And the keyboard flags a program asked for (the kitty protocol), as a number.
-        let keys = (self.keys() != 0).then(|| format!("keys{}", self.keys()));
-        let on = self.switches().into_iter().filter(|s| *s.2 && !s.1.is_empty()).map(|s| s.1.to_string());
-        on.chain(mouse).chain(keys).collect::<Vec<String>>().join(" ")
-    }
-
-    /// Takes the modes those words say (a reader's side of `words`).
-    pub fn set_words(&mut self, words: &str) {
-        let has = |mode: &str| words.split_whitespace().any(|m| m == mode);
-        self.switches().into_iter().filter(|s| !s.1.is_empty()).for_each(|(_, name, on)| *on = has(name));
-        self.mouse = [9, 1000, 1002, 1003].into_iter().find(|m| has(&format!("mouse{m}"))).unwrap_or(0);
-        // (Whichever screen is shown has the keyboard flags.)
-        let keys = words.split_whitespace().find_map(|m| m.strip_prefix("keys")?.parse().ok()).unwrap_or(0);
-        self.keys = [(keys, Vec::new()), (keys, Vec::new())];
-    }
 }
 
 impl Term {
@@ -545,12 +603,12 @@ impl Term {
     }
 
     /// With no `wrap` (a reader's) it has one column more, also past the widest: there a longer line ends, cut off.
-    fn sized(cols: usize, rows: usize, wrap: bool) -> Term {
+    pub(crate) fn sized(cols: usize, rows: usize, wrap: bool) -> Term {
         let (cols, rows) = (cols.clamp(usize::from(wrap), SIZE_MAX) + usize::from(!wrap), rows.clamp(1, SIZE_MAX));
         let grid = vec![vec![Cell::blank(Style::default()); cols]; rows];
         Term {
             screen: Screen { cols, rows, grid: grid.clone(), cursor_shown: true, autowrap: wrap, ..Screen::default() },
-            told: Told { cell: (10, 20), ..Told::default() },
+            told: Told::default(),
             other: grid,
             top: 0,
             bottom: rows - 1,
@@ -563,6 +621,8 @@ impl Term {
             links: Vec::new(),
             link: 0,
             tail: Tail::default(),
+            history_max: HISTORY_PENDING_MAX,
+            version: 0,
             lent: None,
             state: State::Ground,
             csi: Csi::default(),
@@ -578,14 +638,44 @@ impl Term {
         }
     }
 
-    /// What is shown.
-    pub fn screen(&self) -> &Screen {
+    /// The screen currently shown (main or alternate).
+    pub fn shown(&self) -> &Screen {
         &self.screen
     }
 
-    /// How input is to be sent to the program, as words: what the `modes` file says.
-    pub fn words(&mut self) -> String {
-        self.screen.words()
+    /// Resolves a cell's 1-based OSC 8 hyperlink number to its address.
+    pub fn link(&self, id: u16) -> Option<&str> {
+        self.links.get(usize::from(id).checked_sub(1)?).map(String::as_str).filter(|address| !address.is_empty())
+    }
+
+    /// The program-set colour for palette entry `index` (OSC 4), if set.
+    pub fn palette(&self, index: u8) -> Option<[u8; 3]> {
+        self.own.get(&u16::from(index)).copied()
+    }
+
+    /// The program-set default foreground colour (OSC 10), if set.
+    pub fn foreground(&self) -> Option<[u8; 3]> {
+        self.own.get(&FOREGROUND).copied()
+    }
+
+    /// The program-set default background colour (OSC 11), if set.
+    pub fn background(&self) -> Option<[u8; 3]> {
+        self.own.get(&BACKGROUND).copied()
+    }
+
+    /// The cursor's colour, if the program set one (OSC 12).
+    pub fn cursor_colour(&self) -> Option<[u8; 3]> {
+        self.own.get(&CURSOR).copied()
+    }
+
+    /// Monotonic revision bumped on `feed`, `resize`, and `notice`.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Bounds the pending history bytes kept in `Out` (0 disables string history buffering).
+    pub fn set_history_max(&mut self, bytes: usize) {
+        self.history_max = bytes;
     }
 
     /// What the terminal is told of the world outside it: to be read, and to be said anew.
@@ -643,18 +733,7 @@ impl Term {
         out
     }
 
-    // ---- files -----------------------------------------------------------
-
-    /// A wrapped row keeps its trailing spaces, except for a wide character's padding cell.
-    fn row_text(row: &[Cell], goes_on: bool, out: &mut String) {
-        let blank = |cell: &Cell| cell.ch == '\0' || (cell.ch == ' ' && cell.more.first() == Some(&'\0'));
-        let used = if goes_on {
-            text_cells(row).len()
-        } else {
-            row.iter().rposition(|cell| !blank(cell)).map_or(0, |last| last + 1)
-        };
-        out.extend(row.iter().take(used).flat_map(Cell::chars));
-    }
+    // ---- history ---------------------------------------------------------
 
     /// A row's text as history keeps it. A row that goes on in the next is not ended, so history
     /// holds whole lines however they were wrapped; `open` says the line before was left so, and
@@ -662,11 +741,11 @@ impl Term {
     /// `styled` gets the same row with its looks, and a line's end wherever `out` gets one;
     /// `joiner` is what the open line's last character is to this row's first, `own` the colours
     /// the program set, in which the row is told as it is now: history is not told again later.
-    /// With 4 MiB waiting to be written in `out` the row is not kept, which is what false says:
+    /// Past `limit` bytes waiting in `out` the row is not kept, which is what false says:
     /// it ends the line it would have gone on, in both texts.
-    fn row_history(row: &[Cell], goes_on: bool, own: &Own, tail: &mut Tail, out: &mut Out) -> bool {
+    fn row_history(row: &[Cell], goes_on: bool, own: &Own, limit: usize, tail: &mut Tail, out: &mut Out) -> bool {
         let (out, styled) = (&mut out.history, &mut out.styled);
-        let kept = out.len().max(styled.len()) < HISTORY_PENDING_MAX;
+        let kept = out.len().max(styled.len()) < limit;
         if tail.open.is_some() && !(kept && continues(row)) {
             tail.end(out, styled);
         }
@@ -674,7 +753,7 @@ impl Term {
             return false;
         }
         let start = out.len();
-        Term::row_text(row, goes_on, out);
+        files::row_text(row, goes_on, out);
         tail.open = goes_on.then(|| tail.open.unwrap_or(0) + out.len() - start);
         // (Most rows have no looks and no character that could join another: their text is all of it.)
         let looks = |cell: &Cell| Style { flags: cell.style.flags & !MARKS, ..cell.style } != Style::default();
@@ -690,108 +769,12 @@ impl Term {
             tail.joiner = Joiner::default();
             text.chars().next_back().map(|last| tail.joiner.joins(last));
         } else {
-            Term::row_styled(row, goes_on, false, own, &mut tail.joiner, styled);
+            files::row_styled(row, goes_on, false, own, &mut tail.joiner, styled);
         }
         if !goes_on {
             tail.end(out, styled);
         }
         true
-    }
-
-    /// What a screen's files say: the main one's, or (`alt`) the alternate one's while a program has it.
-    pub fn files(&self, alt: bool) -> Option<Files<'_>> {
-        let (grid, pictures) = match (alt, self.screen.alt) {
-            (false, true) => (&self.other, &self.other_pictures),
-            (true, false) => return None,
-            _ => (&self.screen.grid, &self.screen.pictures),
-        };
-        let top = if alt { 0 } else { self.tail.lines };
-        let (screen, lines) = (Term::text(grid), format!("{top}\n{}\n", self.goes_on(grid, !alt)));
-        Some(Files { screen, styled: self.looks(grid), lines, links: self.links_of(grid, top), pictures })
-    }
-
-    fn text(grid: &[Vec<Cell>]) -> String {
-        let mut out = String::new();
-        for (row, goes_on) in with_next(grid) {
-            Term::row_text(row, goes_on, &mut out);
-            out.push('\n');
-        }
-        out
-    }
-
-    /// The cursor's colour, if the program set one (OSC 12).
-    pub fn cursor_colour(&self) -> Option<[u8; 3]> {
-        self.own.get(&CURSOR).copied()
-    }
-
-    /// A screen with colours: text and SGR codes only, each row on a line
-    /// that starts and ends in the default style. A colour the program set for a palette number
-    /// or for the two it draws with by default is told as what it set (direct colour), wherever
-    /// a cell has that number or that default: so with a background of its own every cell of
-    /// the screen has it, the blank ones too, and every row is as long as the screen is wide.
-    fn looks(&self, grid: &[Vec<Cell>]) -> String {
-        let mut out = String::new();
-        for (row, goes_on) in with_next(grid) {
-            Term::row_styled(row, goes_on, true, &self.own, &mut Joiner::default(), &mut out);
-            out.push('\n');
-        }
-        out
-    }
-
-    /// A row with its looks, from the default style to the default style, and no line's end.
-    /// `own` are the colours the program set: a cell that has such a palette number or default
-    /// is told in that colour. `joiner` is what came before the row in its line, and then what
-    /// the row leaves.
-    /// `screen`: the cell a wide character left empty at the row's end is told too, if it has a
-    /// look (it is no text: U+200B before it says so, and a history has none of it).
-    fn row_styled(row: &[Cell], goes_on: bool, screen: bool, own: &Own, joiner: &mut Joiner, out: &mut String) {
-        let plain = Style::default();
-        let own = |color: Color, default: Option<u16>| {
-            let slot = match color {
-                Color::Default => default,
-                Color::Indexed(n) => Some(u16::from(n)),
-                Color::Rgb(..) => None,
-            };
-            slot.and_then(|slot| own.get(&slot)).map_or(color, |[r, g, b]| Color::Rgb(*r, *g, *b))
-        };
-        // (A blank at a row's end is not told for a foreground of its own alone: it shows none.)
-        let blank = Cell { style: Style { fg: own(Color::Default, Some(FOREGROUND)), ..plain }, ..Cell::blank(plain) };
-        // (The marks are no looks, and a link is none here: the file has no links. An underline
-        // with no colour of its own has the text's.)
-        let look = |cell: &Cell| {
-            let Style { fg, bg, ul, flags } = cell.style;
-            let (fg, bg, ul) = (own(fg, Some(FOREGROUND)), own(bg, Some(BACKGROUND)), own(ul, None));
-            Cell { style: Style { fg, bg, ul, flags: flags & !MARKS }, link: 0, ..*cell }
-        };
-        // (A row that goes on in the next keeps the blanks at its end, as in `plain`.)
-        let gap = row.last().filter(|cell| goes_on && cell.style.flags & PAD != 0);
-        let used = match goes_on {
-            true => row.len() - usize::from(gap.is_some()),
-            false => row.iter().rposition(|c| look(c) != blank).map_or(0, |last| last + 1),
-        };
-        let gap = gap.filter(|cell| screen && look(cell) != blank);
-        let mut style = plain;
-        for cell in row.iter().take(used).chain(gap).filter(|cell| cell.ch != '\0') {
-            if look(cell).style != style {
-                style = look(cell).style;
-                style.sgr(out);
-            }
-            if gap.is_some_and(|gap| std::ptr::eq(gap, cell)) {
-                out.push('\u{200b}');
-            }
-            // Two characters that would read back as one are kept apart by U+200B, which
-            // takes no room and is no part of either.
-            if joiner.joins(cell.ch) {
-                out.push('\u{200b}');
-                *joiner = Joiner::default();
-                joiner.joins(cell.ch);
-            }
-            cell.more.iter().take_while(|&&c| c != '\0').for_each(|&c| _ = joiner.joins(c));
-            out.extend(cell.chars());
-        }
-        if style != plain {
-            out.push_str("\x1b[m");
-        }
     }
 
     /// Ends the line history has the start of, where history has it: a line break the program did not
@@ -841,31 +824,6 @@ impl Term {
         self.links.resize(self.links.len().max(at + 1), String::new());
         self.links.get_mut(at).into_iter().for_each(|slot| *slot = address.to_string());
         at as u16 + 1
-    }
-
-    /// The links on a screen, a line each: `LINE COL LEN ADDRESS`. LINE is the line's number, the
-    /// first row's being `top`; COL counts cells from the start of that line's first row on the
-    /// screen, a whole row for each row before; LEN is how many cells, in reading order.
-    fn links_of(&self, grid: &[Vec<Cell>], top: usize) -> String {
-        // (A list that would be longer than a reader reads ends before the run that makes it so.)
-        let (mut out, mut full) = (String::new(), false);
-        for (line, rows) in (top..).zip(grid.chunk_by(|_, next| continues(next))) {
-            // A run is a line's cells of one link, one after the other: no link after the line's
-            // last cell ends the run that reaches it.
-            let (mut start, mut open) = (0, 0);
-            for (at, link) in rows.iter().flatten().map(|cell| cell.link).chain([0]).enumerate() {
-                if link != open && open != 0 {
-                    let address = self.links.get(usize::from(open) - 1);
-                    let record = format!("{line} {start} {} {}\n", at - start, address.map_or("", String::as_str));
-                    full |= out.len() + record.len() > LINKS_LIST_MAX;
-                    if address.is_some_and(|address| !address.is_empty()) && !full {
-                        out.push_str(&record);
-                    }
-                }
-                (start, open) = if link == open { (start, open) } else { (at, link) };
-            }
-        }
-        out
     }
 
     /// The main screen's rows, whichever screen is shown.
@@ -937,13 +895,13 @@ impl Term {
         self.marks.iter_mut().zip(texts).for_each(|(mark, at)| mark.0 = at);
     }
 
-    /// The shell's marks, a line each: `LINE AT KIND`, and the command's exit code after `end`.
-    pub fn marks(&self) -> String {
-        let mut out = String::new();
-        for ((_, kind, code), at) in self.marks.iter().zip(self.texts(0..usize::MAX)) {
-            let At::Text(line, bytes) = at else { continue };
-            let _ = write!(out, "{line} {bytes} {kind}");
-            let _ = writeln!(out, "{}", code.map_or(String::new(), |code| format!(" {code}")));
+    /// The shell's OSC 133 marks, in the pane text's line/byte numbering.
+    pub fn marks(&self) -> Vec<Mark> {
+        let mut out = Vec::with_capacity(self.marks.len());
+        for (&(_, kind, exit), at) in self.marks.iter().zip(self.texts(0..usize::MAX)) {
+            if let At::Text(line, byte) = at {
+                out.push(Mark { line, byte, kind, exit });
+            }
         }
         out
     }
@@ -966,14 +924,6 @@ impl Term {
             // (What comes after them in history makes the rows a resize sent there stay there.)
             self.lent = None;
         }
-    }
-
-    /// The rows of a screen that go on from the row above (the text wrapped into them), as numbers
-    /// from 0: what its text cannot say. The main screen's first row may go on from history's last line.
-    fn goes_on(&self, grid: &[Vec<Cell>], main: bool) -> String {
-        let open = self.tail.open.is_some() && main;
-        let rows = grid.iter().enumerate().filter(|(y, row)| continues(row) && (*y > 0 || open));
-        rows.map(|(y, _)| y.to_string()).collect::<Vec<String>>().join(" ")
     }
 
     // ---- the grid --------------------------------------------------------
@@ -1138,7 +1088,7 @@ impl Term {
             let used = row.iter().rposition(|cell| *cell != blank).map_or(0, |last| last + 1);
             if kept {
                 let text = row.get(..used.max(1)).filter(|_| cut && !goes_on).unwrap_or(row);
-                full |= !Term::row_history(text, goes_on, &self.own, &mut self.tail, &mut self.out);
+                full |= !Term::row_history(text, goes_on, &self.own, self.history_max, &mut self.tail, &mut self.out);
             }
             row.iter_mut().take(used).for_each(|cell| *cell = blank);
         }
@@ -1150,7 +1100,7 @@ impl Term {
             self.parts(from);
         }
         self.parts(self.bottom + 1);
-        if full {
+        if full && self.history_max > 0 {
             self.refuse(HISTORY_FULL);
         }
     }
@@ -1377,7 +1327,9 @@ impl Term {
         // command begins, in that order and still on the screen (where each is, noted before
         // the marks become places in the text).
         let pending = match self.marks.as_slice() {
-            [.., (At::Screen(ar, ac), "prompt", _), (At::Screen(br, bc), "command", _)] if (br, bc) > (ar, ac) => {
+            [.., (At::Screen(ar, ac), MarkKind::Prompt, _), (At::Screen(br, bc), MarkKind::Command, _)]
+                if (br, bc) > (ar, ac) =>
+            {
                 Some(((*ar, *ac), (*br, *bc)))
             }
             _ => None,
@@ -1451,7 +1403,7 @@ impl Term {
             if y == keep {
                 before = (self.out.history.len(), self.out.styled.len(), self.tail);
             }
-            full |= !Term::row_history(row, goes_on, &self.own, &mut self.tail, &mut self.out);
+            full |= !Term::row_history(row, goes_on, &self.own, self.history_max, &mut self.tail, &mut self.out);
         }
         let rows_lent: Vec<Vec<Cell>> = wrapped.drain(..up).skip(keep).collect();
         wrapped.resize(rows, vec![blank; cols]);
@@ -1512,11 +1464,12 @@ impl Term {
             styled: self.out.styled.len() - before.1,
             before: before.2,
         });
-        if full {
+        if full && self.history_max > 0 {
             self.refuse(HISTORY_FULL);
         }
         (self.screen.cols, self.screen.rows) = (cols, rows);
-        (self.top, self.bottom) = (0, rows - 1);
+        (self.top, self.bottom) = (0, rows.saturating_sub(1));
+        self.version = self.version.wrapping_add(1);
         self.settle();
         let screen = |at: At| match at {
             At::Text(line, bytes) => self.screen_place(line, bytes).map_or(at, |(row, col)| At::Screen(row, col)),
@@ -1548,6 +1501,9 @@ impl Term {
             self.byte(byte);
         }
         self.settle();
+        if !bytes.is_empty() {
+            self.version = self.version.wrapping_add(1);
+        }
     }
 
     fn byte(&mut self, byte: u8) {
@@ -1693,6 +1649,8 @@ impl Term {
                     titles: std::mem::take(&mut self.titles),
                     next_picture: self.next_picture,
                     tail: self.tail,
+                    history_max: self.history_max,
+                    version: self.version,
                     marks: std::mem::take(&mut self.marks),
                     ..Term::new(self.screen.cols, self.screen.rows)
                 };
@@ -1781,6 +1739,7 @@ impl Term {
 
     /// Something the program wants noticed: text without control characters, a kibibyte at most.
     pub fn notice(&mut self, text: &str) {
+        self.version = self.version.wrapping_add(1);
         let mut text: String = text.chars().filter(|c| !c.is_control()).collect();
         text.truncate(text.floor_char_boundary(1024));
         self.out.notice = Some(text);
@@ -1816,23 +1775,15 @@ impl Term {
                         // (No answer is looked for that has no room, 28 bytes being the longest:
                         // what the string sets after it is set all the same.)
                         (Some(_), "?") if self.out.reply.len() + 28 > REPLY_MAX => self.refuse(DROPPED),
-                        // Told what the program set; or else from the last line that starts with
-                        // that name, if what follows the name is a colour (`#` and six hex
-                        // digits; blanks around them do not matter).
+                        // Told what the program set; or else what the host told us.
                         (Some(slot), "?") => {
-                            let (name, which) = match slot {
-                                FOREGROUND => ("foreground".to_string(), "10".to_string()),
-                                BACKGROUND => ("background".to_string(), "11".to_string()),
-                                CURSOR => ("cursor".to_string(), "12".to_string()),
-                                n => (n.to_string(), format!("4;{n}")),
+                            let (which, told) = match slot {
+                                FOREGROUND => ("10".to_string(), self.told.fg),
+                                BACKGROUND => ("11".to_string(), self.told.bg),
+                                CURSOR => ("12".to_string(), self.told.cursor),
+                                n => (format!("4;{n}"), self.told.palette.get(&(n as u8)).copied()),
                             };
-                            let line = |line: &str| {
-                                let mut words = line.split_whitespace();
-                                let told = |told: &str| Some(told).filter(|told| told.len() == 7).and_then(colour);
-                                (words.next() == Some(name.as_str())).then(|| words.next().and_then(told))
-                            };
-                            let told = || self.told.colours.lines().rev().find_map(line).flatten();
-                            if let Some([r, g, b]) = self.own.get(&slot).copied().or_else(told) {
+                            if let Some([r, g, b]) = self.own.get(&slot).copied().or(told) {
                                 let answer = format!("rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}");
                                 self.respond(&format!("\x1b]{which};{answer}{end}"));
                             }
@@ -1900,23 +1851,27 @@ impl Term {
             // as the place the cursor is at.
             "133" if !self.screen.alt => {
                 let kind = match rest.split(';').next() {
-                    Some("A") => "prompt",
-                    Some("B") => "command",
-                    Some("C") => "output",
-                    Some("D") => "end",
+                    Some("A") => MarkKind::Prompt,
+                    Some("B") => MarkKind::Command,
+                    Some("C") => MarkKind::Output,
+                    Some("D") => MarkKind::End,
                     _ => return,
                 };
-                let code = rest.split(';').nth(1).filter(|_| kind == "end").and_then(|code| code.parse::<u8>().ok());
+                let code =
+                    rest.split(';').nth(1).filter(|_| kind == MarkKind::End).and_then(|code| code.parse::<u8>().ok());
                 let (row, col) = self.screen.cursor.place();
                 let here = At::Screen(row, col);
                 // A prompt before a mark says that mark's text is there no more (the prompt was
                 // drawn again higher up): the mark is kept, at the prompt's place, so that what
                 // was marked before is still in its order, with nothing between. Only a prompt
                 // says so: a program that moved up and ended has erased nothing.
-                if kind == "prompt" {
+                if kind == MarkKind::Prompt {
                     self.move_marks(|r, c| (r, c).min((row, col)));
                     // (A prompt drawn again in its place is one prompt.)
-                    while self.marks.last().is_some_and(|last| last.0 == here && matches!(last.1, "prompt" | "command"))
+                    while self
+                        .marks
+                        .last()
+                        .is_some_and(|last| last.0 == here && matches!(last.1, MarkKind::Prompt | MarkKind::Command))
                     {
                         self.marks.pop();
                     }
@@ -2083,7 +2038,7 @@ impl Term {
                 }
                 self.interrupt();
             }
-            (0, 0, b'c') => self.respond("\x1b[?62;4;22c"),
+            (0, 0, b'c') => self.respond(if self.told.sixel { "\x1b[?62;4;22c" } else { "\x1b[?62;22c" }),
             (b'>', 0, b'q') if self.csi.params.len() == 1 && self.arg(0, 0) == 0 => {
                 self.respond(&format!("\x1bP>|{}\x1b\\", self.told.name));
             }
