@@ -1,7 +1,7 @@
 #!/bin/sh
 # .edit FILE [LINE]: opens FILE in a tab of its own, in the editor, at LINE; FILE
 # is removed when that ends. LINE is 1 if not given.
-# How the editor is run is `$FUXN_EDIT` if that is set (a line of sh: the file is its
+# How the editor is run is `$FUX_EDIT` if that is set (a line of sh: the file is its
 # `$1`, the line its `$2`, which it may leave out), else `$EDITOR`, `$PAGER` or less,
 # with the line as the `case` below knows that editor to take it. The README has it in
 # full ("Keys are scripts").
@@ -10,10 +10,10 @@ if [ "$1" = --in ]; then
   # goes with the pane however that is closed (`.shell` removes the folder when
   # the editor ends; the close key removes it under a running one).
   # (One that cannot be moved there has gone, or the pane is going: mv has said why, and Enter closes the pane.)
-  mv "$2" "$FUXN_PANE/text" || { rm -f "$2"; read -r _; exit; }
-  f=$FUXN_PANE/text n=$3
+  mv "$2" "$FUX_PANE/text" || { rm -f "$2"; read -r _; exit; }
+  f=$FUX_PANE/text n=$3
   set -f; set -- ${EDITOR:-${PAGER:-less}}
-  if [ -n "$FUXN_EDIT" ]; then sh -c "$FUXN_EDIT" sh "$f" "$n"
+  if [ -n "$FUX_EDIT" ]; then sh -c "$FUX_EDIT" sh "$f" "$n"
   else case ${1##*/} in
     vi|vim|nvim|nano|emacs) "$@" "+$n" "$f" ;;
     less) "$@" "+${n}g" "$f" ;;
@@ -22,6 +22,6 @@ if [ "$1" = --in ]; then
   esac; fi || { echo "the editor ended with $?: Enter closes this"; read -r _; }
   exit 0
 fi
-p=$(fux start -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.edit" --in "$1" "${2:-1}") || { rm -f "$1"; exit; }
+p=$(fux start -- "$FUX_KEYS/.shell" "$FUX_KEYS/.edit" --in "$1" "${2:-1}") || { rm -f "$1"; exit; }
 # (An editor that is done by now has taken its pane with it: then there is none to show.)
 fux layout pane "${p##*/}" 2> /dev/null || :

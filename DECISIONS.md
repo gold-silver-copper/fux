@@ -2231,6 +2231,12 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   install of this one and fux 1 never share a session; `cargo install fux`
   now gives this one, and the README says so.
 
+- **D116. `fux 1` coexistence names retired** (the owner, 2026-11-22).
+  Environment variables move from `FUXN_*` to `FUX_*`, and default runtime
+  and config directories move from `fux-next` to `fux` (`$XDG_RUNTIME_DIR/fux`,
+  `~/.config/fux/keys`, `/tmp/fux-$USER`). The temporary coexistence section
+  is removed from `README.md`.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

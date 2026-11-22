@@ -3,4 +3,4 @@
 # group: Pane actions
 # As closing its terminal does: `kill` on the pane's `ctl`, which its holder reads. (A program
 # that ignores a hangup lives on, with `state hungup`: its number is `pid` in `status`.)
-[ -p "$FUXN_PANE/ctl" ] && echo kill 1<>"$FUXN_PANE/ctl"
+[ -p "$FUX_PANE/ctl" ] && echo kill 1<>"$FUX_PANE/ctl"

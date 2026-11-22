@@ -3,18 +3,16 @@
 //! the viewer and every other client only read and write files.
 #![forbid(unsafe_code)]
 
-/// The names that tell this program from the fux it is to replace. They are
-/// temporary: when that fux is retired, these three lines become `FUX_`,
-/// `fux` and `fux` (and the key scripts' variables with them).
+/// Environment-variable prefix (`FUX_DIR`, `FUX_KEYS`, `FUX_WS`, `FUX_VIEW`, `FUX_PANE`, ...).
 macro_rules! name {
     ($suffix:literal) => {
-        concat!("FUXN_", $suffix)
+        concat!("FUX_", $suffix)
     };
 }
 /// The folder of a session (in the runtime or cache directory) and of the keys (in the config directory).
-const FOLDER: &str = "fux-next";
+const FOLDER: &str = "fux";
 /// What `TERM_PROGRAM` says in a pane.
-pub const TERM_PROGRAM: &str = "fux-next";
+pub const TERM_PROGRAM: &str = "fux";
 
 mod holder;
 mod keys;
@@ -39,7 +37,7 @@ const USAGE: &str = "\
 fux dir                         print the session directory
 fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/
 fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and the state it left
-fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: $FUXN_WS; else in a pane its own; else main)
+fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: $FUX_WS; else in a pane its own; else main)
 fux layout [EDIT…]              print the layout of the workspace (the same default), or edit it
 fux --help                      this summary and the complete guide (for people, scripts and agents)";
 /// The single help page for people, scripts and agents; every command on it is run by `tools/help-agents.sh`.
@@ -50,13 +48,13 @@ fn var(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-/// The pane a command was typed in: `$FUXN_PANE`, when it is a directory's whole path.
+/// The pane a command was typed in: `$FUX_PANE`, when it is a directory's whole path.
 fn here() -> Option<PathBuf> {
     var(name!("PANE")).filter(|pane| pane.is_absolute())
 }
 
-/// The session directory: `$FUXN_DIR`; else, in a pane, the session that pane
-/// is in; else `$XDG_RUNTIME_DIR/fux-next`; else `~/.cache/fux-next`. By its whole path: one named by
+/// The session directory: `$FUX_DIR`; else, in a pane, the session that pane
+/// is in; else `$XDG_RUNTIME_DIR/fux`; else `~/.cache/fux`. By its whole path: one named by
 /// a relative path is meant from here, and every path of a workspace or a pane is made from this one.
 fn session() -> Result<PathBuf, String> {
     let from_pane = || Some(here()?.parent()?.parent()?.to_path_buf());
@@ -67,7 +65,7 @@ fn session() -> Result<PathBuf, String> {
     std::path::absolute(&dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
-/// The workspace a command means: the one `given` it, refused as `wrong` says if it is no name; else `$FUXN_WS`
+/// The workspace a command means: the one `given` it, refused as `wrong` says if it is no name; else `$FUX_WS`
 /// (a key script's); else, in a pane, the folder that holds the pane; else `main`. One that is no name is refused.
 fn workspace(given: Option<&str>, wrong: &str) -> Result<String, String> {
     let from_pane = || here()?.parent()?.file_name().map(PathBuf::from);

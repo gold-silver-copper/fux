@@ -98,7 +98,7 @@ class Mux:
     def start(self, fux):
         kind, rows = self.kind, ROWS
         if kind == "fux":
-            self.env.update(FUXN_DIR=os.path.join(self.root, "session"), FUXN_KEYS=os.path.join(self.root, "keys"))
+            self.env.update(FUX_DIR=os.path.join(self.root, "session"), FUX_KEYS=os.path.join(self.root, "keys"))
             pane = subprocess.run([fux, "start", "main/p", "--", "sh"], env=self.env, capture_output=True, text=True, check=True)
             self.fux, self.pane = fux, pane.stdout.strip()
             status = dict(line.split(" ", 1) for line in open(os.path.join(self.pane, "status")).read().splitlines())

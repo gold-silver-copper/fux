@@ -3,9 +3,9 @@
 # usage: ./example.sh [path to fux]   (default: target/release/fux)
 set -eu
 fux=${1:-target/release/fux}
-FUXN_DIR=$(mktemp -d) && export FUXN_DIR
-unset FUXN_PANE FUXN_WS    # run in a pane, `build` would else start in that pane's workspace
-trap 'rm -rf "$FUXN_DIR"' EXIT
+FUX_DIR=$(mktemp -d) && export FUX_DIR
+unset FUX_PANE FUX_WS    # run in a pane, `build` would else start in that pane's workspace
+trap 'rm -rf "$FUX_DIR"' EXIT
 
 # Waits up to 10 s until the command succeeds.
 until_ok() { n=0; until "$@" >/dev/null 2>&1; do n=$((n + 1)); [ $n -lt 200 ] || { echo "timed out: $*" >&2; exit 1; }; sleep 0.05; done; }

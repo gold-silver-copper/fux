@@ -9,7 +9,7 @@ if [ "$1" = --tab ]; then
   [ -s "$2" ] || { rm -f "$2"; echo "nothing to choose"; exit 0; }
   [ $# -gt 2 ] || set -- "$@" sh -c 'fux layout tab - 2>/dev/null; fux layout pane "$1"' sh
   shift
-  p=$(fux start -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$@") || { rm -f "$1"; exit; }
+  p=$(fux start -- "$FUX_KEYS/.shell" "$FUX_KEYS/.pick" "$@") || { rm -f "$1"; exit; }
   fux layout pane "${p##*/}" 2> /dev/null
   # Wait briefly until the finder (or numbered list) has drawn its first line, so early keys
   # buffered by the viewer do not arrive before a TUI finder sets raw mode (TCSAFLUSH).
@@ -23,8 +23,8 @@ if [ "$1" = --tab ]; then
 fi
 list=$1; shift
 # (The list is in this pane's own folder from here on, and goes with it; if it cannot be moved there, mv has said why, and Enter closes the pane.)
-mv "$list" "$FUXN_PANE/list" || { rm -f "$list"; read -r _; exit; }
-list=$FUXN_PANE/list
+mv "$list" "$FUX_PANE/list" || { rm -f "$list"; read -r _; exit; }
+list=$FUX_PANE/list
 if finder=$({ command -v fzf || command -v sk || command -v fzy; } 2>/dev/null); then
   line=$("$finder" < "$list") || exit 0
 else

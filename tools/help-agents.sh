@@ -19,8 +19,8 @@ if "$fux" --help | awk "$section"' !skip' | grep -n -i -e perl -e python; then
   echo "help-agents: perl or python outside the optional section" >&2; exit 1
 fi
 [ "$(wc -l < "$work/page.sh")" -ge 40 ]
-unset FUXN_PANE FUXN_WS FUXN_KEYS FUXN_EDIT
-(cd "$work" && PATH="$work/bin:$PATH" FUXN_DIR="$work/d" FUXN_KEYS="$work/keys" EDITOR=true sh -eux page.sh) > "$work/out" 2> "$work/trace" || {
+unset FUX_PANE FUX_WS FUX_KEYS FUX_EDIT
+(cd "$work" && PATH="$work/bin:$PATH" FUX_DIR="$work/d" FUX_KEYS="$work/keys" EDITOR=true sh -eux page.sh) > "$work/out" 2> "$work/trace" || {
   cat "$work/out" >&2; tail -n 5 "$work/trace" >&2; echo "help-agents: a command of the page failed" >&2; exit 1; }
 # What the page says its commands print, they print; and what it started, it removed.
 for said in '^alt$' '^main$' "the main screen's first row is line [0-9]* of the pane's text" '^exit code 3$' '^state exited 3$' '^agent-demo/ls/ exited 3 : sh -c ls /; exit 3$' '^<<t1:[1-9][0-9]*>>$' ' end 1$' '^/$' '^state killed 15$' '^state exited 2$' \

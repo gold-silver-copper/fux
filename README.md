@@ -22,7 +22,7 @@ printf 'echo hi\n' > "$D/main/build/in"; cat "$D/main/build/shown/screen"     # 
 ls "$D" "$D/main"                           # workspaces are folders, panes are folders in them
 fux view                                   # tiles, tabs, workspaces; vim, less and htop work in a pane
 # a key is a script: C-b then `v` runs an executable file you can read and replace
-cat ~/.config/fux-next/keys/C-b/v         # or under $FUXN_KEYS or $XDG_CONFIG_HOME, if you set them
+cat ~/.config/fux/keys/C-b/v         # or under $FUX_KEYS or $XDG_CONFIG_HOME, if you set them
 echo kill > "$D/main/build/ctl"             # hangs up the program; what Unix does next is what happens
 ```
 
@@ -31,18 +31,6 @@ Two notes on it: the screen is written a few milliseconds after the program
 prints, so a script looks again until it sees what it waits for; and the key
 scripts are written on the first `fux view`, to the keys directory ("Keys are
 scripts" says where that is).
-
-## While fux 1 is the one you use daily
-
-This is the fux that replaces fux 1: the branch `master` (fux 1 is on
-`old-main`; `HANDOFF.md` says where things are). Until fux 1 is retired its names are temporary, so that the two never meet: the
-variables are `FUXN_…` (to become `FUX_…`), the session is
-`$FUXN_DIR`, else `$XDG_RUNTIME_DIR/fux-next`, else `~/.cache/fux-next`, the
-keys directory is a `fux-next/keys` too, and a pane's program sees `TERM_PROGRAM=fux-next`.
-It is on crates.io as `fux` (with `fux-vt` and `fuxix`), so `cargo install fux`
-gives this one and replaces fux 1's `fux`. While you still use fux 1, build this
-one from the repository and run it by its path (`target/release/fux`), as the
-example does with `PATH` for one shell.
 
 ## Commands
 
@@ -59,9 +47,9 @@ Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot, and not `-` alone, `layout`, `layout.new`, `colours` or `keyboard`
 (a workspace and a session have files of those names).
 
-With no workspace named, a command means the one in `FUXN_WS` (a key script is
+With no workspace named, a command means the one in `FUX_WS` (a key script is
 told the workspace shown there); else, typed in a pane, "here": the workspace that pane
-is in (and that pane's session, unless `FUXN_DIR` says otherwise); else `main`. So the
+is in (and that pane's session, unless `FUX_DIR` says otherwise); else `main`. So the
 example above, typed in a pane of another workspace, starts `build` there and not in `main`.
 
 ## A pane's files
@@ -89,7 +77,7 @@ example above, typed in a pane of another workspace, starts `build` there and no
 | `pic-N.sixel` | a picture the program drew, whole, for as long as a screen places it: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes, and not there while the program has set none, or an empty one |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
-| `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself: `pwd > "$FUXN_PANE/cwd"` |
+| `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself: `pwd > "$FUX_PANE/cwd"` |
 | `notice` | what was last to be noticed: a number that grows with each round of writing that had one (from 1 again when the pane is started again), then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture that is too large, history it could not write); stops at 64 KiB |
 
@@ -199,11 +187,11 @@ fux's holder reads only so much between two screens (Bounds), which is what boun
 the frames a program can write. From run to run the key rows move by a millisecond and the flood by a few
 hundredths of a second.)
 
-The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux-next`,
-`TERM_PROGRAM_VERSION`, `COLORTERM=truecolor` and `FUXN_PANE` (its pane's directory, whole path), in
+The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux`,
+`TERM_PROGRAM_VERSION`, `COLORTERM=truecolor` and `FUX_PANE` (its pane's directory, whole path), in
 the directory `fux start` was run in, with the rest of that environment and
 the signals 1 to 31 at their defaults. Four names are not passed on, those a key script is
-told of its viewer (`FUXN_WS`, `FUXN_VIEW`, `FUXN_ROW` and `FUXN_COL`: below);
+told of its viewer (`FUX_WS`, `FUX_VIEW`, `FUX_ROW` and `FUX_COL`: below);
 and neither `COLUMNS` nor `LINES`, which the holder reads for itself: the
 pane's first size is 80x24, or the `COLUMNS` and the `LINES` the starter set (each 1 to
 500; one that is set and is not such a number fails the start, which says so).
@@ -213,7 +201,7 @@ itself and for itself, with nobody watching:
 
 | Asked | Answered |
 |---|---|
-| `CSI > q` (XTVERSION) | `fux-next VERSION` |
+| `CSI > q` (XTVERSION) | `fux VERSION` |
 | `CSI c`, `CSI > c` (device attributes) | `CSI ? 62;4;22 c` (a VT220 with sixel and colour) and `CSI > 70;0;0 c`: a kind of terminal no other gives (xterm is 41, tmux 84, Ghostty 1 with version 10), so nothing a program knows of another terminal's versions is turned on |
 | `DCS $ q … ST` (DECRQSS) | what the emulator keeps: `m` (the colours and looks in force, in the form with colons), `r` (the scroll region), `SP q` (the cursor's shape); "not valid" for anything else |
 | `DCS + q NAMES ST` (XTGETTCAP) | each name by itself, from the table below; "not valid" for every other name, so a name fux does not know never hides one it does (answers past the 16 KiB of them the emulator lets wait at once are dropped, with a line in `log`; what waits for the program, typed bytes and answers together, is 64 KiB at most) |
@@ -457,8 +445,8 @@ changes nothing and leaves a line in `log`.
 
 ### Keys are scripts
 
-The keys directory is `$FUXN_KEYS`, else `$XDG_CONFIG_HOME/fux-next/keys`, else
-`~/.config/fux-next/keys`; the viewer
+The keys directory is `$FUX_KEYS`, else `$XDG_CONFIG_HOME/fux/keys`, else
+`~/.config/fux/keys`; the viewer
 writes the default scripts there if it does not exist (and only then: after
 an upgrade, remove the folder, or copy `keys/` from the source over it, to
 get the new defaults; a copy over it leaves the keys this version no longer has). A key that has a file
@@ -474,11 +462,11 @@ names differ by more than case, for macOS; for a letter outside ASCII, a termina
 `home` `end` `pgup` `pgdn` `insert` `delete`, `f1`…`f12`, with `C-`, `M-`,
 `S-` before them when held (`C-left`, `S-f5`).
 
-A script gets `FUXN_DIR` (the session), `FUXN_WS` (the workspace shown),
-`FUXN_PANE` (the focused pane's directory, empty with no pane), `FUXN_KEYS`, `FUXN_VIEW`,
+A script gets `FUX_DIR` (the session), `FUX_WS` (the workspace shown),
+`FUX_PANE` (the focused pane's directory, empty with no pane), `FUX_KEYS`, `FUX_VIEW`,
 `COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has; `COLUMNS` is not set for a terminal that says it has no columns, nor `LINES` for one with no rows: `fux start` takes 80 or 24 for the one missing),
-`FUXN_ROW` and `FUXN_COL` (the size, as `COLSxROWS`, of the tile a split of the
-focused pane would make: `FUXN_ROW` side by side, as `C-b v` splits, `FUXN_COL`
+`FUX_ROW` and `FUX_COL` (the size, as `COLSxROWS`, of the tile a split of the
+focused pane would make: `FUX_ROW` side by side, as `C-b v` splits, `FUX_COL`
 one above the other, as `C-b s` does; the split keys
 start their pane at that size, so its program is not drawn twice), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
@@ -489,7 +477,7 @@ What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key (its first 200 characters; a line over 4096 bytes is dropped whole, and the corner says so). A key with no file, pressed in an
 open menu, closes the menu and goes nowhere (in a menu that stays open, as resize and move do, the prefix opens its own menu again: `C-b r l l C-b v` resizes and then splits). Writing the same lines to the FIFO
-`$FUXN_VIEW` does the same from anywhere.
+`$FUX_VIEW` does the same from anywhere.
 
 The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `s` split stacked (both, and a new tab, start where the focused pane's program says it is, its `cwd`, and else in the directory the viewer was started in),
@@ -538,8 +526,8 @@ arguments, split at spaces), else `$PAGER`, else `less`, in a new tab. `vi`, `vi
 keys at their line); any other editor
 gets the file alone, as not every editor reads `+LINE`. An editor behind a
 launcher of another name is one of those: say how yours is run in
-`FUXN_EDIT` (it comes before `$EDITOR`), a line of sh that is run with the file as `$1` and the line as `$2`, set where
-the viewer is started (a viewer started in a pane has it too; `export FUXN_EDIT='hx "$1:$2"'`, or your launcher in
+`FUX_EDIT` (it comes before `$EDITOR`), a line of sh that is run with the file as `$1` and the line as `$2`, set where
+the viewer is started (a viewer started in a pane has it too; `export FUX_EDIT='hx "$1:$2"'`, or your launcher in
 `hx`'s place; `keys/.edit` reads it and is yours to change). The file is in the editor pane's own folder and is removed
 when the editor ends, or with the pane if that is closed first. Its tab goes too (the
 pane removes its own folder, as a shell pane does), and the
@@ -564,14 +552,14 @@ one line. Without perl, leave the line out: the edit is then a hand edit ("Don't
 #!/bin/sh
 # show this pane alone, in a tab of its own
 # The tab's line of the layout is kept in the pane's folder; `C-b Z` puts it back.
-[ -n "$FUXN_PANE" ] || exit 0
-[ -f "$FUXN_PANE/alone" ] && { echo "already alone: C-b Z puts it back"; exit; }
-fux layout | grep '^\*' > "$FUXN_PANE/alone.new" || exit
+[ -n "$FUX_PANE" ] || exit 0
+[ -f "$FUX_PANE/alone" ] && { echo "already alone: C-b Z puts it back"; exit; }
+fux layout | grep '^\*' > "$FUX_PANE/alone.new" || exit
 fux layout break
 # A pane that was alone already has not moved: there is nothing to put back.
-if fux layout | grep '^\*' | cmp -s - "$FUXN_PANE/alone.new"
-then rm -f "$FUXN_PANE/alone.new"
-else mv "$FUXN_PANE/alone.new" "$FUXN_PANE/alone"
+if fux layout | grep '^\*' | cmp -s - "$FUX_PANE/alone.new"
+then rm -f "$FUX_PANE/alone.new"
+else mv "$FUX_PANE/alone.new" "$FUX_PANE/alone"
 fi
 ```
 
@@ -580,8 +568,8 @@ fi
 # put this pane back where `C-b z` took it from
 # The layout is text: the kept line replaces the line of the tab the pane left,
 # and the pane's own line goes.
-[ -f "$FUXN_PANE/alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
-ws=$FUXN_DIR/$FUXN_WS me=${FUXN_PANE##*/}
+[ -f "$FUX_PANE/alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
+ws=$FUX_DIR/$FUX_WS me=${FUX_PANE##*/}
 # Under the lock `fux layout` takes (flock on the workspace's folder), by way of perl (optional: see above).
 [ -n "$LOCKED" ] || LOCKED=1 exec perl -e 'use Fcntl ":flock"; open(D, "<", shift) && flock(D, LOCK_EX) or die; exit(system({ $ARGV[0] } @ARGV) >> 8)' "$ws" "$0"
 awk -v me="$me" '
@@ -595,7 +583,7 @@ awk -v me="$me" '
   !done { for (p in here) if (p in near) { print kept; done = 1; next } }
   { print }
   END { if (!done) print own }
-' "$FUXN_PANE/alone" "$ws/layout" > "$ws/.layout.$$" && mv "$ws/.layout.$$" "$ws/layout" && rm -f "$FUXN_PANE/alone"
+' "$FUX_PANE/alone" "$ws/layout" > "$ws/.layout.$$" && mv "$ws/.layout.$$" "$ws/layout" && rm -f "$FUX_PANE/alone"
 ```
 
 Put back: the tab, the pane's place in it, every share, the focus. Not put
@@ -676,11 +664,11 @@ panes too; a `history` put aside in the instant it is read can be missed: search
 `keys/.search` does it: `.text` for a pane's text, `grep`, `.pick` for the
 choice, `.edit` to open.
 
-**`sh ~/.config/fux-next/keys/.restore` (in your keys directory) starts every pane with no holder again**, under its name,
+**`sh ~/.config/fux/keys/.restore` (in your keys directory) starts every pane with no holder again**, under its name,
 with the words of its command line (`status`) and in the directory the
 program last said it was in (`cwd`: a shell that announces it; else, and after a start in place that failed since and took `cwd` away, your home
 directory). What the pane had printed is kept beside it in `before` (`history.1`, `history` and `main/screen`, one after another), since a
-start in place begins a pane's files anew, also one whose holder then ends before its first screen. A pane whose text cannot be copied (a file of it that cannot be read: `cat` says which) is not started again. Run from a login with no `FUXN_KEYS`, it tells the panes the folder it is in itself. A pane that is alive is left
+start in place begins a pane's files anew, also one whose holder then ends before its first screen. A pane whose text cannot be copied (a file of it that cannot be read: `cat` says which) is not started again. Run from a login with no `FUX_KEYS`, it tells the panes the folder it is in itself. A pane that is alive is left
 alone, and the layouts are files, so tiles and tabs are as they were. It
 starts programs, it does not bring them back: a shell starts fresh in its
 directory, an editor without its open files.
@@ -695,8 +683,8 @@ shell, by `keys/.shell`) and programs with plain arguments start as they
 were. A project that needs its panes back exactly keeps a start script of
 its own, which is a few lines of `fux start`.
 For that to be of use after a reboot, the session directory must outlast
-one. The default is usually not such a one on Linux ("Linux and macOS", below: it is one where `XDG_RUNTIME_DIR` is not set, `~/.cache/fux-next`); set `FUXN_DIR` to a directory on disk, in your shell's
-profile so that every `fux` agrees: `export FUXN_DIR=~/.local/state/fux-next`.
+one. The default is usually not such a one on Linux ("Linux and macOS", below: it is one where `XDG_RUNTIME_DIR` is not set, `~/.cache/fux`); set `FUX_DIR` to a directory on disk, in your shell's
+profile so that every `fux` agrees: `export FUX_DIR=~/.local/state/fux`.
 On disk a busy pane costs writes (see "Bounds"). Then run the script at
 login, before the first `fux view`. (`keys/.empty` is no place for it: that script runs only in a
 workspace with no pane folders, and the panes to bring back are folders.)
@@ -711,7 +699,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   shows it says that the folder is gone and stays, until you show it another
   (`C-b w g`) or a new tab (`C-b t n`) makes the folder again.
 - **Don't `mv` a live pane across filesystems** (that is a copy and an `rm`).
-  Within one, the pane simply has the new name; the program's `FUXN_PANE`
+  Within one, the pane simply has the new name; the program's `FUX_PANE`
   still says the old one, so a default shell pane that was moved no longer
   removes its folder when its shell ends (it removes a folder only if it is
   still its own: it looks, and then removes by the name, so a pane moved to that name between the two is removed).
@@ -773,9 +761,9 @@ fux adds nothing to stop these. What happens is what Unix does:
 Differences are left as they are:
 
 - The default session directory is usually in memory on Linux
-  (`$XDG_RUNTIME_DIR/fux-next`) and on disk on macOS, which sets no such
-  variable (`~/.cache/fux-next`): a flood there replaces small files on your
-  disk as often as Bounds says. Point `FUXN_DIR` at a RAM disk if that
+  (`$XDG_RUNTIME_DIR/fux`) and on disk on macOS, which sets no such
+  variable (`~/.cache/fux`): a flood there replaces small files on your
+  disk as often as Bounds says. Point `FUX_DIR` at a RAM disk if that
   matters.
 - One write of up to 4096 bytes to a FIFO arrives whole on Linux; 512 on macOS.
 - macOS ships no `flock(1)`; `fux wait` takes the same lock, and waits for it.
@@ -899,7 +887,7 @@ own character with its own address: where your terminal would join it to the
 one before it (two halves of a flag, each a link of its own), the viewer
 keeps them apart with U+200B, as `screen.styled` does.
 Opening a link is your terminal's doing. Without a viewer the `links` file
-is there to read: `cut -d' ' -f4- "$FUXN_PANE/shown/links"` in a key script lists
+is there to read: `cut -d' ' -f4- "$FUX_PANE/shown/links"` in a key script lists
 the addresses on the focused pane.
 
 

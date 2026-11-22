@@ -147,9 +147,9 @@ class Played:
 
 def fux(case, binary):
     played = Played(case)
-    env = dict(os.environ, FUXN_DIR=str(played.dir / "session"), FUXN_KEYS=str(played.dir / "keys"))
+    env = dict(os.environ, FUX_DIR=str(played.dir / "session"), FUX_KEYS=str(played.dir / "keys"))
     env.update(COLUMNS=str(case[0]), LINES=str(case[1]))
-    for name in ("FUXN_PANE", "FUXN_WS", "FUXN_VIEW"):
+    for name in ("FUX_PANE", "FUX_WS", "FUX_VIEW"):
         env.pop(name, None)
     try:
         pane = pathlib.Path(run([binary, "start", "r/p", "--", *played.command], env=env, text=True).strip())

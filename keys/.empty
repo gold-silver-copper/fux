@@ -2,4 +2,4 @@
 # What the viewer runs when the workspace it is to show has no pane: your shell
 # in a first pane, as the new-tab key starts one. Make it what you like (a
 # project's panes, a picker of workspaces, nothing at all).
-exec "$FUXN_KEYS/.new-shell"
+exec "$FUX_KEYS/.new-shell"
