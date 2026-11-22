@@ -1238,7 +1238,7 @@ fn a_shell_that_ends_with_127_closes_its_pane_and_a_command_that_cannot_be_run_s
 
 #[test]
 fn the_workspace_chosen_is_told_to_the_viewer_that_is_there_and_no_file_is_made_for_one_that_has_gone() {
-    // `C-b f w`'s picker writes its choice to the FIFO of the viewer that started it. A viewer
+    // `C-b w g`'s picker writes its choice to the FIFO of the viewer that started it. A viewer
     // that has gone by then (detached, and attached again under another number) has none: the
     // choice is lost, and no plain file of the FIFO's name is left in the session.
     let session = Session::new("chosen");
@@ -1256,7 +1256,7 @@ fn the_workspace_chosen_is_told_to_the_viewer_that_is_there_and_no_file_is_made_
     let view = session.0.join(".view.0");
     let choose = || {
         let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-        let mut script = Command::new(keys.join("C-b/f/w"));
+        let mut script = Command::new(keys.join("C-b/w/g"));
         script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("FUXN_VIEW", &view);
         script.env("FUXN_DIR", &session.0).env("FUXN_KEYS", &keys).env("FUXN_WS", "main").env_remove("FUXN_PANE");
         assert!(script.status().unwrap().success());
@@ -2678,57 +2678,6 @@ fn a_menu_shades_its_group_headings() {
 }
 
 #[test]
-fn the_workspace_picker_lists_cancels_and_switches_workspaces() {
-    let (outer, inner) = (Session::new("wpouter"), Session::new("wpinner"));
-    let keys = inner.0.join(".keys");
-    let alpha = inner.start("alpha/one", &["sh", "-c", "printf 'in-alpha\\n'; cat"]);
-    inner.start("beta/one", &["sh", "-c", "printf 'in-beta\\n'; sleep 600"]);
-    inner.start("gamma/one", &["sh", "-c", "printf 'in-gamma\\n'; sleep 600"]);
-    until("alpha printed", || read(&alpha.join("shown/screen")).contains("in-alpha"));
-    let command = ["env", &format!("FUXN_DIR={}", inner.0.display()), &format!("FUXN_KEYS={}", keys.display())];
-    let mut start = outer.fux();
-    start.env("COLUMNS", "80").env("LINES", "12").args(["start", "view", "--"]).args(command);
-    start.args([env!("CARGO_BIN_EXE_fux"), "view", "alpha"]);
-    let view = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
-    let screen = || read(&view.join("shown/screen"));
-    until_or("viewer shows alpha", screen, || screen().contains("in-alpha"));
-    // C-b w g opens the overlay workspace picker with `* alpha` selected.
-    fs::write(view.join("in"), "\x02wg").unwrap();
-    until_or("picker shows workspaces", screen, || {
-        screen().contains("workspaces")
-            && screen().contains("* alpha")
-            && screen().contains("  beta")
-            && screen().contains("  gamma")
-    });
-    assert!(fact(&view, "cursor").contains(" hidden"), "cursor should be hidden: {}", fact(&view, "cursor"));
-    // Unbound keys and q stay inside the picker and never leak to alpha's `cat`.
-    fs::write(view.join("in"), "zq").unwrap();
-    until_or("picker closes on q", screen, || !screen().contains("enter select"));
-    assert!(screen().contains("in-alpha") && !screen().contains("z"), "key leaked to pane:\n{}", screen());
-    // Open again, move down twice to gamma, up once to beta, and press Enter to switch.
-    fs::write(view.join("in"), "\x02wg").unwrap();
-    until_or("picker reopens", screen, || screen().contains("* alpha"));
-    fs::write(view.join("in"), "jjk\r").unwrap();
-    until_or("viewer switched to beta", screen, || screen().contains("in-beta") && !screen().contains("enter select"));
-    // Verify windowing on a short terminal (many workspaces).
-    for i in 0..8 {
-        fs::create_dir_all(inner.0.join(format!("w{i:02}"))).unwrap();
-    }
-    let mut short = outer.fux();
-    short.env("COLUMNS", "50").env("LINES", "6").args(["start", "short", "--"]).args(command);
-    short.args([env!("CARGO_BIN_EXE_fux"), "view", "alpha"]);
-    let short_view = PathBuf::from(String::from_utf8(short.output().unwrap().stdout).unwrap().trim());
-    let short_screen = || read(&short_view.join("shown/screen"));
-    until_or("short viewer shows alpha", short_screen, || short_screen().contains("in-alpha"));
-    fs::write(short_view.join("in"), "\x02wg").unwrap();
-    until_or("short picker shows down overflow", short_screen, || {
-        short_screen().contains("* alpha") && short_screen().contains("▼")
-    });
-    fs::write(short_view.join("in"), "jjjj").unwrap();
-    until_or("short picker scrolls with up overflow", short_screen, || short_screen().contains("▲"));
-}
-
-#[test]
 fn hold_refuses_running_without_its_pane_directory_on_stdin() {
     let session = Session::new("holdguard");
     let pane = session.start("p", &["sleep", "60"]);
@@ -2860,4 +2809,92 @@ fn single_unified_help_serves_humans_and_agents() {
     assert!(text.contains("fux start") && text.contains("WHAT THERE IS") && !text.contains("fux help agents"));
     let old = Command::new(bin).args(["help", "agents"]).output().unwrap();
     assert!(!old.status.success(), "`fux help agents` should be removed in favor of one unified help");
+}
+
+#[test]
+fn picker_waits_for_finder_ready_so_first_enter_is_not_lost_and_checks_exit_status() {
+    let (outer, inner) = (Session::new("pkouter"), Session::new("pkinner"));
+    let keys = inner.0.join(".keys");
+    let fakebin = inner.0.join(".fakebin");
+    fs::create_dir_all(&fakebin).unwrap();
+    // Simulate a TUI finder (like fzf) that takes ~80ms to start up, calls TCSAFLUSH on /dev/tty
+    // (dropping any unread bytes typed before it was ready), draws a prompt, then reads one key.
+    let fzf = fakebin.join("fzf");
+    let picked = inner.0.join(".picked");
+    fs::write(
+        &fzf,
+        format!(
+            r#"#!/bin/sh
+cat > "$FUXN_PANE/items"
+python3 - "$FUXN_PANE/items" "{}" <<'PY'
+import sys, time, termios, tty
+time.sleep(0.08)
+f = open("/dev/tty", "rb+", buffering=0)
+old = termios.tcgetattr(f)
+try:
+    tty.setraw(f.fileno(), termios.TCSAFLUSH)
+    f.write(b"FINDER_READY\r\n")
+    b = f.read(1)
+finally:
+    termios.tcsetattr(f, termios.TCSADRAIN, old)
+if b in (b"\r", b"\n"):
+    open(sys.argv[2], "w").write("ok\n")
+    sys.stdout.write(open(sys.argv[1]).readline())
+else:
+    sys.stdout.write("IGNORED\n")
+    sys.exit(1)
+PY
+"#,
+            picked.display()
+        ),
+    )
+    .unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(&fzf).status().unwrap().success());
+    let p1 = inner.start("main/one", &["sh", "-c", "printf 'PANE_ONE\\n'; sleep 600"]);
+    until("p1 printed", || read(&p1.join("shown/screen")).contains("PANE_ONE"));
+    let path = format!("{}:{}", fakebin.display(), std::env::var("PATH").unwrap());
+    let command = [
+        "env",
+        &format!("FUXN_DIR={}", inner.0.display()),
+        &format!("FUXN_KEYS={}", keys.display()),
+        &format!("PATH={path}"),
+    ];
+    let mut start = outer.fux();
+    start.env("COLUMNS", "80").env("LINES", "12").args(["start", "view", "--"]).args(command);
+    start.args([env!("CARGO_BIN_EXE_fux"), "view", "main"]);
+    let view = PathBuf::from(String::from_utf8(start.output().unwrap().stdout).unwrap().trim());
+    let screen = || read(&view.join("shown/screen"));
+    until_or("viewer shows PANE_ONE", screen, || screen().contains("PANE_ONE"));
+    // Press C-b f p and press Enter 20ms later (before the 80ms finder calls TCSAFLUSH).
+    fs::write(view.join("in"), "\x02fp").unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    fs::write(view.join("in"), "\r").unwrap();
+    // Picker pane must receive that first Enter, select `one`, and close cleanly!
+    until_or("picker closed on first Enter", screen, || {
+        picked.exists()
+            && screen().contains("PANE_ONE")
+            && fs::read_dir(inner.0.join("main")).unwrap().filter_map(Result::ok).count() <= 2
+    });
+    // Also verify a cancelled finder (non-zero exit with non-empty stdout) does not run the command.
+    let marker = inner.0.join(".ran");
+    let list = inner.0.join(".list");
+    fs::write(&list, "one\tone\n").unwrap();
+    let cancel_pane = inner.start(
+        "main/cancel",
+        &[
+            "env",
+            &format!("PATH={path}"),
+            &format!("FUXN_KEYS={}", keys.display()),
+            keys.join(".pick").to_str().unwrap(),
+            list.to_str().unwrap(),
+            "sh",
+            "-c",
+            &format!("echo \"$1\" > {}", marker.display()),
+            "sh",
+        ],
+    );
+    until("cancel finder ready", || read(&cancel_pane.join("shown/screen")).contains("FINDER_READY"));
+    fs::write(cancel_pane.join("in"), "q").unwrap();
+    assert!(inner.fux().arg("wait").arg(&cancel_pane).status().unwrap().success());
+    assert!(!marker.exists(), "command must not run when finder exits non-zero");
 }

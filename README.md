@@ -486,7 +486,7 @@ at most), so `C-b t n` and then text types into the new shell; one that
 takes longer runs on while keys are taken again (the defaults put such work in the background).
 Keys that waited (for a script, or for a workspace's first frame) are read as one run of bytes when they are taken: Escape and then a letter typed meanwhile are Alt with that letter, however long lay between them (in the old form of keys; in the kitty form Escape is a key of its own).
 What it prints goes to the viewer, a line at a time: `quit` leaves the
-viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), `workspaces` opens an overlay list of the session's workspaces (up to 1,000; `j`/`k`/arrows move, `Enter`/`y` chooses, `q`/`n`/`Escape` cancels), and anything else (an error
+viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key (its first 200 characters; a line over 4096 bytes is dropped whole, and the corner says so). A key with no file, pressed in an
 open menu, closes the menu and goes nowhere (in a menu that stays open, as resize and move do, the prefix opens its own menu again: `C-b r l l C-b v` resizes and then splits). Writing the same lines to the FIFO
 `$FUXN_VIEW` does the same from anywhere.
@@ -507,7 +507,7 @@ PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'`, the `printf` put first in a
 workspaces (`n` new, `g` choose a workspace, `h` `l`), `r` resize (`h j k l`, repeating), `m` move
 the pane (`h` earlier, `l` later, repeating), `a` pane actions (`n` to a new tab, `k` hang
 up the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
-(`p` a pane, `t` a tab, `w` a workspace: a list in a pane of its own, chosen
+(`p` a pane, `t` a tab, `s` search every pane: a list in a pane of its own, chosen
 with fzf, sk or fzy if one is installed and by number or name if none is (a number is a line of the list first, and a name only if the list has no such line)). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
 not your shell but `keys/.shell`, a few lines that run it and then remove
@@ -709,7 +709,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   notices within 2 seconds, hangs up the program and leaves. That is also how
   to close one. `rm -r` of a workspace ends all its panes; a viewer that
   shows it says that the folder is gone and stays, until you show it another
-  (`C-b f w`) or a new tab (`C-b t n`) makes the folder again.
+  (`C-b w g`) or a new tab (`C-b t n`) makes the folder again.
 - **Don't `mv` a live pane across filesystems** (that is a copy and an `rm`).
   Within one, the pane simply has the new name; the program's `FUXN_PANE`
   still says the old one, so a default shell pane that was moved no longer

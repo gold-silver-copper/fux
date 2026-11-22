@@ -6,17 +6,27 @@
 if [ "$1" = --tab ]; then
   # (With no COMMAND the pane chosen is shown, and the tab shown before the list's
   # own first, so that `fux layout tab -` goes back to that one.)
+  [ -s "$2" ] || { rm -f "$2"; echo "nothing to choose"; exit 0; }
   [ $# -gt 2 ] || set -- "$@" sh -c 'fux layout tab - 2>/dev/null; fux layout pane "$1"' sh
   shift
   p=$(fux start -- "$FUXN_KEYS/.shell" "$FUXN_KEYS/.pick" "$@") || { rm -f "$1"; exit; }
-  fux layout pane "${p##*/}" 2> /dev/null; exit 0
+  fux layout pane "${p##*/}" 2> /dev/null
+  # Wait briefly until the finder (or numbered list) has drawn its first line, so early keys
+  # buffered by the viewer do not arrive before a TUI finder sets raw mode (TCSAFLUSH).
+  n=0
+  while [ $n -lt 40 ] && [ "$(cat "$p/state" 2>/dev/null)" = running ]; do
+    grep -q '[^[:space:]]' "$p/shown/screen" 2>/dev/null && break
+    sleep 0.02
+    n=$((n + 1))
+  done
+  exit 0
 fi
 list=$1; shift
 # (The list is in this pane's own folder from here on, and goes with it; if it cannot be moved there, mv has said why, and Enter closes the pane.)
 mv "$list" "$FUXN_PANE/list" || { rm -f "$list"; read -r _; exit; }
 list=$FUXN_PANE/list
 if finder=$({ command -v fzf || command -v sk || command -v fzy; } 2>/dev/null); then
-  line=$("$finder" < "$list")
+  line=$("$finder" < "$list") || exit 0
 else
   awk '{ printf "%3d  %s\n", NR, $0 }' "$list"
   printf 'which (its number or its name)? '

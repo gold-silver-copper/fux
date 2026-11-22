@@ -5,5 +5,5 @@
 # its own; the one chosen is shown. The list is the layout file: a line a tab,
 # and `focus=` names the pane of it that has the keys.
 list=$(mktemp "$FUXN_DIR/.pick.XXXXXX") || exit
-awk '{ sub(/^[*-]? */, ""); pane = $NF; sub(/^focus=/, "", pane); if (pane != "") printf "%s\t%s\n", pane, $0 }' "$FUXN_DIR/$FUXN_WS/layout" > "$list"
+[ -f "$FUXN_DIR/$FUXN_WS/layout" ] && awk '{ sub(/^[*-]? */, ""); pane = $NF; sub(/^focus=/, "", pane); if (pane != "") printf "%s\t%s\n", pane, $0 }' "$FUXN_DIR/$FUXN_WS/layout" > "$list"
 exec "$FUXN_KEYS/.pick" --tab "$list"
