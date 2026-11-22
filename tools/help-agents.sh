@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs every command of `fux help agents` (its lines indented by four blanks), in order, as one
+# Runs every command of `fux --help` (its lines indented by four blanks), in order, as one
 # shell session in a session directory of its own; any command that fails, fails this. CI runs
 # it on Linux and macOS. The page's section "IF YOU HAVE PERL" is run only where perl is found
 # (CI's machines have it on both systems): the rest must hold without it.
@@ -9,13 +9,13 @@ fux=$(cd "$(dirname "${1:-target/release/fux}")" && pwd)/fux
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/bin" && ln -s "$fux" "$work/bin/fux"
-"$fux" help | grep -q 'fux help agents'
+"$fux" --help | grep -q 'fux start'
 perl=; ! command -v perl > /dev/null 2>&1 || perl=1
 # (The section runs from its heading to the next line that is all capitals.)
 section='/^IF YOU HAVE PERL/ { skip = 1 } /^[A-Z][A-Z ,]*$/ { skip = 0 }'
-"$fux" help agents | awk -v perl="$perl" "$section"' !(skip && !perl)' | sed -n 's/^    \([^ ]\)/\1/p' > "$work/page.sh"
+"$fux" --help | awk -v perl="$perl" "$section"' !(skip && !perl)' | sed -n 's/^    \([^ ]\)/\1/p' > "$work/page.sh"
 # Nothing outside that section names perl or python.
-if "$fux" help agents | awk "$section"' !skip' | grep -n -i -e perl -e python; then
+if "$fux" --help | awk "$section"' !skip' | grep -n -i -e perl -e python; then
   echo "help-agents: perl or python outside the optional section" >&2; exit 1
 fi
 [ "$(wc -l < "$work/page.sh")" -ge 40 ]

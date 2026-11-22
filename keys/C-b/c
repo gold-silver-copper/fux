@@ -1,5 +1,5 @@
 #!/bin/sh
-# history in the editor
+# pane text in the editor
 # group: Panes
 # `.text` makes the file (the pane's text), `.edit` opens it, at its last line
 # (in an editor whose way to a line it knows, or that `FUXN_EDIT` tells it).

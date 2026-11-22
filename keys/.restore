@@ -14,6 +14,10 @@ for p in "$D"/*/*/; do
   p=${p%/}
   command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)
   [ -n "$command" ] || continue
+  case $command in
+    'fux view'|'fux view '*|*'/'fux' view'|*'/'fux' view '*|'fux hold'|'fux hold '*|*'/'fux' hold'|*'/'fux' hold '*) continue ;;
+    *'.edit --in '*|*'.pick '*|*'.search'|*'.search '*) continue ;;
+  esac
   for f in history.1 history main/screen; do [ ! -e "$p/$f" ] || cat "$p/$f" || { rm -f "$p/before.$$"; continue 2; }; done > "$p/before.$$" || continue
   dir=
   IFS= read -r dir 2>/dev/null < "$p/cwd"

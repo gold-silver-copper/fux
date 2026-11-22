@@ -446,7 +446,7 @@ impl View {
                 // The start of an end mark at the very end is kept until the rest of it comes.
                 let held = (1..END.len()).rev().find(|&k| END.get(..k).is_some_and(|part| rest.ends_with(part)));
                 let text = end.unwrap_or(rest.len() - held.unwrap_or(0));
-                if self.picker.is_none() {
+                if self.picker.is_none() && self.menu.is_none() {
                     self.typed.extend_from_slice(rest.get(..text).unwrap_or(&[]));
                 }
                 at += text;
@@ -454,7 +454,7 @@ impl View {
                     break;
                 }
                 self.pasting = None;
-                if self.picker.is_none() {
+                if self.picker.is_none() && self.menu.is_none() {
                     self.typed.extend_from_slice(if marked { END } else { &[] });
                 }
                 at += END.len();
@@ -471,7 +471,7 @@ impl View {
                     // (Whether its program wants a paste marked is read when the paste begins, and kept: it ends as it began.)
                     let marked = has.as_deref().is_some_and(|pane| asks(pane).paste);
                     self.pasting = Some(marked);
-                    if self.picker.is_none() {
+                    if self.picker.is_none() && self.menu.is_none() {
                         self.typed.extend_from_slice(if marked { raw } else { &[] });
                     }
                 }
@@ -666,6 +666,7 @@ impl View {
                     if let Some(name) = chosen.filter(|name| *name != self.workspace) {
                         self.workspace = name;
                         self.forget();
+                        self.pause = true;
                     }
                 }
                 "esc" | "q" | "n" => self.picker = None,
@@ -880,11 +881,15 @@ impl View {
         }
         let directory = self.session.join(&self.workspace);
         let (text, mut layout, mut wrong) = Layout::load(&directory);
+        let mut printed = layout.print();
         // The file says what is shown: when panes came or went, it is written
         // again, so that an edit is always an edit of what is on the screen.
-        if wrong.is_none() && text != layout.print() {
+        if wrong.is_none() && text != printed {
             match layout::command(&directory, &[]) {
-                Ok(settled) => layout = settled,
+                Ok(settled) => {
+                    layout = settled;
+                    printed = layout.print();
+                }
                 Err(why) => wrong = Some(why),
             }
         }
@@ -920,7 +925,7 @@ impl View {
         let known = known.flat_map(|(name, pane)| pane.pictures.iter().map(move |(file, _)| (name, file)));
         let known: Vec<Stamp> = known.map(|(name, file)| picture(directory.join(name).join(file))).collect();
         let message = self.message.clone();
-        let from = (layout.print(), wrong.clone(), message, terminal, panes, clipboard, known);
+        let from = (printed, wrong.clone(), message, terminal, panes, clipboard, known);
         let overlay = self.menu.is_some() || self.picker.is_some();
         if out.is_empty() && !overlay && self.from.as_ref() == Some(&from) {
             return Ok(false);
@@ -943,6 +948,7 @@ impl View {
         let mut modes = String::from("\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
         let mut wants_focus = None;
         let mut keys = 0;
+        let mut resize_pending = false;
         for ((name, body), &(seen, held)) in tiles.iter().zip(&from.4) {
             let pane = self.panes.entry(name.clone()).or_insert_with(unread);
             let pane_directory = directory.join(name);
@@ -951,12 +957,17 @@ impl View {
             // Each holder is asked once to take the tile's size, and told the size of a cell in pixels.
             let asked = (pane.pid, body.w, body.h, cell_size);
             if pane.asked != asked {
-                pane.asked = asked;
                 let cell =
                     if cell_size.0 > 0 { format!(" {} {}", cell_size.0, cell_size.1.max(1)) } else { String::new() };
                 if pane.size != (body.w, body.h) || !cell.is_empty() {
                     let resize = format!("resize {} {}{cell}\n", body.w, body.h);
-                    let _ = send_to(&pane_directory.join("ctl"), resize.as_bytes());
+                    if matches!(send_to(&pane_directory.join("ctl"), resize.as_bytes()), Ok(n) if n == resize.len()) {
+                        pane.asked = asked;
+                    } else if held {
+                        resize_pending = true;
+                    }
+                } else {
+                    pane.asked = asked;
                 }
             }
             for y in 0..body.h {
@@ -999,7 +1010,7 @@ impl View {
                 (_, state) => format!(" {state} "),
             };
             let state = cells(&state, colour(11, Some(236), 0));
-            let (room, y) = (state.len().min(body.w), body.y + body.h - 1);
+            let (room, y) = (state.len().min(body.w), body.y + body.h.saturating_sub(1));
             put(back.get_mut(y * w..(y + 1) * w).unwrap_or_default(), body.x + body.w - room, room, &state);
             // What the focused pane's program copies goes to this terminal's clipboard, once: when its `clipboard`
             // file is another than at the last look, the pane having had the focus then too. Coming to a pane only
@@ -1076,7 +1087,7 @@ impl View {
                 parts.push((key, part));
             }
         }
-        (self.parts, self.from) = (parts, (!overlay).then_some(from));
+        (self.parts, self.from) = (parts, (!overlay && !resize_pending).then_some(from));
         if !refused.is_empty() {
             refused.dedup();
             self.message = refused.join("; ");
@@ -1465,7 +1476,10 @@ impl Pane {
         if self.seen == Some(seen) {
             return;
         }
-        let last = std::mem::replace(self, Pane { seen: Some(seen), asked: self.asked, ..Pane::default() });
+        let last = std::mem::replace(
+            self,
+            Pane { seen: Some(seen), looked: self.looked, asked: self.asked, ..Pane::default() },
+        );
         let fact = |name: &str, most: u64| text(&directory.join(name), most);
         let numbers = |text: &str| {
             text.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(SIZE_MAX + 1)).collect::<Vec<_>>()
@@ -1484,7 +1498,7 @@ impl Pane {
         let at = (place(), place());
         self.screen.cursor_shown = cursor.next() == Some("shown") && at.0.is_some_and(|row| row < self.screen.rows);
         (self.screen.cursor.row, self.screen.cursor.col) =
-            (at.0.unwrap_or(0).min(self.screen.rows - 1), at.1.unwrap_or(0).min(cols - 1));
+            (at.0.unwrap_or(0).min(self.screen.rows.saturating_sub(1)), at.1.unwrap_or(0).min(cols.saturating_sub(1)));
         self.screen.cursor_shape =
             cursor.next().and_then(|shape| shape.parse().ok()).filter(|shape| *shape <= 6).unwrap_or(0);
         self.cursor_colour = cursor.next().filter(|colour| colour.len() == 7).and_then(crate::term::colour);

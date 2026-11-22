@@ -1,5 +1,15 @@
 #!/bin/sh
 # previous workspace
 # group: Workspaces
-cd "$FUXN_DIR" && set -- */ || exit
-while [ $# -gt 1 ]; do [ "$2" != "$FUXN_WS/" ] || echo "workspace ${1%/}"; shift; done
+LC_ALL=C; export LC_ALL
+cd "$FUXN_DIR" || exit
+prev= found=
+for w in */; do
+  w=${w%/}
+  case $w in ''|-|colours|keyboard|layout|layout.new|.*|*[!A-Za-z0-9._-]*) continue ;; esac
+  [ ${#w} -le 64 ] && [ ! -L "$w" ] && [ -d "$w" ] || continue
+  [ "$w" = "$FUXN_WS" ] && found=$prev
+  prev=$w
+done
+target=${found:-$prev}
+[ -n "$target" ] && [ "$target" != "$FUXN_WS" ] && echo "workspace $target"
