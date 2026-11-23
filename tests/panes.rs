@@ -24,6 +24,11 @@ fn limit() -> Duration {
 fn grace() -> Duration {
     limit() / 6
 }
+/// How long the end of a session may take, and the end of all of them where a watcher stops the tests:
+/// what it asks of other programs (`ps`, `kill`) may not return either.
+fn budget() -> Duration {
+    (limit() / 12).max(Duration::from_secs(1))
+}
 
 /// The test on a thread: how many sessions it has, when it must be over, and the word to its
 /// watcher that it is.
@@ -49,15 +54,16 @@ fn deadline() -> Instant {
 /// Ends a session. Each pane's holder leads a session of its own, and its program another: neither
 /// goes with the test, nor at once with the directory (a holder looks every two seconds, and a program
 /// may ignore the hangup). So the holder and the program of every pane are killed, the program with
-/// its process group; then the directory goes. What could not be done is what is given back.
-fn end(session: &Path) -> Vec<String> {
+/// its process group; then the directory goes. All of it is over by the moment `by`: what was not
+/// done by then, or could not be, is what is given back.
+fn end(session: &Path, by: Instant) -> Vec<String> {
     let mut wrong = Vec::new();
     let folders = |folder: &Path| fs::read_dir(folder).into_iter().flatten().flatten().map(|entry| entry.path());
     for pane in folders(session).flat_map(|workspace| folders(&workspace).collect::<Vec<_>>()) {
         let status = read(&pane.join("status"));
         let number = |name: &str| status.lines().find_map(|line| line.strip_prefix(name)?.parse::<u32>().ok());
         let (Some(holder @ 2..), Some(program @ 2..)) = (number("holder "), number("pid ")) else { continue };
-        let processes = match processes(&[holder, program]) {
+        let processes = match processes(&[holder, program], by) {
             Ok(processes) => processes,
             Err(why) => {
                 wrong.push(format!(
@@ -86,8 +92,7 @@ fn end(session: &Path) -> Vec<String> {
         let targets = [its.then(|| format!("-{program}")), ours.then(|| holder.to_string())];
         if targets.iter().any(Option::is_some) {
             let mut kill = Command::new("kill");
-            kill.args(["-KILL", "--"]).args(targets.into_iter().flatten()).stdout(Stdio::null()).stderr(Stdio::null());
-            if let Err(why) = kill.spawn().and_then(|mut kill| kill.wait()) {
+            if let Err(why) = output_by(kill.args(["-KILL", "--"]).args(targets.into_iter().flatten()), by) {
                 wrong.push(format!(
                     "{}: its holder {holder} and program {program} were not killed: {why}",
                     pane.display()
@@ -97,13 +102,13 @@ fn end(session: &Path) -> Vec<String> {
     }
     // (A holder may write a file while its folder is being removed: then once more, so that
     // no pane of a test outlives it.)
-    for _ in 0..20 {
-        if fs::remove_dir_all(session).is_ok() || !session.exists() {
-            return wrong;
+    while fs::remove_dir_all(session).is_err() && session.exists() {
+        if Instant::now() >= by {
+            wrong.push(format!("{}: not removed", session.display()));
+            break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    wrong.push(format!("{}: not removed", session.display()));
     wrong
 }
 
@@ -120,19 +125,16 @@ struct Process {
 /// What `ps` says of the processes of these numbers that there are, with their command lines in full
 /// (whatever width the tests' own terminal is said to have: `ps` cuts its lines to that, and a line
 /// cut short is another command's).
-fn processes(pids: &[u32]) -> Result<Vec<Process>, String> {
+fn processes(pids: &[u32], by: Instant) -> Result<Vec<Process>, String> {
     let pids = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
     let mut ps = Command::new("ps");
-    ps.args(["-ww", "-o", "pid=,ppid=,pgid=,etime=,args=", "-p", &pids]).env_remove("COLUMNS");
-    let mut ps =
-        ps.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
-    let mut said = String::new();
-    let read = ps.stdout.take().map(|mut out| out.read_to_string(&mut said));
+    ps.args(["-ww", "-o", "pid=,ppid=,pgid=,etime=,args=", "-p", &pids]).env_remove("COLUMNS").stdin(Stdio::null());
+    let out = output_by(&mut ps, by)?;
     // (It ends with 1 when none of them is there any more, which is an answer.)
-    match (read, ps.wait().map(|status| status.code())) {
-        (Some(Ok(_)), Ok(Some(0 | 1))) => {}
-        (_, ended) => return Err(format!("ps ended with {ended:?}")),
+    if !matches!(out.status.code(), Some(0 | 1)) {
+        return Err(format!("ps ended with {:?}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim()));
     }
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
     let process = |line: &str| {
         let mut words = line.split_whitespace();
         let mut number = || words.next()?.parse().ok();
@@ -150,7 +152,7 @@ fn processes(pids: &[u32]) -> Result<Vec<Process>, String> {
 struct Session(PathBuf);
 impl Drop for Session {
     fn drop(&mut self) {
-        let wrong = end(&self.0);
+        let wrong = end(&self.0, Instant::now() + budget());
         sessions().retain(|session| *session != self.0);
         // (The test's last session: its watcher is told that it is over.)
         SCENARIO.with(|scenario| {
@@ -211,7 +213,7 @@ impl Session {
     }
 }
 
-/// Watches a test from a thread of its own: one that is not `over` at `end` waits where nothing
+/// Watches a test from a thread of its own: one that is not `over` at `last` waits where nothing
 /// asks its deadline. It is named, every session of the tests is ended, and the tests stop.
 fn watch(test: String, last: Instant, over: Arc<AtomicBool>) {
     std::thread::spawn(move || {
@@ -221,7 +223,17 @@ fn watch(test: String, last: Instant, over: Arc<AtomicBool>) {
                     "the test of the session `{test}` was not over {:?} after its deadline: the tests stop",
                     grace()
                 );
-                sessions().iter().flat_map(|session| end(session)).for_each(|wrong| eprintln!("{wrong}"));
+                // (Ended by a thread of its own, and not waited for past its time: the tests stop
+                // whatever became of that.)
+                let (by, (done, ended)) = (Instant::now() + budget(), mpsc::channel());
+                std::thread::spawn(move || {
+                    let sessions = sessions().clone();
+                    done.send(sessions.iter().flat_map(|session| end(session, by)).collect::<Vec<_>>())
+                });
+                match ended.recv_timeout(budget() + Duration::from_secs(1)) {
+                    Ok(wrong) => wrong.iter().for_each(|wrong| eprintln!("{wrong}")),
+                    Err(_) => eprintln!("the sessions of the tests were not ended in {:?}", budget()),
+                }
                 std::process::exit(124);
             }
             std::thread::sleep(Duration::from_millis(200));
@@ -243,28 +255,7 @@ trait Bounded {
 
 impl Bounded for Command {
     fn run_from(&mut self, from: Option<fs::File>) -> Output {
-        let what = format!("{self:?}");
-        self.stdin(from.map_or(Stdio::null(), Stdio::from)).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = self.spawn().unwrap_or_else(|e| panic!("{what}: {e}"));
-        // What it prints is read meanwhile, by threads: one that prints more than a pipe holds ends too.
-        let reader = |pipe: Option<Box<dyn Read + Send>>| {
-            let (read, bytes) = mpsc::channel();
-            std::thread::spawn(move || {
-                let mut all = Vec::new();
-                let _ = pipe.map(|mut pipe| pipe.read_to_end(&mut all));
-                let _ = read.send(all);
-            });
-            bytes
-        };
-        let stdout = reader(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
-        let stderr = reader(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
-        let status = wait(&mut child, &what);
-        // (Something the command started may still hold its pipes: that too is waited for no longer.)
-        let all = |bytes: mpsc::Receiver<Vec<u8>>| {
-            let left = deadline().saturating_duration_since(Instant::now());
-            bytes.recv_timeout(left).unwrap_or_else(|_| panic!("{what}: what it started still holds its output"))
-        };
-        Output { status, stdout: all(stdout), stderr: all(stderr) }
+        output_by(self.stdin(from.map_or(Stdio::null(), Stdio::from)), deadline()).unwrap_or_else(|why| panic!("{why}"))
     }
     fn ended(&mut self) -> ExitStatus {
         let what = format!("{self:?}");
@@ -273,21 +264,52 @@ impl Bounded for Command {
     }
 }
 
-/// Waits for a command a test started, until the test's deadline: one that has not ended by then is
-/// killed, and the test fails with its command line.
-fn wait(child: &mut Child, what: &str) -> ExitStatus {
-    let end = deadline();
+/// Runs a command to its end, or to the moment `by`, where it is killed: what it printed and how
+/// it ended, or why neither is known.
+fn output_by(command: &mut Command, by: Instant) -> Result<Output, String> {
+    let what = format!("{command:?}");
+    let mut child =
+        command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("{what}: {e}"))?;
+    // What it prints is read meanwhile, by threads: one that prints more than a pipe holds ends too.
+    let reader = |pipe: Option<Box<dyn Read + Send>>| {
+        let (read, bytes) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut all = Vec::new();
+            let _ = pipe.map(|mut pipe| pipe.read_to_end(&mut all));
+            let _ = read.send(all);
+        });
+        bytes
+    };
+    let stdout = reader(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let stderr = reader(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let status = wait_by(&mut child, &what, by)?;
+    // (Something the command started may still hold its pipes: that too is waited for no longer.)
+    let all = |bytes: mpsc::Receiver<Vec<u8>>| {
+        let left = by.saturating_duration_since(Instant::now());
+        bytes.recv_timeout(left).map_err(|_| format!("{what}: what it started still holds its output"))
+    };
+    Ok(Output { status, stdout: all(stdout)?, stderr: all(stderr)? })
+}
+
+/// Waits for a command until the moment `by`: one that has not ended by then is killed, and named.
+fn wait_by(child: &mut Child, what: &str, by: Instant) -> Result<ExitStatus, String> {
     loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            return status;
+        if let Some(status) = child.try_wait().map_err(|e| format!("{what}: {e}"))? {
+            return Ok(status);
         }
-        if Instant::now() >= end {
+        if Instant::now() >= by {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("not ended by the test's deadline, and killed: {what}");
+            return Err(format!("not ended by its deadline, and killed: {what}"));
         }
         std::thread::sleep(Duration::from_millis(2));
     }
+}
+
+/// Waits for a command a test started, until the test's deadline: one that has not ended by then is
+/// killed, and the test fails with its command line.
+fn wait(child: &mut Child, what: &str) -> ExitStatus {
+    wait_by(child, what, deadline()).unwrap_or_else(|why| panic!("{why}"))
 }
 
 /// Writes to a FIFO (a pane's `in` or `ctl`, a viewer's own) as a client that never waits does:
@@ -330,7 +352,7 @@ fn what_a_test_runs_and_writes_to_ends_at_the_tests_one_deadline() {
     let numbers: Vec<&str> = status.lines().take(2).filter_map(|line| line.split(' ').nth(1)).collect();
     let alive = |pid: &str| Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).ended().success();
     assert!(numbers.len() == 2 && numbers.iter().all(|pid| alive(pid)), "{status}");
-    assert_eq!(end(&session.0), [""; 0]);
+    assert_eq!(end(&session.0, Instant::now() + budget()), [""; 0]);
     until("the holder and the program are gone", || !numbers.iter().any(|pid| alive(pid)));
     assert!(!session.0.exists());
 
@@ -372,7 +394,7 @@ fn a_session_ends_a_program_whose_holder_has_died() {
     assert!(Command::new("kill").args(["-KILL", numbers[0]]).ended().success(), "{status}");
     until("the holder is gone", || !alive(numbers[0]));
     assert!(alive(numbers[1]), "the program went with its holder: the test means one that does not");
-    assert_eq!(end(&session.0), [""; 0]);
+    assert_eq!(end(&session.0, Instant::now() + budget()), [""; 0]);
     until("the program is gone", || !alive(numbers[1]));
 }
 
@@ -395,35 +417,62 @@ fn a_session_ends_its_panes_in_a_terminal_of_twenty_columns_too() {
     assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 }
 
+/// Where the tests that were run anew said their sessions are (`a_test_that_opens_a_fifo_nobody_writes`).
+fn said_sessions(out: &Output) -> Vec<PathBuf> {
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    said.lines().filter_map(|line| line.strip_prefix("its session: ")).map(PathBuf::from).collect()
+}
+
 #[test]
 fn a_test_held_where_nothing_asks_its_deadline_is_named_and_the_tests_stop() {
     // The tests themselves, run for the one test below with two seconds to its name: it waits for
     // good, so its watcher ends its session (the pane's program with it) and the run.
-    let dir = std::env::temp_dir().join(format!("fux-held-{}", std::process::id()));
-    let mut tests = Command::new(std::env::current_exe().unwrap());
-    tests.args(["--exact", "a_test_that_opens_a_fifo_nobody_writes", "--nocapture"]);
     let began = Instant::now();
-    let out = tests.env("FUX_TEST_LIMIT", "2").env("FUX_TEST_HELD", &dir).run();
-    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    let out = tests(&["a_test_that_opens_a_fifo_nobody_writes"], &[("FUX_TEST_LIMIT", "2"), ("FUX_TEST_HELD", "1")]);
+    let (said, sessions) = (String::from_utf8_lossy(&out.stderr).into_owned(), said_sessions(&out));
     assert_eq!(out.status.code(), Some(124), "{said}");
     assert!(said.contains("the test of the session `held` was not over"), "{said}");
-    assert!(
-        began.elapsed() < Duration::from_secs(30) && !dir.exists(),
-        "{:?}, and its session is there",
-        began.elapsed()
-    );
+    assert!(began.elapsed() < Duration::from_secs(30) && sessions.len() == 1 && !sessions[0].exists(), "{said}");
+}
+
+#[test]
+fn the_tests_stop_also_when_what_ends_their_sessions_does_not_return() {
+    // The same, where `ps` waits for good (it is a script that reads a FIFO nobody writes): ending
+    // the sessions has a time of its own, the tests stop when it is over, and what was not done is said.
+    let shim = Session::new("shim");
+    fs::create_dir_all(&shim.0).unwrap();
+    fs::write(shim.0.join("ps"), "#!/bin/sh\nexec cat \"$0.fifo\"\n").unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(shim.0.join("ps")).ended().success());
+    assert!(Command::new("mkfifo").arg(shim.0.join("ps.fifo")).ended().success());
+    let path = format!("{}:{}", shim.0.display(), std::env::var("PATH").unwrap());
+    let began = Instant::now();
+    let set = [("FUX_TEST_LIMIT", "2"), ("FUX_TEST_HELD", "1"), ("PATH", path.as_str())];
+    let out = tests(&["a_test_that_opens_a_fifo_nobody_writes"], &set);
+    let (said, sessions) = (String::from_utf8_lossy(&out.stderr).into_owned(), said_sessions(&out));
+    assert_eq!(out.status.code(), Some(124), "{said}");
+    assert!(began.elapsed() < Duration::from_secs(30) && said.contains("were not asked after"), "{said}");
+    // (Its pane was not ended, as nobody could say whose its numbers are: it goes with its folder,
+    // which a holder looks for every two seconds, and its program is one a hangup ends.)
+    assert!(sessions.len() == 1 && !sessions[0].exists(), "{said}");
+    let holder = said.lines().find_map(|line| line.strip_prefix("its holder: ")).unwrap().to_string();
+    until("its holder has left", || {
+        !Command::new("kill").args(["-0", &holder]).stderr(Stdio::null()).ended().success()
+    });
 }
 
 #[test]
 fn a_test_that_opens_a_fifo_nobody_writes() {
-    // (It waits for good, where the test above tells it to: that one runs it.)
-    let Some(dir) = std::env::var_os("FUX_TEST_HELD").map(PathBuf::from) else { return };
-    let session = Session(dir);
-    sessions().push(session.0.clone());
-    let (end, over) = (Instant::now() + limit(), Arc::new(AtomicBool::new(false)));
-    SCENARIO.with(|scenario| *scenario.borrow_mut() = Some((1, end, over.clone())));
-    watch("held".to_string(), end + grace(), over);
+    // (It waits for good, where a test above tells it to: that one runs it.)
+    if std::env::var_os("FUX_TEST_HELD").is_none() {
+        return;
+    }
+    let session = Session::new("held");
+    eprintln!("its session: {}", session.0.display());
     let pane = session.start("p", &["sleep", "600"]);
+    eprintln!(
+        "its holder: {}",
+        read(&pane.join("status")).lines().next().unwrap_or_default().trim_start_matches("holder ")
+    );
     assert!(Command::new("mkfifo").arg(pane.join("fifo")).ended().success());
     // (To open a FIFO to read is to wait for its writer: nothing here has a deadline.)
     drop(fs::File::open(pane.join("fifo")));
