@@ -650,7 +650,8 @@ impl View {
         let files = [("colours", told), ("keyboard", format!("{}\n", self.keyboard))];
         for (name, text) in files.into_iter().filter(|(name, text)| *name == "keyboard" || !text.is_empty()) {
             let own = self.session.join(format!(".{name}.{}", std::process::id()));
-            if let Err(e) = fs::write(&own, &text).and_then(|()| fs::rename(&own, self.session.join(name))) {
+            let written = crate::write_new(&own, text.as_bytes());
+            if let Err(e) = written.and_then(|()| fs::rename(&own, self.session.join(name))) {
                 let _ = fs::remove_file(&own);
                 self.message = format!("cannot write {}: {e}", self.session.join(name).display());
             }

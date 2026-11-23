@@ -101,12 +101,22 @@ pub fn stamp(file: fs::Metadata) -> (u64, i64, i64, u64) {
     (file.ino(), file.mtime(), file.mtime_nsec(), file.len())
 }
 
-/// Replaces a file in one step, so a reader sees the old one or the new one.
+/// Replaces a file in one step, so a reader sees the old one or the new one. The new one is put
+/// together beside it, under the name with `.new`, and does not stay there when it cannot be given
+/// its name.
 pub fn replace(name: impl AsRef<Path>, content: &[u8]) -> std::io::Result<()> {
     let mut new = name.as_ref().as_os_str().to_owned();
     new.push(".new");
-    fs::write(&new, content)?;
-    fs::rename(&new, name)
+    let replaced = write_new(Path::new(&new), content).and_then(|()| fs::rename(&new, name));
+    replaced.inspect_err(|_| _ = fs::remove_file(&new))
+}
+
+/// Writes a file that is made for it: what had the name goes first, and the file is made only if
+/// nothing has the name then. So a link of that name is not written through (to make a file anew
+/// is never to follow a link), nor is a FIFO there waited at.
+pub fn write_new(name: &Path, content: &[u8]) -> std::io::Result<()> {
+    let _ = fs::remove_file(name);
+    fs::OpenOptions::new().write(true).create_new(true).open(name)?.write_all(content)
 }
 
 /// A line on standard output. A reader that has left is no reason for a word; any other failure is.

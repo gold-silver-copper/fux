@@ -461,7 +461,8 @@ impl Holder {
         for (id, format, data) in self.term.new_pictures() {
             // (One that cannot be written is not on the screen: it goes, its file below, and the log says why.)
             self.pictures.insert(id, format);
-            if let Err(e) = fs::write(format!("pic-{id}.{}", format.ext()), data) {
+            // (As any file of the pane: put together beside its name and then given it, whatever has the name.)
+            if let Err(e) = replace(format!("pic-{id}.{}", format.ext()), &data) {
                 self.term.keep_pictures(|kept| kept != id);
                 self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
             }

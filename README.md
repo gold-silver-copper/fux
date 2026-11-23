@@ -89,7 +89,7 @@ it is (`.styled`, `.1`, `.new`, a picture's format), never which thing it is
 of. Each file is written when it changes and
 not otherwise (`clipboard`, `cwd` and `notice`: each round in which the program said one, the last it said in it), replaced in one step (written as `NAME.new`, then renamed),
 so a reader sees a whole old one or a whole new one (`history` and `history.styled` are added to
-in place, and a picture's file is written in place before `pictures` names it). A file that could not be written is written in the next round, which the
+in place; a picture's file is replaced as any other, before `pictures` names it). The file put together under `NAME.new` is made anew each time: whatever had that name goes, and a link under it or under the file's own name is not written through. A file that could not be written is written in the next round, which the
 program's next output, a line on `ctl` or the program's end brings; a clipboard, a directory, a
 notice or a picture that a failed round did not write is lost, as history is; `log`
 says so for each round that failed.

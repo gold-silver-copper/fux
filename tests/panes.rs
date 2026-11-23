@@ -2208,6 +2208,43 @@ fn a_fifo_where_a_workspace_would_be_is_refused_at_once() {
 }
 
 #[test]
+fn a_link_where_a_file_is_written_anew_is_not_written_through() {
+    // Links where the holder makes its files anew: where `state` and a picture's file are put
+    // together, and under the picture's own name. Each leads to a file that is none of the pane's.
+    // The holder writes none of them: what it writes is its own file, made anew.
+    let session = Session::new("nolink");
+    let draws =
+        "trap '' HUP; echo r''eady; read x; printf '\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\drawn\\n'; sleep 600";
+    let pane = session.start("p", &["sh", "-c", draws]);
+    until("the program is there", || read(&pane.join("shown/screen")).contains("ready"));
+    let kept = |name: &str| session.0.join(name);
+    for (link, file) in [("state.new", "state-kept"), ("pic-1.sixel", "picture-kept"), ("pic-1.sixel.new", "new-kept")]
+    {
+        fs::write(kept(file), "not the pane's\n").unwrap();
+        std::os::unix::fs::symlink(kept(file), pane.join(link)).unwrap();
+    }
+    send(&pane.join("in"), "\n");
+    until("the picture is drawn", || fact(&pane, "main/pictures").starts_with("pic-1.sixel "));
+    send(&pane.join("ctl"), "kill\n");
+    until("the program is hung up", || fact(&pane, "state") == "hungup");
+    for file in ["state-kept", "picture-kept", "new-kept"] {
+        assert_eq!(read(&kept(file)), "not the pane's\n", "{file} was written through a link");
+    }
+    let is_file = |name: &str| fs::symlink_metadata(pane.join(name)).is_ok_and(|file| file.is_file());
+    assert!(is_file("state") && is_file("pic-1.sixel"), "a link was given the file's name");
+    assert!(read(&pane.join("pic-1.sixel")).starts_with("\x1bPq\"1;1;10;6"));
+    // A file that cannot be given its name (here a folder has it) does not stay under the name it
+    // was put together under: the round fails, and nothing is left of it.
+    let titled = session.start("t", &["sh", "-c", "read x; printf '\\033]0;a title\\007'; sleep 600"]);
+    fs::create_dir(titled.join("title")).unwrap();
+    fs::write(titled.join("title/kept"), "").unwrap();
+    send(&titled.join("in"), "\n");
+    until("the round has failed", || read(&titled.join("log")).contains("cannot write the pane's files"));
+    let left: Vec<_> = fs::read_dir(&titled).unwrap().flatten().map(|file| file.file_name()).collect();
+    assert!(!left.iter().any(|name| name.to_string_lossy().ends_with(".new")), "{left:?}");
+}
+
+#[test]
 fn rounds_of_writing_that_fail_do_not_leave_their_pictures_for_good() {
     // A program that draws a picture, erases it and draws the next, while the list of them cannot
     // be written (a directory where its new file would be made): a round that fails still removes

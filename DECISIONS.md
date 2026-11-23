@@ -2307,6 +2307,19 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     other's panes, and four tests failed every time (at four a time, as CI
     runs them, no pair met). A session's name is now one test's, and two
     tests that take one at once are told so.
+  - **No link is written through.** `replace` wrote a file's new text with
+    a write that follows a link (`fs::write` on `NAME.new`), and a picture's
+    file the same way under its own name: with a link under either name, the
+    holder wrote into whatever file the link led to. A pane's folder may be
+    written by another program than its holder (a mirror of a pane on another
+    machine is), so the name is no proof of the file. Now the file put
+    together is made anew: what had the name is unlinked, and the file is
+    made only if nothing has the name then (`O_EXCL`, which follows no link);
+    a picture's file goes the same way, through `replace`; and the file put
+    together does not stay when it cannot be given its name. Left as they
+    were, and named here so that they are not thought covered: `log` (made by
+    `fux start`), and `history` and `history.styled` (added to in place) are
+    opened by name.
 
 ## The old fux3's bugs: which classes are gone
 
