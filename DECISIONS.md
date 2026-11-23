@@ -2265,6 +2265,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   placed whole is its own file. A screen keeps 16 images and 16 MiB of them
   (pixels as RGBA, and a PNG's own bytes), refuses one that is over that alone,
   and keeps 4 MiB of the PNGs it made; the README's bounds give the total for a pane.
+  Three readings were settled with those fixes. A payload's base64 is read by the
+  one decoder there is now, as strictly as a clipboard's (OSC 52) already was:
+  padding may be left out, but bits left over in the last character that are not
+  zero make it no base64 (`EINVAL: invalid base64`), where 0.42.0 dropped them
+  and kept the picture. Such text is base64 cut in the wrong place, so its pixels
+  were wrong before and it is refused now; and two readings of one encoding that
+  disagreed were the worse thing. A later part of a transfer may say again any of
+  the first part's keys with their values, and no others (the protocol allows it
+  `m` and `q` alone; Kitty takes any direct transmission as the next part, and
+  `kitten icat` says `a=T` on each). A key that is not the protocol's is passed
+  over, as 0.42.0 passed it over, where Kitty drops the command that has one; a
+  key of the protocol with a value not of its kind still makes the command none.
 
 ## The old fux3's bugs: which classes are gone
 
