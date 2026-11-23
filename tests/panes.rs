@@ -2657,7 +2657,8 @@ fn the_viewer_knows_a_pane_by_its_folder_and_asks_no_status_who_its_program_is()
         let new = inner.0.join(format!("main/.made.{count}"));
         fs::create_dir_all(new.join("main")).unwrap();
         std::os::unix::fs::symlink("main", new.join("shown")).unwrap();
-        for (name, text) in [("modes", "keys11\n"), ("state", "running\n"), ("main/screen.styled", "made\n")] {
+        let screen = format!("made {count}\n");
+        for (name, text) in [("modes", "keys11\n"), ("state", "running\n"), ("main/screen.styled", screen.as_str())] {
             fs::write(new.join(name), text).unwrap();
         }
         assert!(Command::new("mkfifo").arg(new.join("in")).arg(new.join("ctl")).ended().success());
@@ -2679,6 +2680,7 @@ fn the_viewer_knows_a_pane_by_its_folder_and_asks_no_status_who_its_program_is()
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
     until("the viewer asks its terminal for the keys the pane asks", || fact(&view, "modes").contains("keys11"));
     until("the pane is asked to take its tile's size", || got(&asked, &all).starts_with("resize 80 24 10 20\n"));
+    until("its screen is drawn", || read(&view.join("shown/screen")).starts_with("made 1\n"));
     let key = |letter: u8, kind: u8| format!("\x1b[{letter};1:{kind}u");
     let all = RefCell::new(String::new());
     send(&view.join("in"), key(97, 1) + &key(97, 3));
@@ -2690,6 +2692,9 @@ fn the_viewer_knows_a_pane_by_its_folder_and_asks_no_status_who_its_program_is()
     until("the next key is down", || got(&typed, &all).ends_with(&key(98, 1)));
     let (typed, asked, all) = make(2);
     until("the new folder is asked its size", || got(&asked, &all).starts_with("resize 80 24 10 20\n"));
+    // And what is drawn is the new folder's own screen: what was read of the one before is not its
+    // (neither has a `generation` to say that its files are others).
+    until("the new folder's screen is drawn", || read(&view.join("shown/screen")).starts_with("made 2\n"));
     let all = RefCell::new(String::new());
     send(&view.join("in"), key(98, 3) + &key(99, 1) + &key(99, 3));
     until("a key after it is the new pane's", || got(&typed, &all).ends_with(&key(99, 3)));

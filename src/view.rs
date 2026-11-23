@@ -106,6 +106,8 @@ struct Pane {
     size: (usize, usize),
     /// The pane's folder, while it is a tile: with another folder under its name it is another pane.
     folder: Option<Rc<Folder>>,
+    /// Which folder what is known here was read of: kept while the pane is no tile.
+    of: Option<(u64, u64)>,
     state: String,
     /// The addresses of the links on the screen: a cell's `link` less one is its place here.
     addresses: Vec<String>,
@@ -934,10 +936,14 @@ impl View {
                 // middle of writing, a pane is as it was last read.)
                 let held = sys::open_fifo(directory.join(name).join("in")).is_ok();
                 let pane = self.panes.entry(name.clone()).or_insert_with(unread);
-                // (Another folder under the name, or one that was no tile a moment ago and so not
-                // known: it is known from here on, has been asked nothing, and is drawn whatever its files say.)
+                // (Another folder under the name, or one that was no tile a moment ago: it is known from
+                // here on, has been asked nothing, and is drawn whatever its files say. Another folder
+                // than the one that was read is another pane: nothing that was read is its.)
                 if !pane.folder.as_ref().is_some_and(|folder| folder.is(&directory.join(name))) {
-                    (pane.folder, pane.asked) = (Folder::of(&directory.join(name)), None);
+                    let folder = Folder::of(&directory.join(name));
+                    let of = folder.as_ref().map(|folder| folder.id);
+                    *pane = Pane { folder, of, ..if of == pane.of { std::mem::take(pane) } else { unread() } };
+                    pane.asked = None;
                     self.from = self.from.take().filter(|_| pane.folder.is_none());
                 }
                 pane.looked = generation(&directory.join(name), pane.looked);
@@ -1454,7 +1460,8 @@ impl Pane {
             return;
         }
         let folder = self.folder.take();
-        let new = Pane { seen: Some(seen), looked: self.looked, folder, asked: self.asked, ..Pane::default() };
+        let (of, asked) = (self.of, self.asked);
+        let new = Pane { seen: Some(seen), looked: self.looked, folder, of, asked, ..Pane::default() };
         let last = std::mem::replace(self, new);
         let fact = |name: &str, most: u64| text(&directory.join(name), most);
         let numbers = |text: &str| {

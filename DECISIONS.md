@@ -2516,6 +2516,14 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     covered: a pane renamed while a key is down in it that does not have
     the keys any more by the viewer's next look (the name it went to is not
     searched for); its release is dropped, as before.
+  - **What was read of a folder is that folder's alone** (after the review
+    of PR #483: a folder put under a tile's name in place of another was
+    asked its size and then drawn as the old one, for as long as neither had
+    a `generation`: the viewer reads a pane again when that file is another,
+    and "no file" was the same as "no file"). The viewer remembers which
+    folder it read. Another one under the name starts unread: its own files
+    are drawn, whatever they are. A pane that was no tile for a while keeps
+    what was read of it if its folder is the one that was read, as before.
   - **One handle for a pane, and never the viewer's last** (after the review
     of PR #483: with 30 panes side by side and 32 files to open, the viewer
     held 30 folders, had none left to open a pane's `in` with, and typed
