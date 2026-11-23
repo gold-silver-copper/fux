@@ -98,7 +98,7 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
     let session = crate::here().ok_or("hold is started by `fux start`".into()).and_then(|_| crate::session())?;
     // (The `cwd` an earlier holder left goes before the program starts: the file is the program's to write too.)
     let _ = fs::remove_file("cwd");
-    let mut child = {
+    let child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
         // The program is told what terminal it is in and which pane, and no size but the terminal's
@@ -113,23 +113,8 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
             .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         child.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
         sys::new_session(&mut child, true);
-        child.spawn().map_err(|e| format!("cannot start {}: {e}", program.to_string_lossy()))?
+        child
     };
-    let pid = child.id();
-    // The program's end arrives as a line on a pipe, so the loop waits on it
-    // like on everything else.
-    let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
-    let waiter = std::thread::Builder::new().spawn(move || {
-        let state = match child.wait() {
-            Ok(status) => match (status.code(), status.signal()) {
-                (Some(code), _) => format!("exited {code}"),
-                (_, signal) => format!("killed {}", signal.unwrap_or(0)),
-            },
-            Err(error) => format!("lost {error}"),
-        };
-        let _ = end_writer.write_all(state.as_bytes());
-    });
-    waiter.map_err(|e| format!("cannot start a thread: {e}"))?;
     // The command as `status` shows it: without control characters, and its first 4,096 characters.
     let command = plain(&args.iter().skip(1).map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
     let command: String = command.chars().take(4096).collect();
@@ -146,22 +131,48 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
         logged: 0,
     };
     holder.term.told().name = format!("{} {}", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION"));
-    // The FIFOs are there for as long as this function runs, and not after (what an earlier
-    // holder left of those names goes).
-    let fifos = sys::fifo("in").and_then(|input| Ok((input, sys::fifo("ctl")?)));
-    // Who holds the pane, the program's own number, and what it runs: written once, as it
-    // never changes, before the first screen (and after `generation` says the files are being written).
-    let status = format!("holder {}\npid {pid}\ncommand {command}\n", std::process::id());
-    let result =
-        fifos.and_then(|fifos| holder.turn(true).and_then(|()| replace("status", status.as_bytes())).map(|()| fifos));
-    let result = result.map_err(|e| format!("cannot make the FIFOs or the status: {e}"));
-    let result = result.and_then(|(input, ctl)| holder.run(&input, &ctl, &mut ended));
+    // The FIFOs are there for as long as the pane is kept, and not after (what an earlier holder
+    // left of those names goes): not after a program that could not be started either.
+    let result = holder.start(child, &program.to_string_lossy(), &command);
     let _ = fs::remove_file("in");
     let _ = fs::remove_file("ctl");
     result
 }
 
 impl Holder {
+    /// Makes the FIFOs, says in `status` who holds the pane, starts the program and keeps the pane
+    /// until it ends.
+    fn start(&mut self, mut program: Command, name: &str, command: &str) -> Result<(), String> {
+        // Who holds the pane and what it runs are in `status` before the program is started: the
+        // program, whose parent this is, finds from its first instruction which pane it is in. (After
+        // `generation` says the files are being written.) Its own number follows when it runs: one
+        // that could not be started leaves a `status` with none.
+        let status = |pid: Option<u32>| {
+            let pid = pid.map_or(String::new(), |pid| format!("pid {pid}\n"));
+            replace("status", format!("holder {}\n{pid}command {command}\n", std::process::id()).as_bytes())
+        };
+        let fifos = sys::fifo("in").and_then(|input| Ok((input, sys::fifo("ctl")?)));
+        let made = fifos.and_then(|fifos| self.turn(true).and_then(|()| status(None)).map(|()| fifos));
+        let (input, ctl) = made.map_err(|e| format!("cannot make the FIFOs or the status: {e}"))?;
+        let mut child = program.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
+        status(Some(child.id())).map_err(|e| format!("cannot write the status: {e}"))?;
+        // The program's end arrives as a line on a pipe, so the loop waits on it
+        // like on everything else.
+        let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
+        let waiter = std::thread::Builder::new().spawn(move || {
+            let state = match child.wait() {
+                Ok(status) => match (status.code(), status.signal()) {
+                    (Some(code), _) => format!("exited {code}"),
+                    (_, signal) => format!("killed {}", signal.unwrap_or(0)),
+                },
+                Err(error) => format!("lost {error}"),
+            };
+            let _ = end_writer.write_all(state.as_bytes());
+        });
+        waiter.map_err(|e| format!("cannot start a thread: {e}"))?;
+        self.run(&input, &ctl, &mut ended)
+    }
+
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
         // What an earlier holder of this pane left goes before this one's first screen is there: its clipboard,
         // its history, its title (a fact with none) and its program's end, which is not that of the one `status`

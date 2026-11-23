@@ -2246,6 +2246,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   graphics half one thing holds still: the note below on base64 read strictly,
   which is the clipboard's reading (OSC 52). The sentence that the pane-folder
   layout is frozen as v1 is the other half, and is not touched by D119.
+  Amended 2026-11-23 by D120: that other half is withdrawn too. The frozen v1
+  pane-folder format is withdrawn. The format is what the README of a release
+  describes; nothing is frozen again until koh has shipped on it.
   As it was written: `fux-vt` implements
   the Kitty graphics protocol (`ESC _ G ... ESC \`) with zero external dependencies
   (including bounded RFC 1950/1951 inflate and PNG decode/encode): query (`a=q`
@@ -2440,6 +2443,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     yanked or patched is the owner's to say.
   - **Sizes** (`./sizes.sh`, lines written by hand): fux-vt 5,390 to 3,103,
     fux 3,662 to 3,505; added, `base64.rs` (83, moved).
+
+- **D120. Who am I, and another name: scripts** (the owner, 2026-11-23, after
+  the review of a plan that had five new verbs: "nothing goes into the binary
+  that a shell or perl script can do"; no `fux here`, no `fux layout rename`,
+  no `fux held`, no `fux close`, no `fux start --again`, no signal sent by a
+  holder). What the binary does for the scripts, and no more:
+  - **`status` is written before the program is started.** A holder made its
+    FIFOs and wrote `status` after it had started its program, so a program
+    that looked at once found no `status` some of the time (ten of thirty
+    looks, in the review's run of the plan). Now the FIFOs are made and `status` says
+    `holder N` and `command …` first; then the program is started; then
+    `status` is written once more with `pid N` between the two. So a program
+    finds the pane it is in from its first instruction: the one whose
+    `status` names its parent. `fux wait` and the viewer already read a
+    `status` with no `pid` line. A program that cannot be started leaves that
+    first `status` (who tried, and what), an odd `generation` (the files were
+    being written and never agreed) and the `log` that says why; `in` and
+    `ctl` go, as they do when a holder ends, so that nothing takes the folder
+    for a pane that is read. Removing that `status` again was turned down: it
+    is true, and one more thing to do on the way out.
+  - **The format moves** (a `status` of two lines for an instant, and what the
+    entries below add): D117's "frozen as v1" is withdrawn, there.
 
 ## The old fux3's bugs: which classes are gone
 

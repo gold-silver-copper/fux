@@ -2670,6 +2670,33 @@ fn a_shell_named_by_nothing_is_no_shell_named() {
 }
 
 #[test]
+fn a_panes_status_names_its_holder_before_its_program_is_started() {
+    // Who keeps a pane is in its `status` before the program's first instruction: the holder, which is
+    // the program's parent. So a program that looks at once finds the pane it is in (`keys/.here`
+    // looks so); its own number follows when it runs.
+    let session = Session::new("statusfirst");
+    let looks =
+        "cat \"$FUX_PANE/status\" > \"$FUX_PANE/first\"; echo \"parent $PPID\" >> \"$FUX_PANE/first\"; exec sleep 600";
+    let pane = session.start("p", &["sh", "-c", looks]);
+    until("the program has looked", || read(&pane.join("first")).contains("parent "));
+    let (first, status) = (read(&pane.join("first")), read(&pane.join("status")));
+    let lines: Vec<&str> = status.lines().collect();
+    let holder = lines[0].strip_prefix("holder ").unwrap();
+    assert!(lines.len() == 3 && lines[1].starts_with("pid ") && lines[2].starts_with("command sh -c cat "), "{status}");
+    assert!(first.starts_with(&format!("holder {holder}\n")) && first.contains("\ncommand sh -c cat "), "{first}");
+    assert!(first.ends_with(&format!("\nparent {holder}\n")), "{first}");
+    // The order, without a race: a program that cannot be started was not tried before `status` said
+    // who tries and what. That `status` stays, with no `pid` (no program ever ran here), beside the
+    // `log` that says why; the FIFOs go, as nothing reads them.
+    let none = session.fux().args(["start", "none", "--", "/no/such/program"]).run();
+    assert!(String::from_utf8_lossy(&none.stderr).contains("cannot start /no/such/program"), "{none:?}");
+    let (none, left) = (session.0.join("main/none"), read(&session.0.join("main/none/status")));
+    let lines: Vec<&str> = left.lines().collect();
+    assert!(lines.len() == 2 && lines[0].starts_with("holder ") && lines[1] == "command /no/such/program", "{left:?}");
+    assert!(fs::symlink_metadata(none.join("in")).is_err() && fs::symlink_metadata(none.join("ctl")).is_err());
+}
+
+#[test]
 fn a_pane_started_again_that_never_came_up_leaves_no_state_of_the_run_before() {
     // A pane whose program ended with 37 is started again, and the new holder cannot write its
     // first screen (`.marks.new` is a directory). Its `status` has the new program's number by

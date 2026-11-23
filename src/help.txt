@@ -101,7 +101,8 @@ cursor  ROW COL shown|hidden SHAPE, from 0, of the screen that is drawn: `2 8 sh
         on every cell of the default background, `58:2::R:G:B` for an underline)
 modes   words, or an empty line: appcursor, keypad, paste, focus, mousesgr, mouseN, keysN
 state   running | hungup | exited CODE | killed SIGNAL (lost ERROR: the holder could not wait)
-status  three lines: holder N / pid N (the program's) / command ...
+status  three lines: holder N / pid N (the program's) / command ... (no pid line until the
+        program runs: none at all if it could not be started)
 main/, alt/, shown   a folder for each screen, the same five names in each (screen,
         screen.styled, lines, links, pictures): main always, the screen a shell prints on; alt
         while a full-screen program has the alternate screen (kept if the pane ends under it);
