@@ -2073,6 +2073,18 @@ fn kitty_refuses_an_image_larger_than_a_screen_keeps_and_evicts_nothing_for_it()
     t.feed(&apc("a=t,i=4,f=100", &large));
     assert_eq!(reply(&mut t), format!("\x1b_Gi=4;{no}\x1b\\"));
 
+    // Sent under the `i` of an image that is there, it is refused the same, and that image goes,
+    // with its places on the screen: it was to be replaced. No other image goes.
+    t.feed(&apc("a=T,i=6,f=24,s=1,v=1,q=2", &[0, 0, 255]));
+    assert_eq!(placed(&t), [(1, 0), (1, 7), (6, 0)]);
+    t.feed(&apc("a=t,i=1,f=32,s=2049,v=2048,o=z", &zeros(2049 * 2048 * 4)));
+    let out = t.take(0);
+    assert_eq!(String::from_utf8(out.reply).unwrap(), format!("\x1b_Gi=1;{no}\x1b\\"));
+    assert_eq!(out.refused, ["a kitty picture over the 16 MiB a screen keeps was dropped"]);
+    assert_eq!(placed(&t), [(6, 0)]);
+    t.feed(b"\x1b_Ga=p,i=1\x1b\\\x1b_Ga=p,i=6,p=2\x1b\\");
+    assert_eq!(reply(&mut t), "\x1b_Gi=1;ENOENT: image not found\x1b\\\x1b_Gi=6,p=2;OK\x1b\\");
+
     // One of exactly 16 MiB is kept; the oldest goes for it, as before.
     t.feed(&apc("a=t,i=5,f=32,s=2048,v=2048,o=z", &zeros(2048 * 2048 * 4)));
     assert_eq!(reply(&mut t), "\x1b_Gi=5;OK\x1b\\");

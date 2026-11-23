@@ -146,10 +146,15 @@ cells. A program that says it is in the middle of drawing (mode 2026) is not
 written out until it says it is done, or what is not yet written (output, or a line on `ctl`) has waited half a second (history may be added to meanwhile): so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data and 500 cells each way; a ninth drops the
 oldest, with a line in `log`. Of Kitty graphics a screen also keeps the images a program sent, to place them
 again: at most 16, and 16 MiB together (each one's pixels as RGBA, and a PNG's own bytes); one more drops
-the oldest, and one that is over 16 MiB alone is refused (`ENOMEM`, with a line in `log`) before it is
-unpacked, and nothing goes for it. An image still being sent in parts is at most 4 MiB, and so are, together,
-the PNGs a screen has made of images' pixels for their files and keeps to place them so again. So what a
-holder keeps of images for a pane is 48 MiB at most: 16 MiB, 4 MiB and 4 MiB for each of its two screens. At most 4 MiB of history and one row wait to be written,
+the oldest that is not placed (the oldest of all, with its pictures, when all are placed), and one that is
+over 16 MiB alone is refused (`ENOMEM`, with a line in `log`) before its pixels are unpacked. No other image
+goes for one that is refused, but the one it was sent to replace does (the image of the same `i`, with its
+pictures). An image still being sent in parts is at most 4 MiB, and so are, together,
+the PNGs a screen has made of images' pixels for their files and keeps to place them so again. So the image
+data a holder keeps for a pane is 48 MiB at most: 16 MiB, 4 MiB and 4 MiB for each of its two screens. That
+is what is kept, not all the memory images take: beside it are what is being unpacked or made a PNG at the
+moment, a command still being read (4 MiB at most), and a placed picture's bytes until they are written (the 8
+pictures above, each screen's). At most 4 MiB of history and one row wait to be written,
 counted on the longer of `history` and `history.styled`: rows past that (one
 write of the program or one resize that makes more, with what still waits from before; rows a resize takes back and gives again are counted once) are not kept, in either
 file, with a line in `log`, and the line they were part of ends there in
