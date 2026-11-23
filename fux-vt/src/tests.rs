@@ -2157,27 +2157,57 @@ fn kitty_transfer_in_parts_goes_on_only_with_its_own_parts() {
         text
     };
     // A 64 by 48 image is three parts of 4,096 characters: placed once, where the cursor is at
-    // the last, and answered once. The later parts say `m` alone, or (as ranger does, and Kitty
-    // takes) all that the first said.
+    // the last, and answered once. The later parts say `m` alone, or (as Kitty takes it) some or
+    // all of what the first said, each key with its value; an `a` or `t` the first left out
+    // counts as said, for it is `a=t`, `t=d`.
     let rgb: Vec<u8> = (0..64u32 * 48).flat_map(|i| [i as u8, (i >> 8) as u8, 9]).collect();
     let text = b64(&rgb);
     let parts = [&text[..4096], &text[4096..8192], &text[8192..]];
-    let first = "a=T,i=3,f=24,s=64,v=48,C=1";
-    for later in ["", "a=T,i=3,f=24,s=64,v=48,C=1,"] {
+    for (first, later) in [
+        ("a=T,i=3,f=24,s=64,v=48,C=1", ""),
+        ("a=T,i=3,f=24,s=64,v=48,C=1", "a=T,i=3,f=24,s=64,v=48,C=1,"),
+        ("a=T,i=3,f=24,s=64,v=48,C=1", "a=T,i=3,"),
+        ("a=T,i=3,f=24,s=64,v=48,C=1", "i=3,"),
+        ("a=T,i=3,f=24,s=64,v=48,C=1", "f=24,t=d,"),
+        ("i=3,f=24,s=64,v=48", "a=t,i=3,"),
+    ] {
         let mut t = Term::new(20, 10);
         t.feed(format!("\x1b_G{first},m=1;{}\x1b\\\x1b_G{later}m=1;{}\x1b\\", parts[0], parts[1]).as_bytes());
-        assert!(reply(&mut t).is_empty() && t.shown().pictures.is_empty());
+        assert!(reply(&mut t).is_empty() && t.shown().pictures.is_empty(), "{later}");
         t.feed(format!("\x1b[2;3H\x1b_G{later}m=0;{}\x1b\\", parts[2]).as_bytes());
-        assert_eq!(reply(&mut t), "\x1b_Gi=3;OK\x1b\\");
-        assert_eq!(t.shown().pictures.iter().map(|p| (p.row, p.col)).collect::<Vec<_>>(), [(1, 2)]);
-        assert_eq!(crate::png::decode(&t.new_pictures()[0].2, 64 * 48).unwrap().2.len(), 64 * 48 * 4);
+        assert_eq!(reply(&mut t), "\x1b_Gi=3;OK\x1b\\", "{later}");
+        if first.starts_with("a=T") {
+            assert_eq!(t.shown().pictures.iter().map(|p| (p.row, p.col)).collect::<Vec<_>>(), [(1, 2)], "{later}");
+            assert_eq!(crate::png::decode(&t.new_pictures()[0].2, 64 * 48).unwrap().2.len(), 64 * 48 * 4);
+        }
     }
+
+    // `kitten icat --transfer-mode=stream` (0.49.2), key for key: the first part says what the
+    // image is and `m=1`, each later one `a=T,q=2,m=1`, the last `a=T,q=2` and no `m`; the base64
+    // has no padding. (Its parts are 131,072 characters; these are shorter.)
+    let png = crate::png::encode_rgba(
+        64,
+        48,
+        &rgb.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect::<Vec<_>>(),
+        1 << 20,
+    );
+    let text = b64(&png.unwrap());
+    let (text, mut t) = (text.trim_end_matches('='), Term::new(20, 10));
+    assert!(text.len() > 8192 && text.len() % 4 != 0);
+    t.feed(format!("\x1b_Ga=T,q=2,f=100,m=1,s=64,v=48;{}\x1b\\", &text[..4096]).as_bytes());
+    t.feed(format!("\x1b_Ga=T,q=2,m=1;{}\x1b\\\x1b_Ga=T,q=2;{}\x1b\\", &text[4096..8192], &text[8192..]).as_bytes());
+    let out = t.take(0);
+    assert_eq!((out.reply.len(), out.refused.len(), t.shown().pictures.len()), (0, 0, 1));
 
     // What breaks a transfer off: each, after the first part, drops it (the log says so), so the
     // last part then belongs to nothing and the image is not there. With nothing between, it is.
-    let broken_off: [(&str, &[u8]); 9] = [
+    let broken_off: [(&str, &[u8]); 13] = [
         ("nothing", b""),
         ("another transfer", b"\x1b_Ga=T,i=2,f=24,s=1,v=1;AAAA\x1b\\"),
+        ("a part that names another image", b"\x1b_Gi=2,q=2;AAAA\x1b\\"),
+        ("a part with another value for a key", b"\x1b_Gi=1,f=24,s=64,v=47,q=2;AAAA\x1b\\"),
+        ("a part with a key the first had not", b"\x1b_Gi=1,c=3,q=2;AAAA\x1b\\"),
+        ("a part with another action", b"\x1b_Ga=T,q=2;AAAA\x1b\\"),
         ("a placement", b"\x1b_Ga=p,i=9,q=2\x1b\\"),
         ("a deletion", b"\x1b_Ga=d,d=i,i=9\x1b\\"),
         ("a command that is none", b"\x1b_Gm=;AAAA\x1b\\"),

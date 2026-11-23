@@ -299,7 +299,7 @@ fn xterm_256(n: u8) -> [u8; 3] {
 // ---- Kitty APC command parser & screen storage --------------------------------
 
 /// Dense key-value table for single-ASCII-letter Kitty control keys (`a`..`z`, `A`..`Z`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 struct Kv {
     values: [u32; 52],
     present: u64,
@@ -334,6 +334,13 @@ impl Kv {
             }
         }
         self
+    }
+
+    /// Whether each key of the table is in `other` too, with the same value.
+    fn within(&self, other: &Self) -> bool {
+        let said = |idx: &usize| self.present & (1u64 << idx) != 0;
+        self.present & !other.present == 0
+            && (0..self.values.len()).filter(said).all(|idx| self.values.get(idx) == other.values.get(idx))
     }
 
     fn put(&mut self, key: u8, val: u32) {
@@ -550,7 +557,8 @@ impl StoredImage {
 }
 
 struct Loading {
-    /// What its first part said, but for `m` and `q`: a later part may say the same again.
+    /// What its first part said, but for `m` and `q`, with the `a` and `t` it may have left out
+    /// (`a=t`, `t=d`): a later part may say any of it again.
     header: Kv,
     id: u32,
     number: u32,
@@ -623,13 +631,13 @@ impl Storage {
         let placement_id = kv.get(b'p').unwrap_or(0);
         let action = kv.get(b'a').and_then(|v| u8::try_from(v).ok()).unwrap_or(b't');
 
-        // A transfer in parts goes on with a part that says `m` (and `q`) alone, as it must, or all
-        // that the first part said, as some programs send and Kitty takes. A query stores nothing and
-        // leaves it be. Anything else is not part of it: the transfer is dropped, and the command is itself.
-        let goes_on = self.loading.as_ref().is_some_and(|loading| {
-            let said = kv.without(b"mq");
-            matches!(action, b't' | b'T') && (said.without(b"a") == Kv::default() || said == loading.header)
-        });
+        // A transfer in parts goes on with a part that says, `m` and `q` aside, nothing the first part
+        // did not: nothing at all, as the protocol has it, or some of the first part's keys again, each
+        // with its value, as programs send and Kitty takes (`kitten icat` says `a=T,q=2,m=1` where it
+        // began with `a=T`: without that no picture of its comes through). A query stores nothing and
+        // leaves the transfer be. Anything else is not part of it, be it a key the first part had not
+        // or another value for one it had: the transfer is dropped, and the command is itself.
+        let goes_on = self.loading.as_ref().is_some_and(|loading| kv.without(b"mq").within(&loading.header));
         let broke = !goes_on && action != b'q' && self.abandon(pictures);
         let mut outcome = if id > 0 && number > 0 {
             let both = "EINVAL: image ID and number are mutually exclusive";
@@ -811,8 +819,11 @@ impl Storage {
             spec.image_number = number;
             spec
         });
+        let mut header = kv.without(b"mq");
+        header.put(b'a', u32::from(if and_display { b'T' } else { b't' }));
+        header.put(b't', u32::from(b'd'));
         let loading = Loading {
-            header: kv.without(b"mq"),
+            header,
             id,
             number,
             implicit_id,
