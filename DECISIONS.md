@@ -2237,8 +2237,16 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   `~/.config/fux/keys`, `/tmp/fux-$USER`). The temporary coexistence section
   is removed from `README.md`.
 
-- **D117. Kitty graphics protocol and frozen v1 pane-folder format** (the owner,
-  2026-11-22, overruling the earlier panel per `HANDOFF.md`). `fux-vt` implements
+- **D117. Kitty graphics protocol (withdrawn by D119) and frozen v1 pane-folder
+  format** (the owner, 2026-11-22, overruling the earlier panel per `HANDOFF.md`).
+  Amended 2026-11-23 by D119: the graphics half of this entry is no longer what
+  fux does. Kitty graphics was taken out, what a program sends and what the
+  viewer draws, and sixel is the one picture format again; no `pic-N.png` is
+  written or drawn. What follows is the record of what was built. Of the
+  graphics half one thing holds still: the note below on base64 read strictly,
+  which is the clipboard's reading (OSC 52). The sentence that the pane-folder
+  layout is frozen as v1 is the other half, and is not touched by D119.
+  As it was written: `fux-vt` implements
   the Kitty graphics protocol (`ESC _ G ... ESC \`) with zero external dependencies
   (including bounded RFC 1950/1951 inflate and PNG decode/encode): query (`a=q`
   and feature query `e=`), direct chunked transmission (`a=t`, `a=T`, `t=d`,
@@ -2387,6 +2395,51 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     lost: a holder makes both as FIFOs, and so does a mirror (koh makes them
     with `fuxix::fifo`). A holder's own FIFOs are opened without following a
     link too.
+
+- **D119. Kitty graphics is withdrawn** (the owner, 2026-11-23: "i think we get
+  rid of all kitty image stuff, keep kitty keyboard stuff, keep sixel"). This
+  reverses the graphics half of D117, a day after it. Sixel is the one picture
+  format, in a pane and in the viewer. The kitty keyboard protocol is another
+  thing and is not touched.
+  - **Why.** The reader of the protocol's commands, the inflate and the PNG
+    decoder (`kitty.rs`, `inflate.rs`, `png.rs`: 2,264 lines) were over two
+    fifths of fux-vt, and the largest body of code in fux that reads bytes a
+    program chooses; the review after they were published found its defects
+    there (PR #480). The terminal the owner uses (foot) draws sixel.
+  - **What fux does now.** `ESC _ G … ESC \` is an APC the emulator does not
+    know, as any other: read to its end, and nothing. No answer, no picture, no
+    move of the cursor, no text, no line in `log`. (No unknown string has a
+    line there; one over the 4 MiB any string may have is dropped with the line
+    any string gets.) A program that asks whether such pictures are drawn
+    (`a=q`, then `CSI c`) gets the one answer, what the terminal is, and falls
+    back at once. A pane's folder has `pic-N.sixel` and no other picture file.
+    The viewer asks its terminal nothing about Kitty graphics and sends it no
+    command of them, at its start, in a frame or at its end; in a terminal
+    that does not say it draws sixel no picture is drawn, as it was before
+    D117. A `pictures` line that names anything but a `.sixel` file is passed
+    over. A line of the first three fields alone (the file, its row, its
+    column) is still drawn: that was sixel's before D117, the viewer measuring
+    the picture itself, and only what D117 added for a PNG went.
+  - **Turned down.** Cutting only what a program sends and keeping the
+    viewer's side, a pane's sixel pictures drawn with the Kitty protocol in a
+    terminal without sixel: the owner chose the whole cut. And a thin layer
+    that turns Kitty graphics into sixel: it needs every one of the three
+    parsers, which is what the cut is for.
+  - **What is lost.** A program that draws with Kitty graphics alone, as
+    `kitten icat`, shows nothing in a pane. fux shows no picture in a terminal
+    that draws no sixel, Ghostty and kitty among them.
+  - **What stays of D117.** Its note on base64: a clipboard (OSC 52) is read
+    by the strict decoder, which moved out of `kitty.rs` into `base64.rs` byte
+    for byte. Padding may be left out; bits left over in the last character
+    that are not zero make it no base64.
+  - **In fux-vt's API** `kitty`, `png`, `PictureFormat`, `Told::kitty_graphics`
+    and `Picture`'s `format` and `z` are gone, and `Term::new_pictures` gives
+    each picture's number and bytes. No version is bumped here: the next
+    release carries the break. fux-vt 0.19.0 and fux 0.42.0 as published still
+    have the code, with the defects PR #480 fixed after them; whether they are
+    yanked or patched is the owner's to say.
+  - **Sizes** (`./sizes.sh`, lines written by hand): fux-vt 5,390 to 3,103,
+    fux 3,662 to 3,505; added, `base64.rs` (83, moved).
 
 ## The old fux3's bugs: which classes are gone
 

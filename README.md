@@ -71,10 +71,10 @@ example above, typed in a pane of another workspace, starts `build` there and no
 | `lines` (in a screen's folder) | how that screen's rows are lines, a fact a line (`{ read -r top; read -r wraps; } < main/lines`, or `sed -n 2p main/lines`). The first line: how many lines are before the screen's first row, which is the number, from 0, of the line that row is part of. In `main/lines` they are lines of the pane's text, counted since the pane began (after `history` has become `history.1` twice, the oldest of them are in neither file). In `alt/lines` it is `0`: the alternate screen is in no text, nothing of it goes to `history`, and its lines are counted from its own first row (a number and not a sign, so that one rule reads both folders: a row's line is this number plus how many of the rows from 1 to that row do not go on). The second: the screen's rows, numbered from 0, that go on from the row above (the text wrapped into them; in `main/lines` row 0 too, from the last line of `history`), as numbers with a blank between, empty when none. Written when either line changes. A row that goes on in the next keeps the blanks at its end in `screen` and in `screen.styled`, so joining the two gives the line as it was printed (of `screen.styled`, once the U+200B and the blank of a cell a wide character left empty are taken from the row's end, as `keys/.text` does; a line feed onto a row that goes on does not end the line above, as in tmux: a shell moves down a wrapped command with one. A program that writes two lines over a wrapped one without erasing it leaves them one line): with it a script can copy a wrapped line whole |
 | `marks` | where a shell that marks its prompts (OSC 133) put its marks, a line each: `LINE AT KIND`, KIND being `prompt`, `command` (where what is typed begins), `output` or `end` (with the command's exit code after it, if the shell gave one from 0 to 255). LINE is counted from the pane's first line, as the first line of `main/lines` is, a line being what was printed up to its line break however many rows it takes: the line of that number is the screen's first, a smaller number is in `history`, in `history.1` or older than both. AT is how many bytes of the line's text are before the mark, as `history` and `main/screen` (its rows joined as `main/lines` says) have that text (and the blanks `screen` cuts from a row's end, for a mark that stands past them): `cut -b` and `LC_ALL=C awk` cut there, and never inside a character. In a file made of `history.1`, `history` and the main screen, one after the other (rows that go on joined), the line LINE is line LINE + 1 + N - T, sed's count: N the line ends `history.1` and `history` have, T the first line of `main/lines` (`keys/.text` makes that file and prints 1 + N - T); below 1, it is older than the files. A mark stays on its text: when lines are scrolled, inserted, deleted or wrapped anew its numbers follow. What is erased takes its marks to where the erased part begins, in their order (so does a prompt drawn again higher up, for the marks after it): an output that was cleared away is a pair of marks at one place, and nothing. The marks are in the pane's text, so they are at the pane's root and not in a screen's folder: the alternate screen has none, and `marks` are the shell's while it is shown. Where a line that never ends was ended in `history` (below), the marks after that count from there, in the next line. The last thousand; empty when the shell marks nothing |
 | `links` (in a screen's folder) | the links on that screen (a program makes one with OSC 8, as `ls --hyperlink` does), a line each: `LINE COL LEN ADDRESS`. LINE is the line's number as that folder's `lines` counts (in `main/links`, as in `marks`; in `alt/links`, from 0 at the alternate screen's first row), COL how many cells from the start of the line's first row on the screen the link begins (a whole row for each row the line has above it there), LEN how many cells it has, in reading order (a row counts as many cells as `size` says, also where a wide character that did not fit left its last cell empty, which `screen` does not show; a wide character is two cells); a link that goes over a line break is a line for each line. ADDRESS is printable ASCII without blanks, 2,048 bytes at most: anything else is no link, an address with a control byte in it among them. A cell keeps its link when it scrolls on the screen and when the text is wrapped anew, and loses it when it is erased or written over; text in `history` has none. The main screen's links stay listed in `main/links` while a program covers it. At most a thousand different addresses at a time (one more is no link, with a line in `log`), and a list of 256 KiB at most (the runs past that are left out); empty when there are none |
-| `pictures` (in a screen's folder) | a line `FILE ROW COL COLS ROWS CELL-WIDTH CELL-HEIGHT` for each picture that has a row on that screen: the file (`pic-N.sixel` or `pic-N.png`, in the pane's folder: a picture's bytes are the pane's, where it is placed is a screen's), where its first row and column are on the screen, its size in cells, and the size in pixels of the cells it was laid out in (what the program's terminal was told then: 10 by 20 until a `resize` says otherwise). COLS and ROWS are the whole picture's, also where it goes past the screen's right edge or its last row; ROW is below 0 when rows of it have scrolled off the top (`-2`: its third row is on the screen's first), and those rows are CELL-HEIGHT pixels each, whatever a reader's own cells are: the viewer cuts by that number, so one picture is cut the same in every terminal. The holder writes all seven. Of a sixel picture the viewer reads the first three and, of one with rows above the screen, the last, and measures the picture itself; of a PNG it reads all seven, as a Kitty placement may fill other cells than its pixels would (it is then scaled to them). A line you wrote with only the first three and a ROW of 0 or more is drawn either way: the picture as it is, measured. The lines are in the order the pictures were placed, which is the order they are drawn in, over the text: a Kitty placement's `z` is not in the line. The main screen's pictures stay listed in `main/pictures` while a program covers it |
+| `pictures` (in a screen's folder) | a line `pic-N.sixel ROW COL COLS ROWS CELL-WIDTH CELL-HEIGHT` for each picture that has a row on that screen: the file (in the pane's folder: a picture's bytes are the pane's, where it is placed is a screen's), where its first row and column are on the screen, its size in cells, and the size in pixels of the cells it was laid out in (what the program's terminal was told then: 10 by 20 until a `resize` says otherwise). COLS and ROWS are the whole picture's, also where it goes past the screen's right edge or its last row; ROW is below 0 when rows of it have scrolled off the top (`-2`: its third row is on the screen's first), and those rows are CELL-HEIGHT pixels each, whatever a reader's own cells are: the viewer cuts by that number, so one picture is cut the same in every terminal. The holder writes all seven; the viewer reads the first three and, of a picture with rows above the screen, the last, and measures the picture itself, so it draws a line of a `pictures` you wrote that has only the first three and a ROW of 0 or more. A line that names anything but a `.sixel` file is passed over. The main screen's pictures stay listed in `main/pictures` while a program covers it |
 | `history` | plain text of the lines that scrolled off the top: whole lines, however the screen had wrapped them (the last may be unfinished: its rest is on the screen still). Past 4 MiB it becomes `history.1` and a new one starts, where a line ends. A line that never ends is ended when a file is past 8 MiB: the text gets a line's end there that the program did not print (in both files, with a line in `log`), what follows is the next line, and `main/lines` and `marks` count so: the files hold whole lines whatever a program prints, and a mark points at text that is there. That is looked at when lines are written, so a file gets longer than that (Bounds says by how much), and not while its last rows are those a resize sent there and may take back. When what the last line went on in is erased from the screen, the line is ended in `history` too |
 | `history.styled` | the same lines in the same order with their colours: text and SGR codes only, as `screen.styled` is beside `screen` (each row a line was wrapped in starts and ends in the default style; a blank that has a colour is kept at a line's end; U+200B where two characters that were two cells would read as one, as in `screen.styled`, also where two rows are joined; no links). Without the codes, those U+200B and the blanks at line ends it is `history`: `marks` count bytes in `history`, not in this one. It becomes `history.styled.1` when `history` becomes `history.1`, at the same line, which is when either file is past 4 MiB: lines full of colour codes are put aside sooner. A colour the program set is the pane's here too: a row is told as `screen.styled` had it when it left the screen (with a background of the program's own it is as wide as the pane was), and it is a record, not told again when a colour is set or given back later; only what a resize takes back is told anew, in the colours of then. What a resize takes back from `history` is taken back from it too. What cannot be written to one of the two files is lost to that file and `log` says so: the other has those lines all the same, and what a resize sent to history just before is then not taken back from it. A file that cannot be put aside (its `.1` cannot be replaced) begins anew: its lines up to there are lost, `log` says so, and the other is put aside as always. A line without colours is its text a second time (`seq 1 2000000` writes 14 MiB to each file) |
-| `pic-N.sixel`, `pic-N.png` | a picture the program drew, whole, for as long as a screen places it: `pic-N.sixel` for sixel (`cat` it in a sixel terminal), `pic-N.png` for Kitty graphics (a standard PNG image). Listed in `shown/pictures` as `FILE ROW COL COLS ROWS CELL-WIDTH CELL-HEIGHT` |
+| `pic-N.sixel` | a picture the program drew, whole, for as long as a screen places it: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes, and not there while the program has set none, or an empty one |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
 | `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself: `pwd > "$FUX_PANE/cwd"` |
@@ -144,17 +144,7 @@ reading; past that it stops reading `in`, and once the FIFO's own buffer
 (the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
 cells. A program that says it is in the middle of drawing (mode 2026) is not
 written out until it says it is done, or what is not yet written (output, or a line on `ctl`) has waited half a second (history may be added to meanwhile): so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data and 500 cells each way; a ninth drops the
-oldest, with a line in `log`. Of Kitty graphics a screen also keeps the images a program sent, to place them
-again: at most 16, and 16 MiB together (each one's pixels as RGBA, and a PNG's own bytes); one more drops
-the oldest that is not placed (the oldest of all, with its pictures, when all are placed), and one that is
-over 16 MiB alone is refused (`ENOMEM`, with a line in `log`) before its pixels are unpacked. No other image
-goes for one that is refused, but the one it was sent to replace does (the image of the same `i`, with its
-pictures). An image still being sent in parts is at most 4 MiB, and so are, together,
-the PNGs a screen has made of images' pixels for their files and keeps to place them so again. So the image
-data a holder keeps for a pane is 48 MiB at most: 16 MiB, 4 MiB and 4 MiB for each of its two screens. That
-is what is kept, not all the memory images take: beside it are what is being unpacked or made a PNG at the
-moment, a command still being read (4 MiB at most), and a placed picture's bytes until they are written (the 8
-pictures above, each screen's). At most 4 MiB of history and one row wait to be written,
+oldest, with a line in `log`. At most 4 MiB of history and one row wait to be written,
 counted on the longer of `history` and `history.styled`: rows past that (one
 write of the program or one resize that makes more, with what still waits from before; rows a resize takes back and gives again are counted once) are not kept, in either
 file, with a line in `log`, and the line they were part of ends there in
@@ -628,14 +618,12 @@ reported at its edge until a button is let go (with two held, the first to be le
 gives that tile the keys and is not passed on. The viewer uses the mouse for nothing else, and when the
 focused program does not ask, your terminal's own selection works as ever.
 
-Pictures: a pane's picture is drawn in its tile when your terminal takes Kitty
-graphics or draws sixel (the viewer asks it for both as it starts). A picture
-is a file in the pane's folder, `pic-N.sixel` or `pic-N.png`, and goes to your
-terminal in the protocol it was made in where the terminal takes that one;
-where it takes only the other, the viewer converts it. It reads the file that has that name and nothing a link of that name leads to: a link there (or a FIFO, or a folder) is no picture, and none is drawn. The viewer measures every picture itself, in pixels: the picture's
-own size (of a sixel one, the larger of what it says and what it paints) against the pixels
+Pictures: when the terminal says it draws sixel, a pane's picture is drawn in
+its tile; in a terminal that does not say so, none is. A picture is a file in
+the pane's folder, `pic-N.sixel`. The viewer reads the file that has that name and nothing a link of that name leads to: a link there (or a FIFO, or a folder) is no picture, and none is drawn. The viewer measures every picture itself, in pixels: the picture's
+own size (the larger of what it says and what it paints) against the pixels
 its tile has for it, counted in your terminal's cells (the cells a pane
-counted it in say where it starts and, of one with rows above the pane's top, how many of its pixels those rows are). A sixel picture whose pixels are square and
+counted it in say where it starts and, of one with rows above the pane's top, how many of its pixels those rows are). One whose pixels are square and
 all in the tile is passed on as the program wrote it. Of any other (wider or
 taller than the tile, with rows scrolled off the pane's top, or asking in its raster attributes for
 pixels that are not square) the part inside the tile is drawn, at its place
@@ -648,14 +636,6 @@ of a picture is made once and kept for as long as it is drawn. A part has
 square pixels, and a pixel the program never painted stays unpainted in it
 (the part says that such pixels keep what is under them, whatever the
 picture said: which colour a terminal fills them with is its own).
-A PNG is sent whole, with the rectangle of it that is in the tile for the
-terminal to cut out, and with the cells it is to fill where its placement
-asked for other cells than its pixels fill. Converted for a terminal that
-draws only sixel, a PNG is decoded and its part in the tile written as sixel
-in the 216 colours of the 6 by 6 by 6 cube, its pixels as they are (not
-scaled), one less than half opaque left unpainted; converted for a terminal
-that takes only Kitty graphics, a sixel picture's part in the tile is sent as
-RGBA pixels.
 No picture is drawn on your terminal's last row: a terminal
 may put the cursor under a picture and scroll everything to do so. While a
 menu is open, a picture it covers a cell of is not drawn. A cell counts as
@@ -667,10 +647,7 @@ have, a step for each byte) and counts for nothing else. The part is at most
 8,388,608 pixels (a screen of 3840 by 2160 has fewer); what is painted in it
 may name colour registers 0 to 255 and 256 different colours, and may paint
 each of its pixels 16 times over on average; 4 MiB of sixel are written for
-it. What is sent as Kitty graphics is 4 MiB at most too, and is base64: a PNG
-file over about 3 MiB is not drawn in a terminal that takes Kitty graphics,
-nor a sixel picture's part of more than about 780,000 pixels in one that
-takes only those. All the pictures on the terminal are 16 MiB together at most (counted as the panes are drawn, under a menu too; one left out for this stays out when others go, until its file or its tile changes or its tab is shown anew). A picture
+it. All the pictures on the terminal are 16 MiB together at most (counted as the panes are drawn, under a menu too; one left out for this stays out when others go, until its file or its tile changes or its tab is shown anew). A picture
 past one of these is not drawn (no stand-in is), and the viewer's corner
 says which, until the next key: once for each part, and every one of a
 frame. So is every picture in a terminal that does not say how many pixels a
@@ -816,7 +793,7 @@ does something else is a row below with a case that shows it.
 | What a control sequence does | xterm. fux implements what the `xterm-256color` terminal description offers a program (`infocmp -x xterm-256color`) and, beyond it, only: line feed and index forms (`ESC D`, `CSI E`, `F`, `a`, `e`, `` ` ``, `I`), `CSI s` and `u` and mode 1048 (save and restore the cursor), origin mode (`CSI ? 6 h`), the alternate screens 47 and 1047, `ESC # 8`, the second character set (`ESC )` with SO and SI; a character set is chosen also with more bytes between the `ESC (` or `ESC )` and its letter, as `ESC ( ! ! 0`), SGR 6 (kept as 5), 9, 21, 58 and 59 and the colon forms of 4 (the kinds of underline), 38, 48 and 58, modes 1004 (focus) and 2026 (drawing), OSC 7, 8, 9, 777, 99 and 133, the mouse modes 9, 1002 and 1003, the questions `CSI 5 n`, `CSI ? N $ p` and `CSI 14`, `16` and `18 t`, `CSI 22 t` and `23 t` for the title, OSC 0 and 2, OSC 10 and 11 with a value and OSC 110 and 111 (a pane's own foreground and background; the description has the palette's and the cursor's, OSC 4, 12, 104 and 112) |
 | Where one character ends and the next begins | Unicode's UAX #29 (grapheme clusters) and its test file, `GraphemeBreakTest.txt`, of Unicode 17. Always: a program that asks about mode 2027 (`CSI ? 2027 $ p`) is told it is set for good. A character goes on while the cursor is where its last part left it and its cell is unchanged: a change of colour or a title between a letter and its accent does not part them (`grep --color` does this), an erase does, and a move that leaves the cursor elsewhere (one away and back again parts nothing: `a`, CR, cursor right, U+0301 is `á`) |
 | How many columns a character takes | One rule. A character (a cluster) takes the columns of its parts added up, two at most and one at least. A part adds two if it is East Asian wide or fullwidth or has emoji presentation (half a flag adds one, so a flag is two); none if it is a mark that takes no room (categories Mn and Me, the wide voiced marks of kana among them), a joiner, or the vowel or final consonant that follows in a Hangul syllable; one otherwise: the "ambiguous" ones, a mark that takes room (a vowel sign, a halfwidth voiced mark), a format character that starts a cluster (U+0600). An emoji with U+FE0F in its character is two. A control, U+2028 and U+2029 among them, and a mark that takes no room or a joiner with no character to join, takes no cell and is dropped |
-| A newer protocol (sixel, Kitty graphics, OSC 52, bracketed paste, SGR mouse reports, the kitty keyboard protocol) | Its own specification |
+| A newer protocol (sixel, OSC 52, bracketed paste, SGR mouse reports, the kitty keyboard protocol) | Its own specification |
 | What a colour is (OSC 10, 11, 12, and 4 with `?`) | What the pane's program set (OSC 4, 10, 11, 12 with a value, until 104, 110 to 112 or a full reset gives it back); else the session's `colours` file: what the terminal you look at said, or what you wrote. No file or no line, no answer |
 
 `tools/referee/referee.py` plays the same bytes to fux and to three
@@ -944,32 +921,21 @@ would be a script); a copy mode (`C-b c` is the
 editor on the pane's text, `C-b M-c` is `less` on it in colour); Windows. `clear` clears the screen, not the
 `history` file (`CSI 3 J` is ignored).
 
-Pictures: both sixel and the Kitty graphics protocol are supported (direct
-transmission `t=d`, formats `f=24`, `f=32`, `f=100` PNG, zlib compression `o=z`,
-chunked transfer, query `a=q`, placement `a=p` with cropping/scaling/`C=1`, and
-deletion `a=d`; file/shared-memory transmission `t=f`/`t=t`/`t=s`, Unicode
-placeholders `U=1`, relative placements `P`/`Q`, and animation `a=f`/`a=a`/`a=c` are left out:
-each is refused, and nothing is placed or moved for it; whether the error is answered goes by
-the protocol's rules for any answer, of the image's id or number (`i`, `I`) and of quiet (`q`)).
-A placement's `z` is kept for the deletions that choose by it (`d=z`, `d=q`) and
-orders nothing: pictures are drawn over the text, a later one over an earlier;
-its offsets inside a cell (`X`, `Y`) are not read.
-A PNG that was sent is kept as it is, and is its own file when it is placed
-whole: 4 MiB of file at most and, with its pixels as RGBA, the 16 MiB a screen
-keeps (about four million pixels). Pixels that were sent (`f=24`, `f=32`), and
-a part of any image (`x`, `y`, `w`, `h`), become a PNG that fux does not
-compress, in a file of 4 MiB at most: 1024 by 1023 pixels fit, 1024 by 1024
-do not. A larger one is kept, and placing it is refused (`ENOMEM`, which says
-that this is the bound, with a line in `log`).
-The viewer detects both Kitty graphics and sixel on the outer terminal, passes
-each picture through natively when supported, and converts between them when the
-outer terminal supports only one. For sixel, a pixel shape other than square
-(sixel can ask for pixels twice as high as wide) is not kept, text written over
-any cell of a sixel picture takes the whole picture away, and after a sixel
-picture the cursor goes to the start of the line below it (so a sixel picture
-needs a free row under it). For Kitty graphics, normal text does not remove a
-placement (`CSI 2 J` and `a=d` do), and cursor movement follows `C=0`/`C=1`.
-A picture keeps its place through a resize where the text beside it does: one on rows
+Pictures: sixel is the one picture format, in a pane and in the viewer. A
+command of the Kitty graphics protocol (`ESC _ G … ESC \`) is read to its end
+and ignored, with no answer, so a program that asks whether such pictures are
+drawn (`a=q`, then `CSI c`) is told only what the terminal is and falls back at
+once: taking that protocol needs a reader of its commands, an inflate and a PNG
+decoder, some 2,300 lines that read bytes a program chooses, beside an emulator
+of 3,100. (A program that draws with Kitty graphics
+alone, as `kitten icat` does, shows nothing in a pane; a terminal that draws no
+sixel, as kitty and Ghostty, shows no picture of a pane's.)
+A pixel shape other than square (sixel can ask for pixels twice
+as high as wide) is not kept: cells are counted as if pixels were square. Text
+written over any cell of a picture takes the whole picture away, in the pane
+and in the viewer (a sixel terminal keeps the pixels the text did not
+cover): a pane's picture is one rectangle of cells, not pixels. A picture
+keeps its place through a resize where the text beside it does: one on rows
 that wrap anew at the new width goes; one past the right edge or the last
 row of a smaller screen is kept, and shown again on a larger one (unless what is erased meanwhile reaches that edge: an erase to a row's end takes the pictures past it, one to the screen's end those below it); a resize
 that tells of cells of another size in pixels takes every picture away.
