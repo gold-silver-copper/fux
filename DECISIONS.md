@@ -2284,10 +2284,17 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   left was another command, `a=d,D=i,i=1` deleting every placement for its
   mistyped `d`. No program that draws on Kitty can send one.
 
-- **D118. A test has one deadline, and no link is followed** (2026-11-23,
-  after an audit of this line of work: a run of the tests had hung for fifteen
-  minutes on one test, writing the same error; and the review of D117 found
-  writes that follow a link). Three parts, a commit each.
+- **D118. A test has one deadline; three kinds of link are no longer
+  followed** (2026-11-23, after an audit of this line of work: a run of the
+  tests had hung for fifteen minutes on one test, writing the same error; and
+  the review of D117 found writes that follow a link). What the second half
+  covers, and no more: the files a holder replaces, the pictures a viewer
+  reads, and what a viewer writes to a pane's `in` and `ctl`. Still followed,
+  and not changed here: a viewer's reads of every other fact in a pane's
+  folder (`clipboard`, the screens' files, `title`, `modes`, `status`,
+  `generation`, `notice`); a link where a FOLDER of the path is (`main`,
+  `alt`, and `shown`, which is one by design); and `log`, `history` and
+  `history.styled`, which are opened by name to write. Four parts.
   - **One deadline for a test.** `twostarts` made its start again in a loop
     with no end, and every command the tests ran (`fux start`, `fux wait`, the
     key scripts) was waited for with none: a holder that never came up held
@@ -2299,10 +2306,21 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     session and the run. A session that ends kills the holders and the
     programs of its panes: each leads a session of its own, a signal to the
     test does not reach them, and a program that ignores the hangup outlived
-    its test. `twostarts` stages what it tests without a loop and without
-    asking the lock (the holder waits at a `history` that is a FIFO; its
-    `status` says it is there). A test in the file refuses the calls that
-    wait by themselves. And three pairs of tests had the same names for their
+    its test. Before it kills, it asks `ps` (in full, whatever width the
+    terminal is said to have) whether a number in `status` is ours: the
+    holder is the one with the pane's lock that is this fux holding; the
+    program is its child, or, its holder gone, the leader of its own process
+    group born when `status` was written. Ending a session has a time of its
+    own, so that a `ps` or a `kill` that does not return holds nothing up;
+    and a command a test started is on a list from that moment, which the
+    watcher stops before it stops the tests (a `fux start` whose holder
+    never comes is no pane's yet, and no session's end finds it). What the
+    end of a session could not do fails its test. `twostarts` stages what it
+    tests without a loop and without asking the lock (the holder waits at a
+    `history` that is a FIFO; its `status` says it is there); what that
+    leaves out, its comment says. Not covered: tests that are killed from
+    outside leave the sessions of those then running; and between `ps` and
+    `kill` a number could in principle become another process's. And three pairs of tests had the same names for their
     sessions, so the same directories: run sixteen at a time they ended each
     other's panes, and four tests failed every time (at four a time, as CI
     runs them, no pair met). A session's name is now one test's, and two
@@ -2316,10 +2334,12 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     together is made anew: what had the name is unlinked, and the file is
     made only if nothing has the name then (`O_EXCL`, which follows no link);
     a picture's file goes the same way, through `replace`; and the file put
-    together does not stay when it cannot be given its name. Left as they
-    were, and named here so that they are not thought covered: `log` (made by
-    `fux start`), and `history` and `history.styled` (added to in place) are
-    opened by name.
+    together does not stay when it cannot be given its name (`shown`'s new
+    link neither). `replace` is for a name that one writer writes: two at
+    once would share the one name the file is put together under (a holder
+    is alone in its pane by its lock, and the layout is written under the
+    workspace's). Left as they were: `log` (made by `fux start`), and
+    `history` and `history.styled` (added to in place) are opened by name.
   - **A file is put together under a dot-name.** `NAME.new` was a name like a
     fact's: whoever copied a pane's folder between two renames copied half a
     file as if it were one, and `layout.new` was a name no pane could have for

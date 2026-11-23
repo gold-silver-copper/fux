@@ -103,7 +103,9 @@ pub fn stamp(file: fs::Metadata) -> (u64, i64, i64, u64) {
 
 /// Replaces a file in one step, so a reader sees the old one or the new one. The new one is put
 /// together beside it, under `staging`'s name for it, and does not stay there when it cannot be
-/// given its name.
+/// given its name. For a name that one writer writes: two at once would put theirs together under
+/// the one name (a holder is alone in its pane by its lock; a layout is written under its
+/// workspace's).
 pub fn replace(name: impl AsRef<Path>, content: &[u8]) -> std::io::Result<()> {
     let new = staging(name.as_ref());
     let replaced = write_new(&new, content).and_then(|()| fs::rename(&new, name));

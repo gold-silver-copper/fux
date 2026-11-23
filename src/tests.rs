@@ -240,6 +240,8 @@ fn a_picture_is_read_only_if_its_name_is_a_file_and_no_link_to_one() {
     // of the file. A link under it (to a picture or to anything else), a FIFO and a folder are no
     // picture: none is read, none is waited at, and none is asked when it was written.
     let dir = std::env::temp_dir().join(format!("fux-named-{}", std::process::id()));
+    // (What a run that failed left under that name, of a process of this number, goes first.)
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let red = "0;1q\"1;1;80;1#0;2;100;0;0!80@";
     std::fs::write(dir.join("real.sixel"), format!("\x1bP{red}\x1b\\")).unwrap();

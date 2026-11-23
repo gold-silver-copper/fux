@@ -16,8 +16,10 @@ use std::process::Command;
 mod os {
     use std::ffi::{c_int, c_ulong};
     pub const O_NONBLOCK: c_int = 0o4000;
-    // (The one number here that differs between Linux's processors: arm64 and four more have it
-    // as arm has, x86-64 and every other as x86 has.)
+    // (Of the numbers here the one that differs between x86-64 and arm64, the two of Linux's
+    // processors these numbers are for. It is given for the others too, as it is what keeps a link
+    // from being followed: arm64 and four more have it as arm has, every other as x86 has. On
+    // some of those the numbers above are others, and fuxix is not for them.)
     const AS_ARM: bool = cfg!(any(
         target_arch = "aarch64",
         target_arch = "arm",
