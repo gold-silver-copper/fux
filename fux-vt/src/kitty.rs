@@ -694,8 +694,9 @@ impl Storage {
 
     fn query(&self, kv: &Kv, payload: &[u8], quiet: Quiet) -> Outcome {
         let id = kv.get(b'i').unwrap_or(0);
-        let number = kv.get(b'I').unwrap_or(0);
         let placement_id = kv.get(b'p').unwrap_or(0);
+        // (A query names its image by `i`, as the protocol says and Kitty holds it: one that gives
+        // only a number, `I`, is not answered. One that gives both never comes here.)
         if id == 0 {
             return Outcome::default();
         }
@@ -732,8 +733,8 @@ impl Storage {
             payload,
             true,
         ) {
-            Ok(_) => Response::ok(id, number, placement_id),
-            Err(msg) => Response::err(id, number, placement_id, msg),
+            Ok(_) => Response::ok(id, 0, placement_id),
+            Err(msg) => Response::err(id, 0, placement_id, msg),
         };
         Outcome { reply: resp.encode(quiet), ..Outcome::default() }
     }
