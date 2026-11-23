@@ -2697,6 +2697,48 @@ fn the_viewer_knows_a_pane_by_its_folder_and_asks_no_status_who_its_program_is()
 }
 
 #[test]
+fn a_viewer_that_may_open_few_files_still_types_into_its_panes() {
+    // Thirty panes side by side, and a viewer that may have 32 files open at a time (`ulimit -n`).
+    // It holds a pane's folder open to know it again, where it can: not where that would leave it
+    // none to open a pane's `in` with. What is typed reaches the pane, and a key's release too.
+    let (outer, inner) = (Session::new("fewouter"), Session::new("fewinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(&outer.0).unwrap();
+    fs::write(outer.0.join("keyboard"), "31\n").unwrap();
+    fs::create_dir_all(&inner.0).unwrap();
+    fs::write(inner.0.join("keyboard"), "31\n").unwrap();
+    let first = inner.start("p1", &["sh", "-c", "stty raw -echo; printf '\\033[>11u'; exec cat -vt"]);
+    let names: Vec<String> = (1..=30).map(|n| format!("p{n}")).collect();
+    for name in &names[1..] {
+        inner.start(name, &["sleep", "600"]);
+    }
+    lay(&inner.0, &format!("* row({}) focus=p1\n", names.join(" ")));
+    let few = format!("ulimit -n 32 && exec '{}' view", env!("CARGO_BIN_EXE_fux"));
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let mut start = outer.fux();
+    start.env("COLUMNS", "160").args(["start", "view", "--"]).args(command).args(["sh", "-c", &few]);
+    let view = outer.started(&mut start);
+    let last = inner.0.join("main/p30");
+    until_or(
+        "every pane has its tile's size",
+        || read(&view.join("shown/screen")),
+        || {
+            fact(&last, "size").ends_with(" 24")
+                && fact(&last, "size") != "80 24"
+                && fact(&view, "modes").contains("keys11")
+        },
+    );
+    send(&view.join("in"), "\x1b[97;1:1u\x1b[97;1:3uZ");
+    until_or(
+        "the key, its release and a letter are typed into the first pane",
+        || format!("{}\n{}", read(&first.join("shown/screen")), read(&view.join("shown/screen"))),
+        || read(&first.join("shown/screen")).replace('\n', "").contains("^[[97;1:1u^[[97;1:3uZ"),
+    );
+    assert!(!read(&view.join("shown/screen")).contains("Too many open files"));
+}
+
+#[test]
 fn rename_gives_a_pane_another_name_and_keeps_its_place_in_the_layout() {
     use std::os::unix::fs::MetadataExt;
     let session = Session::new("rename");

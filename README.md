@@ -457,7 +457,7 @@ looks the last is passed on; of two panes', both, the last in the corner. Anothe
 that asked to be told about focus (mode 1004) is told when its pane gains
 and loses the keys, and when your terminal's window does.
 
-The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile or the terminal's cell size changes, another folder has the pane's name (a pane is one run: a name removed and started anew is another pane, which the viewer knows by its folder, held open while it is a tile, not by a number in `status`), or the pane is a tile again after its tab was not shown (a request its `ctl` had no room for, 64 KiB unread there with its holder stopped, is not made again until one of them changes). Two
+The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile or the terminal's cell size changes, another folder has the pane's name (a pane is one run: a name removed and started anew is another pane, which the viewer knows by its folder, held open while it is a tile, not by a number in `status`; a viewer that may open few files, `ulimit -n`, holds a folder open only while that leaves it eight to work with, and knows the others by device and inode alone), or the pane is a tile again after its tab was not shown (a request its `ctl` had no room for, 64 KiB unread there with its holder stopped, is not made again until one of them changes). Two
 viewers with different sizes do not fight: the last to ask wins, and the
 other shows what fits.
 

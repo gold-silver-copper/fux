@@ -2502,6 +2502,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     changed). What the viewer read of it is kept meanwhile, as before.
     `fn pid` and `fn program` are gone from the viewer; koh need not write
     `pid 1` into a mirror's `status` any more.
+  - **One handle for a pane, and never the viewer's last** (after the review
+    of PR #483: with 30 panes side by side and 32 files to open, the viewer
+    held 30 folders, had none left to open a pane's `in` with, and typed
+    nothing; master used 9. And every key held in a pane had opened that
+    folder once more). A pane's folder is opened once, for its tile and for
+    the keys that are down in it. It is held only if eight more files can be
+    opened right after (what a frame, a key and a key's script open for a
+    moment: tried by opening them); else the pane is known by device and
+    inode alone, as it is when the folder cannot be opened at all. Known by
+    number alone, a folder removed and made anew under its name may get the
+    old number and be taken for the old one: it is then not asked its size
+    again, as before this branch a pane with no `pid` was not. A fixed count
+    of folders to hold was turned down: what is scarce is the viewer's own
+    limit, which only an open tells without a new call in fuxix.
   - **`keys/.rename WORKSPACE OLD NEW`** (perl, for the lock) moves a pane's
     folder and rewrites its name in `layout`, both under the workspace's
     lock, so the pane keeps its place. NEW is claimed by `mkdir`, the claim
