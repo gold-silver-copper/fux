@@ -642,10 +642,16 @@ impl Storage {
         // A transfer in parts goes on with a part that says, `m` and `q` aside, nothing the first part
         // did not: nothing at all, as the protocol has it, or some of the first part's keys again, each
         // with its value, as programs send and Kitty takes (`kitten icat` says `a=T,q=2,m=1` where it
-        // began with `a=T`: without that no picture of its comes through). A query stores nothing and
-        // leaves the transfer be. Anything else is not part of it, be it a key the first part had not
-        // or another value for one it had: the transfer is dropped, and the command is itself.
-        let goes_on = self.loading.as_ref().is_some_and(|loading| kv.without(b"mq").within(&loading.header));
+        // began with `a=T`: without that no picture of its comes through). A part that says `a=t` or
+        // `a=T` and no more goes on with it too, whichever of the two the first part said: Kitty takes
+        // it, and the first part's stands. A query stores nothing and leaves the transfer be. Anything
+        // else is not part of it, be it a key the first part had not or another value for one it had:
+        // the transfer is dropped, and the command is itself.
+        let goes_on = self.loading.as_ref().is_some_and(|loading| {
+            let said = kv.without(b"mq");
+            let action_alone = matches!(action, b't' | b'T') && said.without(b"a").present == 0;
+            action_alone || said.within(&loading.header)
+        });
         let broke = !goes_on && action != b'q' && self.abandon(pictures);
         let mut outcome = if id > 0 && number > 0 {
             let both = "EINVAL: image ID and number are mutually exclusive";

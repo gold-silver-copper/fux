@@ -2171,7 +2171,8 @@ fn kitty_transfer_in_parts_goes_on_only_with_its_own_parts() {
     // A 64 by 48 image is three parts of 4,096 characters: placed once, where the cursor is at
     // the last, and answered once. The later parts say `m` alone, or (as Kitty takes it) some or
     // all of what the first said, each key with its value; an `a` or `t` the first left out
-    // counts as said, for it is `a=t`, `t=d`.
+    // counts as said, for it is `a=t`, `t=d`. And a later part that says `a=t` or `a=T` and no
+    // more goes on whichever of the two the first said: the first part's stands.
     let rgb: Vec<u8> = (0..64u32 * 48).flat_map(|i| [i as u8, (i >> 8) as u8, 9]).collect();
     let text = b64(&rgb);
     let parts = [&text[..4096], &text[4096..8192], &text[8192..]];
@@ -2182,6 +2183,8 @@ fn kitty_transfer_in_parts_goes_on_only_with_its_own_parts() {
         ("a=T,i=3,f=24,s=64,v=48,C=1", "i=3,"),
         ("a=T,i=3,f=24,s=64,v=48,C=1", "f=24,t=d,"),
         ("i=3,f=24,s=64,v=48", "a=t,i=3,"),
+        ("a=T,i=3,f=24,s=64,v=48,C=1", "a=t,"),
+        ("a=t,i=3,f=24,s=64,v=48", "a=T,q=0,"),
     ] {
         let mut t = Term::new(20, 10);
         t.feed(format!("\x1b_G{first},m=1;{}\x1b\\\x1b_G{later}m=1;{}\x1b\\", parts[0], parts[1]).as_bytes());
@@ -2191,6 +2194,8 @@ fn kitty_transfer_in_parts_goes_on_only_with_its_own_parts() {
         if first.starts_with("a=T") {
             assert_eq!(t.shown().pictures.iter().map(|p| (p.row, p.col)).collect::<Vec<_>>(), [(1, 2)], "{later}");
             assert_eq!(crate::png::decode(&t.new_pictures()[0].2, 64 * 48).unwrap().2.len(), 64 * 48 * 4);
+        } else {
+            assert!(t.shown().pictures.is_empty(), "{later}");
         }
     }
 
@@ -2219,7 +2224,7 @@ fn kitty_transfer_in_parts_goes_on_only_with_its_own_parts() {
         ("a part that names another image", b"\x1b_Gi=2,q=2;AAAA\x1b\\"),
         ("a part with another value for a key", b"\x1b_Gi=1,f=24,s=64,v=47,q=2;AAAA\x1b\\"),
         ("a part with a key the first had not", b"\x1b_Gi=1,c=3,q=2;AAAA\x1b\\"),
-        ("a part with another action", b"\x1b_Ga=T,q=2;AAAA\x1b\\"),
+        ("a part with another action and a key", b"\x1b_Ga=T,i=1,q=2;AAAA\x1b\\"),
         ("an image over what a screen keeps", b"\x1b_Ga=t,i=2,q=2,f=32,s=2049,v=2048;AAAA\x1b\\"),
         ("a placement", b"\x1b_Ga=p,i=9,q=2\x1b\\"),
         ("a deletion", b"\x1b_Ga=d,d=i,i=9\x1b\\"),
