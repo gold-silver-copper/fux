@@ -2204,3 +2204,21 @@ fn kitty_control_keys_are_read_by_their_kind_and_a_malformed_command_is_dropped(
     t.feed(b"\x1b_Ga=p,i=7,C=1\x1b\\");
     assert_eq!(reply(&mut t), "\x1b_Gi=7;OK\x1b\\");
 }
+
+#[test]
+fn kitty_placements_fux_does_not_draw_are_refused_and_move_nothing() {
+    // A placement for Unicode placeholders (`U=1`) or relative to another (`P`, `Q`) is not
+    // drawn at the cursor as if it were a plain one: it is refused, nothing is placed and the
+    // cursor stays. The image that came with it is kept, and a plain placement of it works.
+    for (n, keys) in ["U=1", "P=1,Q=2", "P=1", "Q=2"].into_iter().enumerate() {
+        let mut t = Term::new(20, 10);
+        t.told().cell = (10, 20);
+        t.feed(format!("\x1b[2;3H\x1b_Ga=T,i=1,{keys},c=5,r=3,f=24,s=1,v=1;AAAA\x1b\\").as_bytes());
+        let no = "\x1b_Gi=1;ENOTSUPPORTED: Unicode placeholders and relative placements are not supported\x1b\\";
+        assert_eq!(reply(&mut t), no, "{keys}");
+        assert_eq!((t.shown().pictures.len(), t.shown().cursor.row, t.shown().cursor.col), (0, 1, 2), "{keys}");
+        t.feed(format!("\x1b_Ga=p,i=1,p={},{keys}\x1b\\\x1b_Ga=p,i=1,U=0,P=0,Q=0\x1b\\", n + 1).as_bytes());
+        assert_eq!(reply(&mut t), no.replace("i=1;", &format!("i=1,p={};", n + 1)) + "\x1b_Gi=1;OK\x1b\\", "{keys}");
+        assert_eq!((t.shown().pictures.len(), t.shown().cursor.row, t.shown().cursor.col), (1, 1, 3), "{keys}");
+    }
+}

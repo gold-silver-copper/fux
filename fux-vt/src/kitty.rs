@@ -455,6 +455,8 @@ struct DisplaySpec {
     rows: u32,
     move_cursor: bool,
     z: i32,
+    /// It is one for Unicode placeholders (`U=1`) or relative to another (`P`, `Q`): fux draws neither.
+    not_drawn: bool,
 }
 
 impl DisplaySpec {
@@ -471,6 +473,7 @@ impl DisplaySpec {
             rows: kv.get(b'r').unwrap_or(0),
             move_cursor: kv.get(b'C') != Some(1),
             z: kv.get(b'z').map_or(0, u32::cast_signed),
+            not_drawn: b"UPQ".iter().any(|key| kv.get(*key).is_some_and(|n| n > 0)),
         }
     }
 }
@@ -916,6 +919,17 @@ impl Storage {
             };
         };
         let img_id = img.id;
+        // (Refused, not drawn at the cursor as a plain placement: that would cover text the program
+        // meant to keep and move its cursor.)
+        if spec.not_drawn {
+            let no = "ENOTSUPPORTED: Unicode placeholders and relative placements are not supported";
+            return Outcome {
+                reply: (!implicit_id)
+                    .then(|| Response::err(img_id, spec.image_number, spec.placement_id, no).encode(quiet))
+                    .flatten(),
+                ..Outcome::default()
+            };
+        }
         let sx = spec.src_x.min(img.w);
         let sy = spec.src_y.min(img.h);
         let sw = if spec.src_w > 0 { spec.src_w } else { img.w }.min(img.w - sx);
