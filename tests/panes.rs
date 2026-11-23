@@ -2001,6 +2001,8 @@ fn a_held_key_does_again_what_its_press_did_and_there_only_and_a_program_started
     // not shown: what the terminal tells of the key after that is nothing to the new program.
     send(&first.join("ctl"), "kill\n");
     until("the program has ended", || fact(&first, "state") != "running");
+    // (And its holder gone: it has the pane's lock for a moment after it wrote how its program ended.)
+    assert!(inner.fux().arg("wait").arg(&first).run().status.success());
     inner.start("first", &asking);
     until("the new program is told its flags", || {
         fact(&first, "state") == "running" && shown(&first).ends_with("^[[?11u")
@@ -2789,8 +2791,10 @@ fn a_picture_below_a_shortened_alternate_screen_is_not_listed_until_its_row_is_b
     until("the picture is listed", || fact(&pane, "shown/pictures").starts_with("pic-1.sixel 3 "));
     let listed = fact(&pane, "shown/pictures");
     send(&pane.join("ctl"), "resize 10 2\n");
-    until("the screen is two rows", || fact(&pane, "size") == "10 2");
-    assert_eq!(fact(&pane, "shown/pictures"), "");
+    // (`size` is written before the screen's `pictures` in the one round: both are waited for.)
+    until("the screen is two rows and lists no picture", || {
+        fact(&pane, "size") == "10 2" && fact(&pane, "shown/pictures").is_empty()
+    });
     send(&pane.join("ctl"), "resize 80 24\n");
     until("the picture is listed again", || fact(&pane, "shown/pictures") == listed);
 }
