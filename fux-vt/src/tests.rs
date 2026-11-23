@@ -1930,3 +1930,28 @@ fn kitty_graphics_protocol_query_transmit_chunk_place_delete_and_encode() {
     let back_part = crate::sixel::read(back_six.as_bytes(), [0, 0, 4, 4]).unwrap();
     assert_eq!((back_part.w, back_part.h), (4, 4));
 }
+
+#[test]
+fn inflate_builds_the_fixed_trees_once_however_many_fixed_blocks_a_stream_has() {
+    use crate::inflate;
+    // The most a picture's data may be, 4 MiB, of empty fixed blocks: each is ten bits (not the
+    // last, type 1, the end-of-block code) and writes nothing. The last one says it is the last.
+    let blocks = ((4usize << 20) - 6) * 8 / 10;
+    let mut stream = vec![0x78, 0x01];
+    let (mut bits, mut have) = (0u32, 0u32);
+    for block in 1..=blocks {
+        bits |= (0b10 | u32::from(block == blocks)) << have;
+        have += 10;
+        while have >= 8 {
+            stream.push(bits as u8);
+            (bits, have) = (bits >> 8, have - 8);
+        }
+    }
+    stream.push(bits as u8);
+    stream.extend_from_slice(&inflate::adler32(&[]).to_be_bytes());
+    assert_eq!(stream.len(), 4 << 20);
+    inflate::TREES_BUILT.with(|built| built.set(0));
+    assert_eq!(inflate::zlib(&stream, 0).as_deref(), Ok(&[][..]));
+    // (One tree for literals and lengths, one for distances; they were built anew for each block.)
+    assert_eq!(inflate::TREES_BUILT.with(std::cell::Cell::get), 2);
+}
