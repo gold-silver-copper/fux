@@ -16,6 +16,16 @@ use std::process::Command;
 mod os {
     use std::ffi::{c_int, c_ulong};
     pub const O_NONBLOCK: c_int = 0o4000;
+    // (The one number here that differs between Linux's processors: arm64 and four more have it
+    // as arm has, x86-64 and every other as x86 has.)
+    const AS_ARM: bool = cfg!(any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "m68k",
+        target_arch = "powerpc",
+        target_arch = "powerpc64"
+    ));
+    pub const O_NOFOLLOW: c_int = if AS_ARM { 0o100000 } else { 0o400000 };
     pub const SIGCHLD: c_int = 17;
     pub const TIOCSCTTY: c_ulong = 0x540E;
     pub const TIOCGWINSZ: c_ulong = 0x5413;
@@ -27,6 +37,7 @@ mod os {
 mod os {
     use std::ffi::{c_int, c_uint, c_ulong};
     pub const O_NONBLOCK: c_int = 0x0004;
+    pub const O_NOFOLLOW: c_int = 0x0100;
     pub const SIGCHLD: c_int = 20;
     pub const TIOCSCTTY: c_ulong = 0x2000_7461;
     pub const TIOCGWINSZ: c_ulong = 0x4008_7468;
@@ -180,6 +191,14 @@ pub fn host() -> Option<String> {
 /// holds no caller (to read it is to find it empty; to write it is an error at once).
 pub fn open(path: impl AsRef<Path>, write: bool) -> io::Result<File> {
     OpenOptions::new().read(!write).write(write).custom_flags(os::O_NONBLOCK).open(path)
+}
+
+/// Opens, to read, the file a name is the name of: not what a link of that name leads to (the open
+/// fails, whatever the link leads to), and nothing that is no file. A FIFO, a device or a folder
+/// there holds no caller: it is opened without waiting, and then found to be none.
+pub fn open_regular(path: impl AsRef<Path>) -> io::Result<File> {
+    let file = OpenOptions::new().read(true).custom_flags(os::O_NONBLOCK | os::O_NOFOLLOW).open(path)?;
+    if file.metadata()?.is_file() { Ok(file) } else { Err(io::ErrorKind::InvalidInput.into()) }
 }
 
 /// Whether an open to write failed because the FIFO has no reader (ENXIO, 6 on both systems).

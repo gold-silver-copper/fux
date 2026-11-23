@@ -235,6 +235,39 @@ fn render_picture_bridges_sixel_and_kitty_both_ways() {
 }
 
 #[test]
+fn a_picture_is_read_only_if_its_name_is_a_file_and_no_link_to_one() {
+    // A pane's folder may be written by another than its holder, so a picture's name is no proof
+    // of the file. A link under it (to a picture or to anything else), a FIFO and a folder are no
+    // picture: none is read, none is waited at, and none is asked when it was written.
+    let dir = std::env::temp_dir().join(format!("fux-named-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let red = "0;1q\"1;1;80;1#0;2;100;0;0!80@";
+    std::fs::write(dir.join("real.sixel"), format!("\x1bP{red}\x1b\\")).unwrap();
+    let rgba = [0u8, 255, 0, 255].repeat(20 * 20);
+    std::fs::write(dir.join("real.png"), crate::term::png::encode_rgba(20, 20, &rgba, 65536).unwrap()).unwrap();
+    for kind in ["sixel", "png"] {
+        std::os::unix::fs::symlink(dir.join(format!("real.{kind}")), dir.join(format!("link.{kind}"))).unwrap();
+        std::fs::create_dir(dir.join(format!("folder.{kind}"))).unwrap();
+        drop(crate::sys::fifo(dir.join(format!("fifo.{kind}"))).unwrap());
+    }
+    let part = |name: &str| crate::view::part(&(dir.join(name), None, [0, 80, 20]));
+    let rendered = |name: &str, kitty| {
+        crate::view::render_picture(&(dir.join(name), None, kitty, [0, 2, 1, 10, 20], [10, 10, 10, 20]))
+    };
+    assert_eq!(part("real.sixel"), Ok(Some((red.to_string(), 80, 1))));
+    assert!(rendered("real.png", true).unwrap().is_some() && rendered("real.sixel", true).unwrap().is_some());
+    assert!(crate::view::written(&dir.join("real.png")).is_some());
+    for name in ["link", "folder", "fifo", "none"] {
+        assert_eq!(part(&format!("{name}.sixel")), Ok(None), "{name}.sixel");
+        for (kind, kitty) in [("png", true), ("png", false), ("sixel", true), ("sixel", false)] {
+            assert_eq!(rendered(&format!("{name}.{kind}"), kitty), Ok(None), "{name}.{kind} {kitty}");
+        }
+        assert_eq!(crate::view::written(&dir.join(format!("{name}.png"))), None, "{name}.png");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn a_pictures_line_with_three_fields_draws_a_png_whatever_the_terminal_draws_pictures_in() {
     // A line someone wrote by hand says the file, the row and the column and no more. The viewer
     // measures the picture itself: a PNG of 25 by 45 pixels is three cells by three of 10 by 20,

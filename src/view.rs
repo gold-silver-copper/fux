@@ -72,7 +72,7 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
     if *wide == 0 || *high == 0 {
         return Err("the terminal does not say how many pixels a cell has");
     }
-    let (bytes, Ok(_)) = crate::read(sys::open(path, false), PICTURE_MAX as u64 + 9) else { return Ok(None) };
+    let (bytes, Ok(_)) = crate::read(sys::open_regular(path), PICTURE_MAX as u64 + 9) else { return Ok(None) };
     if bytes.len() > PICTURE_MAX + 8 {
         return Err("its file is over 4 MiB");
     }
@@ -87,6 +87,12 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
         false => sixel::cut(inside, [0, *top, wide, high], PICTURE_MAX)?,
     };
     Ok((wide > 0 && high > 0 && !sixel.is_empty()).then_some((sixel, wide, high)))
+}
+
+/// When a picture's file was written, to draw it anew when it is another: of the file that has the
+/// name, and of nothing a link of that name leads to (which is no picture: `sys::open_regular`).
+pub fn written(file: &Path) -> Stamp {
+    fs::symlink_metadata(file).ok().filter(fs::Metadata::is_file).map(stamp)
 }
 
 /// Renders one picture file (`.sixel` or `.png`) for either a Kitty-capable (`kitty_out = true`)
@@ -109,7 +115,7 @@ pub fn render_picture(
         return Ok(Some((format!("\x1bP{sixel}\x1b\\"), wide.div_ceil(*cell_w), high.div_ceil(*cell_h))));
     }
 
-    let (bytes, Ok(_)) = crate::read(sys::open(path, false), PICTURE_MAX as u64 + 9) else { return Ok(None) };
+    let (bytes, Ok(_)) = crate::read(sys::open_regular(path), PICTURE_MAX as u64 + 9) else { return Ok(None) };
     if bytes.len() > PICTURE_MAX + 8 {
         return Err("its file is over 4 MiB");
     }
@@ -997,7 +1003,7 @@ impl View {
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
         let clipboard = clipboard.map(stamp);
         let terminal = (self.sixel, self.kitty, self.joins.is_some(), self.keyboard, self.window, cell_size);
-        let picture = |file: PathBuf| fs::metadata(file).ok().map(stamp);
+        let picture = |file: PathBuf| written(&file);
         let known = tiles.iter().filter_map(|(name, _)| Some((name, self.panes.get(name)?)));
         let known = known.flat_map(|(name, pane)| pane.pictures.iter().map(move |(file, _)| (name, file)));
         let known: Vec<Stamp> = known.map(|(name, file)| picture(directory.join(name).join(file))).collect();

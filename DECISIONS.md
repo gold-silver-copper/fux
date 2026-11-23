@@ -2330,6 +2330,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     name like any other. (D117 called the pane folder's format frozen; these
     names were never a reader's to rely on, and the README named them only to
     say how a file is replaced.)
+  - **The viewer reads a picture that is a file under its name.** It opened
+    `pic-N.sixel` and `pic-N.png` by name, and asked when each was written by
+    name, following a link either way: in a folder another program writes, a
+    link there had the viewer read any file its user can read (to be drawn
+    only if it is a picture, but read; and asked about at every frame). Now
+    `fuxix::open_regular` opens the name without following a link
+    (`O_NOFOLLOW`, with `O_NONBLOCK` so that a FIFO there holds nobody) and
+    says it is none unless what was opened is a regular file; the frame asks
+    the name itself when it was written (`lstat`). One open and one look at
+    what was opened: no moment between a look at the name and the open in
+    which the name can become another thing. `O_NOFOLLOW` is the one flag
+    fuxix has whose number differs between Linux's processors (x86-64 and
+    arm64 among them): it is given for each, and the test that a link is not
+    read fails on a processor where it is wrong.
 
 ## The old fux3's bugs: which classes are gone
 

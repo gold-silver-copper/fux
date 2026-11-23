@@ -83,7 +83,7 @@ are there and keeps the cursor inside them). It sets the
 outer terminal's cursor-key and keypad modes to the focused program's, so key
 bytes pass through untouched; mouse reports it asks for in the SGR form, and
 gives the program in its own, counted from the tile's corner. Pictures are files the viewer passes on after
-checking that each is one sixel string and that its pixels, measured by
+checking that each is a file under its own name (it follows no link there) and one sixel string and that its pixels, measured by
 the viewer in its own terminal's cells, are all in its tile; of any other
 it writes the part inside the tile (`fux-vt/src/sixel.rs`).
 

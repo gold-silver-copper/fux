@@ -630,7 +630,7 @@ Pictures: a pane's picture is drawn in its tile when your terminal takes Kitty
 graphics or draws sixel (the viewer asks it for both as it starts). A picture
 is a file in the pane's folder, `pic-N.sixel` or `pic-N.png`, and goes to your
 terminal in the protocol it was made in where the terminal takes that one;
-where it takes only the other, the viewer converts it. The viewer measures every picture itself, in pixels: the picture's
+where it takes only the other, the viewer converts it. It reads the file that has that name and nothing a link of that name leads to: a link there (or a FIFO, or a folder) is no picture, and none is drawn. The viewer measures every picture itself, in pixels: the picture's
 own size (of a sixel one, the larger of what it says and what it paints) against the pixels
 its tile has for it, counted in your terminal's cells (the cells a pane
 counted it in say where it starts and, of one with rows above the pane's top, how many of its pixels those rows are). A sixel picture whose pixels are square and

@@ -1866,6 +1866,13 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     until("the corner says why", || {
         read(&view.join("shown/screen")).contains(why) && fact(&view, "shown/pictures").is_empty()
     });
+    // A link under the picture's name is no picture, wherever it leads (here to one that is drawn
+    // when it has the name itself): nothing of it is drawn.
+    anew(format!("q\"1;1;600;60#1;2;0;0;100{}", ["!600~"; 10].join("-")));
+    until("the picture is drawn again", || pixels(&drawn().1, [0, 0, 1000, 100]).is_some_and(all_blue));
+    fs::rename(left.join("pic-1.sixel"), inner.0.join("elsewhere")).unwrap();
+    std::os::unix::fs::symlink(inner.0.join("elsewhere"), left.join("pic-1.sixel")).unwrap();
+    until("the link is not drawn", || fact(&view, "shown/pictures").is_empty());
 }
 
 #[test]
