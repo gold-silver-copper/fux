@@ -92,7 +92,9 @@ fn end(session: &Path, started: &[Started], by: Instant) -> Vec<String> {
             // (`kill` says no when one of them has gone meanwhile, which is nothing: what is said
             // here is a `kill` that could not be run, or did not end.)
             let mut kill = Command::new("kill");
-            if let (false, Err(why)) = (targets.is_empty(), output_by(kill.args(["-KILL", "--"]).args(&targets), by)) {
+            if let (false, Err(why)) =
+                (targets.is_empty(), output_by(kill.args(["-KILL", "--"]).args(&targets), by, false))
+            {
                 wrong.push(format!("{}: {targets:?} were not killed: {why}", session.display()));
             }
         }
@@ -128,7 +130,7 @@ fn processes(pids: &[u32], by: Instant) -> Result<Vec<Process>, String> {
     let pids = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
     let mut ps = Command::new("ps");
     ps.args(["-ww", "-o", "pid=,ppid=,pgid=,args=", "-p", &pids]).env_remove("COLUMNS").stdin(Stdio::null());
-    let out = output_by(&mut ps, by)?;
+    let out = output_by(&mut ps, by, false)?;
     // (It ends with 1, and says nothing, when none of them is there any more: that is an answer.)
     if !matches!((out.status.code(), out.stderr.is_empty()), (Some(0), _) | (Some(1), true)) {
         return Err(format!("ps ended with {:?}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim()));
@@ -224,7 +226,7 @@ impl Session {
 }
 
 /// Watches a test from a thread of its own: one that is not `over` at `last` waits where nothing
-/// asks its deadline. It is named, every session of the tests is ended, and the tests stop.
+/// asks its deadline. It is named, the tests are shut, and they stop.
 fn watch(test: String, last: Instant, over: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while !over.load(Ordering::Relaxed) {
@@ -233,26 +235,32 @@ fn watch(test: String, last: Instant, over: Arc<AtomicBool>) {
                     "the test of the session `{test}` was not over {:?} after its deadline: the tests stop",
                     grace()
                 );
-                // First what the tests have started and still wait for (those who wait find it ended).
-                locked(&RUNNING).iter().for_each(|child| stop(child));
-                // (Ended by a thread of its own, and not waited for past its time: the tests stop
-                // whatever became of that.)
-                let (by, (done, ended)) = (Instant::now() + budget(), mpsc::channel());
-                std::thread::spawn(move || {
-                    let sessions = sessions().clone();
-                    done.send(
-                        sessions.iter().flat_map(|(session, started)| end(session, started, by)).collect::<Vec<_>>(),
-                    )
-                });
-                match ended.recv_timeout(budget() + Duration::from_secs(1)) {
-                    Ok(wrong) => wrong.iter().for_each(|wrong| eprintln!("{wrong}")),
-                    Err(_) => eprintln!("the sessions of the tests were not ended in {:?}", budget()),
-                }
+                shut().iter().for_each(|wrong| eprintln!("{wrong}"));
                 std::process::exit(124);
             }
             std::thread::sleep(Duration::from_millis(200));
         }
     });
+}
+
+/// Whether the tests are being shut: no command is started from then on.
+static SHUT: AtomicBool = AtomicBool::new(false);
+
+/// Shuts the tests: no command is started any more, what was started and is still waited for is
+/// stopped, and every session is ended. What could not be done is given back. All of it is another
+/// thread's work, and this one waits for it only so long: a command that does not die when it is
+/// killed, a list another thread has in hand, a `ps` that does not return, hold nothing up here.
+fn shut() -> Vec<String> {
+    SHUT.store(true, Ordering::SeqCst);
+    let (by, (done, ended)) = (Instant::now() + budget(), mpsc::channel());
+    std::thread::spawn(move || {
+        // First what the tests have started (those who wait for it find it ended), then the sessions.
+        locked(&RUNNING).iter().for_each(|child| stop(child));
+        let sessions = sessions().clone();
+        done.send(sessions.iter().flat_map(|(session, started)| end(session, started, by)).collect::<Vec<_>>())
+    });
+    let late = |_| vec![format!("the tests were not shut in {:?}", budget())];
+    ended.recv_timeout(budget() + Duration::from_secs(1)).unwrap_or_else(late)
 }
 
 /// What the tests have started and not yet seen end. A watcher that stops the tests stops these
@@ -324,25 +332,36 @@ trait Bounded {
 
 impl Bounded for Command {
     fn begin(&mut self) -> Run {
-        let what = format!("{self:?}");
-        // (Started with the list in hand: none is started and not on it.)
-        let mut running = locked(&RUNNING);
-        let child = Arc::new(Mutex::new(self.spawn().unwrap_or_else(|e| panic!("{what}: {e}"))));
-        running.push(child.clone());
-        Run { child, what }
+        launch(self, true).unwrap_or_else(|why| panic!("{why}"))
     }
     fn run_from(&mut self, from: Option<fs::File>) -> Output {
-        output_by(self.stdin(from.map_or(Stdio::null(), Stdio::from)), deadline()).unwrap_or_else(|why| panic!("{why}"))
+        let command = self.stdin(from.map_or(Stdio::null(), Stdio::from));
+        output_by(command, deadline(), true).unwrap_or_else(|why| panic!("{why}"))
     }
     fn ended(&mut self) -> ExitStatus {
         self.stdin(Stdio::null()).begin().end()
     }
 }
 
+/// Starts a command, and puts it on the list as it is started: none is started and not on it.
+/// One a test asks for (`asked`) is not started once the tests are being shut; that is looked at
+/// with the list in hand, so whoever then stops what is on the list finds every command that was
+/// let through. (What the end of a session asks of `ps` and `kill` is started then too.)
+fn launch(command: &mut Command, asked: bool) -> Result<Run, String> {
+    let what = format!("{command:?}");
+    let mut running = locked(&RUNNING);
+    if asked && SHUT.load(Ordering::SeqCst) {
+        return Err(format!("not started, as the tests are stopping: {what}"));
+    }
+    let child = Arc::new(Mutex::new(command.spawn().map_err(|e| format!("{what}: {e}"))?));
+    running.push(child.clone());
+    Ok(Run { child, what })
+}
+
 /// Runs a command to its end, or to the moment `by`, where it is killed: what it printed and how
 /// it ended, or why neither is known.
-fn output_by(command: &mut Command, by: Instant) -> Result<Output, String> {
-    let run = command.stdout(Stdio::piped()).stderr(Stdio::piped()).begin();
+fn output_by(command: &mut Command, by: Instant, asked: bool) -> Result<Output, String> {
+    let run = launch(command.stdout(Stdio::piped()).stderr(Stdio::piped()), asked)?;
     // What it prints is read meanwhile, by threads: one that prints more than a pipe holds ends too.
     let reader = |pipe: Option<Box<dyn Read + Send>>| {
         let (read, bytes) = mpsc::channel();
@@ -559,6 +578,28 @@ fn a_test_whose_start_waits() {
     let start = session.fux().args(["start", "p", "--", "sleep", "600"]).stdout(Stdio::null()).begin();
     eprintln!("its start: {}", locked(&start.child).id());
     start.end();
+}
+
+#[test]
+fn a_command_begun_as_the_tests_stop_is_not_started() {
+    // The tests run anew for the one test below, which shuts them itself, as a watcher does before
+    // it stops them: what it had started is ended, and what it starts after that is refused.
+    let out = tests(&["a_test_that_shuts_the_tests_itself"], &[("FUX_TEST_HELD", "1")]);
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn a_test_that_shuts_the_tests_itself() {
+    // (Where the test above tells it to: that one runs it, alone.)
+    if std::env::var_os("FUX_TEST_HELD").is_none() {
+        return;
+    }
+    let before = Command::new("sleep").arg("600").begin();
+    assert_eq!(shut(), [""; 0]);
+    assert!(before.over().is_some(), "what the tests had started was not stopped");
+    let said = |failed: std::thread::Result<()>| *failed.unwrap_err().downcast::<String>().unwrap();
+    let after = said(std::panic::catch_unwind(|| drop(Command::new("sleep").arg("600").begin())));
+    assert!(after.contains("\"sleep\" \"600\"") && after.contains("as the tests are stopping"), "{after}");
 }
 
 #[test]
