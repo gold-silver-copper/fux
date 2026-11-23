@@ -2809,7 +2809,8 @@ fn a_panes_status_names_its_holder_before_its_program_is_started() {
     let looks =
         "cat \"$FUX_PANE/status\" > \"$FUX_PANE/first\"; echo \"parent $PPID\" >> \"$FUX_PANE/first\"; exec sleep 600";
     let pane = session.start("p", &["sh", "-c", looks]);
-    until("the program has looked", || read(&pane.join("first")).contains("parent "));
+    // (A line of its own: the `command` line it has copied by then says `parent` too.)
+    until("the program has looked", || read(&pane.join("first")).contains("\nparent "));
     let (first, status) = (read(&pane.join("first")), read(&pane.join("status")));
     let lines: Vec<&str> = status.lines().collect();
     let holder = lines[0].strip_prefix("holder ").unwrap();
