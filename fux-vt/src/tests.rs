@@ -605,7 +605,7 @@ fn a_cursor_waiting_at_the_right_margin_moves_like_any_other() {
 #[test]
 fn a_title_and_a_clipboard_leave_as_text_and_bytes_and_a_string_has_one_bound() {
     use crate::base64_encode;
-    let base64_decode = |text: &str| crate::kitty::decode_base64(text.as_bytes(), usize::MAX).ok();
+    let base64_decode = |text: &str| crate::base64::decode_base64(text.as_bytes(), usize::MAX).ok();
     // The title loses its control characters; the clipboard is what the base64 says; text goes on after both.
     let mut term = term(40, 2, "\x1b]2;my \u{9b}title\x07\x1b]52;c;aGVsbG8sIHdvcmxk\x1b\\after");
     let out = term.take(0);
@@ -1263,7 +1263,7 @@ fn the_words_of_how_input_is_sent_read_back_and_wrapped_rows_and_lines_gone_are_
     // A clipboard's padding must be the padding of its length, and a number too large is no keyboard flags.
     // (One reading of base64 for a clipboard and for a picture: what is left over of the last
     // character must be nothing, and no more is read than the bound.)
-    let base64_decode = |text: &str| crate::kitty::decode_base64(text.as_bytes(), 3).ok();
+    let base64_decode = |text: &str| crate::base64::decode_base64(text.as_bytes(), 3).ok();
     assert_eq!(
         (base64_decode("b2xk"), base64_decode("AA=="), base64_decode("AA")),
         (Some(b"old".to_vec()), Some(vec![0]), Some(vec![0]))

@@ -3,6 +3,7 @@
 //! takes sixel and kitty graphics pictures. It knows nothing of files or processes.
 #![forbid(unsafe_code)]
 
+mod base64;
 pub mod files;
 mod inflate;
 pub mod kitty;
@@ -1950,7 +1951,7 @@ impl Term {
                 // Setting only: a program is never told what is on the clipboard.
                 Some("?") => self.refuse("a program asked to read the clipboard: that is refused"),
                 // (A string is 4 MiB at most, so what it says in base64 is under that too.)
-                what => match what.and_then(|text| kitty::decode_base64(text.as_bytes(), PICTURE_MAX).ok()) {
+                what => match what.and_then(|text| base64::decode_base64(text.as_bytes(), PICTURE_MAX).ok()) {
                     Some(bytes) if bytes.len() <= 1 << 20 => self.out.clipboard = Some(bytes),
                     Some(_) => self.refuse("a clipboard over 1 MiB was dropped"),
                     None => self.refuse("a clipboard that was not base64 was dropped"),
@@ -2379,10 +2380,10 @@ impl Term {
     }
 }
 
-/// Base64 of `bytes`, with its padding: what [`kitty::encode_base64`] adds to a text.
+/// Base64 of `bytes`, with its padding.
 pub fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::new();
-    kitty::encode_base64(bytes, &mut out);
+    base64::encode_base64(bytes, &mut out);
     out
 }
 
