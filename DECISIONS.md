@@ -2274,9 +2274,11 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   disagreed were the worse thing. A later part of a transfer may say again any of
   the first part's keys with their values, and no others (the protocol allows it
   `m` and `q` alone; Kitty takes any direct transmission as the next part, and
-  `kitten icat` says `a=T` on each). A key that is not the protocol's is passed
-  over, as 0.42.0 passed it over, where Kitty drops the command that has one; a
-  key of the protocol with a value not of its kind still makes the command none.
+  `kitten icat` says `a=T` on each). A key that is not one of the protocol's 31
+  makes the command none, as one with a value not of its kind does, and as in
+  Kitty (0.49.2 was asked): 0.42.0 passed such a key over, and what was left was
+  another command, `a=d,D=i,i=1` deleting every placement for its mistyped `d`.
+  No program that draws on Kitty can send one.
 
 ## The old fux3's bugs: which classes are gone
 

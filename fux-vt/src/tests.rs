@@ -2271,20 +2271,16 @@ fn kitty_transfer_in_parts_goes_on_only_with_its_own_parts() {
 fn kitty_control_keys_are_read_by_their_kind_and_a_malformed_command_is_dropped() {
     const UNREADABLE: &str = "a kitty graphics command that could not be read was dropped";
     // A key that names one of several things takes a letter, `z` (and `H`, `V`) a number with
-    // perhaps a `-`, every other key of the protocol a number without sign: one image, placed.
-    // A key that is not the protocol's is passed over, as fux 0.42.0 passed it over (a later
-    // Kitty's key, or a program's own), whatever it has of letters, digits and `-` for a value.
+    // perhaps a `-`, every other key a number without sign: one image, placed.
     let mut t = Term::new(20, 10);
-    t.feed(b"\x1b_Ga=T,t=d,i=7,f=24,s=1,v=1,z=-3,C=1,g=5,T=a,B=-1,ab=1,k=x9,H=-1;AAAA\x1b\\");
-    let out = t.take(0);
-    assert_eq!((String::from_utf8(out.reply).unwrap().as_str(), out.refused.len()), ("\x1b_Gi=7;OK\x1b\\", 0));
-    assert_eq!(t.shown().pictures.iter().map(|p| p.z).collect::<Vec<_>>(), [-3]);
+    t.feed(b"\x1b_Ga=T,t=d,i=7,f=24,s=1,v=1,z=-3,C=1,H=-1;AAAA\x1b\\");
+    assert_eq!((reply(&mut t).as_str(), t.shown().pictures.len()), ("\x1b_Gi=7;OK\x1b\\", 1));
+    assert_eq!(t.shown().pictures[0].z, -3);
 
-    // A key of the protocol with a value of the other kind or a sign where none belongs, no key,
-    // a key that is not letters, no value, a value that is more than letters, digits and `-`:
-    // the command is none. It is not answered (it names no image that could be believed), it
-    // does nothing, and the log says so.
-    let malformed: [&[u8]; 18] = [
+    // A value of the other kind, a sign where none belongs, no key, a key that is not one of the
+    // protocol's 31 (whatever its value), no value: the command is none, as it is in Kitty. It is
+    // not answered (it names no image that could be believed), it does nothing, and the log says so.
+    let malformed: [&[u8]; 24] = [
         b"a=T,i=A,f=24,s=1,v=1;AAAA",     // (was image 65)
         b"a=T,i=8,f=d,s=1,v=1;AAAA",      // (was f=100)
         b"a=100,d=65",                    // (was a=d,d=A: every placement and image gone)
@@ -2296,13 +2292,20 @@ fn kitty_control_keys_are_read_by_their_kind_and_a_malformed_command_is_dropped(
         b"a=T,i=8,f=24,s=1,v=1,q=x;AAAA",
         b"=1,a=T,i=8,f=24,s=1,v=1;AAAA", // (the pair without a key was passed over)
         b"1=1,a=T,i=8,f=24,s=1,v=1;AAAA",
-        b"a1=1,a=T,i=8,f=24,s=1,v=1;AAAA",
         b"a=T,i=8,f=24,s=1,v=1,ab;AAAA",
-        b"a=T,i=8,f=24,s=1,v=1,g=;AAAA",
-        b"a=T,i=8,f=24,s=1,v=1,g=5.0;AAAA",
         b"a=T,i=8,f=24,s=1,v=1,;AAAA",
         b"a=T,i=4294967296,f=24,s=1,v=1;AAAA",
         b"a=T,i=8,f=24,s=1,v=1,z=-2147483649;AAAA",
+        // A key that is not the protocol's. Passed over, each of these did something:
+        b"a=T,i=8,f=24,s=1,v=1,g=5;AAAA",
+        b"a=T,i=8,f=24,s=1,v=1,T=a;AAAA",
+        b"a=T,i=8,f=24,s=1,v=1,B=-1;AAAA",
+        b"a=T,i=8,f=24,s=1,v=1,ab=1;AAAA",
+        b"a=T,i=8,K=1,f=24,s=1,v=1;AAAA", // (a key of some later protocol: placed without what it asked)
+        b"a=d,D=i,i=7",                   // (`d` mistyped: was a=d alone, every placement gone)
+        b"A=q,i=7,f=24,s=1,v=1;",         // (`a` mistyped: was a=t, image 7 replaced by nothing)
+        b"a=d,d=A,T=-1",                  // (every placement and image gone)
+        b"a=d,d=i,i=7,x-y=1",
     ];
     for command in malformed {
         t.feed(&[b"\x1b_G", command, b"\x1b\\"].concat());
@@ -2314,6 +2317,16 @@ fn kitty_control_keys_are_read_by_their_kind_and_a_malformed_command_is_dropped(
     // (The image is still there to place: nothing was deleted.)
     t.feed(b"\x1b_Ga=p,i=7,C=1\x1b\\");
     assert_eq!(reply(&mut t), "\x1b_Gi=7;OK\x1b\\");
+
+    // While a transfer is under way such a command is no part of it: its payload is not taken
+    // for the transfer's (these three bytes would have made the image whole, and placed it).
+    // It breaks the transfer off, as any command that cannot be read does.
+    t.feed(b"\x1b_Ga=T,i=9,f=24,s=2,v=1,m=1;AAAA\x1b\\\x1b_GT=x;AAAA\x1b\\");
+    let out = t.take(0);
+    assert_eq!((out.reply.len(), t.shown().pictures.len()), (0, 2));
+    assert_eq!(out.refused, ["a kitty picture that was not sent whole was dropped", UNREADABLE]);
+    t.feed(b"\x1b_Gm=0;AAAA\x1b\\\x1b_Ga=p,i=9\x1b\\");
+    assert_eq!(reply(&mut t), "\x1b_Gi=9;ENOENT: image not found\x1b\\");
 }
 
 #[test]
