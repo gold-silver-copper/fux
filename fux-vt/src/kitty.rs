@@ -7,7 +7,9 @@ use crate::sixel::{self, Colour, Part};
 use crate::{PICTURE_MAX, PICTURES_MAX, Picture, PictureFormat, SIZE_MAX, png};
 
 const STORED_IMAGES_MAX: usize = 16;
+/// The most a screen keeps of images, all together: each one's pixels as RGBA, and a PNG's own bytes.
 const STORED_BYTES_MAX: usize = 16 << 20;
+const TOO_LARGE: &str = "ENOMEM: image is over the 16 MiB a screen keeps";
 const PIXELS_MAX: usize = sixel::PIXELS_MAX;
 const CHUNK_RAW_BYTES: usize = 3072; // 3072 raw bytes == 4096 base64 characters
 
@@ -841,6 +843,7 @@ impl Storage {
                     reply: (!loading.implicit_id)
                         .then(|| Response::err(loading.id, loading.number, loading.placement_id, msg).encode(quiet))
                         .flatten(),
+                    refused: (msg == TOO_LARGE).then_some("a kitty picture over the 16 MiB a screen keeps was dropped"),
                     ..Outcome::default()
                 };
             }
@@ -1162,6 +1165,8 @@ impl Storage {
         }
     }
 
+    /// Keeps `img`, the oldest going for it while there are too many or they are too large together.
+    /// (One that is too large alone never comes here: `decode_image` refuses it, before it is unpacked.)
     fn store_image(&mut self, img: StoredImage, pictures: &mut Vec<Picture>) {
         let needed = img.byte_len();
         let total = |imgs: &[StoredImage]| imgs.iter().map(StoredImage::byte_len).sum::<usize>();
@@ -1210,6 +1215,9 @@ fn decode_image(
     } else {
         payload.to_vec()
     };
+    // An image is kept as RGBA, and a PNG's own bytes with it: one that a screen's store has no room
+    // for, even empty, is refused before anything of it is unpacked.
+    let fits = |pixels: usize, more: usize| pixels.saturating_mul(4).saturating_add(more) <= STORED_BYTES_MAX;
     let max_uncompressed = match format {
         Format::Png => PICTURE_MAX,
         Format::Rgb | Format::Rgba => {
@@ -1223,6 +1231,9 @@ fn decode_image(
             let pixels = (width as usize).checked_mul(height as usize).ok_or("EINVAL: dimensions too large")?;
             if pixels > PIXELS_MAX {
                 return Err("EINVAL: dimensions too large");
+            }
+            if !fits(pixels, 0) {
+                return Err(TOO_LARGE);
             }
             pixels.checked_mul(bpp).ok_or("EINVAL: dimensions too large")?
         }
@@ -1238,6 +1249,9 @@ fn decode_image(
 
     match format {
         Format::Png => {
+            if png::dimensions(&data).is_some_and(|(w, h)| !fits(w as usize * h as usize, data.len())) {
+                return Err(TOO_LARGE);
+            }
             let (w, h, rgba) = png::decode(&data, PIXELS_MAX).map_err(|_| "EINVAL: invalid PNG data")?;
             Ok(DecodedImage { w, h, rgba, png: Some(data) })
         }

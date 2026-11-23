@@ -1955,3 +1955,72 @@ fn inflate_builds_the_fixed_trees_once_however_many_fixed_blocks_a_stream_has() 
     // (One tree for literals and lengths, one for distances; they were built anew for each block.)
     assert_eq!(inflate::TREES_BUILT.with(std::cell::Cell::get), 2);
 }
+
+/// A Kitty graphics command: `control`, then `payload` in base64.
+fn apc(control: &str, payload: &[u8]) -> Vec<u8> {
+    let mut command = format!("\x1b_G{control};");
+    crate::kitty::encode_base64(payload, &mut command);
+    (command + "\x1b\\").into_bytes()
+}
+
+/// What the terminal answered since the last look.
+fn reply(term: &mut Term) -> String {
+    String::from_utf8(term.take(0).reply).unwrap()
+}
+
+/// A zlib stream of `n` zero bytes in one fixed-Huffman block: a literal, then copies of the byte before.
+fn zeros(n: usize) -> Vec<u8> {
+    let mut stream = vec![0x78, 0x01];
+    let (mut bits, mut have) = (0u64, 0u32);
+    // A Huffman code goes in from its first bit; everything else from its last.
+    let mut code = |code: u32, len: u32, stream: &mut Vec<u8>| {
+        for bit in (0..len).rev() {
+            bits |= u64::from(code >> bit & 1) << have;
+            have += 1;
+        }
+        while have >= 8 {
+            stream.push(bits as u8);
+            (bits, have) = (bits >> 8, have - 8);
+        }
+    };
+    code(0b110, 3, &mut stream); // the last block, type 1 (the three bits are read from the other end)
+    let copies = n.saturating_sub(1) / 258;
+    (0..n.min(1)).for_each(|_| code(0b0011_0000, 8, &mut stream));
+    (0..copies).for_each(|_| code(0b1100_0101_00000, 13, &mut stream)); // 258 bytes from 1 back
+    (0..n.saturating_sub(1) - copies * 258).for_each(|_| code(0b0011_0000, 8, &mut stream));
+    code(0, 7 + 7, &mut stream); // the block's end, and the last byte's rest
+    stream.extend_from_slice(&((n as u32 % 65521) << 16 | 1).to_be_bytes());
+    stream
+}
+
+#[test]
+fn kitty_refuses_an_image_larger_than_a_screen_keeps_and_evicts_nothing_for_it() {
+    let mut t = Term::new(20, 10);
+    t.feed(&apc("a=T,i=1,f=24,s=1,v=1", &[255, 0, 0]));
+    assert_eq!((reply(&mut t).as_str(), t.shown().pictures.len()), ("\x1b_Gi=1;OK\x1b\\", 1));
+    assert_eq!(crate::inflate::zlib(&zeros(1000), 1000).unwrap(), vec![0; 1000]);
+
+    // 2049 by 2048 pixels are 16 MiB and 8 KiB as RGBA: more than the 16 MiB a screen keeps.
+    // It is refused, and what was there stays: the image, and its place on the screen.
+    let no = "ENOMEM: image is over the 16 MiB a screen keeps";
+    t.feed(&apc("a=t,i=2,f=32,s=2049,v=2048,o=z", &zeros(2049 * 2048 * 4)));
+    let out = t.take(0);
+    assert_eq!(String::from_utf8(out.reply).unwrap(), format!("\x1b_Gi=2;{no}\x1b\\"));
+    assert_eq!(out.refused, ["a kitty picture over the 16 MiB a screen keeps was dropped"]);
+    assert_eq!(t.shown().pictures.len(), 1);
+    t.feed(b"\x1b_Ga=p,i=2\x1b\\\x1b_Ga=p,i=1,p=7\x1b\\");
+    assert_eq!(reply(&mut t), "\x1b_Gi=2;ENOENT: image not found\x1b\\\x1b_Gi=1,p=7;OK\x1b\\");
+    // A query for it is told the same, and so is a PNG that says it is that large (its pixels
+    // and its own bytes count): neither is unpacked for that.
+    t.feed(&apc("a=q,i=3,f=32,s=2049,v=2048,o=z", &zeros(2049 * 2048 * 4)));
+    assert_eq!(reply(&mut t), format!("\x1b_Gi=3;{no}\x1b\\"));
+    let mut large = crate::png::encode_rgba(1, 1, &[0; 4], 1024).unwrap();
+    large[16..24].copy_from_slice(&[0, 0, 8, 0, 0, 0, 8, 0]); // (2048 by 2048: the 16 MiB, and the file)
+    t.feed(&apc("a=t,i=4,f=100", &large));
+    assert_eq!(reply(&mut t), format!("\x1b_Gi=4;{no}\x1b\\"));
+
+    // One of exactly 16 MiB is kept; the oldest goes for it, as before.
+    t.feed(&apc("a=t,i=5,f=32,s=2048,v=2048,o=z", &zeros(2048 * 2048 * 4)));
+    assert_eq!(reply(&mut t), "\x1b_Gi=5;OK\x1b\\");
+    assert!(t.shown().pictures.is_empty());
+}

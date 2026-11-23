@@ -144,7 +144,11 @@ reading; past that it stops reading `in`, and once the FIFO's own buffer
 (the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
 cells. A program that says it is in the middle of drawing (mode 2026) is not
 written out until it says it is done, or what is not yet written (output, or a line on `ctl`) has waited half a second (history may be added to meanwhile): so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data and 500 cells each way; a ninth drops the
-oldest, with a line in `log`. At most 4 MiB of history and one row wait to be written,
+oldest, with a line in `log`. Of Kitty graphics a screen also keeps the images a program sent, to place them
+again: at most 16, and 16 MiB together (each one's pixels as RGBA, and a PNG's own bytes); one more drops
+the oldest, and one that is over 16 MiB alone is refused (`ENOMEM`, with a line in `log`) before it is
+unpacked, and nothing goes for it. An image still being sent in parts is at most 4 MiB. So the images a
+holder keeps for a pane are 40 MiB at most: 16 MiB and 4 MiB for each of its two screens. At most 4 MiB of history and one row wait to be written,
 counted on the longer of `history` and `history.styled`: rows past that (one
 write of the program or one resize that makes more, with what still waits from before; rows a resize takes back and gives again are counted once) are not kept, in either
 file, with a line in `log`, and the line they were part of ends there in
