@@ -298,6 +298,9 @@ fn xterm_256(n: u8) -> [u8; 3] {
 
 // ---- Kitty APC command parser & screen storage --------------------------------
 
+/// The keys of the protocol, as of Kitty 0.50: each is one letter.
+const KEYS: &[u8] = b"aqeftsvSOiIpomNxywhXYcrCUzPQHVd";
+
 /// Dense key-value table for single-ASCII-letter Kitty control keys (`a`..`z`, `A`..`Z`).
 #[derive(Clone, Copy)]
 struct Kv {
@@ -352,9 +355,12 @@ impl Kv {
         }
     }
 
-    /// Reads `key=value` pairs, each key one letter. A key that names one of several things (`a`, `t`,
-    /// `o`, `d`, `e`) takes one letter; `z`, `H` and `V` a number that may have a `-`; every other key
-    /// a number without sign. Anything else makes the command none: no pair of it is believed.
+    /// Reads `key=value` pairs. A key that names one of several things (`a`, `t`, `o`, `d`, `e`) takes
+    /// one letter; `z`, `H` and `V` a number that may have a `-`; every other key of the protocol a
+    /// number without sign. A key that is not the protocol's is passed over, if it is letters and its
+    /// value letters, digits and `-`: a later Kitty's key, or a program's own. (Kitty drops a command
+    /// that has one. fux 0.42.0 passed it over, and a program that got its picture then gets it now.)
+    /// Anything else makes the command none: no pair of it is believed.
     fn parse(control: &[u8]) -> Option<Self> {
         let mut kv = Self::default();
         if control.is_empty() {
@@ -364,9 +370,16 @@ impl Kv {
             let digits = std::str::from_utf8(digits).ok().filter(|text| text.bytes().all(|b| b.is_ascii_digit()))?;
             digits.parse::<u32>().ok()
         };
+        let letters =
+            |text: &[u8], or: &[u8]| !text.is_empty() && text.iter().all(|b| b.is_ascii_alphabetic() || or.contains(b));
         for pair in control.split(|&b| b == b',') {
-            let [key, b'=', value @ ..] = pair else { return None };
-            Self::index(*key)?;
+            let at = pair.iter().position(|&b| b == b'=')?;
+            let (name, value) = (pair.get(..at)?, pair.get(at + 1..)?);
+            let key = match name {
+                [key] if KEYS.contains(key) => key,
+                _ if letters(name, b"") && letters(value, b"0123456789-") => continue,
+                _ => return None,
+            };
             let value = match (key, value) {
                 (b'a' | b't' | b'o' | b'd' | b'e', [letter]) if letter.is_ascii_alphabetic() => u32::from(*letter),
                 (b'a' | b't' | b'o' | b'd' | b'e', _) => return None,
