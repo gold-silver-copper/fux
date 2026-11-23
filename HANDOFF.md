@@ -139,9 +139,12 @@ about two minutes.
 - One PR per task; the PR body has a before/after for anything a user or script sees, the line counts
   per crate, and what was not verified.
 - A bug gets a test that fails on the base first; the PR body shows it failing.
-- A test of the real binary (`tests/panes.rs`) has one deadline, two minutes from its first session,
-  and waits for nothing but through that file's helpers (`run`, `ended`, `wait`, `send`, `until`),
-  which ask it: a test in that file says so of the file. Run them all under `timeout` as well.
+- A test of the real binary (`tests/panes.rs`) has one deadline, two minutes from its first session.
+  It starts a command with `run`, `run_from`, `ended` or `begin`, writes to a FIFO with `send`, reads
+  with `read` and waits with `until` or `until_or`: these ask that deadline, and a command started
+  through them is one the tests stop when they stop. Nothing checks that a new test does so (a bare
+  `spawn`, `output` or `fs::write` to a FIFO waits by itself): look for it in review. Run them all
+  under `timeout` as well.
 - Design questions that have several defensible answers go to a panel of independent reviewers
   who vote on a fixed ballot; the result and the strongest dissent go into `DECISIONS.md`.
 - Before review, blind testers use the built binary with only the README and `fux help agents`;

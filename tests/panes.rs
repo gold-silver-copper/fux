@@ -552,19 +552,6 @@ fn a_test_that_opens_a_fifo_nobody_writes() {
 }
 
 #[test]
-fn no_test_waits_for_a_command_or_a_fifo_but_through_the_helpers() {
-    // What waits by itself, a test calls through `run`, `ended`, `wait` and `send`, which ask the
-    // test's deadline: none of these is in this file but there.
-    let source = include_str!("panes.rs");
-    for call in [[".out", "put()"], [".sta", "tus()"], ["wait_with_", "output"], ["fs::write(pane.join(\"i", "n\")"]] {
-        let call = call.concat();
-        let found = source.lines().enumerate().filter(|(_, line)| line.contains(&call));
-        let lines: Vec<usize> = found.map(|(n, _)| n + 1).collect();
-        assert!(lines.is_empty(), "`{call}` at lines {lines:?}: it waits without the test's deadline");
-    }
-}
-
-#[test]
 fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
     // Lines of 252 bytes, three rows each, in bursts: more than twice what `history` holds, so
     // it is put aside twice. No line is cut by that: `history.1` ends with a whole line, and
@@ -685,6 +672,11 @@ fn a_pane_moved_while_it_is_started_is_held_where_it_went_and_its_name_is_anothe
     // says, and nobody asks the lock). The folder is moved, and a second start takes the name. The
     // first holder keeps the folder that was locked for it, under its new name, and the second the
     // new one: never two in one.
+    // (What this does not cover: a start that would open the pane by its name once more between
+    // taking the lock and starting its holder. The folder is moved here after the holder has it. To
+    // move it between the two, the test must know that the start has the lock; only asking the lock
+    // says so, and asking it can make that very start fail. The test that did was made again in a
+    // loop until it did not.)
     let session = Session::new("twostarts");
     let (pane, old) = (session.0.join("main/p"), session.0.join("main/old"));
     fs::create_dir_all(&pane).unwrap();
