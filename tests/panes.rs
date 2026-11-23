@@ -2312,6 +2312,34 @@ fn a_line_of_ctl_is_measured_in_the_bytes_that_were_written() {
 }
 
 #[test]
+fn the_viewer_writes_to_a_fifo_under_a_panes_name_and_to_nothing_a_link_there_leads_to() {
+    // A pane's folder that another than a holder wrote: under `in` and under `ctl` a link, each to a
+    // file that is none of the pane's. The viewer shows the pane, asks it nothing and types nothing
+    // into it: what a link leads to is not written, and a pane with no FIFO under `in` is not read.
+    let (outer, inner) = (Session::new("wlouter"), Session::new("wlinner"));
+    let (keys, pane) = (inner.0.join(".keys"), inner.0.join("main/linked"));
+    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(&pane).unwrap();
+    let kept = [("in", inner.0.join("typed-kept")), ("ctl", inner.0.join("asked-kept"))];
+    for (name, file) in &kept {
+        fs::write(file, "not the pane's\n").unwrap();
+        std::os::unix::fs::symlink(file, pane.join(name)).unwrap();
+    }
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    let screen = || read(&view.join("shown/screen"));
+    let written = || kept.iter().any(|(_, file)| read(file) != "not the pane's\n");
+    until("the viewer shows the workspace", || fact(&view, "modes").contains("paste") || !screen().trim().is_empty());
+    send(&view.join("in"), "typed\r");
+    until("the viewer says what became of the keys", || written() || screen().contains("linked"));
+    std::thread::sleep(Duration::from_millis(300));
+    for (name, file) in &kept {
+        assert_eq!(read(file), "not the pane's\n", "the viewer wrote through the link under `{name}`");
+    }
+    assert!(screen().contains("linked") && screen().contains("what you typed"), "{}", screen());
+}
+
+#[test]
 fn the_windows_focus_is_not_told_to_a_program_that_asks_no_more() {
     // A program that asked to be told of the focus (mode 1004) and was told it has the keys. It
     // stops asking while the viewer is stopped, and the terminal says in that time that its window

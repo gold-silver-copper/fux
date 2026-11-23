@@ -2344,6 +2344,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     fuxix has whose number differs between Linux's processors (x86-64 and
     arm64 among them): it is given for each, and the test that a link is not
     read fails on a processor where it is wrong.
+  - **The viewer writes to a FIFO under `in` and `ctl`, and to nothing
+    else** (added after the review of the three parts above, which found the
+    list of what was left uncovered one short). The viewer opened a pane's
+    `in` and `ctl` by name to write: with `in` a link to a file, a pane
+    counted as read, and what was typed overwrote the file's first bytes
+    (`typed\r` over a file, in the test); a `resize` went the same way through
+    `ctl`. `fuxix::open_fifo` opens the name to write without following a
+    link and gives it only if a FIFO was opened; the viewer's writes and its
+    look at whether a pane is read go through it. Nothing a pane needs is
+    lost: a holder makes both as FIFOs, and so does a mirror (koh makes them
+    with `fuxix::fifo`). A holder's own FIFOs are opened without following a
+    link too.
 
 ## The old fux3's bugs: which classes are gone
 

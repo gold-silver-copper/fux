@@ -7,7 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Error, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -201,6 +201,14 @@ pub fn open_regular(path: impl AsRef<Path>) -> io::Result<File> {
     if file.metadata()?.is_file() { Ok(file) } else { Err(io::ErrorKind::InvalidInput.into()) }
 }
 
+/// Opens, to write without waiting, the FIFO a name is the name of: not what a link of that name
+/// leads to (the open fails), and nothing that is no FIFO (a file there would be written into).
+/// With nobody reading the FIFO it is an error at once, as with `open`.
+pub fn open_fifo(path: impl AsRef<Path>) -> io::Result<File> {
+    let file = OpenOptions::new().write(true).custom_flags(os::O_NONBLOCK | os::O_NOFOLLOW).open(path)?;
+    if file.metadata()?.file_type().is_fifo() { Ok(file) } else { Err(io::ErrorKind::InvalidInput.into()) }
+}
+
 /// Whether an open to write failed because the FIFO has no reader (ENXIO, 6 on both systems).
 pub fn no_reader(error: &Error) -> bool {
     error.raw_os_error() == Some(6)
@@ -213,7 +221,7 @@ pub fn fifo(path: impl AsRef<Path>) -> io::Result<File> {
     let name = CString::new(path.as_ref().as_os_str().as_bytes())?;
     // SAFETY: the name is a valid NUL-terminated string for the call.
     check(unsafe { mkfifo(name.as_ptr(), 0o600) })?;
-    OpenOptions::new().read(true).write(true).custom_flags(os::O_NONBLOCK).open(path)
+    OpenOptions::new().read(true).write(true).custom_flags(os::O_NONBLOCK | os::O_NOFOLLOW).open(path)
 }
 
 /// A terminal in raw mode. Dropped, it writes the terminal what it was given to say on leaving

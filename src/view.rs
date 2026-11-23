@@ -994,7 +994,7 @@ impl View {
             .map(|(name, _)| {
                 // (Whether its holder lives is whether anything reads its `in`. While it is in the
                 // middle of writing, a pane is as it was last read.)
-                let held = sys::open(directory.join(name).join("in"), true).is_ok();
+                let held = sys::open_fifo(directory.join(name).join("in")).is_ok();
                 let pane = self.panes.entry(name.clone()).or_insert_with(unread);
                 pane.looked = generation(&directory.join(name), pane.looked);
                 (pane.seen.filter(|_| pane.looked.1 && held).unwrap_or(pane.looked.0), held)
@@ -1481,9 +1481,10 @@ fn put(row: &mut [Cell], x: usize, room: usize, cells: &[Cell]) {
     }
 }
 
-/// Writes to a pane's FIFO (`in`, `ctl`) without waiting.
+/// Writes to a pane's FIFO (`in`, `ctl`) without waiting: to the FIFO that has the name, and to
+/// nothing else that has it (a link there leads anywhere, and a file there would be written into).
 fn send_to(path: &Path, bytes: &[u8]) -> io::Result<usize> {
-    sys::open(path, true)?.write(bytes)
+    sys::open_fifo(path)?.write(bytes)
 }
 
 /// How a pane's program asks for its input (pastes marked, the mouse, the focus, keys), as its

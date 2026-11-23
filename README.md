@@ -379,7 +379,9 @@ lives: `flock -n "$D/main/build" true` fails while it does (Linux), and
 ## The viewer
 
 `fux view [WORKSPACE]` shows every folder in the workspace whose name is a
-pane's name (above) as a pane. The
+pane's name (above) as a pane. It types into a pane's `in` and asks on its `ctl` only where a FIFO
+has that name: a link there is not followed and a file there is not written, and a pane with no
+FIFO under `in` is one nothing reads. The
 `layout` file in the workspace says where; a person can read and edit it, and
 viewers of the same workspace share it, focus included:
 
