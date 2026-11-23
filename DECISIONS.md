@@ -2736,6 +2736,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     one), where it kept it in the pane's folder. A pane closed while it is
     alone leaves that file; before, it went with the folder. The recipe says
     so.
+  - **`.search` on a hangup** has a test since the review of PR #483: hung
+    up while it reads a pane, its list and that pane's text both go.
   - **Tests.** Replaced: "a text or a list that cannot be moved into its pane
     is removed" (nothing is moved any more) by one test that both end with
     their file gone and nothing put into the pane's folder, and that a

@@ -194,7 +194,7 @@ about two minutes.
 1. **Daily use.** The owner is to use this fux daily beside fux 1; what annoys or surprises in use
    decides the next changes better than another audit (the last line-by-line audits found almost
    nothing left to cut).
-2. **Small known items:** `C-b c`'s menu caption still says "history in the editor" (it opens history
+2. **Small known items:** `tools/help-agents.sh` failed once in CI on Linux at the page's last command (`rm -r` of the demo workspace: `agent-demo/broad/main: Directory not empty`; PR #483, 1 of 11 runs there, 0 of 160 by hand on that branch and on master): the README's "one failed `rm -r` of a busy pane", after the page typed into that pane five commands before, and not explained further; `C-b c`'s menu caption still says "history in the editor" (it opens history
    and screen); `keys/.edit` passes no line number to an `$EDITOR` it does not know by name, such as a
    wrapper script around a known editor (the file opens where that editor starts; `FUXN_EDIT` passes
    the line); a pane kept by a holder from an older build writes the old file layout and nothing says so; in the pane picker the first Enter
