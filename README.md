@@ -947,7 +947,8 @@ transmission `t=d`, formats `f=24`, `f=32`, `f=100` PNG, zlib compression `o=z`,
 chunked transfer, query `a=q`, placement `a=p` with cropping/scaling/`C=1`, and
 deletion `a=d`; file/shared-memory transmission `t=f`/`t=t`/`t=s`, Unicode
 placeholders `U=1`, relative placements `P`/`Q`, and animation `a=f`/`a=a`/`a=c` are left out:
-each is refused with an error, and nothing is placed or moved for it).
+each is refused, and nothing is placed or moved for it; the error is answered as any answer is,
+to a command that named its image by `i` or `I` and did not ask for silence with `q=2`).
 A placement's `z` is kept for the deletions that choose by it (`d=z`, `d=q`) and
 orders nothing: pictures are drawn over the text, a later one over an earlier;
 its offsets inside a cell (`X`, `Y`) are not read.

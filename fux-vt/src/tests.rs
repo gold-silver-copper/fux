@@ -2331,6 +2331,13 @@ fn kitty_placements_fux_does_not_draw_are_refused_and_move_nothing() {
         t.feed(format!("\x1b_Ga=p,i=1,p={},{keys}\x1b\\\x1b_Ga=p,i=1,U=0,P=0,Q=0\x1b\\", n + 1).as_bytes());
         assert_eq!(reply(&mut t), no.replace("i=1;", &format!("i=1,p={};", n + 1)) + "\x1b_Gi=1;OK\x1b\\", "{keys}");
         assert_eq!((t.shown().pictures.len(), t.shown().cursor.row, t.shown().cursor.col), (1, 1, 3), "{keys}");
+        // The refusal is answered as anything is: not to a command that named no image, nor to
+        // one that asked for silence. Nothing is placed or moved for those either.
+        for unanswered in [format!("a=T,{keys},f=24,s=1,v=1"), format!("a=T,i=2,q=2,{keys},f=24,s=1,v=1")] {
+            t.feed(format!("\x1b_G{unanswered};AAAA\x1b\\").as_bytes());
+            assert_eq!(reply(&mut t), "", "{unanswered}");
+            assert_eq!((t.shown().pictures.len(), t.shown().cursor.col), (1, 3), "{unanswered}");
+        }
     }
 }
 
