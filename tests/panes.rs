@@ -41,7 +41,7 @@ static SESSIONS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 /// (Taken whatever became of a test that had it: a session that ends must not fail at its end, which
 /// in a test that is failing would stop every test where it is, its panes left running.)
 fn sessions() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
-    SESSIONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    locked(&SESSIONS)
 }
 
 /// When the test on this thread must be over (one with no session: `limit` from now).
@@ -223,6 +223,8 @@ fn watch(test: String, last: Instant, over: Arc<AtomicBool>) {
                     "the test of the session `{test}` was not over {:?} after its deadline: the tests stop",
                     grace()
                 );
+                // First what the tests have started and still wait for (those who wait find it ended).
+                locked(&RUNNING).iter().for_each(|child| stop(child));
                 // (Ended by a thread of its own, and not waited for past its time: the tests stop
                 // whatever became of that.)
                 let (by, (done, ended)) = (Instant::now() + budget(), mpsc::channel());
@@ -241,8 +243,63 @@ fn watch(test: String, last: Instant, over: Arc<AtomicBool>) {
     });
 }
 
+/// What the tests have started and not yet seen end. A watcher that stops the tests stops these
+/// first: a command that waits (a `fux start` whose holder never comes) is no pane's yet, and no
+/// session's end finds it.
+static RUNNING: Mutex<Vec<Arc<Mutex<Child>>>> = Mutex::new(Vec::new());
+/// (Taken whatever became of a test that had it, as `sessions` is.)
+fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A command a test started, which is known to the tests from that moment. It is waited for until
+/// a moment and killed there; and one that is let go while it runs is killed too.
+struct Run {
+    child: Arc<Mutex<Child>>,
+    what: String,
+}
+
+impl Run {
+    /// How it ended, if it has.
+    fn over(&self) -> Option<ExitStatus> {
+        locked(&self.child).try_wait().unwrap_or_else(|e| panic!("{}: {e}", self.what))
+    }
+    /// Waits for its end until the moment `by`, where it is killed, and named.
+    fn end_by(&self, by: Instant) -> Result<ExitStatus, String> {
+        loop {
+            if let Some(status) = self.over() {
+                return Ok(status);
+            }
+            if Instant::now() >= by {
+                return Err(format!("not ended by its deadline, and killed: {}", self.what));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    /// Waits for its end until the test's deadline: one that has not ended by then fails the test.
+    fn end(&self) -> ExitStatus {
+        self.end_by(deadline()).unwrap_or_else(|why| panic!("{why}"))
+    }
+}
+
+impl Drop for Run {
+    fn drop(&mut self) {
+        stop(&self.child);
+        locked(&RUNNING).retain(|child| !Arc::ptr_eq(child, &self.child));
+    }
+}
+
+/// Kills a command and waits for it (one that has ended is only waited for, which is nothing).
+fn stop(child: &Mutex<Child>) {
+    let mut child = locked(child);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// What a test runs ends by the test's deadline, or is killed there and named.
 trait Bounded {
+    /// Starts the command, to be waited for as the test says (`Run`).
+    fn begin(&mut self) -> Run;
     /// As `output`: what the command printed, and how it ended. It is given nothing to read, unless
     /// `from` is a file for it.
     fn run_from(&mut self, from: Option<fs::File>) -> Output;
@@ -254,22 +311,26 @@ trait Bounded {
 }
 
 impl Bounded for Command {
+    fn begin(&mut self) -> Run {
+        let what = format!("{self:?}");
+        // (Started with the list in hand: none is started and not on it.)
+        let mut running = locked(&RUNNING);
+        let child = Arc::new(Mutex::new(self.spawn().unwrap_or_else(|e| panic!("{what}: {e}"))));
+        running.push(child.clone());
+        Run { child, what }
+    }
     fn run_from(&mut self, from: Option<fs::File>) -> Output {
         output_by(self.stdin(from.map_or(Stdio::null(), Stdio::from)), deadline()).unwrap_or_else(|why| panic!("{why}"))
     }
     fn ended(&mut self) -> ExitStatus {
-        let what = format!("{self:?}");
-        let mut child = self.stdin(Stdio::null()).spawn().unwrap_or_else(|e| panic!("{what}: {e}"));
-        wait(&mut child, &what)
+        self.stdin(Stdio::null()).begin().end()
     }
 }
 
 /// Runs a command to its end, or to the moment `by`, where it is killed: what it printed and how
 /// it ended, or why neither is known.
 fn output_by(command: &mut Command, by: Instant) -> Result<Output, String> {
-    let what = format!("{command:?}");
-    let mut child =
-        command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("{what}: {e}"))?;
+    let run = command.stdout(Stdio::piped()).stderr(Stdio::piped()).begin();
     // What it prints is read meanwhile, by threads: one that prints more than a pipe holds ends too.
     let reader = |pipe: Option<Box<dyn Read + Send>>| {
         let (read, bytes) = mpsc::channel();
@@ -280,36 +341,15 @@ fn output_by(command: &mut Command, by: Instant) -> Result<Output, String> {
         });
         bytes
     };
-    let stdout = reader(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
-    let stderr = reader(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
-    let status = wait_by(&mut child, &what, by)?;
+    let stdout = reader(locked(&run.child).stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let stderr = reader(locked(&run.child).stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let status = run.end_by(by)?;
     // (Something the command started may still hold its pipes: that too is waited for no longer.)
     let all = |bytes: mpsc::Receiver<Vec<u8>>| {
         let left = by.saturating_duration_since(Instant::now());
-        bytes.recv_timeout(left).map_err(|_| format!("{what}: what it started still holds its output"))
+        bytes.recv_timeout(left).map_err(|_| format!("{}: what it started still holds its output", run.what))
     };
     Ok(Output { status, stdout: all(stdout)?, stderr: all(stderr)? })
-}
-
-/// Waits for a command until the moment `by`: one that has not ended by then is killed, and named.
-fn wait_by(child: &mut Child, what: &str, by: Instant) -> Result<ExitStatus, String> {
-    loop {
-        if let Some(status) = child.try_wait().map_err(|e| format!("{what}: {e}"))? {
-            return Ok(status);
-        }
-        if Instant::now() >= by {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("not ended by its deadline, and killed: {what}"));
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-}
-
-/// Waits for a command a test started, until the test's deadline: one that has not ended by then is
-/// killed, and the test fails with its command line.
-fn wait(child: &mut Child, what: &str) -> ExitStatus {
-    wait_by(child, what, deadline()).unwrap_or_else(|why| panic!("{why}"))
 }
 
 /// Writes to a FIFO (a pane's `in` or `ctl`, a viewer's own) as a client that never waits does:
@@ -373,7 +413,9 @@ fn what_a_test_runs_and_writes_to_ends_at_the_tests_one_deadline() {
     // A FIFO nobody reads holds no test: writing to it fails, and reading it finds nothing.
     fs::create_dir_all(&session.0).unwrap();
     let fifo = session.0.join("fifo");
-    assert!(Command::new("mkfifo").arg(&fifo).spawn().unwrap().wait().unwrap().success());
+    // (This test's deadline is over: the command has a moment of its own.)
+    let made = Command::new("mkfifo").arg(&fifo).begin().end_by(Instant::now() + Duration::from_secs(10));
+    assert!(made.is_ok_and(|made| made.success()));
     let refused = said(std::panic::catch_unwind(|| send(&fifo, "typed")));
     assert!(refused.contains("fifo") && read(&fifo).is_empty(), "{refused}");
     assert!(after.elapsed() < Duration::from_secs(3), "{:?}", after.elapsed());
@@ -458,6 +500,37 @@ fn the_tests_stop_also_when_what_ends_their_sessions_does_not_return() {
     until("its holder has left", || {
         !Command::new("kill").args(["-0", &holder]).stderr(Stdio::null()).ended().success()
     });
+}
+
+#[test]
+fn the_tests_stop_with_no_command_of_another_test_left_running() {
+    // Beside the test that is held, another whose `fux start` waits (its pane's `log` is a FIFO
+    // nobody reads) and whose own deadline is far off when the watcher stops the tests: that start
+    // is stopped with them. It is no pane's yet, so no session's end would have found it.
+    let set = [("FUX_TEST_LIMIT", "2"), ("FUX_TEST_HELD", "1")];
+    let out = tests(&["a_test_that_opens_a_fifo_nobody_writes", "a_test_whose_start_waits"], &set);
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(124), "{said}");
+    let start = said.lines().find_map(|line| line.strip_prefix("its start: ")).unwrap_or_else(|| panic!("{said}"));
+    let alive = Command::new("kill").args(["-0", start]).stderr(Stdio::null()).ended().success();
+    assert!(!alive, "the start {start} of the other test outlived the tests");
+    assert!(said_sessions(&out).iter().all(|session| !session.exists()), "{said}");
+}
+
+#[test]
+fn a_test_whose_start_waits() {
+    // (Where a test above tells it to: that one runs it, beside the one that is held.)
+    if std::env::var_os("FUX_TEST_HELD").is_none() {
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(750));
+    let session = Session::new("waits");
+    eprintln!("its session: {}", session.0.display());
+    fs::create_dir_all(session.0.join("main/p")).unwrap();
+    assert!(Command::new("mkfifo").arg(session.0.join("main/p/log")).ended().success());
+    let start = session.fux().args(["start", "p", "--", "sleep", "600"]).stdout(Stdio::null()).begin();
+    eprintln!("its start: {}", locked(&start.child).id());
+    start.end();
 }
 
 #[test]
@@ -616,16 +689,16 @@ fn a_pane_moved_while_it_is_started_is_held_where_it_went_and_its_name_is_anothe
     let (pane, old) = (session.0.join("main/p"), session.0.join("main/old"));
     fs::create_dir_all(&pane).unwrap();
     assert!(Command::new("mkfifo").arg(pane.join("history")).ended().success());
-    let mut first = session.fux().args(["start", "p", "--", "sleep", "600"]).stdout(Stdio::null()).spawn().unwrap();
+    let first = session.fux().args(["start", "p", "--", "sleep", "600"]).stdout(Stdio::null()).begin();
     until("the first holder has the pane and waits", || read(&pane.join("status")).contains("command sleep 600"));
-    assert!(first.try_wait().unwrap().is_none(), "the start did not wait for its holder's first screen");
+    assert!(first.over().is_none(), "the start did not wait for its holder's first screen");
     let held = read(&pane.join("status"));
     fs::rename(&pane, &old).unwrap();
     assert_eq!(session.start("p", &["sleep", "600"]), pane);
     let second = read(&pane.join("status"));
     // (Read from now on, without waiting: the first holder goes on to its first screen.)
     let history = fuxix::open(old.join("history"), false).unwrap();
-    assert!(wait(&mut first, "the first start").success());
+    assert!(first.end().success());
     until("the first holder has its screen where its folder went", || fact(&old, "state") == "running");
     assert_eq!((read(&old.join("status")), read(&pane.join("status"))), (held.clone(), second.clone()));
     assert_ne!(held, second);
@@ -945,18 +1018,12 @@ fn what_is_written_to_in_after_a_kill_goes_nowhere_and_its_writer_does_not_wait(
     until("the program ignores the hangup", || read(&pane.join("shown/screen")).contains("ready"));
     send(&pane.join("ctl"), "kill\n");
     until("the pty is closed", || fact(&pane, "state") == "hungup");
-    let mut writer =
-        Command::new("sh").args(["-c", "head -c 100000 /dev/zero > in"]).current_dir(&pane).spawn().unwrap();
-    let start = Instant::now();
-    let done = loop {
-        match writer.try_wait().unwrap() {
-            None if start.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(20)),
-            done => break done,
-        }
-    };
-    let _ = writer.kill();
-    let _ = writer.wait();
-    assert!(done.is_some_and(|status| status.success()), "100,000 bytes to `in` after kill: {done:?} after 5 seconds");
+    let writer = Command::new("sh").args(["-c", "head -c 100000 /dev/zero > in"]).current_dir(&pane).begin();
+    let done = writer.end_by(Instant::now() + Duration::from_secs(5));
+    assert!(
+        done.as_ref().is_ok_and(|status| status.success()),
+        "100,000 bytes to `in` after kill: {done:?} after 5 seconds"
+    );
     assert_eq!(fact(&pane, "state"), "hungup");
 }
 
@@ -2318,21 +2385,10 @@ fn a_fifo_where_a_named_pane_would_be_is_refused_at_once() {
     let session = Session::new("fifoname");
     fs::create_dir_all(session.0.join("main")).unwrap();
     assert!(Command::new("mkfifo").arg(session.0.join("main/p")).ended().success());
-    let mut start = session.fux().args(["start", "p", "--", "sleep", "600"]).spawn().unwrap();
-    // (A few seconds, not `until`'s minute: a start that waits for the FIFO waits for good.)
-    let begun = Instant::now();
-    let status = loop {
-        if let Some(status) = start.try_wait().unwrap() {
-            break status;
-        }
-        if begun.elapsed() > Duration::from_secs(4) {
-            start.kill().unwrap();
-            start.wait().unwrap();
-            panic!("after 4 s the start was still waiting for the FIFO");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    assert!(!status.success());
+    let start = session.fux().args(["start", "p", "--", "sleep", "600"]).begin();
+    // (A few seconds, not the test's two minutes: a start that waits for the FIFO waits for good.)
+    let status = start.end_by(Instant::now() + Duration::from_secs(4));
+    assert!(status.as_ref().is_ok_and(|status| !status.success()), "{status:?}: the start was to say no at once");
 }
 
 #[test]
@@ -2342,20 +2398,9 @@ fn a_fifo_where_a_workspace_would_be_is_refused_at_once() {
     let session = Session::new("fifoworkspace");
     fs::create_dir_all(&session.0).unwrap();
     assert!(Command::new("mkfifo").arg(session.0.join("main")).ended().success());
-    let mut layout = session.fux().arg("layout").stdout(std::process::Stdio::null()).spawn().unwrap();
-    let begun = Instant::now();
-    let status = loop {
-        if let Some(status) = layout.try_wait().unwrap() {
-            break status;
-        }
-        if begun.elapsed() > Duration::from_secs(4) {
-            layout.kill().unwrap();
-            layout.wait().unwrap();
-            panic!("after 4 s the layout was still waiting for the FIFO");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    assert!(!status.success());
+    let layout = session.fux().arg("layout").stdout(Stdio::null()).begin();
+    let status = layout.end_by(Instant::now() + Duration::from_secs(4));
+    assert!(status.as_ref().is_ok_and(|status| !status.success()), "{status:?}: the layout was to say no at once");
 }
 
 #[test]
@@ -2573,14 +2618,14 @@ fn a_program_that_writes_its_cwd_as_soon_as_it_runs_keeps_it() {
     assert!(Command::new("mkfifo").arg(pane.join("history")).ended().success());
     fs::write(pane.join("cwd"), "/left/by/an/earlier/holder\n").unwrap();
     let says = "pwd > \"$FUX_PANE/cwd.mine\" && mv \"$FUX_PANE/cwd.mine\" \"$FUX_PANE/cwd\"; exec sleep 600";
-    let mut start = session.fux().args(["start", "p", "--", "sh", "-c", says]).stdout(Stdio::null()).spawn().unwrap();
+    let start = session.fux().args(["start", "p", "--", "sh", "-c", says]).stdout(Stdio::null()).begin();
     let here = format!("{}\n", std::env::current_dir().unwrap().display());
     until("the program has said where it is", || read(&pane.join("cwd")) == here);
     until("its holder has said what it runs", || read(&pane.join("status")).contains("command sh -c pwd"));
-    assert!(start.try_wait().unwrap().is_none(), "the holder was up before the test let it");
+    assert!(start.over().is_none(), "the holder was up before the test let it");
     // (Read from now on, without waiting: the holder goes on to its first screen.)
     let history = fuxix::open(pane.join("history"), false).unwrap();
-    assert!(wait(&mut start, "the start").success());
+    assert!(start.end().success());
     assert_eq!((fact(&pane, "state").as_str(), read(&pane.join("cwd"))), ("running", here));
     drop(history);
 }
