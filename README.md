@@ -349,8 +349,8 @@ end: its repeats and its release reach no program. (Held in a menu that
 stays open, as the resize menu does, a key that did something there does it
 again, while that menu is the one open: in no other.) A key that went to a
 pane is that pane's: its repeats and its release go there too, also while a
-menu is open, unless the pane's program has ended, been started anew or
-stopped asking meanwhile (the pane's `status` and `modes` are read then).
+menu is open, unless the pane has ended, another has its name or it has
+stopped asking meanwhile (the folder under the pane's name is looked at then, and its `modes` read: the viewer holds the folder open from the press on, so it knows it again whatever has the name by then, and asks no `status` for a number. A pane written by another program than a holder, with no `status` at all, gets its releases too).
 When the keys leave a pane with a key of its still down (another pane or
 workspace gets them, or the viewer leaves), the viewer tells that pane
 itself that the key is let go, since the terminal, asked for the next pane's
@@ -442,7 +442,7 @@ looks the last is passed on; of two panes', both, the last in the corner. Anothe
 that asked to be told about focus (mode 1004) is told when its pane gains
 and loses the keys, and when your terminal's window does.
 
-The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile, the terminal's cell size or the pane's program changes (a request its `ctl` had no room for, 64 KiB unread there with its holder stopped, is not made again until one of them changes). Two
+The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile or the terminal's cell size changes, another folder has the pane's name (a pane is one run: a name removed and started anew is another pane, which the viewer knows by its folder, held open while it is a tile, not by a number in `status`), or the pane is a tile again after its tab was not shown (a request its `ctl` had no room for, 64 KiB unread there with its holder stopped, is not made again until one of them changes). Two
 viewers with different sizes do not fight: the last to ask wins, and the
 other shows what fits.
 

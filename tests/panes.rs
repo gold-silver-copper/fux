@@ -2638,6 +2638,61 @@ fn the_viewer_writes_to_a_fifo_under_a_panes_name_and_to_nothing_a_link_there_le
 }
 
 #[test]
+fn the_viewer_knows_a_pane_by_its_folder_and_asks_no_status_who_its_program_is() {
+    // A pane's folder that no holder made, as the picture of a pane kept on another machine is: no
+    // `status`, and so no program's number; FIFOs under `in` and `ctl`, which the test reads; a
+    // `modes` that asks to be told of keys let go. The viewer asks it to take its tile's size, and
+    // a key's release follows its press there.
+    let (outer, inner) = (Session::new("fouter"), Session::new("finner"));
+    let (keys, pane) = (inner.0.join(".keys"), inner.0.join("main/made"));
+    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(&outer.0).unwrap();
+    fs::write(outer.0.join("keyboard"), "31\n").unwrap();
+    // (Made beside the workspace's panes under a name that is no pane's, and then given the name.)
+    let make = |count: u8| {
+        let new = inner.0.join(format!("main/.made.{count}"));
+        fs::create_dir_all(new.join("main")).unwrap();
+        std::os::unix::fs::symlink("main", new.join("shown")).unwrap();
+        for (name, text) in [("modes", "keys11\n"), ("state", "running\n"), ("main/screen.styled", "made\n")] {
+            fs::write(new.join(name), text).unwrap();
+        }
+        assert!(Command::new("mkfifo").arg(new.join("in")).arg(new.join("ctl")).ended().success());
+        let fifos = (fuxix::open(new.join("in"), false).unwrap(), fuxix::open(new.join("ctl"), false).unwrap());
+        let _ = fs::rename(&pane, inner.0.join(format!("main/.was.{count}")));
+        fs::rename(&new, &pane).unwrap();
+        (fifos.0, fifos.1, RefCell::new(String::new()))
+    };
+    // All that was written to a FIFO so far.
+    let got = |mut fifo: &fs::File, all: &RefCell<String>| {
+        let mut bytes = [0; 4096];
+        while let Ok(n @ 1..) = fifo.read(&mut bytes) {
+            all.borrow_mut().push_str(&String::from_utf8_lossy(&bytes[..n]));
+        }
+        all.borrow().clone()
+    };
+    let (typed, asked, all) = make(1);
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer asks its terminal for the keys the pane asks", || fact(&view, "modes").contains("keys11"));
+    until("the pane is asked to take its tile's size", || got(&asked, &all).starts_with("resize 80 24 10 20\n"));
+    let key = |letter: u8, kind: u8| format!("\x1b[{letter};1:{kind}u");
+    let all = RefCell::new(String::new());
+    send(&view.join("in"), key(97, 1) + &key(97, 3));
+    until("the key's release follows its press", || got(&typed, &all) == key(97, 1) + &key(97, 3));
+    // Another folder under the pane's name is another pane: it is asked its size as the first was
+    // (no number in a `status` tells the two apart: the folders do), and the release of a key that
+    // went down in the folder before is nothing to it.
+    send(&view.join("in"), key(98, 1));
+    until("the next key is down", || got(&typed, &all).ends_with(&key(98, 1)));
+    let (typed, asked, all) = make(2);
+    until("the new folder is asked its size", || got(&asked, &all).starts_with("resize 80 24 10 20\n"));
+    let all = RefCell::new(String::new());
+    send(&view.join("in"), key(98, 3) + &key(99, 1) + &key(99, 3));
+    until("a key after it is the new pane's", || got(&typed, &all).ends_with(&key(99, 3)));
+    assert_eq!(got(&typed, &all), key(99, 1) + &key(99, 3));
+}
+
+#[test]
 fn the_windows_focus_is_not_told_to_a_program_that_asks_no_more() {
     // A program that asked to be told of the focus (mode 1004) and was told it has the keys. It
     // stops asking while the viewer is stopped, and the terminal says in that time that its window

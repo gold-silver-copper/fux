@@ -2480,6 +2480,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     program whose ancestors have all gone, one in a container or behind ssh.
     Its test: a pane's shell, a shell in it, a background job; outside a
     pane; a folder nobody keeps that names the asker; two kept folders.
+  - **The viewer knows a pane by its folder**, not by the `pid` in its
+    `status`. It read that number for two things: to ask a pane its tile's
+    size again when the program under a name was another, and to send a key's
+    release only to the program that got its press. A pane with no `status`
+    (one that another program than a holder writes: a mirror) had number 0:
+    it got no release at all, and a new folder under its name was not asked
+    its size. Since D121 a folder is one run of one program, so the folder is
+    the identity. The viewer holds a tile's folder open and compares device
+    and inode with what the name has now (`stat`); another folder is asked
+    its size anew and drawn whatever its files say. A key that went down in a
+    pane holds that folder open until it is let go; its release is sent if
+    the name still has that folder and `modes` still asks for releases. Held
+    open, because a number alone is given to the next folder made once the
+    first is removed. No new system call in fuxix: the release is a `stat`
+    of the path and then `open_fifo` of `PATH/in`, and between the two a pane
+    moved away and another put under its name would get the release (two
+    system calls wide; every write by a name has that). Held only while a
+    tile: a pane whose tab is not shown is not held, so it is asked its size
+    once more when its tab is shown again (before: not until its program
+    changed). What the viewer read of it is kept meanwhile, as before.
+    `fn pid` and `fn program` are gone from the viewer; koh need not write
+    `pid 1` into a mirror's `status` any more.
   - **The format moves** (a `status` of two lines for an instant, and what the
     entries below add): D117's "frozen as v1" is withdrawn, there.
 

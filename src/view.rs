@@ -15,11 +15,11 @@ use crate::{Stamp, is_name, keys, sixel, stamp, text};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::num::NonZeroU32;
 use std::os::fd::AsFd;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -104,14 +104,16 @@ struct Pane {
     screen: Screen,
     /// The size the pane says it has (`size`), if it says one.
     size: (usize, usize),
-    pid: u32,
+    /// The pane's folder, held open while it is a tile: with another folder under its name it is
+    /// another pane (a folder's number is no other's while something has it open).
+    folder: Option<File>,
     state: String,
     /// The addresses of the links on the screen: a cell's `link` less one is its place here.
     addresses: Vec<String>,
     /// Pictures on the screen: file, row, column, and how many rows of its pixels are above the screen.
     pictures: Vec<(String, [usize; 3])>,
-    /// The size last asked for (and the cell's, in pixels), and of which holder: asked once, not fought over.
-    asked: (u32, usize, usize, (u16, u16)),
+    /// The size last asked for (and the cell's, in pixels) of the folder held open: asked once, not fought over.
+    asked: Option<(usize, usize, (u16, u16))>,
     /// The title its program set (the `title` file), without control characters.
     title: String,
     /// The colour its program gave the cursor, if any (the fifth word of `cursor`).
@@ -119,11 +121,12 @@ struct Pane {
 }
 
 /// Where the press of a key went, if its repeats or its release have somewhere to go: to a
-/// script the viewer ran for it, or to a pane (its directory and its program).
+/// script the viewer ran for it, or to a pane (its directory, and that folder held open: which
+/// pane it was, whatever has the name by now).
 #[derive(Clone)]
 enum Went {
     Script(PathBuf),
-    Pane(PathBuf, NonZeroU32),
+    Pane(PathBuf, Rc<File>),
 }
 
 struct View {
@@ -623,7 +626,7 @@ impl View {
             }
             match (kind, went) {
                 (1, _) => {}
-                (2 | 3, Some(Went::Pane(directory, pid))) => return self.pass(&directory, pid, raw),
+                (2 | 3, Some(Went::Pane(directory, folder))) => return self.pass(&directory, &folder, raw),
                 // Held, a key does again what its press did, there and only there: the script it
                 // ran in a menu that stays open (to resize, say), while that menu is the one open.
                 (2, Some(Went::Script(script))) => {
@@ -660,7 +663,8 @@ impl View {
                 // (Its release is the pane's only if it can have one and the program there asks to be
                 // told of releases now: a key typed to one that does not is typed, and no more.)
                 let directory = self.session.join(&self.workspace).join(self.focus.as_deref().unwrap_or_default());
-                event.and_then(|_| program(&directory)).map(|pid| Went::Pane(directory, pid))
+                let folder = event.filter(|_| releases(&directory)).and_then(|_| sys::open(&directory, false).ok());
+                folder.map(|folder| Went::Pane(directory, Rc::new(folder)))
             }
             // A key that a menu which stays open does not have ends it; if it is the key that
             // led there (the prefix), its own menu is open again, as when it is pressed anew.
@@ -683,10 +687,12 @@ impl View {
     }
 
     /// A key's repeat or release goes to the pane that got its press, after what was typed before
-    /// it, if that pane's program is still the one that got it and still asks to be told of keys
-    /// let go. Who a pane is, is read when it matters: nothing the viewer remembers of it is asked.
-    fn pass(&mut self, directory: &Path, pid: NonZeroU32, raw: &[u8]) {
-        if program(directory) == Some(pid) {
+    /// it, if the folder under that pane's name is still the one that got it (a pane is one run: its
+    /// folder is its program) and it still asks to be told of keys let go. Both are looked at when
+    /// it matters. (Between that look and the write, a pane moved away and another put under its name
+    /// would get it: as with every write by a name.)
+    fn pass(&mut self, directory: &Path, folder: &File, raw: &[u8]) {
+        if same(directory, folder) && releases(directory) {
             self.send();
             let _ = send_to(&directory.join("in"), raw);
         }
@@ -699,8 +705,8 @@ impl View {
     fn leave(&mut self, has: Option<&Path>) {
         for ((code, last), went) in std::mem::take(&mut self.down) {
             match went {
-                Went::Pane(directory, pid) if Some(directory.as_path()) != has => {
-                    self.pass(&directory, pid, format!("\x1b[{code};1:3{}", char::from(last)).as_bytes());
+                Went::Pane(directory, folder) if Some(directory.as_path()) != has => {
+                    self.pass(&directory, &folder, format!("\x1b[{code};1:3{}", char::from(last)).as_bytes());
                 }
                 went => self.down.push(((code, last), went)),
             }
@@ -881,6 +887,12 @@ impl View {
                 // middle of writing, a pane is as it was last read.)
                 let held = sys::open_fifo(directory.join(name).join("in")).is_ok();
                 let pane = self.panes.entry(name.clone()).or_insert_with(unread);
+                // (Another folder under the name, or one that was no tile a moment ago and so not held
+                // open: it is held from here on, has been asked nothing, and is drawn whatever its files say.)
+                if !pane.folder.as_ref().is_some_and(|folder| same(&directory.join(name), folder)) {
+                    (pane.folder, pane.asked) = (sys::open(directory.join(name), false).ok(), None);
+                    self.from = self.from.take().filter(|_| pane.folder.is_none());
+                }
                 pane.looked = generation(&directory.join(name), pane.looked);
                 (pane.seen.filter(|_| pane.looked.1 && held).unwrap_or(pane.looked.0), held)
             })
@@ -906,7 +918,11 @@ impl View {
         // What no tile covers is a line: marked here, drawn once the tiles are in place.
         let line = Cell { ch: '\u{2}', ..Cell::blank(Style::default()) };
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
-        self.panes.retain(|name, _| layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str())));
+        self.panes.retain(|name, pane| {
+            // (A pane's folder is held open only while it is a tile.)
+            pane.folder = pane.folder.take().filter(|_| tiles.iter().any(|(tile, _)| tile == name));
+            layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str()))
+        });
         let (mut cursor, mut pictures): (String, Vec<Drawn>) = (String::new(), Vec::new());
         let (mut parts, mut refused, mut bytes) = (Vec::new(), Vec::<String>::new(), 0);
         let mut cursor_colour = None;
@@ -921,8 +937,8 @@ impl View {
             let pane_directory = directory.join(name);
             pane.read(&pane_directory, seen, held);
             let focused = self.focus.as_ref() == Some(name);
-            // Each holder is asked once to take the tile's size, and told the size of a cell in pixels.
-            let asked = (pane.pid, body.w, body.h, cell_size);
+            // Each pane is asked once to take the tile's size, and told the size of a cell in pixels.
+            let asked = Some((body.w, body.h, cell_size));
             if pane.asked != asked {
                 let cell =
                     if cell_size.0 > 0 { format!(" {} {}", cell_size.0, cell_size.1.max(1)) } else { String::new() };
@@ -1368,15 +1384,17 @@ fn asks(directory: &Path) -> Screen {
     screen
 }
 
-/// Who a pane's program is: the pid in its `status`, as the file says now.
-fn pid(directory: &Path) -> u32 {
-    text(&directory.join("status"), 256).lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap_or(0)
+/// Whether a pane's program asks to be told of keys let go and held (flag 2 of the `keys` word in
+/// `modes`), as the file says now.
+fn releases(directory: &Path) -> bool {
+    asks(directory).keys() & 2 != 0
 }
 
-/// Who a pane's program is, if it asks to be told of keys let go and held (flag 2 of the `keys`
-/// word in `modes`), as the files say now: a pane with no program has none to tell.
-fn program(directory: &Path) -> Option<NonZeroU32> {
-    NonZeroU32::new(pid(directory)).filter(|_| asks(directory).keys() & 2 != 0)
+/// Whether the folder a name has now is the one held open: by its device and its number, which
+/// are no other folder's while it is open.
+fn same(path: &Path, held: &File) -> bool {
+    let id = |folder: io::Result<fs::Metadata>| folder.ok().map(|folder| (folder.dev(), folder.ino()));
+    id(held.metadata()).is_some_and(|held| id(fs::metadata(path)) == Some(held))
 }
 
 /// A pane's `generation` as a look finds it: which file, and whether its number is odd (its holder is
@@ -1395,10 +1413,9 @@ impl Pane {
         if self.seen == Some(seen) {
             return;
         }
-        let last = std::mem::replace(
-            self,
-            Pane { seen: Some(seen), looked: self.looked, asked: self.asked, ..Pane::default() },
-        );
+        let folder = self.folder.take();
+        let new = Pane { seen: Some(seen), looked: self.looked, folder, asked: self.asked, ..Pane::default() };
+        let last = std::mem::replace(self, new);
         let fact = |name: &str, most: u64| text(&directory.join(name), most);
         let numbers = |text: &str| {
             text.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(SIZE_MAX + 1)).collect::<Vec<_>>()
@@ -1422,7 +1439,6 @@ impl Pane {
             cursor.next().and_then(|shape| shape.parse().ok()).filter(|shape| *shape <= 6).unwrap_or(0);
         self.cursor_colour = cursor.next().filter(|colour| colour.len() == 7).and_then(crate::term::colour);
         self.state = fact("state", 64).trim_end().to_string();
-        self.pid = pid(directory);
         // A picture is kept only if it lies on a screen of the largest size there is. A first row
         // below 0 says how many of its rows are above the screen, each as high as the line's last
         // number says (the cells it was laid out in, not this terminal's: a line that does not say is none).
@@ -1483,7 +1499,7 @@ impl Pane {
         // (Nor is a first read kept that was taken while a living holder was writing.)
         let now = generation(directory, last.looked);
         if now.0 != seen || now.1 && held {
-            *self = last;
+            *self = Pane { folder: self.folder.take(), ..last };
         }
     }
 }
