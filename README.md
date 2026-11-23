@@ -61,7 +61,7 @@ keeps (its lock is held: a `status` alone is anyone's to write). So it finds
 the pane from a program's first instruction, after the pane was renamed, and
 in a program started with another environment, where `FUX_PANE` says nothing
 or something old. The session is the one `fux dir` prints, or the directory
-given: `.here SESSION`. It needs `ps`, `grep` and perl. Not found: a program
+given: `.here SESSION`. It needs `ps`, `grep` and perl, and `fux` on `PATH` where no session is given (it says so if `fux dir` names none). Not found: a program
 whose ancestors have all gone (a daemon, `(job &)`), and one in a container or
 behind ssh. Two kept folders whose `status` name one process are no answer:
 it names both and fails.

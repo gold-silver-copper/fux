@@ -2952,6 +2952,12 @@ fn here_says_which_pane_a_program_is_in_and_believes_only_a_folder_a_holder_keep
     let none = outside();
     assert!(none.status.code() == Some(1) && none.stdout.is_empty(), "{none:?}");
     assert!(String::from_utf8_lossy(&none.stderr).contains("not in a pane of "), "{none:?}");
+    // With no session given it asks `fux dir`, and says so where there is no `fux` to ask.
+    let asks = Command::new(here).env("PATH", "/nowhere").env_remove("FUX_DIR").env_remove("FUX_PANE").run();
+    assert!(
+        asks.status.code() == Some(1) && String::from_utf8_lossy(&asks.stderr).starts_with("here: no session"),
+        "{asks:?}"
+    );
     fs::create_dir_all(session.0.join("w/made")).unwrap();
     fs::write(session.0.join("w/made/status"), format!("holder 1\npid {}\ncommand sh\n", std::process::id())).unwrap();
     let made = outside();

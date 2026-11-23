@@ -5,9 +5,11 @@
 # script's ancestors are asked of `ps`, nearest first; the first of them that a `status` of the
 # session names is the pane's, if a holder keeps that folder (the kernel's lock on it is held:
 # a `status` alone is anyone's to write). Two kept folders that name one process are no answer.
-# Needs ps, grep and perl. Not found: a program whose ancestors have all gone (a daemon), and
-# one in a container or behind ssh. And between the answer and its use the pane may have ended.
-s=${1:-$(fux dir)} || exit
+# Needs ps, grep and perl, and `fux` on PATH if no SESSION is given. Not found: a program whose
+# ancestors have all gone (a daemon), and one in a container or behind ssh. And between the answer
+# and its use the pane may have ended.
+s=${1:-$(fux dir 2>/dev/null)}
+[ -n "$s" ] || { echo "here: no session was given, and \`fux dir\` names none (is fux on PATH?)" >&2; exit 1; }
 [ -d "$s" ] || { echo "here: $s: no session there" >&2; exit 1; }
 locked() { perl -e 'use Fcntl ":flock"; open(D, "<", $ARGV[0]) or exit 1; exit(flock(D, LOCK_SH|LOCK_NB) ? 1 : 0)' "$1"; }
 p=$$ n=0
