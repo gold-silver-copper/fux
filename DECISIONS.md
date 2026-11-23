@@ -2284,6 +2284,110 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   left was another command, `a=d,D=i,i=1` deleting every placement for its
   mistyped `d`. No program that draws on Kitty can send one.
 
+- **D118. A test has one deadline; three kinds of link are no longer
+  followed** (2026-11-23, after an audit of this line of work: a run of the
+  tests had hung for fifteen minutes on one test, writing the same error; and
+  the review of D117 found writes that follow a link). What the second half
+  covers, and no more: the files a holder replaces, the pictures a viewer
+  reads, and what a viewer writes to a pane's `in` and `ctl`. Still followed,
+  and not changed here: a viewer's reads of every other fact in a pane's
+  folder (`clipboard`, the screens' files, `title`, `modes`, `status`,
+  `generation`, `notice`); a link where a FOLDER of the path is (`main`,
+  `alt`, and `shown`, which is one by design); `log`, `history` and
+  `history.styled`, which are opened by name to write; and, outside a pane's
+  folder, a viewer's own FIFO in the session (`.view.PID`, which its key
+  scripts write to) and the keys it installs at its first run. Five parts.
+  - **One deadline for a test.** `twostarts` made its start again in a loop
+    with no end, and every command the tests ran (`fux start`, `fux wait`, the
+    key scripts) was waited for with none: a holder that never came up held
+    the test for good. Now a test has two minutes from its first session
+    (the whole suite takes a third of one), every wait its helpers make ends at
+    that one moment, a command not ended by then is killed and named, a FIFO is
+    written and read without waiting, and a test held where nothing asks the
+    deadline (a call that waits by itself) is named by a watcher that ends every
+    session and the run. A session that ends kills the holder and the
+    program of each pane it started itself: each leads a session of its own,
+    a signal to the test does not reach them, and a program that ignores the
+    hangup outlived its test. Whose they are is noted when the session's own
+    `start` has just been told that the pane is up, from that pane's
+    `status`; no file is asked later whom to kill (a `status` in a session
+    may be a test's own making). Before it kills, the end asks `ps` (in full,
+    whatever width the terminal is said to have) after those numbers only: a
+    holder that is this fux holding goes, with the program that is its child;
+    with its holder gone, the program goes if it still leads its process
+    group. A pane started another way (a key's script, `.restore`, a `fux
+    start` a test runs as a command of its own) ends as before, when its
+    holder finds the folder gone; no test starts a program that ignores the
+    hangup that way. Ending a session has a time of its own, so that a `ps` or a
+    `kill` that does not return holds nothing up. A command a test started is
+    on a list from that moment. A watcher that stops the tests first says
+    that they are being shut, from when no test's command is started; the
+    commands on the list are stopped and the sessions ended by another
+    thread, which the watcher waits for only so long. A `ps` that cannot be
+    asked, and a `kill` that cannot be run or does not end, fail the test
+    whose session ends; a `kill` that finds its process gone is nothing.
+    `twostarts` stages what it tests without a loop and without asking the
+    lock (the holder waits at a `history` that is a FIFO; its `status` says
+    it is there); what that leaves out, its comment says. Not covered: tests
+    that are killed from outside leave the sessions of those then running;
+    and a number noted could in principle have become another process that
+    leads a process group of that number. And three pairs of tests had the
+    same names for their sessions, so the same directories: run sixteen at a
+    time they ended each other's panes, and four tests failed every time (at
+    four a time, as CI runs them, no pair met). A session's name is now one
+    test's, and two tests that take one at once are told so.
+  - **No link is written through.** `replace` wrote a file's new text with
+    a write that follows a link (`fs::write` on `NAME.new`), and a picture's
+    file the same way under its own name: with a link under either name, the
+    holder wrote into whatever file the link led to. A pane's folder may be
+    written by another program than its holder (a mirror of a pane on another
+    machine is), so the name is no proof of the file. Now the file put
+    together is made anew: what had the name is unlinked, and the file is
+    made only if nothing has the name then (`O_EXCL`, which follows no link);
+    a picture's file goes the same way, through `replace`; and the file put
+    together does not stay when it cannot be given its name (`shown`'s new
+    link neither). `replace` is for a name that one writer writes: two at
+    once would share the one name the file is put together under (a holder
+    is alone in its pane by its lock, and the layout is written under the
+    workspace's). Left as they were: `log` (made by `fux start`), and
+    `history` and `history.styled` (added to in place) are opened by name.
+  - **A file is put together under a dot-name.** `NAME.new` was a name like a
+    fact's: whoever copied a pane's folder between two renames copied half a
+    file as if it were one, and `layout.new` was a name no pane could have for
+    that reason alone. It is `.NAME.new` now, the dot on the file's name and
+    not on its path (`main/.screen.new`, `.shown.new`, `.layout.new`), so that
+    the one rule "a name that starts with a dot is nobody's fact" covers it,
+    as it covers the key scripts' own files in a session. `layout.new` is a
+    name like any other. (D117 called the pane folder's format frozen; these
+    names were never a reader's to rely on, and the README named them only to
+    say how a file is replaced.)
+  - **The viewer reads a picture that is a file under its name.** It opened
+    `pic-N.sixel` and `pic-N.png` by name, and asked when each was written by
+    name, following a link either way: in a folder another program writes, a
+    link there had the viewer read any file its user can read (to be drawn
+    only if it is a picture, but read; and asked about at every frame). Now
+    `fuxix::open_regular` opens the name without following a link
+    (`O_NOFOLLOW`, with `O_NONBLOCK` so that a FIFO there holds nobody) and
+    says it is none unless what was opened is a regular file; the frame asks
+    the name itself when it was written (`lstat`). One open and one look at
+    what was opened: no moment between a look at the name and the open in
+    which the name can become another thing. `O_NOFOLLOW` is the one flag
+    fuxix has whose number differs between Linux's processors (x86-64 and
+    arm64 among them): it is given for each, and the test that a link is not
+    read fails on a processor where it is wrong.
+  - **The viewer writes to a FIFO under `in` and `ctl`, and to nothing
+    else** (added after the review of the parts above, which found the
+    list of what was left uncovered one short). The viewer opened a pane's
+    `in` and `ctl` by name to write: with `in` a link to a file, a pane
+    counted as read, and what was typed overwrote the file's first bytes
+    (`typed\r` over a file, in the test); a `resize` went the same way through
+    `ctl`. `fuxix::open_fifo` opens the name to write without following a
+    link and gives it only if a FIFO was opened; the viewer's writes and its
+    look at whether a pane is read go through it. Nothing a pane needs is
+    lost: a holder makes both as FIFOs, and so does a mirror (koh makes them
+    with `fuxix::fifo`). A holder's own FIFOs are opened without following a
+    link too.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

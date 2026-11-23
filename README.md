@@ -44,7 +44,7 @@ scripts" says where that is).
 | `fux --help` | prints the command summary and the complete one-page guide (for people, scripts and agents): how to start a pane, type, read, wait, get a command's exit code, tell a live pane from a dead one and clean up, in plain sh, with the hazards said. It is `src/help.txt`, in the binary; its indented lines are run, in order, as one sh session by `tools/help-agents.sh` (CI, both systems; the perl section where perl is) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
-with a dot, and not `-` alone, `layout`, `layout.new`, `colours` or `keyboard`
+with a dot, and not `-` alone, `layout`, `colours` or `keyboard`
 (a workspace and a session have files of those names).
 
 With no workspace named, a command means the one in `FUX_WS` (a key script is
@@ -85,11 +85,11 @@ example above, typed in a pane of another workspace, starts `build` there and no
 else about a pane is a small file of its own. The files are flat, but for a
 folder for each screen: the one thing a pane has two of that has several
 files. A dot and a word after a name say only how a file is told or how old
-it is (`.styled`, `.1`, `.new`, a picture's format), never which thing it is
+it is (`.styled`, `.1`, a picture's format), never which thing it is
 of. Each file is written when it changes and
-not otherwise (`clipboard`, `cwd` and `notice`: each round in which the program said one, the last it said in it), replaced in one step (written as `NAME.new`, then renamed),
+not otherwise (`clipboard`, `cwd` and `notice`: each round in which the program said one, the last it said in it), replaced in one step (written as `.NAME.new` beside it, then renamed: a name with a dot first is no fact's, and `ls` passes it over),
 so a reader sees a whole old one or a whole new one (`history` and `history.styled` are added to
-in place, and a picture's file is written in place before `pictures` names it). A file that could not be written is written in the next round, which the
+in place; a picture's file is replaced as any other, before `pictures` names it). The file put together under `.NAME.new` is made anew each time: whatever had that name goes unless it is a folder, and a link under it or under the file's own name is not written through. (A folder of that name does not go: the file cannot be replaced until it does, and `log` says so.) A file that could not be written is written in the next round, which the
 program's next output, a line on `ctl` or the program's end brings; a clipboard, a directory, a
 notice or a picture that a failed round did not write is lost, as history is; `log`
 says so for each round that failed.
@@ -379,7 +379,9 @@ lives: `flock -n "$D/main/build" true` fails while it does (Linux), and
 ## The viewer
 
 `fux view [WORKSPACE]` shows every folder in the workspace whose name is a
-pane's name (above) as a pane. The
+pane's name (above) as a pane. It types into a pane's `in` and asks on its `ctl` only where a FIFO
+has that name: a link there is not followed and a file there is not written, and a pane with no
+FIFO under `in` is one nothing reads. The
 `layout` file in the workspace says where; a person can read and edit it, and
 viewers of the same workspace share it, focus included:
 
@@ -630,7 +632,7 @@ Pictures: a pane's picture is drawn in its tile when your terminal takes Kitty
 graphics or draws sixel (the viewer asks it for both as it starts). A picture
 is a file in the pane's folder, `pic-N.sixel` or `pic-N.png`, and goes to your
 terminal in the protocol it was made in where the terminal takes that one;
-where it takes only the other, the viewer converts it. The viewer measures every picture itself, in pixels: the picture's
+where it takes only the other, the viewer converts it. It reads the file that has that name and nothing a link of that name leads to: a link there (or a FIFO, or a folder) is no picture, and none is drawn. The viewer measures every picture itself, in pixels: the picture's
 own size (of a sixel one, the larger of what it says and what it paints) against the pixels
 its tile has for it, counted in your terminal's cells (the cells a pane
 counted it in say where it starts and, of one with rows above the pane's top, how many of its pixels those rows are). A sixel picture whose pixels are square and

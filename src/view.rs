@@ -72,7 +72,7 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
     if *wide == 0 || *high == 0 {
         return Err("the terminal does not say how many pixels a cell has");
     }
-    let (bytes, Ok(_)) = crate::read(sys::open(path, false), PICTURE_MAX as u64 + 9) else { return Ok(None) };
+    let (bytes, Ok(_)) = crate::read(sys::open_regular(path), PICTURE_MAX as u64 + 9) else { return Ok(None) };
     if bytes.len() > PICTURE_MAX + 8 {
         return Err("its file is over 4 MiB");
     }
@@ -87,6 +87,12 @@ pub fn part((path, _, [top, wide, high]): &Part) -> Result<Sixel, &'static str> 
         false => sixel::cut(inside, [0, *top, wide, high], PICTURE_MAX)?,
     };
     Ok((wide > 0 && high > 0 && !sixel.is_empty()).then_some((sixel, wide, high)))
+}
+
+/// When a picture's file was written, to draw it anew when it is another: of the file that has the
+/// name, and of nothing a link of that name leads to (which is no picture: `sys::open_regular`).
+pub fn written(file: &Path) -> Stamp {
+    fs::symlink_metadata(file).ok().filter(fs::Metadata::is_file).map(stamp)
 }
 
 /// Renders one picture file (`.sixel` or `.png`) for either a Kitty-capable (`kitty_out = true`)
@@ -109,7 +115,7 @@ pub fn render_picture(
         return Ok(Some((format!("\x1bP{sixel}\x1b\\"), wide.div_ceil(*cell_w), high.div_ceil(*cell_h))));
     }
 
-    let (bytes, Ok(_)) = crate::read(sys::open(path, false), PICTURE_MAX as u64 + 9) else { return Ok(None) };
+    let (bytes, Ok(_)) = crate::read(sys::open_regular(path), PICTURE_MAX as u64 + 9) else { return Ok(None) };
     if bytes.len() > PICTURE_MAX + 8 {
         return Err("its file is over 4 MiB");
     }
@@ -650,7 +656,8 @@ impl View {
         let files = [("colours", told), ("keyboard", format!("{}\n", self.keyboard))];
         for (name, text) in files.into_iter().filter(|(name, text)| *name == "keyboard" || !text.is_empty()) {
             let own = self.session.join(format!(".{name}.{}", std::process::id()));
-            if let Err(e) = fs::write(&own, &text).and_then(|()| fs::rename(&own, self.session.join(name))) {
+            let written = crate::write_new(&own, text.as_bytes());
+            if let Err(e) = written.and_then(|()| fs::rename(&own, self.session.join(name))) {
                 let _ = fs::remove_file(&own);
                 self.message = format!("cannot write {}: {e}", self.session.join(name).display());
             }
@@ -928,6 +935,10 @@ impl View {
             Err(e) if sys::no_reader(&e) || e.kind() == io::ErrorKind::NotFound => {
                 self.message = format!("{name} has ended: nothing reads what you type");
             }
+            // (Something else than a FIFO has the name: `open_fifo` wrote nothing into it.)
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
+                self.message = format!("{name}: its `in` is no FIFO: what you typed was dropped");
+            }
             Err(e) => self.message = format!("{name}: {e}: what you typed was dropped"),
         }
     }
@@ -987,7 +998,7 @@ impl View {
             .map(|(name, _)| {
                 // (Whether its holder lives is whether anything reads its `in`. While it is in the
                 // middle of writing, a pane is as it was last read.)
-                let held = sys::open(directory.join(name).join("in"), true).is_ok();
+                let held = sys::open_fifo(directory.join(name).join("in")).is_ok();
                 let pane = self.panes.entry(name.clone()).or_insert_with(unread);
                 pane.looked = generation(&directory.join(name), pane.looked);
                 (pane.seen.filter(|_| pane.looked.1 && held).unwrap_or(pane.looked.0), held)
@@ -996,7 +1007,7 @@ impl View {
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
         let clipboard = clipboard.map(stamp);
         let terminal = (self.sixel, self.kitty, self.joins.is_some(), self.keyboard, self.window, cell_size);
-        let picture = |file: PathBuf| fs::metadata(file).ok().map(stamp);
+        let picture = |file: PathBuf| written(&file);
         let known = tiles.iter().filter_map(|(name, _)| Some((name, self.panes.get(name)?)));
         let known = known.flat_map(|(name, pane)| pane.pictures.iter().map(move |(file, _)| (name, file)));
         let known: Vec<Stamp> = known.map(|(name, file)| picture(directory.join(name).join(file))).collect();
@@ -1474,9 +1485,10 @@ fn put(row: &mut [Cell], x: usize, room: usize, cells: &[Cell]) {
     }
 }
 
-/// Writes to a pane's FIFO (`in`, `ctl`) without waiting.
+/// Writes to a pane's FIFO (`in`, `ctl`) without waiting: to the FIFO that has the name, and to
+/// nothing else that has it (a link there leads anywhere, and a file there would be written into).
 fn send_to(path: &Path, bytes: &[u8]) -> io::Result<usize> {
-    sys::open(path, true)?.write(bytes)
+    sys::open_fifo(path)?.write(bytes)
 }
 
 /// How a pane's program asks for its input (pastes marked, the mouse, the focus, keys), as its

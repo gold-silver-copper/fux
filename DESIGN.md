@@ -76,14 +76,14 @@ facts and the `screen.styled` that `shown` leads to when the pane's `generation`
 (it is written last), keeps what it read if it is still that file afterwards, and
 parses the screen with the same emulator that wrote it. It sends keys with a write to `in` that never waits, opening it by
 its path each time, so that the pane typed into is the pane of that name
-now. There is no header and no version: what says that
+now, and only if a FIFO has that name (no link there is followed, and no file written). There is no header and no version: what says that
 files are of one moment is `generation`, read before and after them (in a
 folder made by hand they may still disagree: the viewer takes the rows that
 are there and keeps the cursor inside them). It sets the
 outer terminal's cursor-key and keypad modes to the focused program's, so key
 bytes pass through untouched; mouse reports it asks for in the SGR form, and
 gives the program in its own, counted from the tile's corner. Pictures are files the viewer passes on after
-checking that each is one sixel string and that its pixels, measured by
+checking that each is a file under its own name (it follows no link there) and one sixel string and that its pixels, measured by
 the viewer in its own terminal's cells, are all in its tile; of any other
 it writes the part inside the tile (`fux-vt/src/sixel.rs`).
 

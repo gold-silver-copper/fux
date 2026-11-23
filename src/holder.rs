@@ -461,7 +461,8 @@ impl Holder {
         for (id, format, data) in self.term.new_pictures() {
             // (One that cannot be written is not on the screen: it goes, its file below, and the log says why.)
             self.pictures.insert(id, format);
-            if let Err(e) = fs::write(format!("pic-{id}.{}", format.ext()), data) {
+            // (As any file of the pane: put together beside its name and then given it, whatever has the name.)
+            if let Err(e) = replace(format!("pic-{id}.{}", format.ext()), &data) {
                 self.term.keep_pictures(|kept| kept != id);
                 self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
             }
@@ -517,9 +518,10 @@ impl Holder {
             ("main" | "alt", Some(_)) => absent(fs::create_dir(name), ErrorKind::AlreadyExists),
             ("alt", None) => absent(fs::remove_dir_all(name), ErrorKind::NotFound),
             ("shown", Some(folder)) => {
-                absent(fs::remove_file("shown.new"), ErrorKind::NotFound)?;
-                std::os::unix::fs::symlink(String::from_utf8_lossy(folder).as_ref(), "shown.new")?;
-                fs::rename("shown.new", name)
+                let new = crate::staging(Path::new(name));
+                absent(fs::remove_file(&new), ErrorKind::NotFound)?;
+                std::os::unix::fs::symlink(String::from_utf8_lossy(folder).as_ref(), &new)?;
+                fs::rename(&new, name).inspect_err(|_| _ = fs::remove_file(&new))
             }
             (_, Some(bytes)) => replace(name, bytes),
             (_, None) => absent(fs::remove_file(name), ErrorKind::NotFound),
