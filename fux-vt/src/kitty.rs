@@ -20,7 +20,9 @@ const CHUNK_RAW_BYTES: usize = 3072; // 3072 raw bytes == 4096 base64 characters
 
 const B64_ENC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// Decodes RFC 4648 base64 bytes, failing if invalid or if decoded size exceeds `max_out`.
+/// Decodes RFC 4648 base64 bytes, failing if invalid or if decoded size exceeds `max_out`: the one
+/// reading of base64 there is, a picture's and a clipboard's. Padding may be left out; if it is there
+/// it is the padding of that length, and what is left over of the last character is nothing.
 pub fn decode_base64(input: &[u8], max_out: usize) -> Result<Vec<u8>, &'static str> {
     if input.is_empty() {
         return Ok(Vec::new());
@@ -58,7 +60,7 @@ pub fn decode_base64(input: &[u8], max_out: usize) -> Result<Vec<u8>, &'static s
             out.push(((buf >> bits) & 0xff) as u8);
         }
     }
-    if bits == 6 || (pad == 1 && bits != 2) || (pad == 2 && bits != 4) {
+    if bits == 6 || (pad == 1 && bits != 2) || (pad == 2 && bits != 4) || buf & ((1 << bits) - 1) != 0 {
         return Err("truncated base64 payload");
     }
     Ok(out)

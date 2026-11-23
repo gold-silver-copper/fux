@@ -1949,7 +1949,8 @@ impl Term {
             "52" => match rest.split_once(';').map(|(_, what)| what) {
                 // Setting only: a program is never told what is on the clipboard.
                 Some("?") => self.refuse("a program asked to read the clipboard: that is refused"),
-                what => match what.and_then(base64_decode) {
+                // (A string is 4 MiB at most, so what it says in base64 is under that too.)
+                what => match what.and_then(|text| kitty::decode_base64(text.as_bytes(), PICTURE_MAX).ok()) {
                     Some(bytes) if bytes.len() <= 1 << 20 => self.out.clipboard = Some(bytes),
                     Some(_) => self.refuse("a clipboard over 1 MiB was dropped"),
                     None => self.refuse("a clipboard that was not base64 was dropped"),
@@ -2375,46 +2376,10 @@ impl Term {
     }
 }
 
-/// Base64, as the clipboard command carries it. `None` for text that is not:
-/// a character outside the set, padding anywhere but at the end, or a length no bytes give.
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    // Padding, if there is any, must be the padding of that length; and what is left over of
-    // the last character must be nothing.
-    let padded = text.len() - text.trim_end_matches('=').len();
-    let text = text.trim_end_matches('=');
-    if text.len() % 4 == 1 || (padded > 0 && !(text.len() + padded).is_multiple_of(4)) || padded > 2 {
-        return None;
-    }
-    let (mut out, mut bits, mut have) = (Vec::new(), 0u32, 0u32);
-    for byte in text.bytes() {
-        let six = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        };
-        (bits, have) = ((bits << 6) | u32::from(six), have + 6);
-        if have >= 8 {
-            have -= 8;
-            out.push((bits >> have) as u8);
-            bits &= (1 << have) - 1;
-        }
-    }
-    (bits == 0).then_some(out)
-}
-
+/// Base64 of `bytes`, with its padding: what [`kitty::encode_base64`] adds to a text.
 pub fn base64_encode(bytes: &[u8]) -> String {
-    const SET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let three = chunk.iter().fold(0u32, |n, b| (n << 8) | u32::from(*b)) << (8 * (3 - chunk.len()));
-        for i in 0..4 {
-            let six = SET.get((three >> (18 - 6 * i)) as usize & 63).copied().unwrap_or(b'=');
-            out.push(if i <= chunk.len() { char::from(six) } else { '=' });
-        }
-    }
+    kitty::encode_base64(bytes, &mut out);
     out
 }
 
