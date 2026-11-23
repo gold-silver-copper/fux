@@ -125,7 +125,7 @@ links   (in a screen's folder) `LINE COL LEN ADDRESS` for each link (OSC 8) on t
         does (screen row = LINE - that number, if no row above wraps), COL is the first cell
         from 0, LEN the number of cells
 log     what the holder refused or lost. (Also: clipboard; and in a screen's folder `pictures`,
-        a line `pic-N.{sixel,png} ROW COL COLS ROWS CELL-WIDTH CELL-HEIGHT` for each picture on that
+        a line `pic-N.sixel ROW COL COLS ROWS CELL-WIDTH CELL-HEIGHT` for each picture on that
         screen, the file being in the pane's folder.)
 One file read by itself is always whole. Two files read one after the other may be of two
 writings of the files (a `lines` one scroll behind its `screen`). Where they must agree,

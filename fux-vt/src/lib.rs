@@ -1,12 +1,10 @@
 //! The terminal emulator: bytes in, a grid of cells out. It answers the
 //! queries programs wait on, keeps the lines that scroll off the top, and
-//! takes sixel and kitty graphics pictures. It knows nothing of files or processes.
+//! takes sixel pictures whole. It knows nothing of files or processes.
 #![forbid(unsafe_code)]
 
+mod base64;
 pub mod files;
-mod inflate;
-pub mod kitty;
-pub mod png;
 pub mod sixel;
 #[cfg(test)]
 mod tests;
@@ -271,39 +269,19 @@ impl Cell {
     }
 }
 
-/// The file format of a picture placed on a screen.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum PictureFormat {
-    Sixel,
-    Png,
-}
-
-impl PictureFormat {
-    pub fn ext(self) -> &'static str {
-        match self {
-            Self::Sixel => "sixel",
-            Self::Png => "png",
-        }
-    }
-}
-
 /// A picture the program drew: where what the screen has of it is, in cells, and how many of
 /// its rows have gone off the screen's top (`row` is 0 then); the size in pixels of the cells it
 /// was laid out in; and its bytes, until they are taken.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Picture {
     pub id: u32,
-    pub format: PictureFormat,
     pub row: usize,
     pub col: usize,
     pub cols: usize,
     pub rows: usize,
     pub off: usize,
     pub cell: (usize, usize),
-    pub z: i32,
-    pub(crate) kitty_id: u32,
-    pub(crate) placement_id: u32,
-    pub(crate) bytes: Option<Vec<u8>>,
+    bytes: Option<Vec<u8>>,
 }
 
 /// The kind of an OSC 133 shell prompt mark.
@@ -508,8 +486,6 @@ pub struct Told {
     pub cell: (usize, usize),
     /// Whether DA1 advertises sixel graphics (4).
     pub sixel: bool,
-    /// Whether Kitty graphics protocol APC commands (`ESC _ G ... ESC \`) are accepted.
-    pub kitty_graphics: bool,
     /// Host default foreground, background, cursor and 0..=255 palette colours for OSC 4/10/11/12 queries.
     pub fg: Option<[u8; 3]>,
     pub bg: Option<[u8; 3]>,
@@ -524,7 +500,6 @@ impl Default for Told {
             keyboard: 0,
             cell: (10, 20),
             sixel: true,
-            kitty_graphics: true,
             fg: None,
             bg: None,
             cursor: None,
@@ -570,8 +545,6 @@ pub struct Term {
     out: Out,
     /// The pictures of the screen not shown (the main one while the alternate is).
     other_pictures: Vec<Picture>,
-    kitty: kitty::Storage,
-    other_kitty: kitty::Storage,
     next_picture: u32,
     /// The title now, and the titles a program put aside to bring back (`CSI 22 t`, `CSI 23 t`), at most 8.
     title: String,
@@ -659,8 +632,6 @@ impl Term {
             string_holed: false,
             out: Out::default(),
             other_pictures: Vec::new(),
-            kitty: kitty::Storage::default(),
-            other_kitty: kitty::Storage::default(),
             next_picture: 1,
             title: String::new(),
             titles: Vec::new(),
@@ -713,10 +684,10 @@ impl Term {
         &mut self.told
     }
 
-    /// The pictures on either screen whose bytes were not taken yet: the number of each, its format, and its bytes.
-    pub fn new_pictures(&mut self) -> Vec<(u32, PictureFormat, Vec<u8>)> {
+    /// The pictures on either screen whose bytes were not taken yet: the number of each and its bytes.
+    pub fn new_pictures(&mut self) -> Vec<(u32, Vec<u8>)> {
         let pictures = self.screen.pictures.iter_mut().chain(&mut self.other_pictures);
-        pictures.filter_map(|p| Some((p.id, p.format, p.bytes.take()?))).collect()
+        pictures.filter_map(|p| Some((p.id, p.bytes.take()?))).collect()
     }
 
     /// Whether either screen has the picture of this number.
@@ -1045,16 +1016,10 @@ impl Term {
         to
     }
 
-    /// The sixel pictures that lie on cells `from` to `to` of the rows `rows` are written over: they go. (A row erased to its
+    /// The pictures that lie on cells `from` to `to` of the rows `rows` are written over: they go. (A row erased to its
     /// end is erased past it, and the display erased to its end below it too. Asked first, as in `scroll_pictures`: a flood prints over none.)
     fn uncover(&mut self, rows: std::ops::Range<usize>, from: usize, to: usize) {
-        let on = |p: &Picture| {
-            p.format == PictureFormat::Sixel
-                && p.row < rows.end
-                && rows.start < p.row + p.rows
-                && p.col < to
-                && from < p.col + p.cols
-        };
+        let on = |p: &Picture| p.row < rows.end && rows.start < p.row + p.rows && p.col < to && from < p.col + p.cols;
         let Some(_) = self.screen.pictures.iter().position(on) else { return };
         self.screen.pictures.retain(|p| !on(p));
     }
@@ -1338,13 +1303,10 @@ impl Term {
             // (A character still being joined is of the screen it was printed on.)
             self.cluster = None;
             std::mem::swap(&mut self.screen.pictures, &mut self.other_pictures);
-            std::mem::swap(&mut self.kitty, &mut self.other_kitty);
             self.screen.alt = alt;
         }
         if alt && clear {
             self.fill(Cell::blank(Style::default()));
-            self.screen.pictures.clear();
-            self.kitty.clear();
         }
     }
 
@@ -1727,21 +1689,11 @@ impl Term {
     fn end_string(&mut self, end: Option<&str>) {
         self.state = State::Ground;
         let string = std::mem::take(&mut self.string);
-        let end = end.filter(|_| string.len() <= PICTURE_MAX + 1);
-        // A graphics command that was broken off, is over the bound or has a control byte in it is dropped,
-        // and with it the transfer in parts it may have been the next part of: what follows is not that one's.
-        if string.starts_with(b"_G") && self.told.kitty_graphics && (end.is_none() || self.string_holed) {
-            if self.kitty.abandon(&mut self.screen.pictures) {
-                self.refuse(kitty::BROKEN_OFF);
-            }
-            return;
-        }
-        let Some(end) = end else { return };
+        let Some(end) = end.filter(|_| string.len() <= PICTURE_MAX + 1) else { return };
         match string.as_slice() {
             [b'P', b'$', b'q', data @ ..] if !self.string_holed => self.report_setting(data),
             [b'P', b'+', b'q', data @ ..] if !self.string_holed => self.report_caps(data),
             [b'P', data @ ..] if Term::is_sixel(data) => self.picture(data),
-            [b'_', b'G', data @ ..] if self.told.kitty_graphics => self.kitty_graphics(data),
             [b']', data @ ..] => self.command(&String::from_utf8_lossy(data), end),
             _ => {}
         }
@@ -1950,7 +1902,7 @@ impl Term {
                 // Setting only: a program is never told what is on the clipboard.
                 Some("?") => self.refuse("a program asked to read the clipboard: that is refused"),
                 // (A string is 4 MiB at most, so what it says in base64 is under that too.)
-                what => match what.and_then(|text| kitty::decode_base64(text.as_bytes(), PICTURE_MAX).ok()) {
+                what => match what.and_then(|text| base64::decode_base64(text.as_bytes(), PICTURE_MAX).ok()) {
                     Some(bytes) if bytes.len() <= 1 << 20 => self.out.clipboard = Some(bytes),
                     Some(_) => self.refuse("a clipboard over 1 MiB was dropped"),
                     None => self.refuse("a clipboard that was not base64 was dropped"),
@@ -1980,61 +1932,10 @@ impl Term {
         (0..room).for_each(|_| self.linefeed(false));
         let row = self.screen.cursor.row.saturating_sub(room);
         let (id, cell) = (self.next_picture, self.told.cell);
-        self.screen.pictures.push(Picture {
-            id,
-            format: PictureFormat::Sixel,
-            row,
-            col,
-            cols,
-            rows,
-            off: 0,
-            cell,
-            z: 0,
-            kitty_id: 0,
-            placement_id: 0,
-            bytes,
-        });
+        self.screen.pictures.push(Picture { id, row, col, cols, rows, off: 0, cell, bytes });
         self.next_picture = self.next_picture.wrapping_add(1);
         (room..rows).for_each(|_| self.linefeed(false));
         self.move_to_col(0);
-    }
-
-    /// Executes one Kitty graphics protocol APC command (`ESC _ G ... ESC \`).
-    fn kitty_graphics(&mut self, data: &[u8]) {
-        let cursor = (self.screen.cursor.row, self.screen.cursor.col);
-        let outcome = self.kitty.execute(
-            data,
-            self.told.cell,
-            self.screen.cols,
-            cursor,
-            &mut self.screen.pictures,
-            &mut self.next_picture,
-        );
-        if outcome.broke {
-            self.refuse(kitty::BROKEN_OFF);
-        }
-        if let Some(refused) = outcome.refused {
-            self.refuse(refused);
-        }
-        if let Some(reply) = outcome.reply {
-            self.respond(&reply);
-        }
-        if let Some(adv) = outcome.cursor {
-            let linefeeds = adv.linefeeds.min(self.screen.rows.saturating_mul(2));
-            let rows = self.screen.pictures.last().map_or(0, |p| p.rows);
-            let in_region = (self.top..=self.bottom).contains(&cursor.0);
-            let room =
-                if in_region && rows <= self.bottom - self.top + 1 { linefeeds.min(rows.saturating_sub(1)) } else { 0 };
-            if room > 0
-                && let Some(mut pic) = self.screen.pictures.pop()
-            {
-                (0..room).for_each(|_| self.linefeed(false));
-                pic.row = self.screen.cursor.row.saturating_sub(room);
-                self.screen.pictures.push(pic);
-            }
-            (room..linefeeds).for_each(|_| self.linefeed(false));
-            self.move_to_col(adv.target_col);
-        }
     }
 
     fn csi(&mut self, byte: u8) {
@@ -2107,8 +2008,7 @@ impl Term {
                 // (CSI J is the screen's rows, CSI K the cursor's: from the cursor on, up to it, or all; J to the end takes the rows below too.)
                 let (first, end) = if last == b'J' { (0, self.screen.rows - 1) } else { (row, row) };
                 let (first, end) = ((first, 0), (end, self.screen.cols));
-                let mode = self.arg(0, 0);
-                let (from, to) = match mode {
+                let (from, to) = match self.arg(0, 0) {
                     0 => ((row, col), end),
                     1 => (first, (row, col + 1)),
                     2 => (first, end),
@@ -2116,9 +2016,6 @@ impl Term {
                 };
                 let below = if self.erase(from, to) == end && last == b'J' { usize::MAX } else { 0 };
                 self.uncover(self.screen.rows..below, 0, usize::MAX);
-                if last == b'J' && mode == 2 {
-                    self.screen.pictures.clear();
-                }
             }
             (0, 0, b'X') => _ = self.erase((row, col), (row, col.saturating_add(n).min(self.screen.cols))),
             (0, 0, b'@' | b'P') => {
@@ -2291,9 +2188,6 @@ impl Term {
             1047 => {
                 if !on && self.screen.alt {
                     self.fill(Cell::blank(Style::default()));
-                    // (Its Kitty placements go as its sixel pictures do, and the images kept for them.)
-                    self.screen.pictures.clear();
-                    self.kitty.clear();
                 }
                 // Asked for while already there, it is left as it is (as in xterm).
                 self.set_alt(on, on && !self.screen.alt);
@@ -2379,10 +2273,10 @@ impl Term {
     }
 }
 
-/// Base64 of `bytes`, with its padding: what [`kitty::encode_base64`] adds to a text.
+/// Base64 of `bytes`, with its padding.
 pub fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::new();
-    kitty::encode_base64(bytes, &mut out);
+    base64::encode_base64(bytes, &mut out);
     out
 }
 

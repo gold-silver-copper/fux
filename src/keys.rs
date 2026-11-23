@@ -50,15 +50,6 @@ pub fn next(bytes: &[u8], whole: bool, answers: bool) -> Option<(usize, String, 
                 };
                 Some((length, format!("answer:{}", String::from_utf8_lossy(bytes.get(2..end)?)), None))
             }
-            // The terminal's APC answer to a graphics support query (Kitty graphics protocol).
-            Some(b'_') if answers => {
-                let st = bytes.windows(2).skip(1).position(|pair| pair == b"\x1b\\").map(|at| (at + 1, at + 3));
-                let Some((end, length)) = st else {
-                    let alone = (whole && bytes.len() == 2).then(|| (2, "M-_".to_string(), None));
-                    return alone.or((bytes.len() > 256).then(|| (bytes.len(), String::new(), None)));
-                };
-                Some((length, format!("graphics:{}", String::from_utf8_lossy(bytes.get(2..end)?)), None))
-            }
             // The short forms of the arrows, Home, End and F1 to F4. Others (the keypad's) are not keys of ours.
             Some(b'O') => match bytes.get(2) {
                 None => whole.then(|| (2, "M-S-o".into(), None)),

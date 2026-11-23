@@ -37,7 +37,7 @@ unaffected. `tools/referee` builds the old emulator from a commit on `old-main`,
 ## The code
 
 Three crates, no dependencies beyond them (CI checks that `Cargo.lock` names exactly these three).
-About 6,460 production lines (`./sizes.sh`).
+About 6,870 production lines (`./sizes.sh`).
 
 | Crate | What | Notes |
 |---|---|---|
@@ -180,8 +180,13 @@ about two minutes.
   failed system call is reported, never retried). The holder keeps the pty's slave open while the
   program runs, which keeps a program's last output on macOS too. No Windows.
 - The pane folder's format: D114 (folder per screen, `shown`, `generation`).
-- Kitty graphics is wanted eventually, beside sixel (the owner, overruling an earlier panel's "not
-  worth doing"; to be recorded in `DECISIONS.md` with the change that starts it).
+- No Kitty graphics: sixel is the one picture format (the owner, 2026-11-23, D119). It was built
+  (D117, 2026-11-22) and taken out a day later: the reader of its commands, an inflate and a PNG
+  decoder were over two fifths of the emulator, and the most code in fux reading what a program
+  sends. A command of it is read to its end and ignored. Two smaller forms were turned down with it:
+  output only (a pane's sixel pictures drawn with the Kitty protocol in a terminal without sixel),
+  and a thin layer from Kitty graphics to sixel (it needs all three parsers). The kitty keyboard
+  protocol stays.
 
 ## Open work, roughly in order
 
@@ -194,13 +199,7 @@ about two minutes.
    the line); a pane kept by a holder from an older build writes the old file layout and nothing says so; in the pane picker the first Enter
    can be lost (seen by a blind tester; the record is in the owner's notes); `.restore` can restart a
    pane whose saved command was a viewer; two role-named items in the code (`term.screen()`, `Holder.facts`); the word `shown` is both the link and a word of `cursor`.
-3. **Kitty graphics**, in three steps: (a) output only: pictures fux has are drawn in the outer
-   terminal with the kitty protocol, which is what makes pictures work in terminals without sixel
-   (Ghostty), about 150 to 250 lines; (b) input of raw pixels with placement and deletion by id,
-   stored as pane files beside `pic-N.sixel`, about 300; (c) PNG and compressed input (needs an
-   inflate of its own: no dependencies), about 300 more. Shared memory, file transfer and animation
-   are out.
-4. **Retire fux 1:** take the plain names (above), delete nothing of `old-main` (it is the record),
+3. **Retire fux 1:** take the plain names (above), delete nothing of `old-main` (it is the record),
    release.
-5. **koh:** whether koh (a remote shell over QUIC, a separate project) can carry pane folders between
+4. **koh:** whether koh (a remote shell over QUIC, a separate project) can carry pane folders between
    machines instead of needing its own emulator. A spike once the folder format has stopped changing.
