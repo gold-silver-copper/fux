@@ -870,42 +870,26 @@ impl Storage {
         pictures: &mut Vec<Picture>,
         next_picture: &mut u32,
     ) -> Outcome {
-        let decoded = match decode_image(
-            loading.format,
-            Medium::Direct,
-            loading.compression,
-            loading.width,
-            loading.height,
-            &loading.data,
-            false,
-        ) {
-            Ok(decoded) => decoded,
-            Err(msg) => {
-                if let Some(old_id) = loading.replaces {
-                    self.remove_image_and_placements(old_id, pictures);
-                }
-                return Outcome {
-                    reply: (!loading.implicit_id)
-                        .then(|| Response::err(loading.id, loading.number, loading.placement_id, msg).encode(quiet))
-                        .flatten(),
-                    refused: (msg == TOO_LARGE).then_some("a kitty picture over the 16 MiB a screen keeps was dropped"),
-                    ..Outcome::default()
-                };
-            }
-        };
+        // (The image this one was sent to take the place of goes, whether or not this one is kept.)
         if let Some(old_id) = loading.replaces {
             self.remove_image_and_placements(old_id, pictures);
         }
-        let img = StoredImage {
-            id: loading.id,
-            number: loading.number,
-            w: decoded.w,
-            h: decoded.h,
-            rgba: decoded.rgba,
-            png: decoded.png,
-            made: None,
-        };
-        self.store_image(img, pictures);
+        let (format, compression, data) = (loading.format, loading.compression, &loading.data);
+        let kept = decode_image(format, Medium::Direct, compression, loading.width, loading.height, data, false)
+            .and_then(|decoded| {
+                let DecodedImage { w, h, rgba, png } = decoded;
+                let img = StoredImage { id: loading.id, number: loading.number, w, h, rgba, png, made: None };
+                self.store_image(img, pictures)
+            });
+        if let Err(msg) = kept {
+            return Outcome {
+                reply: (!loading.implicit_id)
+                    .then(|| Response::err(loading.id, loading.number, loading.placement_id, msg).encode(quiet))
+                    .flatten(),
+                refused: (msg == TOO_LARGE).then_some("a kitty picture over the 16 MiB a screen keeps was dropped"),
+                ..Outcome::default()
+            };
+        }
 
         if let Some(spec) = loading.display {
             return self.place(&spec, quiet, cell, screen_cols, cursor, pictures, next_picture, loading.implicit_id);
@@ -1249,10 +1233,15 @@ impl Storage {
         }
     }
 
-    /// Keeps `img`, the oldest going for it while there are too many or they are too large together.
-    /// (One that is too large alone never comes here: `decode_image` refuses it, before it is unpacked.)
-    fn store_image(&mut self, img: StoredImage, pictures: &mut Vec<Picture>) {
+    /// Keeps `img`. While there are too many, or they are too large together, another goes for it: the
+    /// oldest that is not placed, or the oldest of all when all are. One that is too large alone is not
+    /// kept, and none goes for it. (`decode_image` refuses such a one sooner, before its pixels are
+    /// unpacked; the bound is held here whatever comes.)
+    fn store_image(&mut self, img: StoredImage, pictures: &mut Vec<Picture>) -> Result<(), &'static str> {
         let needed = img.byte_len();
+        if needed > STORED_BYTES_MAX {
+            return Err(TOO_LARGE);
+        }
         let total = |imgs: &[StoredImage]| imgs.iter().map(StoredImage::byte_len).sum::<usize>();
         while self.images.len() >= STORED_IMAGES_MAX || total(&self.images).saturating_add(needed) > STORED_BYTES_MAX {
             // Prefer evicting oldest unplaced image first, then oldest placed image (matches Kitty/Ghostty).
@@ -1266,6 +1255,7 @@ impl Storage {
             pictures.retain(|p| !(p.format == PictureFormat::Png && p.kitty_id == evicted.id));
         }
         self.images.push(img);
+        Ok(())
     }
 }
 
@@ -1300,7 +1290,9 @@ fn decode_image(
         payload.to_vec()
     };
     // An image is kept as RGBA, and a PNG's own bytes with it: one that a screen's store has no room
-    // for, even empty, is refused before anything of it is unpacked.
+    // for, even empty, is refused before its pixels are unpacked. (Pixels that were sent, by the
+    // width and height sent with them, before anything is; a PNG by its header, which is read once
+    // the file is whole, and so after `o=z` is undone: that is 4 MiB at most.)
     let fits = |pixels: usize, more: usize| pixels.saturating_mul(4).saturating_add(more) <= STORED_BYTES_MAX;
     let max_uncompressed = match format {
         Format::Png => PICTURE_MAX,
@@ -1393,4 +1385,18 @@ fn crop_rgba(img_w: usize, rgba: &[u8], sx: usize, sy: usize, sw: usize, sh: usi
         }
     }
     out
+}
+
+/// (Here and not with the other tests: nothing outside this file can hand `store_image` such an image.)
+#[cfg(test)]
+#[test]
+fn an_image_over_what_a_screen_keeps_is_not_stored_whoever_asks() {
+    let image = |id, bytes| StoredImage { id, number: 0, w: 1, h: 1, rgba: vec![0; bytes], png: None, made: None };
+    let ids = |storage: &Storage| storage.images.iter().map(|img| img.id).collect::<Vec<_>>();
+    let (mut storage, mut pictures) = (Storage::default(), Vec::new());
+    assert_eq!(storage.store_image(image(1, 4), &mut pictures), Ok(()));
+    assert_eq!(storage.store_image(image(2, STORED_BYTES_MAX + 1), &mut pictures), Err(TOO_LARGE));
+    assert_eq!(ids(&storage), [1]);
+    assert_eq!(storage.store_image(image(3, STORED_BYTES_MAX), &mut pictures), Ok(()));
+    assert_eq!(ids(&storage), [3]);
 }
