@@ -738,14 +738,24 @@ impl View {
     /// The keys are with the pane `has` now, or with none: a key that is down in another pane is
     /// let go there, so that a press is followed by its release (the terminal, asked for the next
     /// pane's flags or left to itself, may never tell of it, or tell of it in another form), and
-    /// what the terminal still tells of that key reaches no pane.
+    /// what the terminal still tells of that key reaches no pane. Which pane has the keys is which
+    /// folder: a pane that was given another name (`keys/.rename`) still has its keys, those that
+    /// are down too, under that name. (A name that has no folder at all was read a moment ago and
+    /// is out of date, as when a pane is renamed between a look at the layout and this: nothing
+    /// is let go on its word, and the next look says who has the keys.)
     fn leave(&mut self, has: Option<&Path>) {
         for ((code, last), went) in std::mem::take(&mut self.down) {
-            match went {
-                Went::Pane(directory, folder) if Some(directory.as_path()) != has => {
+            match (went, has) {
+                (Went::Pane(_, folder), Some(has)) if folder.is(has) => {
+                    self.down.push(((code, last), Went::Pane(has.to_path_buf(), folder)));
+                }
+                (went @ Went::Pane(..), Some(has)) if fs::metadata(has).is_err() => {
+                    self.down.push(((code, last), went))
+                }
+                (Went::Pane(directory, folder), _) => {
                     self.pass(&directory, &folder, format!("\x1b[{code};1:3{}", char::from(last)).as_bytes());
                 }
-                went => self.down.push(((code, last), went)),
+                (went, _) => self.down.push(((code, last), went)),
             }
         }
     }

@@ -2502,6 +2502,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     changed). What the viewer read of it is kept meanwhile, as before.
     `fn pid` and `fn program` are gone from the viewer; koh need not write
     `pid 1` into a mirror's `status` any more.
+  - **A key that is down in a pane stays down in it through `.rename`**
+    (after the review of PR #483: the key's repeat and release were dropped,
+    though the folder, and so the program, was the same). When the viewer
+    looked which pane has the keys, it compared paths, took the new name
+    for another pane and let the key go in the old path, which no folder
+    had. It asks now whether the pane that has the keys is the key's folder:
+    if so the key stays down, under the name the folder has now. And a name
+    that has no folder at all lets nothing go: it was read a moment ago and
+    is out of date (a frame that read the layout just before the rename, and
+    got to its keys after it, let the key go on the old name: 2 of 192 runs
+    of the test, sixteen at a time; none of 320 since). Not
+    covered: a pane renamed while a key is down in it that does not have
+    the keys any more by the viewer's next look (the name it went to is not
+    searched for); its release is dropped, as before.
   - **One handle for a pane, and never the viewer's last** (after the review
     of PR #483: with 30 panes side by side and 32 files to open, the viewer
     held 30 folders, had none left to open a pane's `in` with, and typed

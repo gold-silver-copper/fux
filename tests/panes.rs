@@ -2647,7 +2647,7 @@ fn the_viewer_knows_a_pane_by_its_folder_and_asks_no_status_who_its_program_is()
     // `status`, and so no program's number; FIFOs under `in` and `ctl`, which the test reads; a
     // `modes` that asks to be told of keys let go. The viewer asks it to take its tile's size, and
     // a key's release follows its press there.
-    let (outer, inner) = (Session::new("fouter"), Session::new("finner"));
+    let (outer, inner) = (Session::new("idouter"), Session::new("idinner"));
     let (keys, pane) = (inner.0.join(".keys"), inner.0.join("main/made"));
     fs::create_dir_all(&keys).unwrap();
     fs::create_dir_all(&outer.0).unwrap();
@@ -2736,6 +2736,33 @@ fn a_viewer_that_may_open_few_files_still_types_into_its_panes() {
         || read(&first.join("shown/screen")).replace('\n', "").contains("^[[97;1:1u^[[97;1:3uZ"),
     );
     assert!(!read(&view.join("shown/screen")).contains("Too many open files"));
+}
+
+#[test]
+fn a_key_held_while_its_pane_is_renamed_is_held_and_let_go_in_that_pane() {
+    // The folder is the pane, whatever it is called: a key that went down in it is still down in
+    // it after `.rename`, and its repeat and its release go to the same program.
+    let (outer, inner) = (Session::new("heldouter"), Session::new("heldinner"));
+    let keys = inner.0.join(".keys");
+    for session in [&outer, &inner] {
+        fs::create_dir_all(&session.0).unwrap();
+        fs::write(session.0.join("keyboard"), "31\n").unwrap();
+    }
+    fs::create_dir_all(&keys).unwrap();
+    let pane = inner.start("a", &["sh", "-c", "stty raw -echo; printf '\\033[>11u'; exec cat -vt"]);
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer asked its terminal for the keys the pane asks", || fact(&view, "modes").contains("keys11"));
+    let key = |letter: u8, kind: u8| format!("\x1b[{letter};1:{kind}u");
+    send(&view.join("in"), key(97, 1));
+    until("the key is down in the pane", || read(&pane.join("shown/screen")).contains("^[[97;1:1u"));
+    let mut rename = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.rename"));
+    assert!(rename.arg(inner.0.join("main")).args(["a", "renamed"]).ended().success());
+    let renamed = inner.0.join("main/renamed");
+    send(&view.join("in"), key(97, 2) + &key(97, 3) + &key(98, 1) + &key(98, 3));
+    let shown = || read(&renamed.join("shown/screen")).replace('\n', "");
+    until("the next key has come and gone", || shown().ends_with("^[[98;1:1u^[[98;1:3u"));
+    assert_eq!(shown(), "^[[97;1:1u^[[97;1:2u^[[97;1:3u^[[98;1:1u^[[98;1:3u");
 }
 
 #[test]
