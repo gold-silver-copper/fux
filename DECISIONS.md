@@ -2293,16 +2293,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   and not changed here: a viewer's reads of every other fact in a pane's
   folder (`clipboard`, the screens' files, `title`, `modes`, `status`,
   `generation`, `notice`); a link where a FOLDER of the path is (`main`,
-  `alt`, and `shown`, which is one by design); and `log`, `history` and
-  `history.styled`, which are opened by name to write. Five parts.
+  `alt`, and `shown`, which is one by design); `log`, `history` and
+  `history.styled`, which are opened by name to write; and, outside a pane's
+  folder, a viewer's own FIFO in the session (`.view.PID`, which its key
+  scripts write to) and the keys it installs at its first run. Five parts.
   - **One deadline for a test.** `twostarts` made its start again in a loop
     with no end, and every command the tests ran (`fux start`, `fux wait`, the
     key scripts) was waited for with none: a holder that never came up held
     the test for good. Now a test has two minutes from its first session
-    (the whole suite takes a third of one), every wait in it ends at that one
-    moment, a command not ended by then is killed and named, a FIFO is written
-    and read without waiting, and a test held where nothing asks the deadline
-    (a call that waits by itself) is named by a watcher that ends every
+    (the whole suite takes a third of one), every wait its helpers make ends at
+    that one moment, a command not ended by then is killed and named, a FIFO is
+    written and read without waiting, and a test held where nothing asks the
+    deadline (a call that waits by itself) is named by a watcher that ends every
     session and the run. A session that ends kills the holder and the
     program of each pane it started itself: each leads a session of its own,
     a signal to the test does not reach them, and a program that ignores the
@@ -2374,7 +2376,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     arm64 among them): it is given for each, and the test that a link is not
     read fails on a processor where it is wrong.
   - **The viewer writes to a FIFO under `in` and `ctl`, and to nothing
-    else** (added after the review of the three parts above, which found the
+    else** (added after the review of the parts above, which found the
     list of what was left uncovered one short). The viewer opened a pane's
     `in` and `ctl` by name to write: with `in` a link to a file, a pane
     counted as read, and what was typed overwrote the file's first bytes

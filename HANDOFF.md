@@ -141,8 +141,8 @@ about two minutes.
 - A bug gets a test that fails on the base first; the PR body shows it failing.
 - A test of the real binary (`tests/panes.rs`) has one deadline, two minutes from its first session.
   It starts a command with `run`, `run_from`, `ended` or `begin`, writes to a FIFO with `send`, reads
-  with `read` and waits with `until` or `until_or`: these ask that deadline, and a command started
-  through them is one the tests stop when they stop. Nothing checks that a new test does so (a bare
+  with `read` (which never waits) and waits with `until` or `until_or`: their waits end at that
+  deadline, and a command started through them is one the tests stop when they stop. Nothing checks that a new test does so (a bare
   `spawn`, `output` or `fs::write` to a FIFO waits by itself): look for it in review. Run them all
   under `timeout` as well.
 - Design questions that have several defensible answers go to a panel of independent reviewers

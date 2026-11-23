@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 /// How long a test has, all of it: two minutes (the whole of them takes a third of one), or the
-/// seconds `FUX_TEST_LIMIT` says. Every wait in a test ends at the one moment its first session set
-/// (`deadline`): a command that has not ended by then is killed and named, a FIFO nobody reads is an
-/// error at once, and nothing a test does waits without that end.
+/// seconds `FUX_TEST_LIMIT` says. The helpers below end their waits at the one moment a test's first
+/// session set (`deadline`): a command that has not ended by then is killed and named, and a FIFO
+/// nobody reads is an error at once. (A test that waits another way is not held to it by anything
+/// here: its watcher stops it, and the tests with it.)
 fn limit() -> Duration {
     let seconds = std::env::var("FUX_TEST_LIMIT").ok().and_then(|seconds| seconds.parse().ok());
     Duration::from_secs(seconds.unwrap_or(120))
@@ -295,6 +296,7 @@ impl Run {
                 return Ok(status);
             }
             if Instant::now() >= by {
+                stop(&self.child);
                 return Err(format!("not ended by its deadline, and killed: {}", self.what));
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -380,8 +382,9 @@ fn output_by(command: &mut Command, by: Instant, asked: bool) -> Result<Output, 
     let stderr = reader(locked(&run.child).stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
     let status = run.end_by(by)?;
     // (Something the command started may still hold its pipes: that too is waited for no longer.)
+    // (A moment for it also where the command ended as `by` came: what it printed is there to read.)
     let all = |bytes: mpsc::Receiver<Vec<u8>>| {
-        let left = by.saturating_duration_since(Instant::now());
+        let left = by.saturating_duration_since(Instant::now()).max(Duration::from_millis(200));
         bytes.recv_timeout(left).map_err(|_| format!("{}: what it started still holds its output", run.what))
     };
     Ok(Output { status, stdout: all(stdout)?, stderr: all(stderr)? })
@@ -1346,7 +1349,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     let set = "\\033]4;1;#123456\\007\\033]11;#654321\\007\\033]12;#abcdef\\007";
     // (A wide character that has no room in its row's last cell leaves that cell empty.)
     send(&view.join("in"), format!("printf '{set}\\033[31mr''ed\\033[m\\n%38s\u{754c}\\n' ''\r"));
-    fs::write(inner.0.join("main/one/in"), "clear; printf '\\033[31mpl''ain\\033[m\\n'\r").unwrap();
+    send(&inner.0.join("main/one/in"), "clear; printf '\\033[31mpl''ain\\033[m\\n'\r");
     let styled = || read(&view.join("shown/screen.styled"));
     let drawn = |text: &str| styled().lines().find_map(|line| Some(line.split_once(text)?.0.to_string()));
     until_or("the pane is drawn in its colours, and the one beside it is not", styled, || {
