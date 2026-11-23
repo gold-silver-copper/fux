@@ -48,22 +48,15 @@ fn deadline() -> Instant {
 
 /// Ends a session. Each pane's holder leads a session of its own, and its program another: neither
 /// goes with the test, nor at once with the directory (a holder looks every two seconds, and a program
-/// may ignore the hangup). So those of every pane whose holder lives are killed, the program with
+/// may ignore the hangup). So the holder and the program of every pane are killed, the program with
 /// its process group; then the directory goes. What could not be done is what is given back.
 fn end(session: &Path) -> Vec<String> {
     let mut wrong = Vec::new();
     let folders = |folder: &Path| fs::read_dir(folder).into_iter().flatten().flatten().map(|entry| entry.path());
     for pane in folders(session).flat_map(|workspace| folders(&workspace).collect::<Vec<_>>()) {
-        // (Whether its holder lives, the lock says. Opened without waiting: a test may have put a
-        // FIFO where a pane would be.)
-        let held = fuxix::open(&pane, false).is_ok_and(|folder| folder.try_lock_shared().is_err());
         let status = read(&pane.join("status"));
         let number = |name: &str| status.lines().find_map(|line| line.strip_prefix(name)?.parse::<u32>().ok());
-        let (Some(holder @ 2..), Some(program @ 2..), true) = (number("holder "), number("pid "), held) else {
-            continue;
-        };
-        // A number in a file is not yet a process of ours (a pane started again has its lock before
-        // its new `status`): the holder must be this fux holding, and the program its child.
+        let (Some(holder @ 2..), Some(program @ 2..)) = (number("holder "), number("pid ")) else { continue };
         let processes = match processes(&[holder, program]) {
             Ok(processes) => processes,
             Err(why) => {
@@ -74,16 +67,23 @@ fn end(session: &Path) -> Vec<String> {
                 continue;
             }
         };
-        let is = |pid: u32, parent: Option<u32>, runs: &str| {
-            processes.iter().any(|(numbers, line)| {
-                numbers.first() == Some(&pid)
-                    && parent.is_none_or(|parent| numbers.get(1) == Some(&parent))
-                    && line.contains(runs)
-            })
-        };
-        let ours = is(holder, None, concat!(env!("CARGO_BIN_EXE_fux"), " hold "));
-        let targets =
-            [(ours && is(program, Some(holder), "")).then(|| format!("-{program}")), ours.then(|| holder.to_string())];
+        // A number in a file is not yet a process of ours. The holder is: the one that has the pane's
+        // lock (opened without waiting: a test may have put a FIFO where a pane would be) and is this
+        // fux holding. The program is: that holder's child; or, its holder gone (killed, with nobody
+        // left to hang the program up), the leader of its own process group that was born when
+        // `status` was written. (Not "runs what `status` says": a program may have become another,
+        // and many panes of the tests run the same.)
+        let held = fuxix::open(&pane, false).is_ok_and(|folder| folder.try_lock_shared().is_err());
+        let of = |pid: u32| processes.iter().find(|process| process.pid == pid);
+        let written = fs::metadata(pane.join("status")).and_then(|file| file.modified()).ok();
+        let age = written.and_then(|written| written.elapsed().ok()).map(|age| age.as_secs());
+        let ours =
+            held && of(holder).is_some_and(|holder| holder.line.contains(concat!(env!("CARGO_BIN_EXE_fux"), " hold ")));
+        let its = of(program).is_some_and(|process| {
+            (ours && process.parent == holder)
+                || (process.group == program && age.is_some_and(|age| age.abs_diff(process.age) <= 3))
+        });
+        let targets = [its.then(|| format!("-{program}")), ours.then(|| holder.to_string())];
         if targets.iter().any(Option::is_some) {
             let mut kill = Command::new("kill");
             kill.args(["-KILL", "--"]).args(targets.into_iter().flatten()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -107,13 +107,23 @@ fn end(session: &Path) -> Vec<String> {
     wrong
 }
 
-/// What `ps` says of the processes of these numbers that there are: of each its own number and its
-/// parent's, and its whole line, with its command line in full (whatever width the tests' own terminal is
-/// said to have: `ps` cuts its lines to that, and a line cut short is another command's).
-fn processes(pids: &[u32]) -> Result<Vec<(Vec<u32>, String)>, String> {
+/// A process as `ps` tells of it: its number, its parent's, its process group's, how many seconds
+/// ago it was born, and the whole line (which ends in its command line).
+struct Process {
+    pid: u32,
+    parent: u32,
+    group: u32,
+    age: u64,
+    line: String,
+}
+
+/// What `ps` says of the processes of these numbers that there are, with their command lines in full
+/// (whatever width the tests' own terminal is said to have: `ps` cuts its lines to that, and a line
+/// cut short is another command's).
+fn processes(pids: &[u32]) -> Result<Vec<Process>, String> {
     let pids = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
     let mut ps = Command::new("ps");
-    ps.args(["-ww", "-o", "pid=,ppid=,args=", "-p", &pids]).env_remove("COLUMNS");
+    ps.args(["-ww", "-o", "pid=,ppid=,pgid=,etime=,args=", "-p", &pids]).env_remove("COLUMNS");
     let mut ps =
         ps.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
     let mut said = String::new();
@@ -123,9 +133,17 @@ fn processes(pids: &[u32]) -> Result<Vec<(Vec<u32>, String)>, String> {
         (Some(Ok(_)), Ok(Some(0 | 1))) => {}
         (_, ended) => return Err(format!("ps ended with {ended:?}")),
     }
-    let line =
-        |line: &str| (line.split_whitespace().take(2).filter_map(|n| n.parse().ok()).collect(), line.to_string());
-    Ok(said.lines().map(line).collect())
+    let process = |line: &str| {
+        let mut words = line.split_whitespace();
+        let mut number = || words.next()?.parse().ok();
+        let (pid, parent, group) = (number()?, number()?, number()?);
+        // (How long ago: `[[days-]hours:]minutes:seconds`.)
+        let born = words.next()?;
+        let (days, clock) = born.split_once('-').unwrap_or(("0", born));
+        let seconds = clock.split(':').try_fold(0u64, |all, part| Some(all * 60 + part.parse::<u64>().ok()?))?;
+        Some(Process { pid, parent, group, age: days.parse::<u64>().ok()? * 86400 + seconds, line: line.to_string() })
+    };
+    said.lines().map(|line| process(line).ok_or(format!("ps said `{line}`"))).collect()
 }
 
 /// A session directory of the test's own. Dropped, it is ended: its panes with it.
@@ -337,6 +355,25 @@ fn what_a_test_runs_and_writes_to_ends_at_the_tests_one_deadline() {
     let refused = said(std::panic::catch_unwind(|| send(&fifo, "typed")));
     assert!(refused.contains("fifo") && read(&fifo).is_empty(), "{refused}");
     assert!(after.elapsed() < Duration::from_secs(3), "{:?}", after.elapsed());
+}
+
+#[test]
+fn a_session_ends_a_program_whose_holder_has_died() {
+    // A holder killed outright leaves its program with nobody to hang it up, and nothing holding
+    // the pane's lock. The program is still the pane's: it is the one `status` names, it leads its
+    // own process group, and it was born when that `status` was written. The session's end ends it.
+    let session = Session::new("orphan");
+    let deaf = ["sh", "-c", "trap '' HUP; echo r''eady; exec sh -c 'trap \"\" HUP; while :; do sleep 1; done'"];
+    let pane = session.start("deaf", &deaf);
+    until("the program ignores the hangup", || read(&pane.join("shown/screen")).contains("ready"));
+    let status = read(&pane.join("status"));
+    let numbers: Vec<&str> = status.lines().take(2).filter_map(|line| line.split(' ').nth(1)).collect();
+    let alive = |pid: &str| Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).ended().success();
+    assert!(Command::new("kill").args(["-KILL", numbers[0]]).ended().success(), "{status}");
+    until("the holder is gone", || !alive(numbers[0]));
+    assert!(alive(numbers[1]), "the program went with its holder: the test means one that does not");
+    assert_eq!(end(&session.0), [""; 0]);
+    until("the program is gone", || !alive(numbers[1]));
 }
 
 /// The tests themselves, run anew for the tests named, with what `set` says of their surroundings.
