@@ -3219,7 +3219,7 @@ fn what_is_typed_after_a_key_that_shows_a_workspace_with_no_pane_goes_to_its_she
     // The key's script names the workspace and is still running when `.empty` is started for it,
     // and has ended before `.empty` has made the pane: the letter typed after the key waits for
     // `.empty`, whose workspace it is typed in, and not only for the script that chose it.
-    let (outer, inner) = (Session::new("wlouter"), Session::new("wlinner"));
+    let (outer, inner) = (Session::new("wtouter"), Session::new("wtinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b/w")).unwrap();
     fs::write(keys.join("C-b/w/l"), "#!/bin/sh\necho workspace other\nsleep 0.2\n").unwrap();
