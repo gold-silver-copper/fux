@@ -2587,6 +2587,15 @@ fn the_viewer_writes_to_a_fifo_under_a_panes_name_and_to_nothing_a_link_there_le
         assert_eq!(read(file), "not the pane's\n", "the viewer wrote through the link under `{name}`");
     }
     assert!(screen().contains("linked") && screen().contains("what you typed"), "{}", screen());
+    // A file under the two names, and no link: it is not written either, and the viewer says what
+    // is wrong with it.
+    for (name, file) in &kept {
+        fs::remove_file(pane.join(name)).unwrap();
+        fs::copy(file, pane.join(name)).unwrap();
+    }
+    send(&view.join("in"), "typed again\r");
+    until("the viewer says that it is no FIFO", || screen().contains("linked: its `in` is no FIFO"));
+    assert!(["in", "ctl"].iter().all(|name| read(&pane.join(name)) == "not the pane's\n"), "a file was written");
 }
 
 #[test]

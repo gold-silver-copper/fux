@@ -223,7 +223,9 @@ pub fn fifo(path: impl AsRef<Path>) -> io::Result<File> {
     let name = CString::new(path.as_ref().as_os_str().as_bytes())?;
     // SAFETY: the name is a valid NUL-terminated string for the call.
     check(unsafe { mkfifo(name.as_ptr(), 0o600) })?;
-    OpenOptions::new().read(true).write(true).custom_flags(os::O_NONBLOCK | os::O_NOFOLLOW).open(path)
+    let file = OpenOptions::new().read(true).write(true).custom_flags(os::O_NONBLOCK | os::O_NOFOLLOW).open(path)?;
+    // (What was opened is the FIFO made, and not something given its name in between.)
+    if file.metadata()?.file_type().is_fifo() { Ok(file) } else { Err(io::ErrorKind::InvalidInput.into()) }
 }
 
 /// A terminal in raw mode. Dropped, it writes the terminal what it was given to say on leaving

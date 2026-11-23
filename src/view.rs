@@ -935,6 +935,10 @@ impl View {
             Err(e) if sys::no_reader(&e) || e.kind() == io::ErrorKind::NotFound => {
                 self.message = format!("{name} has ended: nothing reads what you type");
             }
+            // (Something else than a FIFO has the name: `open_fifo` wrote nothing into it.)
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
+                self.message = format!("{name}: its `in` is no FIFO: what you typed was dropped");
+            }
             Err(e) => self.message = format!("{name}: {e}: what you typed was dropped"),
         }
     }
