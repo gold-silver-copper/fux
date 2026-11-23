@@ -2284,6 +2284,30 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   left was another command, `a=d,D=i,i=1` deleting every placement for its
   mistyped `d`. No program that draws on Kitty can send one.
 
+- **D118. A test has one deadline, and no link is followed** (2026-11-23,
+  after an audit of this line of work: a run of the tests had hung for fifteen
+  minutes on one test, writing the same error; and the review of D117 found
+  writes that follow a link). Three parts, a commit each.
+  - **One deadline for a test.** `twostarts` made its start again in a loop
+    with no end, and every command the tests ran (`fux start`, `fux wait`, the
+    key scripts) was waited for with none: a holder that never came up held
+    the test for good. Now a test has two minutes from its first session
+    (the whole suite takes a third of one), every wait in it ends at that one
+    moment, a command not ended by then is killed and named, a FIFO is written
+    and read without waiting, and a test held where nothing asks the deadline
+    (a call that waits by itself) is named by a watcher that ends every
+    session and the run. A session that ends kills the holders and the
+    programs of its panes: each leads a session of its own, a signal to the
+    test does not reach them, and a program that ignores the hangup outlived
+    its test. `twostarts` stages what it tests without a loop and without
+    asking the lock (the holder waits at a `history` that is a FIFO; its
+    `status` says it is there). A test in the file refuses the calls that
+    wait by themselves. And three pairs of tests had the same names for their
+    sessions, so the same directories: run sixteen at a time they ended each
+    other's panes, and four tests failed every time (at four a time, as CI
+    runs them, no pair met). A session's name is now one test's, and two
+    tests that take one at once are told so.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

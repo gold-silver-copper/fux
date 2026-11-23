@@ -112,7 +112,7 @@ the tests, `example.sh`, `tools/help-agents.sh`, `tools/referee` and `tools/perf
 ```sh
 cargo build --release
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked -- --test-threads 4   # 127 tests; the real-binary suite takes ~20 s
+cargo test --workspace --locked -- --test-threads 4   # 160 tests; the real-binary suite takes ~20 s
 tools/help-agents.sh                     # runs every example on the agents' page as one sh session
 ./example.sh                             # the README's example
 python3 tools/perf.py target/release/fux # speed: flood, key echo, CPU (with tmux, beside it)
@@ -139,6 +139,9 @@ about two minutes.
 - One PR per task; the PR body has a before/after for anything a user or script sees, the line counts
   per crate, and what was not verified.
 - A bug gets a test that fails on the base first; the PR body shows it failing.
+- A test of the real binary (`tests/panes.rs`) has one deadline, two minutes from its first session,
+  and waits for nothing but through that file's helpers (`run`, `ended`, `wait`, `send`, `until`),
+  which ask it: a test in that file says so of the file. Run them all under `timeout` as well.
 - Design questions that have several defensible answers go to a panel of independent reviewers
   who vote on a fixed ballot; the result and the strongest dissent go into `DECISIONS.md`.
 - Before review, blind testers use the built binary with only the README and `fux help agents`;
