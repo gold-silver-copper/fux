@@ -5,9 +5,9 @@
 //! its program.
 
 use crate::sys::{self, Winsize};
-use crate::term::{Out, Picture, PictureFormat, SIZE_MAX, TERM, Term, files};
+use crate::term::{Out, Picture, SIZE_MAX, TERM, Term, files};
 use crate::{plain, replace};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Write};
@@ -59,8 +59,8 @@ struct Holder {
     /// How many rounds of writing had a notice: the number in the `notice` file.
     noticed: u32,
     ctl_line: Vec<u8>,
-    /// The numbers and formats of the picture files written and not yet removed.
-    pictures: BTreeMap<u32, PictureFormat>,
+    /// The numbers of the picture files written and not yet removed.
+    pictures: BTreeSet<u32>,
     /// The session's folder, where the files are that say what the terminal outside is like, and
     /// which `colours` and `keyboard` were read last.
     session: PathBuf,
@@ -140,7 +140,7 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
         generation: crate::text(Path::new("generation"), 32).trim().parse().map_or(0, |n: u64| n.saturating_add(n % 2)),
         noticed: 0,
         ctl_line: Vec::new(),
-        pictures: BTreeMap::new(),
+        pictures: BTreeSet::new(),
         session,
         told: (None, None),
         logged: 0,
@@ -446,10 +446,10 @@ impl Holder {
         self.turn(true)?;
         let written = self.write(ended);
         // A picture neither screen has any more has no reader left, after a round that failed too.
-        self.pictures.retain(|id, format| {
+        self.pictures.retain(|id| {
             let kept = self.term.has_picture(*id);
             if !kept {
-                let _ = fs::remove_file(format!("pic-{id}.{}", format.ext()));
+                let _ = fs::remove_file(format!("pic-{id}.sixel"));
             }
             kept
         });
@@ -458,11 +458,11 @@ impl Holder {
 
     fn write(&mut self, ended: Option<&str>) -> io::Result<()> {
         let out = self.collect(0);
-        for (id, format, data) in self.term.new_pictures() {
+        for (id, data) in self.term.new_pictures() {
             // (One that cannot be written is not on the screen: it goes, its file below, and the log says why.)
-            self.pictures.insert(id, format);
+            self.pictures.insert(id);
             // (As any file of the pane: put together beside its name and then given it, whatever has the name.)
-            if let Err(e) = replace(format!("pic-{id}.{}", format.ext()), &data) {
+            if let Err(e) = replace(format!("pic-{id}.sixel"), &data) {
                 self.term.keep_pictures(|kept| kept != id);
                 self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
             }
@@ -471,16 +471,7 @@ impl Holder {
         // still: its first row is then above row 0. Its last two numbers are its cells, in pixels.)
         let placed = |p: &Picture| {
             let row = if p.off > 0 { format!("-{}", p.off) } else { p.row.to_string() };
-            format!(
-                "pic-{}.{} {row} {} {} {} {} {}\n",
-                p.id,
-                p.format.ext(),
-                p.col,
-                p.cols,
-                p.rows + p.off,
-                p.cell.0,
-                p.cell.1
-            )
+            format!("pic-{}.sixel {row} {} {} {} {} {}\n", p.id, p.col, p.cols, p.rows + p.off, p.cell.0, p.cell.1)
         };
         let words = files::modes(&mut self.term);
         let (term, screen, at) = (&self.term, self.term.shown(), self.term.shown().cursor);

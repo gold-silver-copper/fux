@@ -3518,41 +3518,32 @@ PY
 }
 
 #[test]
-fn kitty_graphics_pane_files() {
-    // Program inside an inner pane queries Kitty graphics support, displays a 200x40 PNG
-    // (20x2 cells at 10x20), waits for a keypress, then deletes it with a=d,d=A.
-    let inner = Session::new("kginner");
-    fs::create_dir_all(&inner.0).unwrap();
-    let rgba = [255u8, 64, 0, 255].repeat(200 * 40);
-    let png_bytes = fux_vt::png::encode_rgba(200, 40, &rgba, 65536).unwrap();
-    let mut b64 = String::new();
-    fux_vt::kitty::encode_base64(&png_bytes, &mut b64);
-    let b64_file = inner.0.join("img.b64");
-    fs::write(&b64_file, &b64).unwrap();
-    let script = format!(
-        "stty raw -echo; \
-         printf '\\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\\033\\\\'; \
-         dd bs=1 count=12 2>/dev/null > '{}/reply'; \
-         printf '\\033[H\\033_Ga=T,i=7,f=100,C=1,q=2;%s\\033\\\\' \"$(cat '{}')\"; \
-         dd bs=1 count=1 >/dev/null 2>&1; \
-         printf '\\033_Ga=d,d=A,q=2\\033\\\\'; \
-         sleep 60",
-        inner.0.display(),
-        b64_file.display()
+fn a_kitty_graphics_command_leaves_a_pane_as_it_was_and_its_program_is_told_only_what_the_terminal_is() {
+    // A program asks whether Kitty graphics are drawn, the way programs do: the question, then
+    // "what are you", and the first answer is the answer to both. It keeps the eleven bytes that
+    // come first, sends an image to be shown where the cursor is, and prints a word.
+    let session = Session::new("nokitty");
+    fs::create_dir_all(&session.0).unwrap();
+    let answer = session.0.join("answer");
+    let asks = format!(
+        "stty raw -echo; printf '\\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\\033\\\\\\033[c'; \
+         dd bs=1 count=11 2>/dev/null > '{}'; \
+         printf '\\033_Ga=T,i=7,f=24,s=1,v=1;AAAA\\033\\\\word'; sleep 600",
+        answer.display()
     );
-    let pane = inner.start("pic", &["sh", "-c", &script]);
-    until("pane received query OK and placed pic-1.png", || {
-        fs::read(inner.0.join("reply")).ok().as_deref() == Some(b"\x1b_Gi=31;OK\x1b\\")
-            && fact(&pane, "shown/pictures") == "pic-1.png 0 0 20 2 10 20"
-            && pane.join("pic-1.png").is_file()
-    });
-    assert_eq!(fux_vt::png::dimensions(&fs::read(pane.join("pic-1.png")).unwrap()), Some((200, 40)));
-
-    // Deleting the image in the inner pane removes pic-1.png.
-    send(&pane.join("in"), "x");
-    until("kitty picture deleted in pane", || {
-        fact(&pane, "shown/pictures").is_empty() && !pane.join("pic-1.png").exists()
-    });
+    let pane = session.start("asks", &["sh", "-c", &asks]);
+    // It is told what the terminal is, and nothing about graphics before that.
+    until("the program has its answer", || fs::read(&answer).is_ok_and(|answer| answer.len() == 11));
+    assert_eq!(read(&answer), "\x1b[?62;4;22c");
+    // The image is nothing to the pane: no picture listed, no file for one, no cell taken, the
+    // cursor where the word ends, and not a line in the log.
+    until("the word is on the screen", || fact(&pane, "shown/screen").contains("word"));
+    let files = || fs::read_dir(&pane).unwrap().filter_map(|file| file.ok()?.file_name().into_string().ok());
+    assert_eq!(
+        (fact(&pane, "shown/screen").as_str(), fact(&pane, "cursor").as_str(), fact(&pane, "shown/pictures").as_str()),
+        ("word", "0 4 shown 0", "")
+    );
+    assert_eq!((files().filter(|name| name.starts_with("pic-")).count(), read(&pane.join("log")).as_str()), (0, ""));
 }
 
 /// A terminal that is the test itself: the other end of the one a viewer is started on. It keeps

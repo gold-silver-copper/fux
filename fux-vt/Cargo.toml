@@ -2,7 +2,7 @@
 name = "fux-vt"
 version = "0.19.0"
 edition = "2024"
-description = "A terminal emulator: bytes in, a grid of cells out; sixel and Kitty graphics, zero dependencies"
+description = "A terminal emulator: bytes in, a grid of cells out; sixel pictures, sized and cut"
 license = "MIT"
 repository = "https://github.com/gold-silver-copper/fux"
 keywords = ["terminal", "vt100", "ansi", "emulator", "sixel"]
