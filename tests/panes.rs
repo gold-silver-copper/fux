@@ -3518,12 +3518,11 @@ PY
 }
 
 #[test]
-fn kitty_graphics_pane_files_and_viewer_passthrough() {
+fn kitty_graphics_pane_files() {
     // Program inside an inner pane queries Kitty graphics support, displays a 200x40 PNG
     // (20x2 cells at 10x20), waits for a keypress, then deletes it with a=d,d=A.
-    let (outer, inner) = (Session::new("kgouter"), Session::new("kginner"));
-    let keys = inner.0.join(".keys");
-    fs::create_dir_all(&keys).unwrap();
+    let inner = Session::new("kginner");
+    fs::create_dir_all(&inner.0).unwrap();
     let rgba = [255u8, 64, 0, 255].repeat(200 * 40);
     let png_bytes = fux_vt::png::encode_rgba(200, 40, &rgba, 65536).unwrap();
     let mut b64 = String::new();
@@ -3549,20 +3548,77 @@ fn kitty_graphics_pane_files_and_viewer_passthrough() {
     });
     assert_eq!(fux_vt::png::dimensions(&fs::read(pane.join("pic-1.png")).unwrap()), Some((200, 40)));
 
-    // Viewer running in a Kitty-capable outer terminal draws the PNG natively.
-    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
-    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
-    until("viewer drew kitty png", || {
-        fact(&view, "shown/pictures").starts_with("pic-") && fact(&view, "shown/pictures").contains(".png 0 0 20 2 ")
-    });
-    let pic_name = fact(&view, "shown/pictures").split_whitespace().next().unwrap().to_string();
-    assert_eq!(fux_vt::png::dimensions(&fs::read(view.join(&pic_name)).unwrap()), Some((200, 40)));
-
-    // Deleting the image in the inner pane removes pic-1.png and clears it from the viewer.
+    // Deleting the image in the inner pane removes pic-1.png.
     send(&pane.join("in"), "x");
-    until("kitty picture deleted in pane and viewer", || {
-        fact(&pane, "shown/pictures").is_empty()
-            && !pane.join("pic-1.png").exists()
-            && fact(&view, "shown/pictures").is_empty()
+    until("kitty picture deleted in pane", || {
+        fact(&pane, "shown/pictures").is_empty() && !pane.join("pic-1.png").exists()
     });
+}
+
+/// A terminal that is the test itself: the other end of the one a viewer is started on. It keeps
+/// every byte the viewer writes, and says nothing but what the test types.
+struct Terminal(fs::File, RefCell<Vec<u8>>);
+
+impl Terminal {
+    /// A terminal of 80 by 24 cells of 10 by 20 pixels, and a viewer of the session's `main` started on it.
+    fn with_viewer(session: &Session, keys: &Path) -> (Terminal, Run) {
+        let size = fuxix::Winsize { rows: 24, cols: 80, xpixel: 800, ypixel: 480 };
+        let (terminal, viewers) = fuxix::pty(size).unwrap();
+        let view = session.fux().env("FUX_KEYS", keys).arg("view").stdin(viewers).stdout(Stdio::null()).begin();
+        (Terminal(terminal, RefCell::default()), view)
+    }
+    /// All that the viewer has written so far, as text.
+    fn seen(&self) -> String {
+        let (mut bytes, mut kept) = ([0; 1 << 16], self.1.borrow_mut());
+        while let Ok(n @ 1..) = (&self.0).read(&mut bytes) {
+            kept.extend_from_slice(&bytes[..n]);
+        }
+        String::from_utf8_lossy(&kept).into_owned()
+    }
+}
+
+#[test]
+fn the_viewer_draws_a_sixel_file_where_its_terminal_draws_sixel_and_sends_no_other_picture_to_any() {
+    // A pane whose program drew a sixel picture, printed a word under it and ended. Its list of
+    // pictures is then written by hand, each line the file and its place and no more: first a PNG,
+    // which is no picture to fux, then the sixel picture.
+    let session = Session::new("onlysixel");
+    let keys = session.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    let picture = "q\"1;1;20;12#1;2;100;0;0!20~-!20~";
+    let pane = session.start("drew", &["sh", "-c", &format!("printf '\\033P%s\\033\\\\DREW' '{picture}'")]);
+    assert!(session.fux().arg("wait").arg(&pane).ended().success());
+    assert_eq!(fact(&pane, "main/pictures"), "pic-1.sixel 0 0 2 1 10 20");
+    // (Ten pixels by twenty, blue: a file any program that reads PNG shows.)
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\0\x0a\0\0\0\x14\x08\x02\0\0\0\x3b\x8c\x3b\x01\0\0\0\x14IDAT\
+        \x78\xda\x63\x60\x60\xf8\x8f\x17\x8d\x4a\x8f\x4a\x53\x49\x1a\0\x87\x14\xc7\x39\x1a\x13\xdb\x92\0\0\0\0IEND\xae\x42\x60\x82";
+    fs::write(pane.join("pic-2.png"), png).unwrap();
+    fs::write(pane.join("main/pictures"), "pic-2.png 3 0\npic-1.sixel 0 0\n").unwrap();
+    // The test is the viewer's terminal: one that says it draws sixel (the 4 in what it is), then
+    // one that says it does not.
+    for (what_it_is, drawn) in [("\x1b[?62;4;22c", vec![picture]), ("\x1b[?62;22c", vec![])] {
+        let (terminal, view) = Terminal::with_viewer(&session, &keys);
+        // What it is is the last thing a viewer asks. After the answer a key is typed, which the
+        // pane cannot take: when the viewer says so, it has read the answer and drawn with it.
+        until("the viewer has asked its terminal what it is", || terminal.seen().contains("\x1b[c"));
+        (&terminal.0).write_all(format!("{what_it_is}x").as_bytes()).unwrap();
+        until_or("the viewer has drawn the pane", || terminal.seen(), || terminal.seen().contains("drew has ended"));
+        let own = fs::read_dir(&session.0).unwrap().filter_map(|entry| Some(entry.ok()?.file_name()));
+        let own = own.filter(|name| name.as_encoded_bytes().starts_with(b".view.")).collect::<Vec<_>>();
+        send(&session.0.join(&own[0]), "quit\n");
+        until("the viewer has given the terminal back", || terminal.seen().contains("\x1b[?1049l"));
+        assert!(view.end().success());
+        // Of all it wrote from its start to its end: no command of the Kitty graphics protocol
+        // (no APC at all), and no picture but the pane's sixel, as the program printed it.
+        let seen = terminal.seen();
+        assert!(seen.contains("DREW"), "{seen:?}");
+        let mut pictures: Vec<&str> = seen
+            .split("\x1bP")
+            .skip(1)
+            .filter_map(|rest| rest.split_once("\x1b\\"))
+            .map(|(picture, _)| picture)
+            .collect();
+        pictures.dedup();
+        assert_eq!((seen.matches("\x1b_").count(), pictures), (0, drawn), "to a terminal that says {what_it_is:?}");
+    }
 }

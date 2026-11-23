@@ -202,39 +202,6 @@ fn a_picture_is_passed_on_unread_only_if_its_own_pixels_are_square_and_all_in_it
 }
 
 #[test]
-fn render_picture_bridges_sixel_and_kitty_both_ways() {
-    let dir = std::env::temp_dir();
-    let pid = std::process::id();
-    let six_path = dir.join(format!("fux-bridge-{pid}.sixel"));
-    let png_path = dir.join(format!("fux-bridge-{pid}.png"));
-    std::fs::write(&six_path, "\x1bPq\"1;1;20;20#1;2;100;0;0!20~-!20~-!20~\x1b\\").unwrap();
-    let rgba = [0u8, 255, 0, 255].repeat(20 * 20);
-    let png_bytes = crate::term::png::encode_rgba(20, 20, &rgba, 65536).unwrap();
-    std::fs::write(&png_path, &png_bytes).unwrap();
-
-    // Sixel file rendered for Kitty outer terminal -> Kitty f=32 RGBA escape sequence.
-    let key = (six_path.clone(), None, true, [0, 2, 1, 10, 20], [10, 10, 10, 20]);
-    let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("sixel->kitty");
-    assert!(seq.starts_with("\x1b_Ga=T,f=32,s=20,v=20,C=1,q=2;") && seq.ends_with("\x1b\\"));
-    assert_eq!((cols, rows), (2, 1));
-
-    // PNG file rendered for Kitty outer terminal (explicitly scaled c=5,r=3) -> Kitty f=100 with c=5,r=3.
-    let key = (png_path.clone(), None, true, [0, 5, 3, 10, 20], [10, 10, 10, 20]);
-    let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("png->kitty scaled");
-    assert!(seq.starts_with("\x1b_Ga=T,f=100,C=1,q=2,c=5,r=3;") && seq.ends_with("\x1b\\"));
-    assert_eq!((cols, rows), (5, 3));
-
-    // PNG file rendered for sixel-only outer terminal -> sixel escape sequence.
-    let key = (png_path.clone(), None, false, [0, 2, 1, 10, 20], [10, 10, 10, 20]);
-    let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("png->sixel");
-    assert!(seq.starts_with("\x1bP") && seq.ends_with("\x1b\\"));
-    assert_eq!((cols, rows), (2, 1));
-
-    let _ = std::fs::remove_file(&six_path);
-    let _ = std::fs::remove_file(&png_path);
-}
-
-#[test]
 fn a_picture_is_read_only_if_its_name_is_a_file_and_no_link_to_one() {
     // A pane's folder may be written by another than its holder, so a picture's name is no proof
     // of the file. A link under it (to a picture or to anything else), a FIFO and a folder are no
@@ -245,49 +212,17 @@ fn a_picture_is_read_only_if_its_name_is_a_file_and_no_link_to_one() {
     std::fs::create_dir_all(&dir).unwrap();
     let red = "0;1q\"1;1;80;1#0;2;100;0;0!80@";
     std::fs::write(dir.join("real.sixel"), format!("\x1bP{red}\x1b\\")).unwrap();
-    let rgba = [0u8, 255, 0, 255].repeat(20 * 20);
-    std::fs::write(dir.join("real.png"), crate::term::png::encode_rgba(20, 20, &rgba, 65536).unwrap()).unwrap();
-    for kind in ["sixel", "png"] {
-        std::os::unix::fs::symlink(dir.join(format!("real.{kind}")), dir.join(format!("link.{kind}"))).unwrap();
-        std::fs::create_dir(dir.join(format!("folder.{kind}"))).unwrap();
-        drop(crate::sys::fifo(dir.join(format!("fifo.{kind}"))).unwrap());
-    }
+    std::os::unix::fs::symlink(dir.join("real.sixel"), dir.join("link.sixel")).unwrap();
+    std::fs::create_dir(dir.join("folder.sixel")).unwrap();
+    drop(crate::sys::fifo(dir.join("fifo.sixel")).unwrap());
     let part = |name: &str| crate::view::part(&(dir.join(name), None, [0, 80, 20]));
-    let rendered = |name: &str, kitty| {
-        crate::view::render_picture(&(dir.join(name), None, kitty, [0, 2, 1, 10, 20], [10, 10, 10, 20]))
-    };
     assert_eq!(part("real.sixel"), Ok(Some((red.to_string(), 80, 1))));
-    assert!(rendered("real.png", true).unwrap().is_some() && rendered("real.sixel", true).unwrap().is_some());
-    assert!(crate::view::written(&dir.join("real.png")).is_some());
-    for name in ["link", "folder", "fifo", "none"] {
-        assert_eq!(part(&format!("{name}.sixel")), Ok(None), "{name}.sixel");
-        for (kind, kitty) in [("png", true), ("png", false), ("sixel", true), ("sixel", false)] {
-            assert_eq!(rendered(&format!("{name}.{kind}"), kitty), Ok(None), "{name}.{kind} {kitty}");
-        }
-        assert_eq!(crate::view::written(&dir.join(format!("{name}.png"))), None, "{name}.png");
+    assert!(crate::view::written(&dir.join("real.sixel")).is_some());
+    for name in ["link.sixel", "folder.sixel", "fifo.sixel", "none.sixel"] {
+        assert_eq!(part(name), Ok(None), "{name}");
+        assert_eq!(crate::view::written(&dir.join(name)), None, "{name}");
     }
     std::fs::remove_dir_all(&dir).unwrap();
-}
-
-#[test]
-fn a_pictures_line_with_three_fields_draws_a_png_whatever_the_terminal_draws_pictures_in() {
-    // A line someone wrote by hand says the file, the row and the column and no more. The viewer
-    // measures the picture itself: a PNG of 25 by 45 pixels is three cells by three of 10 by 20,
-    // in a terminal that takes Kitty graphics as in one that takes sixel.
-    let png_path = std::env::temp_dir().join(format!("fux-three-{}.png", std::process::id()));
-    let png = crate::term::png::encode_rgba(25, 45, &[0u8, 0, 255, 255].repeat(25 * 45), 65536).unwrap();
-    std::fs::write(&png_path, &png).unwrap();
-    for (kitty_out, starts) in [(true, "\x1b_Ga=T,f=100,C=1,q=2,m=1;"), (false, "\x1bP")] {
-        let key = (png_path.clone(), None, kitty_out, [0, 0, 0, 0, 0], [10, 10, 10, 20]);
-        let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("a picture");
-        assert!(seq.starts_with(starts), "{kitty_out}: {seq:?}");
-        assert_eq!((cols, rows), (3, 3), "{kitty_out}");
-    }
-    // In a tile with room for two cells by one of it, that much of it is drawn: its own pixels, cut.
-    let key = (png_path.clone(), None, true, [0, 0, 0, 0, 0], [2, 1, 10, 20]);
-    let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("a part");
-    assert!(seq.starts_with("\x1b_Ga=T,f=100,C=1,q=2,x=0,y=0,w=20,h=20,m=1;") && (cols, rows) == (2, 1), "{seq:?}");
-    let _ = std::fs::remove_file(&png_path);
 }
 
 /// A sixel picture written from a rule (the colour of each pixel, or none), plainly: for each
