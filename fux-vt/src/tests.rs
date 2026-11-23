@@ -2222,3 +2222,18 @@ fn kitty_placements_fux_does_not_draw_are_refused_and_move_nothing() {
         assert_eq!((t.shown().pictures.len(), t.shown().cursor.row, t.shown().cursor.col), (1, 1, 3), "{keys}");
     }
 }
+
+#[test]
+fn leaving_the_alternate_screen_by_1047_takes_its_kitty_pictures_as_it_takes_its_sixel() {
+    // `CSI ? 1047 l` clears the alternate screen as it leaves it: the text, a sixel picture, and
+    // a Kitty placement with the images kept for it. None is there when the screen is shown again.
+    for picture in [&b"\x1bPq#1;2;100;0;0!10~\x1b\\"[..], b"\x1b_Ga=T,i=1,f=24,s=1,v=1;AAAA\x1b\\"] {
+        let mut t = Term::new(20, 10);
+        t.feed(&[b"\x1b[?1047h", picture, b"x"].concat());
+        assert_eq!(t.shown().pictures.len(), 1);
+        t.feed(b"\x1b[?1047l\x1b[?47h\x1b_Ga=p,i=1\x1b\\");
+        let (shown, text) = (t.shown(), String::from_utf8_lossy(picture).into_owned());
+        assert_eq!((shown.is_alt(), shown.pictures.len()), (true, 0), "{text:?}");
+        assert!(!t.has_picture(1) && reply(&mut t).contains("ENOENT"), "{text:?}");
+    }
+}

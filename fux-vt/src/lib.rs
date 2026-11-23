@@ -2287,6 +2287,9 @@ impl Term {
             1047 => {
                 if !on && self.screen.alt {
                     self.fill(Cell::blank(Style::default()));
+                    // (Its Kitty placements go as its sixel pictures do, and the images kept for them.)
+                    self.screen.pictures.clear();
+                    self.kitty.clear();
                 }
                 // Asked for while already there, it is left as it is (as in xterm).
                 self.set_alt(on, on && !self.screen.alt);
