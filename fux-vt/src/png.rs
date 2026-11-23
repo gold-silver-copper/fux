@@ -23,6 +23,8 @@ pub fn dimensions(data: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Decodes a PNG image into `(width, height, rgba)` where `rgba.len() == width * height * 4`.
+/// One of more than `max_pixels` pixels, a side over [`DIMENSION_MAX`], or more than
+/// [`crate::PICTURE_MAX`] (4 MiB) of compressed image data is refused.
 pub fn decode(data: &[u8], max_pixels: usize) -> Result<(u32, u32, Vec<u8>), &'static str> {
     if data.get(..8) != Some(&SIGNATURE) {
         return Err("invalid PNG signature");
@@ -138,7 +140,9 @@ pub fn decode(data: &[u8], max_pixels: usize) -> Result<(u32, u32, Vec<u8>), &'s
 }
 
 /// Encodes 8-bit RGBA pixels (`rgba.len() == w * h * 4`) into a standard valid PNG
-/// using stored zlib blocks, failing if the result would exceed `max` bytes.
+/// using stored zlib blocks, failing if the result would exceed `max` bytes. Nothing is
+/// compressed: the file is `(4 * w + 1) * h` bytes and a few hundred, so `max` bounds the pixels
+/// (4 MiB holds 1024 by 1023 of them, not 1024 by 1024).
 pub fn encode_rgba(w: u32, h: u32, rgba: &[u8], max: usize) -> Result<Vec<u8>, &'static str> {
     if w == 0 || h == 0 || w > DIMENSION_MAX || h > DIMENSION_MAX {
         return Err("invalid PNG dimensions");

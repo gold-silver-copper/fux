@@ -742,7 +742,7 @@ impl Storage {
                     self.abandon(pictures);
                     return Outcome {
                         reply: fail("ENOMEM: image payload exceeds 4 MiB"),
-                        refused: Some("a kitty picture over 4 MiB was dropped"),
+                        refused: Some("a kitty picture sent as more than 4 MiB of data was dropped"),
                         ..Outcome::default()
                     };
                 }
@@ -980,20 +980,16 @@ impl Storage {
                     let part = crop_rgba(img.w as usize, &img.rgba, sx as usize, sy as usize, sw as usize, sh as usize);
                     png::encode_rgba(sw, sh, &part, PICTURE_MAX)
                 };
+                // (The PNG is not compressed: four bytes a pixel and one a row, in a file of 4 MiB at most.)
                 let Ok(made) = made else {
+                    let no = "ENOMEM: a PNG of these pixels would be over 4 MiB (about a million pixels fit)";
                     return Outcome {
                         reply: (!implicit_id)
-                            .then(|| {
-                                Response::err(
-                                    img_id,
-                                    spec.image_number,
-                                    spec.placement_id,
-                                    "ENOMEM: image exceeds 4 MiB",
-                                )
-                                .encode(quiet)
-                            })
+                            .then(|| Response::err(img_id, spec.image_number, spec.placement_id, no).encode(quiet))
                             .flatten(),
-                        refused: Some("a kitty picture over 4 MiB was dropped"),
+                        refused: Some(
+                            "a kitty picture of more pixels than its 4 MiB file holds (about a million) was dropped",
+                        ),
                         ..Outcome::default()
                     };
                 };

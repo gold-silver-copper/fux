@@ -2243,13 +2243,28 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   (including bounded RFC 1950/1951 inflate and PNG decode/encode): query (`a=q`
   and feature query `e=`), direct chunked transmission (`a=t`, `a=T`, `t=d`,
   `f=24|32|100`, `o=z`, `m=0|1`), placement (`a=p`, `i`/`I`, `p`, `x,y,w,h`,
-  `c,r`, `C=0|1`, `z`), and deletion (`a=d`, `d=a|A|i|I|n|N|c|C|p|P|q|Q|r|R|x|X|y|Y|z|Z`).
+  `c,r`, `C=0|1`), and deletion (`a=d`, `d=a|A|i|I|n|N|c|C|p|P|q|Q|r|R|x|X|y|Y|z|Z`).
   File/shared-memory transmission (`t=f|t|s`) and animation (`a=f|a|c`) are refused.
   Kitty placements are stored in the pane folder as standard `pic-N.png` files beside
   `pic-N.sixel`, using the existing `shown/pictures` 7-column format. The viewer probes
   outer-terminal Kitty graphics support before DA1 and bridges both ways (native protocol
   when supported, sixel ↔ Kitty transcoding when the outer terminal supports only the
   other). The pane-folder layout is now frozen as v1.
+  Amended 2026-11-23, after a review of the code as it was published, where this
+  entry said more than was built. A placement's `z` is read and kept for the
+  deletions that choose by it (`d=z`, `d=q`) and for nothing else: it is not in the
+  7-column `pictures` line and is not sent to the outer terminal, so pictures are
+  drawn over the text in the order they were placed. Carrying it would take an
+  eighth column, which a frozen v1 has no room for; that is not decided here.
+  Unicode placeholders (`U=1`) and relative placements (`P`, `Q`) are refused, as
+  the other things left out are. Cropping has a bound this entry did not give:
+  pixels that were sent (`f=24`, `f=32`), and a part of any image, are written as
+  a PNG that is not compressed (fux has no DEFLATE compressor, and gets none for
+  this), in a picture's file of 4 MiB at most, so such a placement holds about a
+  million pixels (`(4w + 1)h` bytes and a few hundred); a PNG that was sent and is
+  placed whole is its own file. A screen keeps 16 images and 16 MiB of them
+  (pixels as RGBA, and a PNG's own bytes), refuses one that is over that alone,
+  and keeps 4 MiB of the PNGs it made; the README's bounds give the total for a pane.
 
 ## The old fux3's bugs: which classes are gone
 

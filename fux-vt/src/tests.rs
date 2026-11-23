@@ -2093,7 +2093,7 @@ fn kitty_answers_nothing_about_a_transfer_that_named_no_image() {
         t.feed(&apc("m=1", &half));
         let out = t.take(0);
         assert_eq!(String::from_utf8(out.reply).unwrap(), answers[1]);
-        assert_eq!(out.refused, ["a kitty picture over 4 MiB was dropped"]);
+        assert_eq!(out.refused, ["a kitty picture sent as more than 4 MiB of data was dropped"]);
         assert!(t.shown().pictures.is_empty());
     }
 }
@@ -2240,4 +2240,25 @@ fn leaving_the_alternate_screen_by_1047_takes_its_kitty_pictures_as_it_takes_its
         assert_eq!((shown.is_alt(), shown.pictures.len()), (true, 0), "{text:?}");
         assert!(!t.has_picture(1) && reply(&mut t).contains("ENOENT"), "{text:?}");
     }
+}
+
+#[test]
+fn kitty_pixels_placed_are_a_png_of_4_mib_at_most_and_the_refusal_says_so() {
+    // Pixels that were sent, or a part of any image, go to the pane's folder as a PNG that is not
+    // compressed, in a file of 4 MiB at most: 1024 by 1023 pixels fit, 1024 by 1024 do not. The
+    // image is kept all the same (its pixels are 4 MiB of the 16 a screen keeps), so a part of
+    // it can be placed; the placement that cannot be is refused, and told which bound it was.
+    let mut t = Term::new(120, 60);
+    t.feed(&apc("a=t,i=1,f=32,s=1024,v=1024,o=z", &zeros(1024 * 1024 * 4)));
+    assert_eq!(reply(&mut t), "\x1b_Gi=1;OK\x1b\\");
+    t.feed(b"\x1b_Ga=p,i=1\x1b\\");
+    let out = t.take(0);
+    let no = "\x1b_Gi=1;ENOMEM: a PNG of these pixels would be over 4 MiB (about a million pixels fit)\x1b\\";
+    assert_eq!(String::from_utf8(out.reply).unwrap(), no);
+    assert_eq!(out.refused, ["a kitty picture of more pixels than its 4 MiB file holds (about a million) was dropped"]);
+    assert!(t.shown().pictures.is_empty());
+    t.feed(b"\x1b_Ga=p,i=1,h=1023\x1b\\");
+    assert_eq!(reply(&mut t), "\x1b_Gi=1;OK\x1b\\");
+    let file = &t.new_pictures()[0].2;
+    assert!(file.len() <= crate::PICTURE_MAX && crate::png::dimensions(file) == Some((1024, 1023)));
 }
