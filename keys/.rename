@@ -1,0 +1,37 @@
+#!/usr/bin/perl
+# .rename WORKSPACE OLD NEW: gives the pane OLD of a workspace the name NEW, and keeps its place.
+# WORKSPACE is the workspace's directory. The pane's folder is moved and every mention of it in
+# `layout` rewritten, both under the lock on the workspace that `fux layout` and a viewer take to
+# write the layout: neither writes in between, so the pane keeps its tile and the keys. Its
+# program runs on (its holder works in the folder, whatever that is called).
+# NEW is claimed by making its folder, as `fux start` claims a name: if anything has the name,
+# nothing is changed. The folder made is then replaced by OLD's in one step.
+# The layout is read as fux writes it (`fux layout` and a viewer write it so): a name stands after
+# a line's start, a blank, `(` or `focus=`, and before a blank, `)`, `:` or a line's end. One
+# written by hand in another form that fux reads too (`row (a b)`) is to be settled first: `fux layout`.
+# Not covered: a `mv` or an `rm` by hand at the same moment (they take no lock). A viewer that
+# looks between the two steps draws the new name as an empty pane for one frame. And if the layout
+# cannot be written once the folder is moved, this says so and stops, with nothing put back: the
+# pane has its new name, and a tab of its own.
+use strict; use warnings; use Fcntl ':flock';
+sub fail { print STDERR ".rename: @_\n"; exit 1 }
+fail "usage: .rename WORKSPACE OLD NEW" unless @ARGV == 3;
+my ($w, $old, $new) = @ARGV;
+for my $name ($old, $new) {   # (what fux takes for a pane's name)
+    fail "'$name' is not a pane's name"
+        unless $name =~ /\A[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}\z/ && $name !~ /\A(-|layout|colours|keyboard)\z/;
+}
+open(my $lock, '<', $w) or fail "$w: $!";
+flock($lock, LOCK_EX) or fail "$w: $!";
+fail "no pane $old in $w" unless -d "$w/$old";
+exit 0 if $old eq $new;
+mkdir("$w/$new", 0700) or fail "$w/$new: $!";
+my $text = '';
+if (open(my $in, '<', "$w/layout")) { local $/; $text = <$in> // ''; close($in); }
+(my $renamed = $text) =~ s/(?:^|(?<=[\s(])|(?<=focus=))\Q$old\E(?=[\s):]|\z)/$new/gm;
+unless (rename("$w/$old", "$w/$new")) { my $why = $!; rmdir("$w/$new"); fail "$w/$old: $why"; }
+if ($renamed ne $text) {
+    my ($tmp, $out) = ("$w/.layout.new");
+    open($out, '>', $tmp) && print($out $renamed) && close($out) && rename($tmp, "$w/layout")
+        or fail "layout: $! (the pane is called $new now, in a tab of its own)";
+}

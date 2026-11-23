@@ -2693,6 +2693,47 @@ fn the_viewer_knows_a_pane_by_its_folder_and_asks_no_status_who_its_program_is()
 }
 
 #[test]
+fn rename_gives_a_pane_another_name_and_keeps_its_place_in_the_layout() {
+    use std::os::unix::fs::MetadataExt;
+    let session = Session::new("rename");
+    let main = session.0.join("main");
+    let rename = |old: &str, new: &str| {
+        Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.rename")).arg(&main).args([old, new]).run()
+    };
+    let layout = || String::from_utf8(session.fux().arg("layout").run().stdout).unwrap();
+    // Four panes in a split with shares: one named as the layout's own word, one a number.
+    let build = session.start("build", &["sleep", "600"]);
+    for name in ["log", "row", "2"] {
+        session.start(name, &["sleep", "600"]);
+    }
+    lay(&session.0, "* row(build:50 col(log row:2) 2:50) focus=build\n");
+    let (folder, status) = (fs::metadata(&build).unwrap().ino(), read(&build.join("status")));
+    // The folder is moved and the layout names it anew, in its place, with its share and the keys:
+    // the same folder, its program running on.
+    let renamed = rename("build", "tests");
+    assert!(renamed.status.success(), "{renamed:?}");
+    assert_eq!(layout(), "* row(tests:50 col(log row:2) 2:50) focus=tests\n");
+    assert!(!build.exists() && fs::metadata(main.join("tests")).unwrap().ino() == folder);
+    assert!(read(&main.join("tests/status")) == status && fact(&main.join("tests"), "state") == "running");
+    // A name is a name where a name stands: a share of the same digits is not one, nor is the
+    // layout's own word of the same letters.
+    assert!(rename("2", "50").status.success() && rename("50", "z").status.success());
+    assert_eq!(layout(), "* row(tests:50 col(log row:2) z:50) focus=tests\n");
+    assert!(rename("row", "r2").status.success());
+    assert_eq!(layout(), "* row(tests:50 col(log r2:2) z:50) focus=tests\n");
+    // Refused, and nothing changed: a name that is there, a pane that is not, and a name fux would
+    // not make (a dot first, a line's end in it, a name a workspace has a file of).
+    for (old, new) in [("log", "tests"), ("none", "x"), ("log", ".x"), ("log", "x\n"), ("log", "layout")] {
+        let refused = rename(old, new);
+        assert!(!refused.status.success() && !refused.stderr.is_empty(), "{old} {new:?}: {refused:?}");
+    }
+    assert_eq!(layout(), "* row(tests:50 col(log r2:2) z:50) focus=tests\n");
+    let mut names: Vec<_> = fs::read_dir(&main).unwrap().flatten().map(|entry| entry.file_name()).collect();
+    names.sort();
+    assert_eq!(names, ["layout", "log", "r2", "tests", "z"]);
+}
+
+#[test]
 fn the_windows_focus_is_not_told_to_a_program_that_asks_no_more() {
     // A program that asked to be told of the focus (mode 1004) and was told it has the keys. It
     // stops asking while the viewer is stopped, and the terminal says in that time that its window

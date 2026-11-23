@@ -66,6 +66,21 @@ whose ancestors have all gone (a daemon, `(job &)`), and one in a container or
 behind ssh. Two kept folders whose `status` name one process are no answer:
 it names both and fails.
 
+**Another name for a pane** is a script's too: `keys/.rename WORKSPACE OLD
+NEW` (perl; WORKSPACE is the workspace's directory). A plain `mv` renames a
+pane as well, and its program runs on, but the layout knows panes by name:
+the old name leaves its tab and the new one gets a tab of its own. The
+script moves the folder and rewrites every mention of the name in `layout`,
+both under the lock `fux layout` and a viewer take to write the layout, so
+the pane keeps its tile, its share and the keys. NEW is claimed by making
+its folder first, as `fux start` claims a name: if anything has the name,
+nothing is changed. It reads the layout as fux writes it; one you wrote by
+hand in another form fux also reads (`row (a b)`, with a blank) is settled
+by `fux layout` first. If the layout cannot be written once the folder is
+moved, it says so and puts nothing back: the pane has its new name and a
+tab of its own. A viewer that looks between the two steps draws the new
+name as an empty pane for one frame.
+
 ## A pane's files
 
 | File | What it is |
@@ -736,7 +751,8 @@ fux adds nothing to stop these. What happens is what Unix does:
   shows it says that the folder is gone and stays, until you show it another
   (`C-b w g`) or a new tab (`C-b t n`) makes the folder again.
 - **Don't `mv` a live pane across filesystems** (that is a copy and an `rm`).
-  Within one, the pane simply has the new name; the program's `FUX_PANE`
+  Within one, the pane simply has the new name, in a tab of its own
+  (`keys/.rename` keeps its place: "Commands"); the program's `FUX_PANE`
   still says the old one, so a default shell pane that was moved no longer
   removes its folder when its shell ends (it removes a folder only if it is
   still its own: it looks, and then removes by the name, so a pane moved to that name between the two is removed).

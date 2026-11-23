@@ -9,7 +9,7 @@ macro_rules! scripts {
     ($($name:literal)*) => { &[$(($name, include_str!(concat!("../keys/", $name)))),*] };
 }
 pub const DEFAULT: &[(&str, &str)] = scripts!(
-    ".new-shell" ".shell" ".empty" ".pick" ".text" ".edit" ".search" ".restore" ".here" "C-b/f/s" "C-b/S-c" "C-b/M-c" "C-b/p" "C-b/f/.about" "C-b/f/p" "C-b/f/t" "C-b/C-b" "C-b/a/.about" "C-b/a/k" "C-b/a/n" "C-b/b" "C-b/c" "C-b/d" "C-b/g/.about" "C-b/g/c" "C-b/g/g"
+    ".new-shell" ".shell" ".empty" ".pick" ".text" ".edit" ".search" ".restore" ".here" ".rename" "C-b/f/s" "C-b/S-c" "C-b/M-c" "C-b/p" "C-b/f/.about" "C-b/f/p" "C-b/f/t" "C-b/C-b" "C-b/a/.about" "C-b/a/k" "C-b/a/n" "C-b/b" "C-b/c" "C-b/d" "C-b/g/.about" "C-b/g/c" "C-b/g/g"
     "C-b/g/m" "C-b/g/r" "C-b/g/t" "C-b/h" "C-b/j" "C-b/k" "C-b/l" "C-b/m/.about" "C-b/m/.repeat" "C-b/m/h"
     "C-b/m/l" "C-b/n" "C-b/o" "C-b/r/.about" "C-b/r/.repeat" "C-b/r/h" "C-b/r/j" "C-b/r/k" "C-b/r/l"
     "C-b/s" "C-b/t/.about" "C-b/t/n" "C-b/v" "C-b/w/.about" "C-b/w/g" "C-b/w/h" "C-b/w/l" "C-b/w/n"

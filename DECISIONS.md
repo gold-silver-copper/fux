@@ -2502,6 +2502,26 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     changed). What the viewer read of it is kept meanwhile, as before.
     `fn pid` and `fn program` are gone from the viewer; koh need not write
     `pid 1` into a mirror's `status` any more.
+  - **`keys/.rename WORKSPACE OLD NEW`** (perl, for the lock) moves a pane's
+    folder and rewrites its name in `layout`, both under the workspace's
+    lock, so the pane keeps its place. NEW is claimed by `mkdir`, the claim
+    `fux start` makes, and `rename(2)` then replaces that empty folder with
+    OLD's in one step: of a rename and a start of one name, one wins and the
+    other is told. Three things the review of the plan's script changed.
+    A name is matched only where a name stands in a layout fux wrote: after
+    a line's start, a blank, `(` or `focus=`, and before a blank, `)`, `:`
+    or the end. The plan's pattern took the digits of a share for a name
+    (`b:50` and a pane `50` renamed to `z` gave `z:z`, a layout that is not
+    read any more); the test has that case, and fails with that pattern.
+    The name check ends at `\z`, not `$`, which lets a line's end through.
+    And there is no putting back: if the layout cannot be written once the
+    folder is moved (its new file is beside it: a full disk, hardly else),
+    the script says so and stops, and the pane is in a tab of its own under
+    its new name. A rename back could fail too, and bought little. It tests
+    for no link and writes the layout with a plain open (the owner: no
+    further anti-link mechanics). A layout written by hand as `row (a b)`,
+    which fux reads, is not matched: the script's comment says to settle
+    it with `fux layout` first.
   - **The format moves** (a `status` of two lines for an instant, and what the
     entries below add): D117's "frozen as v1" is withdrawn, there.
 

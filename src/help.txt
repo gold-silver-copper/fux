@@ -207,7 +207,9 @@ size in pixels), notify WORDS, kill.
     mv "$W" "$D/agent-demo/broad"; W=$D/agent-demo/broad    # a rename: the pane lives on, under the new path
     echo kill > "$P/ctl"; fux wait "$P"       # hangs up the program: state killed 1, or exited N
 A renamed pane is a tab of its own in the layout again, and its program's $FUX_PANE
-still says the old name. Move only within one filesystem.
+still says the old name. Move only within one filesystem. (To keep its place in the
+layout, a script that comes with a viewer's keys renames under the layout's lock:
+.rename WORKSPACE-DIRECTORY OLD NEW. And .here, beside it, prints the pane it is run in.)
 `kill` hangs up (SIGHUP), as closing a terminal does. It does not remove the pane: the
 directory stays, with the last screen and state. It does not force: a program that
 ignores it lives on, with `state` hungup, and is typed to no more; then signal the program (never the holder):
