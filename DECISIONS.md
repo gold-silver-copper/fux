@@ -2294,7 +2294,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   folder (`clipboard`, the screens' files, `title`, `modes`, `status`,
   `generation`, `notice`); a link where a FOLDER of the path is (`main`,
   `alt`, and `shown`, which is one by design); and `log`, `history` and
-  `history.styled`, which are opened by name to write. Four parts.
+  `history.styled`, which are opened by name to write. Five parts.
   - **One deadline for a test.** `twostarts` made its start again in a loop
     with no end, and every command the tests ran (`fux start`, `fux wait`, the
     key scripts) was waited for with none: a holder that never came up held
@@ -2303,28 +2303,37 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     moment, a command not ended by then is killed and named, a FIFO is written
     and read without waiting, and a test held where nothing asks the deadline
     (a call that waits by itself) is named by a watcher that ends every
-    session and the run. A session that ends kills the holders and the
-    programs of its panes: each leads a session of its own, a signal to the
-    test does not reach them, and a program that ignores the hangup outlived
-    its test. Before it kills, it asks `ps` (in full, whatever width the
-    terminal is said to have) whether a number in `status` is ours: the
-    holder is the one with the pane's lock that is this fux holding; the
-    program is its child, or, its holder gone, the leader of its own process
-    group born when `status` was written. Ending a session has a time of its
-    own, so that a `ps` or a `kill` that does not return holds nothing up;
-    and a command a test started is on a list from that moment, which the
-    watcher stops before it stops the tests (a `fux start` whose holder
-    never comes is no pane's yet, and no session's end finds it). What the
-    end of a session could not do fails its test. `twostarts` stages what it
-    tests without a loop and without asking the lock (the holder waits at a
-    `history` that is a FIFO; its `status` says it is there); what that
-    leaves out, its comment says. Not covered: tests that are killed from
-    outside leave the sessions of those then running; and between `ps` and
-    `kill` a number could in principle become another process's. And three pairs of tests had the same names for their
-    sessions, so the same directories: run sixteen at a time they ended each
-    other's panes, and four tests failed every time (at four a time, as CI
-    runs them, no pair met). A session's name is now one test's, and two
-    tests that take one at once are told so.
+    session and the run. A session that ends kills the holder and the
+    program of each pane it started itself: each leads a session of its own,
+    a signal to the test does not reach them, and a program that ignores the
+    hangup outlived its test. Whose they are is noted when the session's own
+    `start` has just been told that the pane is up, from that pane's
+    `status`; no file is asked later whom to kill (a `status` in a session
+    may be a test's own making). Before it kills, the end asks `ps` (in full,
+    whatever width the terminal is said to have) after those numbers only: a
+    holder that is this fux holding goes, with the program that is its child;
+    with its holder gone, the program goes if it still leads its process
+    group. A pane started another way (`fux start` run as a test's own
+    command, a key's script, `.restore`) ends as before, when its holder
+    finds the folder gone; no test starts a program that ignores the hangup
+    that way. Ending a session has a time of its own, so that a `ps` or a
+    `kill` that does not return holds nothing up. A command a test started is
+    on a list from that moment. A watcher that stops the tests first says
+    that they are being shut, from when no test's command is started; the
+    commands on the list are stopped and the sessions ended by another
+    thread, which the watcher waits for only so long. A `ps` that cannot be
+    asked, and a `kill` that cannot be run or does not end, fail the test
+    whose session ends; a `kill` that finds its process gone is nothing.
+    `twostarts` stages what it tests without a loop and without asking the
+    lock (the holder waits at a `history` that is a FIFO; its `status` says
+    it is there); what that leaves out, its comment says. Not covered: tests
+    that are killed from outside leave the sessions of those then running;
+    and a number noted could in principle have become another process that
+    leads a process group of that number. And three pairs of tests had the
+    same names for their sessions, so the same directories: run sixteen at a
+    time they ended each other's panes, and four tests failed every time (at
+    four a time, as CI runs them, no pair met). A session's name is now one
+    test's, and two tests that take one at once are told so.
   - **No link is written through.** `replace` wrote a file's new text with
     a write that follows a link (`fs::write` on `NAME.new`), and a picture's
     file the same way under its own name: with a link under either name, the

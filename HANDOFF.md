@@ -112,7 +112,7 @@ the tests, `example.sh`, `tools/help-agents.sh`, `tools/referee` and `tools/perf
 ```sh
 cargo build --release
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked -- --test-threads 4   # 167 tests; the real-binary suite takes ~20 s
+cargo test --workspace --locked -- --test-threads 4   # 170 tests; the real-binary suite takes ~20 s
 tools/help-agents.sh                     # runs every example on the agents' page as one sh session
 ./example.sh                             # the README's example
 python3 tools/perf.py target/release/fux # speed: flood, key echo, CPU (with tmux, beside it)
