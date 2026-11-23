@@ -1236,8 +1236,9 @@ impl Storage {
 
     /// Keeps `img`. While there are too many, or they are too large together, another goes for it: the
     /// oldest that is not placed, or the oldest of all when all are. One that is too large alone is not
-    /// kept, and none goes for it. (`decode_image` refuses such a one sooner, before its pixels are
-    /// unpacked; the bound is held here whatever comes.)
+    /// kept, and none goes for it here: the image it was sent to replace is gone by then, `finish_load`
+    /// removes that first. (`decode_image` refuses such a one sooner, before its pixels are unpacked;
+    /// the bound is held here whatever comes.)
     fn store_image(&mut self, img: StoredImage, pictures: &mut Vec<Picture>) -> Result<(), &'static str> {
         let needed = img.byte_len();
         if needed > STORED_BYTES_MAX {

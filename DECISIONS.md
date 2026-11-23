@@ -2269,9 +2269,10 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   one decoder there is now, as strictly as a clipboard's (OSC 52) already was:
   padding may be left out, but bits left over in the last character that are not
   zero make it no base64 (`EINVAL: invalid base64`), where 0.42.0 dropped them
-  and kept the picture. Such text is base64 cut in the wrong place, so its pixels
-  were wrong before and it is refused now; and two readings of one encoding that
-  disagreed were the worse thing. A later part of a transfer may say, beside `m`
+  and kept the picture. Such text is not what an encoder writes: the same bytes
+  written another way (their pixels were right), or text cut in the wrong place
+  (they were not). Either is refused now, since two readings of one encoding
+  that disagreed were the worse thing. A later part of a transfer may say, beside `m`
   and `q`, any of the first part's keys again with their values (an `a` or `t`
   the first part left out counts as said: `a=t`, `t=d`), or `a=t` or `a=T` and no
   more, whichever of the two the first part said. A key the first part had not,
