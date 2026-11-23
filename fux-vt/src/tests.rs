@@ -1736,6 +1736,13 @@ fn in_memory_vt_api_for_external_consumers() {
     assert!(out.history.is_empty() && out.styled.is_empty() && out.refused.is_empty());
 }
 
+/// A zlib stream in one dynamic-Huffman block (Python's `zlib` with `Z_HUFFMAN_ONLY`): 128 bytes.
+const DYNAMIC: [u8; 56] = [
+    0x78, 0x01, 0x05, 0xc1, 0x01, 0x01, 0x00, 0x00, 0x00, 0x82, 0x20, 0xd3, 0xff, 0x9f, 0x03, 0x66, 0x23, 0x8d, 0xe5,
+    0x60, 0x36, 0xd2, 0x58, 0x0e, 0x66, 0x23, 0x8d, 0xe5, 0x60, 0x36, 0xd2, 0x58, 0x0e, 0x66, 0x23, 0x8d, 0xe5, 0x60,
+    0x36, 0xd2, 0x58, 0x0e, 0x66, 0x23, 0x8d, 0xe5, 0x60, 0x36, 0xd2, 0x58, 0x8e, 0x03, 0x30, 0xe0, 0x00, 0xc1,
+];
+
 #[test]
 fn inflate_and_png_roundtrip_and_bounds() {
     use crate::{inflate, png};
@@ -1748,12 +1755,7 @@ fn inflate_and_png_roundtrip_and_bounds() {
     let expected = b"ABCD".repeat(32);
     assert_eq!(inflate::zlib(compressed, 1024).unwrap(), expected);
     // Real zlib stream compressed with dynamic Huffman (BTYPE=2, Python Z_HUFFMAN_ONLY).
-    let dynamic: &[u8] = &[
-        0x78, 0x01, 0x05, 0xc1, 0x01, 0x01, 0x00, 0x00, 0x00, 0x82, 0x20, 0xd3, 0xff, 0x9f, 0x03, 0x66, 0x23, 0x8d,
-        0xe5, 0x60, 0x36, 0xd2, 0x58, 0x0e, 0x66, 0x23, 0x8d, 0xe5, 0x60, 0x36, 0xd2, 0x58, 0x0e, 0x66, 0x23, 0x8d,
-        0xe5, 0x60, 0x36, 0xd2, 0x58, 0x0e, 0x66, 0x23, 0x8d, 0xe5, 0x60, 0x36, 0xd2, 0x58, 0x8e, 0x03, 0x30, 0xe0,
-        0x00, 0xc1,
-    ];
+    let dynamic = &DYNAMIC[..];
     let dyn_expected: Vec<u8> = (0..128usize).map(|i| ((i * 17) ^ (i >> 2)) as u8 & 3).collect();
     assert_eq!(inflate::zlib(dynamic, 1024).unwrap(), dyn_expected);
     // Zip-bomb limit enforced before allocating unbounded output.
@@ -1972,29 +1974,77 @@ fn reply(term: &mut Term) -> String {
     String::from_utf8(term.take(0).reply).unwrap()
 }
 
+/// Bits as DEFLATE packs them into bytes.
+#[derive(Default)]
+struct Packed {
+    bytes: Vec<u8>,
+    bits: u64,
+    have: u32,
+}
+
+impl Packed {
+    /// The lowest `n` bits of `value`, the lowest first: everything but a Huffman code.
+    fn bits(&mut self, value: u32, n: u32) -> &mut Self {
+        self.bits |= u64::from(value) << self.have;
+        self.have += n;
+        while self.have >= 8 {
+            self.bytes.push(self.bits as u8);
+            (self.bits, self.have) = (self.bits >> 8, self.have - 8);
+        }
+        self
+    }
+
+    /// A Huffman code of `n` bits, its first bit first.
+    fn code(&mut self, code: u32, n: u32) -> &mut Self {
+        (0..n).rev().for_each(|bit| _ = self.bits(code >> bit & 1, 1));
+        self
+    }
+
+    /// The bits as a zlib stream, for data of this Adler-32.
+    fn zlib(&mut self, adler: u32) -> Vec<u8> {
+        self.bits(0, 7);
+        [&[0x78, 0x01][..], &self.bytes, &adler.to_be_bytes()].concat()
+    }
+}
+
 /// A zlib stream of `n` zero bytes in one fixed-Huffman block: a literal, then copies of the byte before.
 fn zeros(n: usize) -> Vec<u8> {
-    let mut stream = vec![0x78, 0x01];
-    let (mut bits, mut have) = (0u64, 0u32);
-    // A Huffman code goes in from its first bit; everything else from its last.
-    let mut code = |code: u32, len: u32, stream: &mut Vec<u8>| {
-        for bit in (0..len).rev() {
-            bits |= u64::from(code >> bit & 1) << have;
-            have += 1;
-        }
-        while have >= 8 {
-            stream.push(bits as u8);
-            (bits, have) = (bits >> 8, have - 8);
-        }
-    };
-    code(0b110, 3, &mut stream); // the last block, type 1 (the three bits are read from the other end)
+    let mut packed = Packed::default();
+    packed.bits(1, 1).bits(1, 2); // the last block, of type 1
     let copies = n.saturating_sub(1) / 258;
-    (0..n.min(1)).for_each(|_| code(0b0011_0000, 8, &mut stream));
-    (0..copies).for_each(|_| code(0b1100_0101 << 5, 13, &mut stream)); // 258 bytes, from 1 back
-    (0..n.saturating_sub(1) - copies * 258).for_each(|_| code(0b0011_0000, 8, &mut stream));
-    code(0, 7 + 7, &mut stream); // the block's end, and the last byte's rest
-    stream.extend_from_slice(&((n as u32 % 65521) << 16 | 1).to_be_bytes());
-    stream
+    (0..n.min(1)).for_each(|_| _ = packed.code(0b0011_0000, 8));
+    (0..copies).for_each(|_| _ = packed.code(0b1100_0101 << 5, 13)); // 258 bytes, from 1 back
+    (0..n.saturating_sub(1) - copies * 258).for_each(|_| _ = packed.code(0b0011_0000, 8));
+    packed.code(0, 7).zlib((n as u32 % 65521) << 16 | 1)
+}
+
+/// A PNG chunk: its name and what is in it.
+type Chunk<'a> = (&'a [u8; 4], &'a [u8]);
+
+/// Adds a PNG chunk to `file`.
+fn png_chunk(file: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
+    file.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    let from = file.len();
+    file.extend_from_slice(kind);
+    file.extend_from_slice(body);
+    let crc = crate::png::crc32(&file[from..]);
+    file.extend_from_slice(&crc.to_be_bytes());
+}
+
+/// A PNG file of these chunks.
+fn png_of(chunks: &[Chunk]) -> Vec<u8> {
+    let mut file = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunks.iter().for_each(|(kind, body)| png_chunk(&mut file, kind, body));
+    file
+}
+
+/// A PNG file: its width, height, bit depth, colour type and interlace; the chunks between its
+/// header and its data; and its data as it is before zlib (each row a filter byte and its samples).
+fn png_file((w, h, depth, colour, interlace): (u32, u32, u8, u8, u8), between: &[Chunk], raw: &[u8]) -> Vec<u8> {
+    let header = [&w.to_be_bytes()[..], &h.to_be_bytes(), &[depth, colour, 0, 0, interlace]].concat();
+    let data = crate::inflate::zlib_store(raw);
+    let (first, last): ([Chunk; 1], [Chunk; 2]) = ([(b"IHDR", &header)], [(b"IDAT", &data), (b"IEND", &[])]);
+    png_of(&[&first[..], between, &last].concat())
 }
 
 #[test]
@@ -2261,4 +2311,400 @@ fn kitty_pixels_placed_are_a_png_of_4_mib_at_most_and_the_refusal_says_so() {
     assert_eq!(reply(&mut t), "\x1b_Gi=1;OK\x1b\\");
     let file = &t.new_pictures()[0].2;
     assert!(file.len() <= crate::PICTURE_MAX && crate::png::dimensions(file) == Some((1024, 1023)));
+}
+
+#[test]
+fn png_decodes_each_colour_type_depth_and_interlace_to_the_pixels_the_format_says() {
+    use crate::png;
+    // Interlaced: the seven passes in the format's order, each row of each a filter byte and its pixels.
+    const PASSES: [(usize, usize, usize, usize); 7] =
+        [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)];
+    let pixel = |x: usize, y: usize| [(30 * x) as u8, (30 * y) as u8, (15 * (x + y)) as u8];
+    let mut raw = Vec::new();
+    for (x0, y0, dx, dy) in PASSES {
+        for y in (y0..8).step_by(dy) {
+            raw.push(0);
+            (x0..8).step_by(dx).for_each(|x| raw.extend_from_slice(&pixel(x, y)));
+        }
+    }
+    let want: Vec<u8> = (0..64).flat_map(|i| [&pixel(i % 8, i / 8)[..], &[255]].concat()).collect();
+    assert_eq!(png::decode(&png_file((8, 8, 8, 2, 1), &[], &raw), 64).unwrap(), (8, 8, want));
+
+    // One row of each of the other kinds: sixteen bits (the high byte is kept), fewer than eight,
+    // a palette, and the transparency each kind has.
+    let (k, w) = ([0, 0, 0, 255], [255; 4]);
+    let (red, green, blue) = ([255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]);
+    type Kind<'a> = (&'a str, (u32, u32, u8, u8, u8), &'a [Chunk<'a>], &'a [u8], &'a [[u8; 4]]);
+    let rgb: &[u8] = &[255, 0, 0, 0, 255, 0, 0, 0, 255];
+    let kinds: [Kind; 9] = [
+        (
+            "RGB of 16 bits",
+            (2, 1, 16, 2, 0),
+            &[],
+            &[0, 0x12, 0x34, 0xab, 0xcd, 0xff, 0, 0, 0, 0x80, 0, 0xff, 0xff],
+            &[[0x12, 0xab, 0xff, 255], [0, 0x80, 0xff, 255]],
+        ),
+        ("RGBA of 16 bits", (1, 1, 16, 6, 0), &[], &[0, 1, 2, 3, 4, 5, 6, 7, 8], &[[1, 3, 5, 7]]),
+        ("grey and alpha of 16 bits", (1, 1, 16, 4, 0), &[], &[0, 0xab, 0xcd, 0x12, 0x34], &[[0xab, 0xab, 0xab, 0x12]]),
+        (
+            "grey of 16 bits, one value transparent",
+            (2, 1, 16, 0, 0),
+            &[(b"tRNS", &[0x12, 0x34])],
+            &[0, 0x12, 0x34, 0xab, 0xcd],
+            &[[0x12, 0x12, 0x12, 0], [0xab, 0xab, 0xab, 255]],
+        ),
+        ("grey of 1 bit", (8, 1, 1, 0, 0), &[], &[0, 0b1011_0010], &[w, k, w, w, k, k, w, k]),
+        ("grey of 2 bits", (4, 1, 2, 0, 0), &[], &[0, 0b0001_1011], &[k, [85, 85, 85, 255], [170, 170, 170, 255], w]),
+        ("a palette of 4 bits", (4, 1, 4, 3, 0), &[(b"PLTE", rgb)], &[0, 0x01, 0x21], &[red, green, blue, green]),
+        (
+            "a palette of 1 bit, one entry transparent",
+            (2, 1, 1, 3, 0),
+            &[(b"PLTE", rgb), (b"tRNS", &[255, 0])],
+            &[0, 0b0100_0000],
+            &[red, [0, 255, 0, 0]],
+        ),
+        (
+            "RGB of 8 bits, one colour transparent",
+            (2, 1, 8, 2, 0),
+            &[(b"tRNS", &[0, 1, 0, 2, 0, 3])],
+            &[0, 1, 2, 3, 3, 2, 1],
+            &[[1, 2, 3, 0], [3, 2, 1, 255]],
+        ),
+    ];
+    for (what, header, between, raw, want) in kinds {
+        let decoded = png::decode(&png_file(header, between, raw), 64);
+        assert_eq!(decoded, Ok((header.0, header.1, want.concat())), "{what}");
+    }
+}
+
+#[test]
+fn png_files_are_held_to_their_structure_and_inflate_to_its_edges() {
+    use crate::{inflate, png};
+    // A file's data may come in several chunks, and a chunk a reader need not know is passed over.
+    let raw = [0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 9, 10, 11, 12, 13, 14, 15, 16];
+    let (header, data) = ([0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0], inflate::zlib_store(&raw));
+    let pixels = png::decode(&png_file((2, 2, 8, 6, 0), &[], &raw), 4).unwrap();
+    assert_eq!(pixels.2, [&raw[1..9], &raw[10..]].concat());
+    let (first, second) = data.split_at(data.len() / 2);
+    let split = png_of(&[(b"IHDR", &header), (b"IDAT", first), (b"IDAT", second), (b"IEND", &[])]);
+    let noted = png_of(&[(b"IHDR", &header), (b"tEXt", b"Comment\0hi"), (b"IDAT", &data), (b"IEND", &[])]);
+    assert_eq!((png::decode(&split, 4).as_ref(), png::decode(&noted, 4).as_ref()), (Ok(&pixels), Ok(&pixels)));
+
+    // What is not a PNG fux reads, and why: each is refused, the last before its data is looked at.
+    let wide = png_file((10_001, 1, 8, 0, 0), &[], &[0]);
+    assert_eq!(png::dimensions(&wide), None);
+    let refused: [(&str, Vec<u8>, &str); 7] = [
+        (
+            "unsupported critical PNG chunk",
+            png_of(&[(b"IHDR", &header), (b"FOOB", &[]), (b"IDAT", &data), (b"IEND", &[])]),
+            "a chunk it must know",
+        ),
+        ("missing PNG palette", png_file((1, 1, 8, 3, 0), &[], &[0, 0]), "no palette"),
+        (
+            "PNG palette index out of range",
+            png_file((1, 1, 8, 3, 0), &[(b"PLTE", &[0; 6])], &[0, 3]),
+            "an index past the palette",
+        ),
+        ("invalid PNG dimensions", wide, "a side over 10,000"),
+        ("incomplete PNG stream", png_of(&[(b"IHDR", &header), (b"IDAT", &data)]), "no end"),
+        ("PNG image data length mismatch", png_file((2, 2, 8, 6, 0), &[], &raw[..9]), "too few rows"),
+        (
+            "PNG exceeds pixel limit",
+            png_of(&[(b"IHDR", &header), (b"IDAT", b"not zlib"), (b"IEND", &[])]),
+            "more pixels than asked for",
+        ),
+    ];
+    for (why, file, what) in refused {
+        assert_eq!(png::decode(&file, 3 + usize::from(why != "PNG exceeds pixel limit")), Err(why), "{what}");
+    }
+
+    // Inflate: stored blocks past 65,535 bytes; a stream cut short; a copy from before the
+    // data's start; more codes of a length than there can be.
+    let long: Vec<u8> = (0..70_000u32).map(|i| (i * 7 + i / 255) as u8).collect();
+    assert_eq!(inflate::zlib(&inflate::zlib_store(&long), 70_000).as_ref(), Ok(&long));
+    let mut cut = DYNAMIC.to_vec();
+    cut.remove(DYNAMIC.len() - 5);
+    assert!(inflate::zlib(&cut, 1024).is_err());
+    let mut before = Packed::default();
+    before.bits(1, 1).bits(1, 2).code(1, 7).code(0, 5).code(0, 7); // three bytes from 1 back, of nothing
+    assert_eq!(inflate::zlib(&before.zlib(1), 16), Err("deflate distance out of range"));
+    let mut crowded = Packed::default();
+    crowded.bits(1, 1).bits(2, 2).bits(0, 5).bits(0, 5).bits(15, 4); // 19 lengths follow, each of 1
+    (0..19).for_each(|_| _ = crowded.bits(1, 3));
+    assert_eq!(inflate::zlib(&crowded.zlib(1), 16), Err("oversubscribed huffman tree"));
+}
+
+/// What the screen shows of Kitty graphics: each placement's image and its own number.
+fn placed(term: &Term) -> Vec<(u32, u32)> {
+    term.shown().pictures.iter().map(|p| (p.kitty_id, p.placement_id)).collect()
+}
+
+#[test]
+fn kitty_queries_replacements_and_evictions() {
+    let mut t = Term::new(40, 20);
+    // A query must name its image by `i`, as the protocol says and Kitty holds it: one that gives
+    // only a number (`I`) is not answered.
+    t.feed(b"\x1b_Ga=q,I=31,s=1,v=1,f=24;AAAA\x1b\\\x1b_Ga=q,I=31,e=T\x1b\\\x1b_Ga=q,s=1,v=1,f=24;AAAA\x1b\\");
+    assert_eq!(reply(&mut t), "");
+
+    // A part that is not base64 ends its transfer, and the next transmission is its own.
+    t.feed(b"\x1b_Ga=T,i=3,f=24,s=1,v=2,m=1;AAAA\x1b\\\x1b_Gm=0;####\x1b\\\x1b_Ga=T,i=4,f=24,s=1,v=1;AAAA\x1b\\");
+    assert_eq!(reply(&mut t), "\x1b_Gi=3;EINVAL: invalid base64\x1b\\\x1b_Gi=4;OK\x1b\\");
+    assert_eq!(placed(&t), [(4, 0)]);
+
+    // An image sent again under its id takes the old one's place; if what was sent is no image,
+    // the old one and its placements are gone all the same.
+    t.feed(&apc("a=T,i=4,f=100", b"not a PNG"));
+    assert_eq!((reply(&mut t).as_str(), placed(&t)), ("\x1b_Gi=4;EINVAL: invalid PNG data\x1b\\", vec![]));
+    t.feed(b"\x1b_Ga=p,i=4\x1b\\");
+    assert_eq!(reply(&mut t), "\x1b_Gi=4;ENOENT: image not found\x1b\\");
+
+    // A screen keeps 16 images: the seventeenth takes the place of the oldest that is not placed.
+    for id in 1..=17 {
+        let shown = if id == 1 { "a=T" } else { "a=t" };
+        t.feed(format!("\x1b_G{shown},i={id},q=2,f=24,s=1,v=1;AAAA\x1b\\").as_bytes());
+    }
+    t.feed(b"\x1b_Ga=p,i=1,p=1\x1b\\\x1b_Ga=p,i=2,p=1\x1b\\\x1b_Ga=p,i=17,p=1\x1b\\");
+    let gone = "\x1b_Gi=2,p=1;ENOENT: image not found\x1b\\";
+    assert_eq!(reply(&mut t), format!("\x1b_Gi=1,p=1;OK\x1b\\{gone}\x1b_Gi=17,p=1;OK\x1b\\"));
+
+    // And 16 MiB of them: with two of 8 MiB there, each with a part of it on the screen, a third
+    // takes the place of the oldest, whose placement goes with it. (Nothing says so in the log.)
+    let mut t = Term::new(40, 20);
+    for id in 1..=3 {
+        t.feed(&apc(&format!("a=T,i={id},q=2,f=32,s=2048,v=1024,w=1,h=1,o=z"), &zeros(2048 * 1024 * 4)));
+        assert_eq!(
+            placed(&t),
+            if id < 3 { (1..=id).map(|id| (id, 0)).collect::<Vec<_>>() } else { vec![(2, 0), (3, 0)] }
+        );
+    }
+    assert!(t.take(0).refused.is_empty());
+}
+
+#[test]
+fn kitty_deletes_by_each_selector_what_it_names_and_frees_only_when_asked() {
+    // Five placements, a cell each: image 4 at row 2, column 2; image 5 (z=3) at 4, 4; image 9
+    // twice, as placements 1 and 2, at 0, 0 and 0, 6; image 10 at 6, 8. Each deletion, with the
+    // cursor at row 2, column 2: what stays on the screen, and whether the image asked after is kept.
+    let scene = || {
+        let mut t = Term::new(40, 20);
+        for (id, pid, z, row, col) in
+            [(4, 0, 0, 2, 2), (5, 0, 3, 4, 4), (9, 1, 0, 0, 0), (9, 2, 0, 0, 6), (10, 0, 0, 6, 8)]
+        {
+            let image = if pid == 2 { "a=p".to_string() } else { "a=T,f=24,s=1,v=1".to_string() };
+            t.feed(
+                format!("\x1b[{};{}H\x1b_G{image},i={id},p={pid},z={z},C=1,q=2;AAAA\x1b\\", row + 1, col + 1)
+                    .as_bytes(),
+            );
+        }
+        t.feed(b"\x1b[3;3H");
+        t
+    };
+    let all = [(4, 0), (5, 0), (9, 1), (9, 2), (10, 0)];
+    let without = |gone: &[(u32, u32)]| all.into_iter().filter(|p| !gone.contains(p)).collect::<Vec<_>>();
+    type Deletion<'a> = (&'a str, &'a [(u32, u32)], u32, bool);
+    let deletions: [Deletion; 16] = [
+        ("d=i,i=9,p=1", &[(9, 1)], 9, true),
+        ("d=i,i=9", &[(9, 1), (9, 2)], 9, true),
+        ("d=I,i=9", &[(9, 1), (9, 2)], 9, false),
+        ("d=I,i=9,p=1", &[(9, 1)], 9, true), // (one of its placements is left: the image stays)
+        ("d=c", &[(4, 0)], 4, true),
+        ("d=C", &[(4, 0)], 4, false),
+        ("d=p,x=5,y=5", &[(5, 0)], 5, true),
+        ("d=p,x=20,y=20", &[], 5, true),
+        ("d=x,x=5", &[(5, 0)], 5, true),
+        ("d=X,x=1", &[(9, 1)], 9, true),
+        ("d=y,y=1", &[(9, 1), (9, 2)], 9, true),
+        ("d=y,y=20", &[], 9, true),
+        ("d=r,x=5,y=9", &[(5, 0), (9, 1), (9, 2)], 9, true),
+        ("d=R,x=5,y=9", &[(5, 0), (9, 1), (9, 2)], 5, false),
+        ("d=q,x=5,y=5,z=3", &[(5, 0)], 5, true),
+        ("d=q,x=3,y=3,z=3", &[], 4, true), // (image 4 is in that cell, at another z)
+    ];
+    for (deletion, gone, asked, kept) in deletions {
+        let mut t = scene();
+        assert_eq!(placed(&t), all);
+        t.feed(format!("\x1b_Ga=d,{deletion}\x1b\\").as_bytes());
+        assert_eq!((reply(&mut t).as_str(), placed(&t)), ("", without(gone)), "{deletion}");
+        t.feed(format!("\x1b_Ga=p,i={asked},p=7\x1b\\").as_bytes());
+        assert_eq!(reply(&mut t).ends_with(";OK\x1b\\"), kept, "{deletion}");
+    }
+}
+
+#[test]
+fn kitty_placement_takes_the_cells_its_keys_and_its_pixels_say() {
+    // Cells of 10 by 20 pixels, a screen 20 cells wide. The image, the placement's keys, and
+    // where the cursor is: the cells the picture takes, the pixels of its file, and where the
+    // cursor is afterwards (it moves past the picture unless `C=1`, and wraps at the right edge).
+    type Case<'a> = (&'a str, (u32, u32), &'a str, (usize, usize), (usize, usize), (u32, u32), (usize, usize));
+    let cases: [Case; 6] = [
+        ("columns alone", (20, 40), "c=3,C=1", (0, 0), (3, 3), (20, 40), (0, 0)),
+        ("rows alone", (20, 40), "r=1,C=1", (0, 0), (1, 1), (20, 40), (0, 0)),
+        ("neither", (21, 41), "C=1", (0, 0), (3, 3), (21, 41), (0, 0)),
+        ("a part that reaches past the image", (20, 40), "x=15,w=20,C=1", (0, 0), (1, 2), (5, 40), (0, 0)),
+        ("the cursor moves past it", (20, 40), "", (1, 3), (2, 2), (20, 40), (2, 5)),
+        ("and wraps at the edge", (20, 40), "", (1, 18), (2, 2), (20, 40), (3, 0)),
+    ];
+    for (what, (w, h), keys, (row, col), cells, pixels, cursor) in cases {
+        let mut t = Term::new(20, 10);
+        t.told().cell = (10, 20);
+        let rgb = vec![7u8; (w * h * 3) as usize];
+        t.feed(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
+        t.feed(&apc(format!("a=T,i=1,f=24,s={w},v={h},{keys}").trim_end_matches(','), &rgb));
+        assert_eq!(reply(&mut t), "\x1b_Gi=1;OK\x1b\\", "{what}");
+        let shown = t.shown();
+        let picture = shown.pictures.first().map(|p| ((p.row, p.col), (p.cols, p.rows)));
+        assert_eq!(picture, Some(((row, col), cells)), "{what}");
+        assert_eq!((shown.cursor.row, shown.cursor.col), cursor, "{what}");
+        assert_eq!(crate::png::dimensions(&t.new_pictures()[0].2), Some(pixels), "{what}");
+    }
+    // A part that begins past the image is no part: refused, and nothing placed.
+    let mut t = Term::new(20, 10);
+    t.feed(&apc("a=T,i=1,f=24,s=20,v=40,x=20", &[7u8; 2400]));
+    assert_eq!(reply(&mut t), "\x1b_Gi=1;EINVAL: empty source rectangle\x1b\\");
+    assert!(t.shown().pictures.is_empty());
+}
+
+/// xorshift64: the same numbers on every run.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % n.max(1) as u64) as usize
+    }
+
+    /// One change to `data`: a bit, a byte, a cut, a byte more or fewer, or the rest of `other`.
+    fn mutate(&mut self, data: &mut Vec<u8>, other: &[u8]) {
+        let at = self.below(data.len());
+        match self.below(6) {
+            0 => data.iter_mut().skip(at).take(1).for_each(|byte| *byte ^= 1 << self.below(8)),
+            1 => data
+                .iter_mut()
+                .skip(at)
+                .take(1)
+                .for_each(|byte| *byte = [0, 1, 0x7f, 0x80, 0xff, b'=', b','][self.below(7)]),
+            2 => data.truncate(at),
+            3 => data.insert(at, self.below(256) as u8),
+            4 => drop(data.drain(at..(at + 1 + self.below(4)).min(data.len()))),
+            _ => data.splice(at.., other.iter().skip(self.below(other.len())).copied()).for_each(drop),
+        }
+    }
+}
+
+#[test]
+fn mutated_pngs_and_kitty_commands_break_no_bound() {
+    use crate::{PICTURE_MAX, PICTURES_MAX, SIZE_MAX, png};
+    // PNGs of every kind the decoder has, changed at random under a fixed seed. A third are changed
+    // as files; a third so, with their chunks' checksums made right again, so that the change is
+    // read and not only refused; a third in their header's fields and their data before zlib, so
+    // that every byte of it reaches the filters. Whatever comes back is an image of the size it says.
+    let pixels: Vec<u8> = (0..16u8 * 4).collect();
+    let raw16: Vec<u8> = (0..4).flat_map(|row| [&[row as u8 % 5][..], &pixels[..8]].concat()).collect();
+    let rgb: &[u8] = &[255, 0, 0, 0, 255, 0, 0, 0, 255];
+    type Seed<'a> = ((u32, u32, u8, u8, u8), Vec<Chunk<'a>>, Vec<u8>);
+    let seeds: [Seed; 6] = [
+        ((4, 4, 8, 6, 0), vec![], pixels.chunks(16).flat_map(|row| [&[1][..], row].concat()).collect()),
+        ((4, 4, 8, 2, 1), vec![], vec![0; 55]),
+        ((4, 4, 16, 0, 0), vec![(b"tRNS", &[0, 1])], raw16),
+        ((8, 4, 4, 3, 0), vec![(b"PLTE", rgb), (b"tRNS", &[9, 8])], [0, 0x01, 0x21, 0x02, 0x10].repeat(4)),
+        ((4, 4, 16, 4, 1), vec![], vec![0; 71]),
+        ((9, 1, 1, 0, 0), vec![(b"tEXt", b"a\0b")], vec![4, 0xaa, 0x80]),
+    ];
+    let pngs: Vec<Vec<u8>> = seeds.iter().map(|(header, between, raw)| png_file(*header, between, raw)).collect();
+    assert!(pngs.iter().all(|file| png::decode(file, 64).is_ok()));
+    let reseal = |file: &mut Vec<u8>| {
+        let mut at = 8;
+        while let Some(len) = file.get(at..at + 4).map(|len| u32::from_be_bytes(len.try_into().unwrap()) as usize) {
+            let Some(body) = file.get(at + 4..at + 8 + len).map(png::crc32) else { break };
+            let Some(crc) = file.get_mut(at + 8 + len..at + 12 + len) else { break };
+            crc.copy_from_slice(&body.to_be_bytes());
+            at += 12 + len;
+        }
+    };
+    let mut rng = Rng(0x6675_7820_706e_6721);
+    for round in 0..60_000 {
+        let ((mut w, mut h, mut depth, mut colour, mut interlace), between, mut raw) =
+            seeds[round % seeds.len()].clone();
+        let mut file = pngs[round % pngs.len()].clone();
+        if round % 3 == 2 {
+            match rng.below(8) {
+                0 => (w, h) = (1 + rng.below(9) as u32, 1 + rng.below(9) as u32),
+                1 => depth = [1, 2, 4, 8, 16][rng.below(5)],
+                2 => colour = [0, 2, 3, 4, 6][rng.below(5)],
+                3 => interlace ^= 1,
+                _ => {}
+            }
+            for _ in 0..rng.below(3) {
+                let other = rng.below(pngs.len());
+                rng.mutate(&mut raw, &pngs[other]);
+            }
+            file = png_file((w, h, depth, colour, interlace), &between, &raw);
+        } else {
+            for _ in 0..1 + rng.below(3) {
+                let other = rng.below(pngs.len());
+                rng.mutate(&mut file, &pngs[other]);
+            }
+            if round % 3 == 1 {
+                reseal(&mut file);
+            }
+        }
+        if let Ok((w, h, rgba)) = png::decode(&file, 4096) {
+            assert!(w as usize * h as usize <= 4096 && rgba.len() == w as usize * h as usize * 4, "round {round}");
+        }
+    }
+
+    // Kitty graphics commands the same way, to terminals that live through 64 of them each: no
+    // screen has more pictures than it may, none is over 500 cells or 4 MiB, and what the
+    // terminal answers is whole graphics answers of printable text.
+    let tiny = png::encode_rgba(2, 2, &pixels[..16], 1024).unwrap();
+    let commands: Vec<Vec<u8>> = [
+        apc("a=T,i=1,f=24,s=2,v=2,c=3,r=2", &pixels[..12]),
+        apc("a=t,i=2,f=32,s=2,v=2,o=z", &crate::inflate::zlib_store(&pixels[..16])),
+        apc("a=T,I=5,f=100,p=3,z=-1,C=1", &tiny),
+        apc("a=T,f=100,q=1", &tiny),
+        apc("a=t,i=3,f=24,s=2,v=2,m=1", &pixels[..6]),
+        apc("m=0", &pixels[6..12]),
+        apc("a=q,i=31,s=1,v=1,f=24", &[0; 3]),
+        b"\x1b_Ga=q,i=32,e=T,C=1,f=100\x1b\\".to_vec(),
+        b"\x1b_Ga=p,i=1,p=2,x=1,y=0,w=1,h=2,c=9,r=4\x1b\\".to_vec(),
+        b"\x1b_Ga=p,I=5,U=1\x1b\\\x1b_Ga=p,i=2,c=600\x1b\\".to_vec(),
+        b"\x1b_Ga=d,d=i,i=1,p=2\x1b\\\x1b_Ga=d,d=Z,z=-1\x1b\\".to_vec(),
+        b"\x1b_Ga=d,d=q,x=2,y=2,z=0\x1b\\\x1b_Ga=d,d=R,x=1,y=3\x1b\\".to_vec(),
+        b"\x1b[?1049h\x1b[5;9H".to_vec(),
+        b"\x1b[?1047l\x1b[2J\r\n\r\n".to_vec(),
+    ]
+    .into();
+    let mut term = Term::new(40, 12);
+    for round in 0..40_000 {
+        if round % 64 == 0 {
+            term = Term::new(40, 12);
+        }
+        let mut command = commands[rng.below(commands.len())].clone();
+        if round % 4 != 0 {
+            for _ in 0..1 + rng.below(2) {
+                let other = rng.below(commands.len());
+                rng.mutate(&mut command, &commands[other]);
+            }
+        }
+        term.feed(&command);
+        let answer = term.take(0).reply;
+        let mut rest = &answer[..];
+        while let Some(at) = rest.windows(3).position(|bytes| bytes == b"\x1b_G") {
+            let said = &rest[at + 3..];
+            let end = said.windows(2).position(|bytes| bytes == b"\x1b\\");
+            let whole = end.is_some_and(|end| said[..end].iter().all(|byte| (0x20..0x7f).contains(byte)));
+            assert!(whole, "round {round}: {:?}", String::from_utf8_lossy(&answer));
+            rest = &said[end.unwrap_or(0)..];
+        }
+        let shown = term.shown().pictures.clone();
+        assert!(shown.len() <= PICTURES_MAX, "round {round}");
+        assert!(
+            shown.iter().all(|p| (1..=SIZE_MAX).contains(&p.cols) && (1..=SIZE_MAX).contains(&p.rows)),
+            "round {round}"
+        );
+        assert!(term.new_pictures().iter().all(|(_, _, bytes)| bytes.len() <= PICTURE_MAX + 4), "round {round}");
+    }
 }
