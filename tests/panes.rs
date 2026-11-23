@@ -49,8 +49,9 @@ fn deadline() -> Instant {
 /// Ends a session. Each pane's holder leads a session of its own, and its program another: neither
 /// goes with the test, nor at once with the directory (a holder looks every two seconds, and a program
 /// may ignore the hangup). So those of every pane whose holder lives are killed, the program with
-/// its process group; then the directory goes.
-fn end(session: &Path) {
+/// its process group; then the directory goes. What could not be done is what is given back.
+fn end(session: &Path) -> Vec<String> {
+    let mut wrong = Vec::new();
     let folders = |folder: &Path| fs::read_dir(folder).into_iter().flatten().flatten().map(|entry| entry.path());
     for pane in folders(session).flat_map(|workspace| folders(&workspace).collect::<Vec<_>>()) {
         // (Whether its holder lives, the lock says. Opened without waiting: a test may have put a
@@ -63,18 +64,21 @@ fn end(session: &Path) {
         };
         // A number in a file is not yet a process of ours (a pane started again has its lock before
         // its new `status`): the holder must be this fux holding, and the program its child.
-        let mut ps = Command::new("ps");
-        ps.args(["-o", "pid=,ppid=,args=", "-p", &format!("{holder},{program}")]).stdout(Stdio::piped());
-        let mut processes = String::new();
-        if let Ok(mut ps) = ps.stderr(Stdio::null()).spawn() {
-            let _ = ps.stdout.take().map(|mut said| said.read_to_string(&mut processes));
-            let _ = ps.wait();
-        }
+        let processes = match processes(&[holder, program]) {
+            Ok(processes) => processes,
+            Err(why) => {
+                wrong.push(format!(
+                    "{}: its holder {holder} and program {program} were not asked after: {why}",
+                    pane.display()
+                ));
+                continue;
+            }
+        };
         let is = |pid: u32, parent: Option<u32>, runs: &str| {
-            processes.lines().any(|line| {
-                let mut words = line.split_whitespace();
-                let numbers = (words.next().and_then(|n| n.parse().ok()), words.next().and_then(|n| n.parse().ok()));
-                numbers.0 == Some(pid) && parent.is_none_or(|parent| numbers.1 == Some(parent)) && line.contains(runs)
+            processes.iter().any(|(numbers, line)| {
+                numbers.first() == Some(&pid)
+                    && parent.is_none_or(|parent| numbers.get(1) == Some(&parent))
+                    && line.contains(runs)
             })
         };
         let ours = is(holder, None, concat!(env!("CARGO_BIN_EXE_fux"), " hold "));
@@ -83,24 +87,52 @@ fn end(session: &Path) {
         if targets.iter().any(Option::is_some) {
             let mut kill = Command::new("kill");
             kill.args(["-KILL", "--"]).args(targets.into_iter().flatten()).stdout(Stdio::null()).stderr(Stdio::null());
-            let _ = kill.spawn().and_then(|mut kill| kill.wait());
+            if let Err(why) = kill.spawn().and_then(|mut kill| kill.wait()) {
+                wrong.push(format!(
+                    "{}: its holder {holder} and program {program} were not killed: {why}",
+                    pane.display()
+                ));
+            }
         }
     }
     // (A holder may write a file while its folder is being removed: then once more, so that
     // no pane of a test outlives it.)
     for _ in 0..20 {
         if fs::remove_dir_all(session).is_ok() || !session.exists() {
-            break;
+            return wrong;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    wrong.push(format!("{}: not removed", session.display()));
+    wrong
+}
+
+/// What `ps` says of the processes of these numbers that there are: of each its own number and its
+/// parent's, and its whole line, with its command line in full (whatever width the tests' own terminal is
+/// said to have: `ps` cuts its lines to that, and a line cut short is another command's).
+fn processes(pids: &[u32]) -> Result<Vec<(Vec<u32>, String)>, String> {
+    let pids = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let mut ps = Command::new("ps");
+    ps.args(["-ww", "-o", "pid=,ppid=,args=", "-p", &pids]).env_remove("COLUMNS");
+    let mut ps =
+        ps.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
+    let mut said = String::new();
+    let read = ps.stdout.take().map(|mut out| out.read_to_string(&mut said));
+    // (It ends with 1 when none of them is there any more, which is an answer.)
+    match (read, ps.wait().map(|status| status.code())) {
+        (Some(Ok(_)), Ok(Some(0 | 1))) => {}
+        (_, ended) => return Err(format!("ps ended with {ended:?}")),
+    }
+    let line =
+        |line: &str| (line.split_whitespace().take(2).filter_map(|n| n.parse().ok()).collect(), line.to_string());
+    Ok(said.lines().map(line).collect())
 }
 
 /// A session directory of the test's own. Dropped, it is ended: its panes with it.
 struct Session(PathBuf);
 impl Drop for Session {
     fn drop(&mut self) {
-        end(&self.0);
+        let wrong = end(&self.0);
         sessions().retain(|session| *session != self.0);
         // (The test's last session: its watcher is told that it is over.)
         SCENARIO.with(|scenario| {
@@ -113,6 +145,13 @@ impl Drop for Session {
                 }
             }
         });
+        // What a session's end could not do fails its test (one that is failing already says it and
+        // no more: a second failure there would stop every test where it is).
+        match (wrong.is_empty(), std::thread::panicking()) {
+            (true, _) => {}
+            (false, true) => eprintln!("{}", wrong.join("\n")),
+            (false, false) => panic!("{}", wrong.join("\n")),
+        }
     }
 }
 
@@ -164,7 +203,7 @@ fn watch(test: String, last: Instant, over: Arc<AtomicBool>) {
                     "the test of the session `{test}` was not over {:?} after its deadline: the tests stop",
                     grace()
                 );
-                sessions().iter().for_each(|session| end(session));
+                sessions().iter().flat_map(|session| end(session)).for_each(|wrong| eprintln!("{wrong}"));
                 std::process::exit(124);
             }
             std::thread::sleep(Duration::from_millis(200));
@@ -273,7 +312,7 @@ fn what_a_test_runs_and_writes_to_ends_at_the_tests_one_deadline() {
     let numbers: Vec<&str> = status.lines().take(2).filter_map(|line| line.split(' ').nth(1)).collect();
     let alive = |pid: &str| Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).ended().success();
     assert!(numbers.len() == 2 && numbers.iter().all(|pid| alive(pid)), "{status}");
-    end(&session.0);
+    assert_eq!(end(&session.0), [""; 0]);
     until("the holder and the program are gone", || !numbers.iter().any(|pid| alive(pid)));
     assert!(!session.0.exists());
 
@@ -298,6 +337,25 @@ fn what_a_test_runs_and_writes_to_ends_at_the_tests_one_deadline() {
     let refused = said(std::panic::catch_unwind(|| send(&fifo, "typed")));
     assert!(refused.contains("fifo") && read(&fifo).is_empty(), "{refused}");
     assert!(after.elapsed() < Duration::from_secs(3), "{:?}", after.elapsed());
+}
+
+/// The tests themselves, run anew for the tests named, with what `set` says of their surroundings.
+fn tests(names: &[&str], set: &[(&str, &str)]) -> Output {
+    let mut tests = Command::new(std::env::current_exe().unwrap());
+    tests.arg("--exact").args(names).args(["--nocapture", "--test-threads", "4"]);
+    tests.envs(set.iter().copied()).run()
+}
+
+#[test]
+fn a_session_ends_its_panes_in_a_terminal_of_twenty_columns_too() {
+    // What is asked of `ps` is asked in full, whatever the terminal the tests run in is said to be:
+    // told of twenty columns, `ps` cut the holder's command line short, the holder was taken for
+    // another's, and the program that ignores the hangup was left running.
+    let out = tests(
+        &["what_a_test_runs_and_writes_to_ends_at_the_tests_one_deadline"],
+        &[("COLUMNS", "20"), ("FUX_TEST_LIMIT", "20")],
+    );
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
