@@ -3007,6 +3007,7 @@ fn a_restore_that_fails_leaves_the_run_before_whole_and_a_pane_started_again_is_
     };
     let restored = restore();
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started w/told again\n");
+    assert_eq!(restored.status.code(), Some(1), "a start failed: whoever ran it is told so");
     until_or(
         "the pane started again says where the keys are",
         || read(&told.join("shown/screen")),
@@ -3025,6 +3026,21 @@ fn a_restore_that_fails_leaves_the_run_before_whole_and_a_pane_started_again_is_
     let again = restore();
     assert_eq!(String::from_utf8_lossy(&again.stdout), "started w/told again\n");
     assert!(again.stderr.is_empty() && read(&before.join("history")).contains("\n17\n"), "{again:?}");
+    assert!(again.status.success());
+    // With no `fux` to start anything with (a login whose PATH has none yet), nothing is moved: before,
+    // every pane that was over was moved aside, none was started, and the script ended well.
+    let tools = session.0.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let links =
+        "for tool in sh perl mktemp mv rm rmdir sed cat dirname; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
+    assert!(Command::new("sh").arg("-c").arg(links).arg(&tools).ended().success());
+    assert!(session.fux().arg("wait").arg(&told).ended().success());
+    let was = read(&told.join("status"));
+    let mut restore = Command::new("sh");
+    restore.arg(keys.join(".restore")).arg(&session.0).env("PATH", &tools).env_remove("FUX_KEYS").env_remove("FUX_DIR");
+    let none = restore.run();
+    assert!(none.status.code() == Some(1) && String::from_utf8_lossy(&none.stderr).contains("fux"), "{none:?}");
+    assert_eq!(read(&told.join("status")), was);
 }
 
 #[test]
@@ -3178,6 +3194,7 @@ fn a_restore_that_cannot_copy_what_a_pane_printed_keeps_the_run_before_whole() {
     let restored = restore.run();
     let (said, wrong) = (String::from_utf8_lossy(&restored.stdout), String::from_utf8_lossy(&restored.stderr));
     assert_eq!(said, "started w/kept again\n", "{wrong}");
+    assert_eq!(restored.status.code(), Some(1), "a folder was left aside: whoever ran it is told so");
     let before = wrong.lines().find_map(|line| line.strip_prefix("w/kept: what it had printed is in "));
     let before = PathBuf::from(before.unwrap_or_else(|| panic!("{wrong}")));
     assert!(wrong.contains("screen"), "cat says which file it could not read: {wrong}");

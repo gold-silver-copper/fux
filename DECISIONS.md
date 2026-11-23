@@ -2599,6 +2599,17 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     a start of the other hangs. Turned down: taking each pane's own lock for
     the look and the move, which serializes one pane and not the copy after
     it, for the same number of lines.
+  - **A `.restore` that cannot start anything moves nothing, and a run that
+    left something aside says so by its status** (after the same review).
+    With no `fux` on `PATH` and the session named (a login whose `PATH` has
+    no `~/.cargo/bin` yet), every pane that was over was moved aside, none
+    was started, each workspace was left with no folder under any name, and
+    the script ended with 0: a viewer then takes every name out of the
+    layout. It looks for `fux` and perl before anything else now. And it ends
+    with 1 if a start failed or a text could not be copied (an old run was
+    left in a dot-named folder), 0 otherwise. Not covered, and said in the
+    README: a run cut short between the move and the start leaves the old
+    run in `.restore.XXXXXX/pane` without a word; `mv` puts it back.
   - **Turned down, by the owner's rulings:** `fux start --again`, `fux held`,
     `fux close` and a `close` word on `ctl` (with the verb gone the word has
     no user; it is about fifteen lines in the holder if the owner wants it

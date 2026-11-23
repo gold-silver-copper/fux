@@ -740,6 +740,12 @@ read and remove), and the name has the failed start's folder with its
 `log`, which has no `command` and so is not tried again. If the old text
 cannot be copied (a file of it that cannot be read: `cat` says which), the
 pane is started all the same and the old folder is kept in the same way.
+In both cases the script ends with status 1, so a login that runs it can
+tell; with no `fux` or no perl on `PATH` it says so, ends with 1 and has
+moved nothing. A run that is cut short between the move and the start
+(Ctrl-C, a login that is hung up) says nothing: that pane's old run is then
+in a `.restore.XXXXXX/pane` of the session, whole, and its name has no
+folder; `mv` it back under its name and the next run starts it.
 It starts programs, it does not bring them back: a shell starts fresh in
 its directory, an editor without its open files, both with the environment
 of the script and not the one they had. It needs perl (for the lock, and to

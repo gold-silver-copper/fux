@@ -15,7 +15,10 @@
 # just then takes the pane out of its tab, and the new one gets a tab of its own (a viewer looks
 # every few milliseconds: it may catch every pane, or none); after a reboot none is looking, and
 # the layout stays. If the start fails, nothing is put back: the old run stays where this says, a
-# dot-named folder of the session, and the name has the failed start's folder and its `log`.
+# dot-named folder of the session, and the name has the failed start's folder and its `log`. A run
+# cut short between the move and the start leaves such a folder too, and has not said so.
+# (Before anything is moved: with no `fux` to start a pane with, every pane would be moved and none started.)
+command -v fux > /dev/null && command -v perl > /dev/null || { echo ".restore: fux and perl must be on PATH" >&2; exit 1; }
 D=$(CDPATH= cd -- "${1:-$(fux dir)}" && pwd) || exit
 # One run at a time in a session: between the look at a pane and the move of its folder another run
 # may have started that name anew, and the move would then take a pane that is alive. So this
@@ -29,6 +32,7 @@ kept() { perl -e 'use Fcntl qw(:flock O_WRONLY O_NONBLOCK); open(D, "<", $ARGV[0
   flock(D, LOCK_SH|LOCK_NB) or exit 0; -p "$ARGV[0]/in" or exit 1;
   exit(sysopen(F, "$ARGV[0]/in", O_WRONLY|O_NONBLOCK) ? 0 : 1)' "$1"; }
 printed() { for f in .before history.1 history main/screen; do [ ! -e "$1/$f" ] || cat "$1/$f" || return; done; }
+left=0
 for p in "$D"/*/*/; do
   p=${p%/} name=${p#"$D"/}
   [ -s "$p/command" ] || continue
@@ -43,7 +47,9 @@ for p in "$D"/*/*/; do
   if said=$(cd "${dir:-$HOME}" 2>/dev/null || cd; perl -e 'local $/ = "\0"; open(F, "<", shift) or die "$!\n";
       chomp(my @given = <F>); exec(@ARGV, @given) or die "$ARGV[0]: $!\n"' "$old/pane/command" fux start "$name" -- 2>&1 > /dev/null)
   then echo "started $name again"
-    if printed "$old/pane" > "$p/.before"; then rm -rf "$old"; else rm -f "$p/.before"; echo "$name: what it had printed is in $old/pane" >&2; fi
-  else echo "$name: $said (the run before is in $old/pane)" >&2
+    if printed "$old/pane" > "$p/.before"; then rm -rf "$old"; else rm -f "$p/.before"; left=1; echo "$name: what it had printed is in $old/pane" >&2; fi
+  else left=1; echo "$name: $said (the run before is in $old/pane)" >&2
   fi
 done
+# (It ends with 1 if a run that is over was left aside: a start that failed, or a text that could not be copied.)
+exit $left
