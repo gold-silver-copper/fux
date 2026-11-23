@@ -2201,13 +2201,14 @@ fn kitty_transfer_in_parts_goes_on_only_with_its_own_parts() {
 
     // What breaks a transfer off: each, after the first part, drops it (the log says so), so the
     // last part then belongs to nothing and the image is not there. With nothing between, it is.
-    let broken_off: [(&str, &[u8]); 13] = [
+    let broken_off: [(&str, &[u8]); 14] = [
         ("nothing", b""),
         ("another transfer", b"\x1b_Ga=T,i=2,f=24,s=1,v=1;AAAA\x1b\\"),
         ("a part that names another image", b"\x1b_Gi=2,q=2;AAAA\x1b\\"),
         ("a part with another value for a key", b"\x1b_Gi=1,f=24,s=64,v=47,q=2;AAAA\x1b\\"),
         ("a part with a key the first had not", b"\x1b_Gi=1,c=3,q=2;AAAA\x1b\\"),
         ("a part with another action", b"\x1b_Ga=T,q=2;AAAA\x1b\\"),
+        ("an image over what a screen keeps", b"\x1b_Ga=t,i=2,q=2,f=32,s=2049,v=2048;AAAA\x1b\\"),
         ("a placement", b"\x1b_Ga=p,i=9,q=2\x1b\\"),
         ("a deletion", b"\x1b_Ga=d,d=i,i=9\x1b\\"),
         ("a command that is none", b"\x1b_Gm=;AAAA\x1b\\"),
@@ -2228,6 +2229,13 @@ fn kitty_transfer_in_parts_goes_on_only_with_its_own_parts() {
         let out = t.take(0);
         let whole = what == "nothing";
         assert_eq!(out.refused.contains(&DROPPED), !whole, "{what}");
+        // (And what the command is refused for itself is said as well, after that.)
+        let too = match what {
+            "a command that is none" => Some("a kitty graphics command that could not be read was dropped"),
+            "an image over what a screen keeps" => Some("a kitty picture over the 16 MiB a screen keeps was dropped"),
+            _ => None,
+        };
+        assert!(too.is_none_or(|too| out.refused == [DROPPED, too]), "{what}: {:?}", out.refused);
         // (What followed it is itself: the other transfer is answered, though the first had asked for silence.)
         let answer = if what == "another transfer" { "\x1b_Gi=2;OK\x1b\\" } else { "" };
         assert_eq!(String::from_utf8(out.reply).unwrap(), answer, "{what}");

@@ -599,6 +599,8 @@ pub(crate) struct Outcome {
     pub reply: Option<String>,
     pub cursor: Option<CursorAdvance>,
     pub refused: Option<&'static str>,
+    /// Whether the command broke off a transfer in parts: the log is told that as well.
+    pub broke: bool,
 }
 
 /// Per-screen Kitty graphics image store and chunked-upload state.
@@ -635,8 +637,7 @@ impl Storage {
         };
         // (A command that cannot be read names no image to answer under: the log says it was dropped.)
         let Some(kv) = Kv::parse(control) else {
-            let broke = self.abandon(pictures);
-            return Outcome { refused: Some(if broke { BROKEN_OFF } else { UNREADABLE }), ..Outcome::default() };
+            return Outcome { refused: Some(UNREADABLE), broke: self.abandon(pictures), ..Outcome::default() };
         };
         let mut quiet = Quiet::from_val(kv.get(b'q'));
         let id = kv.get(b'i').unwrap_or(0);
@@ -687,7 +688,7 @@ impl Storage {
                 }
             }
         };
-        outcome.refused = outcome.refused.or(broke.then_some(BROKEN_OFF));
+        outcome.broke = broke;
         outcome
     }
 
@@ -1056,7 +1057,7 @@ impl Storage {
         });
         let reply =
             (!implicit_id).then(|| Response::ok(img_id, spec.image_number, spec.placement_id).encode(quiet)).flatten();
-        Outcome { reply, cursor: cursor_advance, refused }
+        Outcome { reply, cursor: cursor_advance, refused, broke: false }
     }
 
     fn delete(&mut self, kv: &Kv, cursor: (usize, usize), pictures: &mut Vec<Picture>) {

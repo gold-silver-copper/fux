@@ -2010,6 +2010,9 @@ impl Term {
             &mut self.screen.pictures,
             &mut self.next_picture,
         );
+        if outcome.broke {
+            self.refuse(kitty::BROKEN_OFF);
+        }
         if let Some(refused) = outcome.refused {
             self.refuse(refused);
         }
