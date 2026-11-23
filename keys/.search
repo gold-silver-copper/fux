@@ -13,12 +13,17 @@ fi
 printf 'search every pane for: '
 IFS= read -r words
 [ -n "$words" ] || exit
-list=$(mktemp "$FUX_DIR/.pick.XXXXXX") && text=$FUX_PANE/text || exit
+# (The list and each pane's text in turn are dot-named files of the session, removed when this ends,
+# also on a hangup; the list is `.pick`'s to remove once that has it.)
+list=$(mktemp "$FUX_DIR/.pick.XXXXXX") && text=$(mktemp "$FUX_DIR/.text.XXXXXX") || { rm -f "$list"; exit; }
+gone() { trap '' HUP TERM; rm -f "$list" "$text"; }
+trap gone EXIT; trap 'gone; exit' HUP TERM
 for p in "$FUX_DIR"/*/*/; do
   p=${p%/}
   [ -f "$p/main/lines" ] && [ ! "$p" -ef "$FUX_PANE" ] || continue
   FUX_PANE=$p "$FUX_KEYS/.text" "$text" > /dev/null
   LC_ALL=C grep -n -i -F -e "$words" "$text" | LC_ALL=C sed "s|^[0-9]*|${p#"$FUX_DIR"/}:&	${p#"$FUX_DIR"/} &|"
 done > "$list"
-[ -s "$list" ] || { rm -f "$list"; echo "no pane has that: Enter closes this"; read -r _; exit; }
+rm -f "$text"
+[ -s "$list" ] || { echo "no pane has that: Enter closes this"; read -r _; exit; }
 exec "$FUX_KEYS/.pick" "$list" "$FUX_KEYS/.search" --open

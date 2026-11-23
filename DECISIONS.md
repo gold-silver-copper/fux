@@ -2610,6 +2610,56 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     `.restore` keeps the old text as `.before`, not `before`, and removes the
     old folder.
 
+- **D122. Scratch: no script writes a name into a pane's folder** (the owner's
+  rulings of 2026-11-23: "dot-named scratch"). A pane's folder is its
+  holder's, and the record of one run (D121); a mirror's is another
+  program's. The keys' own files were in it: `.edit --in` moved its text
+  there (`text`), `.pick` its list (`list`), and `.search` put each pane's
+  text there in turn.
+  - **Now** each stays where its key made it, a dot-named file of the session
+    (`.text.XXXXXX`, `.pick.XXXXXX`, by `mktemp`: the owner's alone to read),
+    and the script that has it removes it when it ends. One exception, by
+    D121: `.restore` writes `.before` into the pane it has just started.
+  - **On a hangup too, as the keys start them, and not otherwise.** Before,
+    the file went with the pane's folder however the pane was closed. Now a
+    script must remove it, also when its pane is closed under an open
+    editor: each sets a trap for the hangup. That works because the keys
+    start these scripts under `.shell`, the pane's own program: on Linux the
+    hangup of a pty is sent to the session's leader alone, and the rest of
+    its foreground group is hung up when the leader ends. `.shell` sets no
+    trap and ends at once; the editor (or the finder, or the question) is
+    hung up then, and the script's trap runs when that has ended. Tested so:
+    the close key under an open editor, and a holder killed outright under
+    `.edit` and under `.pick`. What is not covered, and said in the README:
+    a script killed outright (`kill -9`) leaves its dot-named file; and
+    so does one started as a pane's own program, with no `.shell` above
+    it, under an editor that does not end when its terminal goes (it is then
+    the leader, traps the hangup, and waits for a child nobody hung up; the
+    first form of the test did exactly that, with `sleep` for an editor).
+    Such a file harms nothing: no reader of a session takes a name with a
+    dot first for a pane or a fact.
+  - **The removal is the hangup's trap's as well as the script's end's**, and
+    ignores the hangup itself. Two things the test found, each in a share of
+    its runs. A question (`read`) or an editor ends by itself when its
+    terminal goes, an instant before the hangup comes: the `rm` of the
+    script's end was then hung up before it had removed anything. And in
+    bash (which is `sh` on the machine this was built on, and on macOS) a
+    hangup that comes while a script is ending runs the hangup's trap in
+    place of the one for its end, so a trap that only said `exit` left the
+    file (10 of 60 runs). So one function removes the file, with the hangup
+    ignored first, and both traps call it (80 of 80). Under dash (`sh` on
+    CI's Linux) this was run by CI only.
+  - **The README's zoom recipe** keeps a tab's line in the session too
+    (`.alone.WORKSPACE+PANE`: `+` is in no name, so two panes never share
+    one), where it kept it in the pane's folder. A pane closed while it is
+    alone leaves that file; before, it went with the folder. The recipe says
+    so.
+  - **Tests.** Replaced: "a text or a list that cannot be moved into its pane
+    is removed" (nothing is moved any more) by one test that both end with
+    their file gone and nothing put into the pane's folder, and that a
+    hangup removes them. The close-key test finds the editor's pane by what
+    it shows, not by a `text` in its folder.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

@@ -1748,7 +1748,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     until("less was given the file", || bare(&read(&out)) == text);
     assert!(read(&out).contains("\n\x1b[0;32ma-long-line-\x1b[mthat-wraps-in-twelve\n$ second\n"), "{:?}", read(&out));
     let asked = read(&session.0.join("out.at"));
-    assert!(asked.starts_with("-+F -R +G /") && asked.ends_with("/text\n"), "{asked}");
+    assert!(asked.starts_with(&format!("-+F -R +G {}/.text.", session.0.display())), "{asked}");
     // The rows left out at the screen's end are those with no text: a colour alone is none.
     // And the cell a wide character left empty at a row's end is no text: the rows are joined without it.
     let blue = session.start("blue", &["sh", "-c", "printf 'x\\033[44m\\033[J%78s\u{754c}\\033[m' ''; sleep 600"]);
@@ -1786,13 +1786,17 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
         run("S-c"),
         "nothing of the last command's output is here (it printed none, or the screen was cleared)\n"
     );
-    // An editor still open when its pane is closed with the close key: the file it was given is
-    // in the pane's own folder, and goes with it.
-    assert_eq!(run_in("c", &pane, "tail -f \"$1\"".into()), "");
-    let editor =
-        || fs::read_dir(session.0.join("main")).unwrap().flatten().find(|pane| pane.path().join("text").exists());
+    // An editor still open when its pane is closed with the close key: the file it was given is a
+    // dot-named one of the session, not in its pane's folder, and is removed when the pane's end
+    // hangs the editor up.
+    assert_eq!(run_in("c", &pane, "echo ed''iting; tail -f \"$1\"".into()), "");
+    let editor = || {
+        let panes = fs::read_dir(session.0.join("main")).unwrap().flatten();
+        panes.map(|pane| pane.path()).find(|pane| read(&pane.join("shown/screen")).contains("editing"))
+    };
     until("the editor has its file", || editor().is_some());
-    let closing = editor().unwrap().path();
+    let closing = editor().unwrap();
+    assert!(!closing.join("text").exists(), "the text is in the editor's pane");
     assert_eq!(run_in("x/y", &closing, String::new()), "");
     until("the pane and its file are gone", || {
         !closing.exists()
@@ -2775,7 +2779,7 @@ fn a_name_that_is_a_number_of_no_line_is_chosen_without_a_word_of_complaint() {
     let (bin, pane, list) = (folder.0.join("bin"), folder.0.join("pane"), folder.0.join("list"));
     fs::create_dir_all(&bin).unwrap();
     fs::create_dir_all(&pane).unwrap();
-    let links = "for tool in mv awk head; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
+    let links = "for tool in rm awk head; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
     assert!(Command::new("sh").arg("-c").arg(links).arg(&bin).ended().success());
     fs::write(&list, "one\tthe first\n0\tnought\n").unwrap();
     fs::write(folder.0.join("typed"), "0\n").unwrap();
@@ -3276,25 +3280,54 @@ fn a_notice_that_cannot_be_opened_is_old_when_it_can_be() {
 }
 
 #[test]
-fn a_text_or_a_list_that_cannot_be_moved_into_its_pane_is_removed() {
-    // The editor's text and the picker's list are moved into their pane's folder and go with it. A
-    // pane that is gone by then (closed under them) takes nothing: the file is removed, not left in the session.
-    let session = Session::new("unmoved");
-    fs::create_dir_all(&session.0).unwrap();
-    let (text, list, enter) = (session.0.join(".text.case"), session.0.join(".pick.case"), session.0.join("enter"));
-    fs::write(&text, "private transcript\n").unwrap();
-    fs::write(&list, "a\tpane a\n").unwrap();
-    fs::write(&enter, "\n").unwrap();
-    for (script, args) in
-        [(".edit", vec!["--in", text.to_str().unwrap(), "1"]), (".pick", vec![list.to_str().unwrap(), "echo"])]
+fn a_text_and_a_list_stay_in_the_session_and_go_when_their_script_ends_or_is_hung_up() {
+    // The editor's text and the picker's list are dot-named files of the session, where their key
+    // made them: no script writes a name into a pane's folder. Each is removed by the script that
+    // has it when that ends.
+    let session = Session::new("scratch");
+    fs::create_dir_all(session.0.join("pane")).unwrap();
+    let script = |name: &str| format!("{}/keys/{name}", env!("CARGO_MANIFEST_DIR"));
+    let file = |name: &str, text: &str| {
+        fs::write(session.0.join(name), text).unwrap();
+        session.0.join(name)
+    };
+    let (text, list, typed) =
+        (file(".text.case", "a transcript\n"), file(".pick.case", "a\tpane a\n"), file("typed", "a\n"));
+    for (name, args) in
+        [(".edit", vec!["--in", text.to_str().unwrap(), "1"]), (".pick", vec![list.to_str().unwrap(), "echo", "chose"])]
     {
         let mut helper = Command::new("sh");
-        helper.arg(format!("{}/keys/{script}", env!("CARGO_MANIFEST_DIR"))).args(args);
-        helper.env("FUX_PANE", session.0.join("gone"));
-        let out = helper.run_from(Some(fs::File::open(&enter).unwrap()));
-        assert!(String::from_utf8_lossy(&out.stderr).contains("gone"), "{script}: mv says why");
+        helper.arg(script(name)).args(args).env("FUX_EDIT", "cat \"$1\"").env("FUX_PANE", session.0.join("pane"));
+        let out = helper.run_from(Some(fs::File::open(&typed).unwrap()));
+        let said = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(said.ends_with(if name == ".edit" { "a transcript\n" } else { "chose a\n" }), "{name}: {out:?}");
     }
     assert!(!text.exists() && !list.exists(), "left behind: text {} list {}", text.exists(), list.exists());
+    assert!(fs::read_dir(session.0.join("pane")).unwrap().next().is_none(), "something was put into the pane's folder");
+    // Also when its pane is hung up under it, started as the keys start it (by `.shell`, which the
+    // hangup ends first: that is what hangs up the rest): here the holder is killed outright, under
+    // an editor that never ends by itself and under the list's question.
+    let (text, list) = (file(".text.hup", "a transcript\n"), file(".pick.hup", "a\tpane a\n"));
+    let mut edits = session.fux();
+    edits.env("FUX_EDIT", "echo ed''iting; exec sleep 600").args(["start", "w/edits", "--", "sh", &script(".shell")]);
+    let edits = session.started(edits.args(["sh", &script(".edit"), "--in", text.to_str().unwrap(), "1"]));
+    // (No finder on the list's PATH: it asks, and waits for a line.)
+    let bin = session.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let links = "for tool in sh ls rm awk; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
+    assert!(Command::new("sh").arg("-c").arg(links).arg(&bin).ended().success());
+    let mut picks = session.fux();
+    picks.args(["start", "w/picks", "--", "env"]).arg(format!("PATH={}", bin.display()));
+    let picks = session.started(picks.args(["sh", &script(".shell"), "sh", &script(".pick")]).arg(&list).arg("echo"));
+    until("the editor and the list are open", || {
+        read(&edits.join("shown/screen")).contains("editing") && read(&picks.join("shown/screen")).contains("which (")
+    });
+    assert!(text.exists() && list.exists());
+    for pane in [&edits, &picks] {
+        let holder = read(&pane.join("status")).lines().next().unwrap().trim_start_matches("holder ").to_string();
+        assert!(Command::new("kill").args(["-KILL", &holder]).ended().success());
+    }
+    until("the text and the list are gone", || !text.exists() && !list.exists());
 }
 
 #[test]

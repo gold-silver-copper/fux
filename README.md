@@ -560,8 +560,11 @@ gets the file alone, as not every editor reads `+LINE`. An editor behind a
 launcher of another name is one of those: say how yours is run in
 `FUX_EDIT` (it comes before `$EDITOR`), a line of sh that is run with the file as `$1` and the line as `$2`, set where
 the viewer is started (a viewer started in a pane has it too; `export FUX_EDIT='hx "$1:$2"'`, or your launcher in
-`hx`'s place; `keys/.edit` reads it and is yours to change). The file is in the editor pane's own folder and is removed
-when the editor ends, or with the pane if that is closed first. Its tab goes too (the
+`hx`'s place; `keys/.edit` reads it and is yours to change). The file is a dot-named one in the session directory (`.text.XXXXXX`, yours alone to read; no script
+puts a file of its own into a pane's folder) and is removed
+when the editor ends, also when its pane is closed under it: the hangup ends the pane's `.shell`, that ends the editor, and
+`.edit` then removes the file. Only an `.edit` killed outright (`kill -9`) leaves it, and so does one you start as a pane's own program
+under an editor that does not end when its terminal goes: `rm` it. Its tab goes too (the
 pane removes its own folder, as a shell pane does), and the
 tab shown before it is shown again (the one you came from, unless you looked
 at another meanwhile); an editor that failed first waits for Enter, so that
@@ -575,7 +578,9 @@ do, and a text shorter than the screen stays open whatever `$LESS` says (`-+F`).
 There is no zoom either: a pane shown alone is a tab with one pane. If you
 want the key, these two scripts are it (`keys/C-b/z` and `keys/C-b/S-z`).
 The first takes the focused pane to a tab of its own and keeps its old tab's
-line in the pane's folder; the second writes that line back. (The
+line in a dot-named file of the session (`.alone.WORKSPACE+PANE`: a script's own
+file is not put into a pane's folder); the second writes that line back and
+removes the file. A pane closed while it is alone leaves that small file: `rm` it. (The
 second script edits the file by hand, which `fux layout` has no edit for, and
 so takes the same lock itself: sh has no way to, and it uses perl for that
 one line. Without perl, leave the line out: the edit is then a hand edit ("Don't" says what that risks).)
@@ -583,15 +588,16 @@ one line. Without perl, leave the line out: the edit is then a hand edit ("Don't
 ```sh
 #!/bin/sh
 # show this pane alone, in a tab of its own
-# The tab's line of the layout is kept in the pane's folder; `C-b Z` puts it back.
+# The tab's line of the layout is kept in a file of the session; `C-b Z` puts it back.
 [ -n "$FUX_PANE" ] || exit 0
-[ -f "$FUX_PANE/alone" ] && { echo "already alone: C-b Z puts it back"; exit; }
-fux layout | grep '^\*' > "$FUX_PANE/alone.new" || exit
+alone=$FUX_DIR/.alone.$FUX_WS+${FUX_PANE##*/}
+[ -f "$alone" ] && { echo "already alone: C-b Z puts it back"; exit; }
+fux layout | grep '^\*' > "$alone.new" || exit
 fux layout break
 # A pane that was alone already has not moved: there is nothing to put back.
-if fux layout | grep '^\*' | cmp -s - "$FUX_PANE/alone.new"
-then rm -f "$FUX_PANE/alone.new"
-else mv "$FUX_PANE/alone.new" "$FUX_PANE/alone"
+if fux layout | grep '^\*' | cmp -s - "$alone.new"
+then rm -f "$alone.new"
+else mv "$alone.new" "$alone"
 fi
 ```
 
@@ -600,7 +606,8 @@ fi
 # put this pane back where `C-b z` took it from
 # The layout is text: the kept line replaces the line of the tab the pane left,
 # and the pane's own line goes.
-[ -f "$FUX_PANE/alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
+alone=$FUX_DIR/.alone.$FUX_WS+${FUX_PANE##*/}
+[ -f "$alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
 ws=$FUX_DIR/$FUX_WS me=${FUX_PANE##*/}
 # Under the lock `fux layout` takes (flock on the workspace's folder), by way of perl (optional: see above).
 [ -n "$LOCKED" ] || LOCKED=1 exec perl -e 'use Fcntl ":flock"; open(D, "<", shift) && flock(D, LOCK_EX) or die; exit(system({ $ARGV[0] } @ARGV) >> 8)' "$ws" "$0"
@@ -615,7 +622,7 @@ awk -v me="$me" '
   !done { for (p in here) if (p in near) { print kept; done = 1; next } }
   { print }
   END { if (!done) print own }
-' "$FUX_PANE/alone" "$ws/layout" > "$ws/.layout.$$" && mv "$ws/.layout.$$" "$ws/layout" && rm -f "$FUX_PANE/alone"
+' "$alone" "$ws/layout" > "$ws/.layout.$$" && mv "$ws/.layout.$$" "$ws/layout" && rm -f "$alone"
 ```
 
 Put back: the tab, the pane's place in it, every share, the focus. Not put
