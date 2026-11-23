@@ -7,13 +7,22 @@ use crate::sixel::{self, Colour, Part};
 use crate::{PICTURE_MAX, PICTURES_MAX, Picture, PictureFormat, SIZE_MAX, png};
 
 const STORED_IMAGES_MAX: usize = 16;
+/// The most a screen keeps of images, all together: each one's pixels as RGBA, and a PNG's own bytes.
 const STORED_BYTES_MAX: usize = 16 << 20;
+const TOO_LARGE: &str = "ENOMEM: image is over the 16 MiB a screen keeps";
+/// The log's line for a transfer in parts that something other than its next part broke off.
+pub(crate) const BROKEN_OFF: &str = "a kitty picture that was not sent whole was dropped";
+const UNREADABLE: &str = "a kitty graphics command that could not be read was dropped";
+/// The most a screen keeps of the PNGs it made of images' pixels for the pane's folder, to use them again.
+const MADE_BYTES_MAX: usize = PICTURE_MAX;
 const PIXELS_MAX: usize = sixel::PIXELS_MAX;
 const CHUNK_RAW_BYTES: usize = 3072; // 3072 raw bytes == 4096 base64 characters
 
 const B64_ENC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// Decodes RFC 4648 base64 bytes, failing if invalid or if decoded size exceeds `max_out`.
+/// Decodes RFC 4648 base64 bytes, failing if invalid or if decoded size exceeds `max_out`: the one
+/// reading of base64 there is, a picture's and a clipboard's. Padding may be left out; if it is there
+/// it is the padding of that length, and what is left over of the last character is nothing.
 pub fn decode_base64(input: &[u8], max_out: usize) -> Result<Vec<u8>, &'static str> {
     if input.is_empty() {
         return Ok(Vec::new());
@@ -51,7 +60,7 @@ pub fn decode_base64(input: &[u8], max_out: usize) -> Result<Vec<u8>, &'static s
             out.push(((buf >> bits) & 0xff) as u8);
         }
     }
-    if bits == 6 || (pad == 1 && bits != 2) || (pad == 2 && bits != 4) {
+    if bits == 6 || (pad == 1 && bits != 2) || (pad == 2 && bits != 4) || buf & ((1 << bits) - 1) != 0 {
         return Err("truncated base64 payload");
     }
     Ok(out)
@@ -289,6 +298,9 @@ fn xterm_256(n: u8) -> [u8; 3] {
 
 // ---- Kitty APC command parser & screen storage --------------------------------
 
+/// The keys of the protocol, as of Kitty 0.50: each is one letter.
+const KEYS: &[u8] = b"aqeftsvSOiIpomNxywhXYcrCUzPQHVd";
+
 /// Dense key-value table for single-ASCII-letter Kitty control keys (`a`..`z`, `A`..`Z`).
 #[derive(Clone, Copy)]
 struct Kv {
@@ -316,6 +328,24 @@ impl Kv {
         (self.present & (1u64 << idx) != 0).then(|| self.values.get(idx).copied().unwrap_or(0))
     }
 
+    /// The table without `keys`.
+    fn without(mut self, keys: &[u8]) -> Self {
+        for idx in keys.iter().filter_map(|key| Self::index(*key)) {
+            self.present &= !(1u64 << idx);
+            if let Some(slot) = self.values.get_mut(idx) {
+                *slot = 0;
+            }
+        }
+        self
+    }
+
+    /// Whether each key of the table is in `other` too, with the same value.
+    fn within(&self, other: &Self) -> bool {
+        let said = |idx: &usize| self.present & (1u64 << idx) != 0;
+        self.present & !other.present == 0
+            && (0..self.values.len()).filter(said).all(|idx| self.values.get(idx) == other.values.get(idx))
+    }
+
     fn put(&mut self, key: u8, val: u32) {
         if let Some(idx) = Self::index(key)
             && let Some(slot) = self.values.get_mut(idx)
@@ -325,41 +355,37 @@ impl Kv {
         }
     }
 
-    fn parse(control: &[u8]) -> Result<Self, &'static str> {
+    /// Reads `key=value` pairs, each key one of the protocol's. A key that names one of several things
+    /// (`a`, `t`, `o`, `d`, `e`) takes one letter; `z`, `H` and `V` a number that may have a `-`; every
+    /// other key a number without sign. Anything else makes the command none, a key that is not the
+    /// protocol's too, as in Kitty: no pair of it is believed. (Passed over, such a key leaves the
+    /// command another one: `a=d,D=i,i=1`, with its `d` mistyped, is `a=d`, and deletes everything.)
+    fn parse(control: &[u8]) -> Option<Self> {
         let mut kv = Self::default();
         if control.is_empty() {
-            return Ok(kv);
+            return Some(kv);
         }
+        let number = |digits: &[u8]| {
+            let digits = std::str::from_utf8(digits).ok().filter(|text| text.bytes().all(|b| b.is_ascii_digit()))?;
+            digits.parse::<u32>().ok()
+        };
         for pair in control.split(|&b| b == b',') {
-            let eq = pair.iter().position(|&b| b == b'=').ok_or("EINVAL: malformed control key")?;
-            let key_bytes = pair.get(..eq).ok_or("EINVAL: malformed control key")?;
-            let val_bytes = pair.get(eq + 1..).ok_or("EINVAL: malformed control value")?;
-            if val_bytes.is_empty() {
-                return Err("EINVAL: empty control value");
+            let [key, b'=', value @ ..] = pair else { return None };
+            if !KEYS.contains(key) {
+                return None;
             }
-            if key_bytes.len() != 1 {
-                continue;
-            }
-            let key = *key_bytes.first().ok_or("EINVAL: malformed control key")?;
-            if Self::index(key).is_none() {
-                continue;
-            }
-            let val = if let [c] = val_bytes
-                && !c.is_ascii_digit()
-            {
-                u32::from(*c)
-            } else {
-                let s = std::str::from_utf8(val_bytes).map_err(|_| "EINVAL: non-ascii control value")?;
-                match key {
-                    b'z' | b'H' | b'V' => {
-                        s.parse::<i32>().map_err(|_| "EINVAL: invalid signed integer")?.cast_unsigned()
-                    }
-                    _ => s.parse::<u32>().map_err(|_| "EINVAL: invalid integer")?,
+            let value = match (key, value) {
+                (b'a' | b't' | b'o' | b'd' | b'e', [letter]) if letter.is_ascii_alphabetic() => u32::from(*letter),
+                (b'a' | b't' | b'o' | b'd' | b'e', _) => return None,
+                (b'z' | b'H' | b'V', [b'-', digits @ ..]) => {
+                    0i32.checked_sub_unsigned(number(digits)?)?.cast_unsigned()
                 }
+                (b'z' | b'H' | b'V', digits) => i32::try_from(number(digits)?).ok()?.cast_unsigned(),
+                (_, digits) => number(digits)?,
             };
-            kv.put(key, val);
+            kv.put(*key, value);
         }
-        Ok(kv)
+        Some(kv)
     }
 }
 
@@ -445,6 +471,8 @@ struct DisplaySpec {
     rows: u32,
     move_cursor: bool,
     z: i32,
+    /// It is one for Unicode placeholders (`U=1`) or relative to another (`P`, `Q`): fux draws neither.
+    not_drawn: bool,
 }
 
 impl DisplaySpec {
@@ -461,6 +489,7 @@ impl DisplaySpec {
             rows: kv.get(b'r').unwrap_or(0),
             move_cursor: kv.get(b'C') != Some(1),
             z: kv.get(b'z').map_or(0, u32::cast_signed),
+            not_drawn: b"UPQ".iter().any(|key| kv.get(*key).is_some_and(|n| n > 0)),
         }
     }
 }
@@ -522,7 +551,10 @@ struct StoredImage {
     w: u32,
     h: u32,
     rgba: Vec<u8>,
+    /// The PNG that was sent, if one was: the file of a placement of the whole image.
     png: Option<Vec<u8>>,
+    /// The PNG last made of its pixels, and of which of them (`[x, y, w, h]`): placed so again, it is used again.
+    made: Option<([u32; 4], Vec<u8>)>,
 }
 
 impl StoredImage {
@@ -532,6 +564,9 @@ impl StoredImage {
 }
 
 struct Loading {
+    /// What its first part said, but for `m` and `q`, with the `a` and `t` it may have left out
+    /// (`a=t`, `t=d`): a later part may say any of it again.
+    header: Kv,
     id: u32,
     number: u32,
     implicit_id: bool,
@@ -558,6 +593,8 @@ pub(crate) struct Outcome {
     pub reply: Option<String>,
     pub cursor: Option<CursorAdvance>,
     pub refused: Option<&'static str>,
+    /// Whether the command broke off a transfer in parts: the log is told that as well.
+    pub broke: bool,
 }
 
 /// Per-screen Kitty graphics image store and chunked-upload state.
@@ -592,66 +629,75 @@ impl Storage {
             Some(sep) => (data.get(..sep).unwrap_or_default(), data.get(sep + 1..).unwrap_or_default()),
             None => (data, &[][..]),
         };
-        let kv = match Kv::parse(control) {
-            Ok(kv) => kv,
-            Err(msg) => {
-                return Outcome { reply: Response::err(0, 0, 0, msg).encode(Quiet::No), ..Outcome::default() };
-            }
+        // (A command that cannot be read names no image to answer under: the log says it was dropped.)
+        let Some(kv) = Kv::parse(control) else {
+            return Outcome { refused: Some(UNREADABLE), broke: self.abandon(pictures), ..Outcome::default() };
         };
         let mut quiet = Quiet::from_val(kv.get(b'q'));
         let id = kv.get(b'i').unwrap_or(0);
         let number = kv.get(b'I').unwrap_or(0);
         let placement_id = kv.get(b'p').unwrap_or(0);
-
-        if id > 0 && number > 0 {
-            return Outcome {
-                reply: Response::err(id, number, placement_id, "EINVAL: image ID and number are mutually exclusive")
-                    .encode(quiet),
-                ..Outcome::default()
-            };
-        }
-
         let action = kv.get(b'a').and_then(|v| u8::try_from(v).ok()).unwrap_or(b't');
-        match action {
-            b'q' => self.query(&kv, payload, quiet),
-            b't' | b'T' => {
-                // Non-direct transmission abandons any in-progress chunked load.
-                if self.loading.is_some() && Medium::from_val(kv.get(b't')) != Medium::Direct {
-                    self.abandon_load(pictures);
-                }
-                // Continuation chunks inherit `q` from the initial chunk unless `q >= 1` is set.
-                if let Some(loading) = self.loading.as_mut() {
-                    match quiet {
-                        Quiet::No => quiet = loading.quiet,
-                        Quiet::Ok | Quiet::Failures => loading.quiet = quiet,
+
+        // A transfer in parts goes on with a part that says, `m` and `q` aside, nothing the first part
+        // did not: nothing at all, as the protocol has it, or some of the first part's keys again, each
+        // with its value, as programs send and Kitty takes (`kitten icat` says `a=T,q=2,m=1` where it
+        // began with `a=T`: without that no picture of its comes through). A part that says `a=t` or
+        // `a=T` and no more goes on with it too, whichever of the two the first part said: Kitty takes
+        // it, and the first part's stands. A query stores nothing and leaves the transfer be. Anything
+        // else is not part of it, be it a key the first part had not or another value for one it had:
+        // the transfer is dropped, and the command is itself.
+        let goes_on = self.loading.as_ref().is_some_and(|loading| {
+            let said = kv.without(b"mq");
+            let action_alone = matches!(action, b't' | b'T') && said.without(b"a").present == 0;
+            action_alone || said.within(&loading.header)
+        });
+        let broke = !goes_on && action != b'q' && self.abandon(pictures);
+        let mut outcome = if id > 0 && number > 0 {
+            let both = "EINVAL: image ID and number are mutually exclusive";
+            Outcome { reply: Response::err(id, number, placement_id, both).encode(quiet), ..Outcome::default() }
+        } else {
+            match action {
+                b'q' => self.query(&kv, payload, quiet),
+                b't' | b'T' => {
+                    // A later part that says `q=1` or `q=2` makes the transfer that quiet from there on,
+                    // less quiet than it was too, as in Kitty; one that says neither is as quiet as it was.
+                    if let Some(loading) = self.loading.as_mut() {
+                        match quiet {
+                            Quiet::No => quiet = loading.quiet,
+                            Quiet::Ok | Quiet::Failures => loading.quiet = quiet,
+                        }
                     }
+                    let show = action == b'T';
+                    self.transmit(&kv, show, payload, quiet, cell, screen_cols, cursor, pictures, next_picture)
                 }
-                self.transmit(&kv, action == b'T', payload, quiet, cell, screen_cols, cursor, pictures, next_picture)
+                b'p' => {
+                    let spec = DisplaySpec::from_kv(&kv);
+                    self.place(&spec, quiet, cell, screen_cols, cursor, pictures, next_picture, false)
+                }
+                b'd' => {
+                    self.delete(&kv, cursor, pictures);
+                    Outcome::default()
+                }
+                b'f' | b'a' | b'c' => {
+                    let no = "ENOTSUPPORTED: animation not supported";
+                    Outcome { reply: Response::err(id, number, placement_id, no).encode(quiet), ..Outcome::default() }
+                }
+                _ => {
+                    let no = "EINVAL: unsupported action";
+                    Outcome { reply: Response::err(id, number, placement_id, no).encode(quiet), ..Outcome::default() }
+                }
             }
-            b'p' => {
-                let spec = DisplaySpec::from_kv(&kv);
-                self.place(&spec, quiet, cell, screen_cols, cursor, pictures, next_picture, false)
-            }
-            b'd' => {
-                self.abandon_load(pictures);
-                self.delete(&kv, cursor, pictures);
-                Outcome::default()
-            }
-            b'f' | b'a' | b'c' => Outcome {
-                reply: Response::err(id, number, placement_id, "ENOTSUPPORTED: animation not supported").encode(quiet),
-                ..Outcome::default()
-            },
-            _ => Outcome {
-                reply: Response::err(id, number, placement_id, "EINVAL: unsupported action").encode(quiet),
-                ..Outcome::default()
-            },
-        }
+        };
+        outcome.broke = broke;
+        outcome
     }
 
     fn query(&self, kv: &Kv, payload: &[u8], quiet: Quiet) -> Outcome {
         let id = kv.get(b'i').unwrap_or(0);
-        let number = kv.get(b'I').unwrap_or(0);
         let placement_id = kv.get(b'p').unwrap_or(0);
+        // (A query names its image by `i`, as the protocol says and Kitty holds it: one that gives
+        // only a number, `I`, is not answered. One that gives both never comes here.)
         if id == 0 {
             return Outcome::default();
         }
@@ -688,8 +734,8 @@ impl Storage {
             payload,
             true,
         ) {
-            Ok(_) => Response::ok(id, number, placement_id),
-            Err(msg) => Response::err(id, number, placement_id, msg),
+            Ok(_) => Response::ok(id, 0, placement_id),
+            Err(msg) => Response::err(id, 0, placement_id, msg),
         };
         Outcome { reply: resp.encode(quiet), ..Outcome::default() }
     }
@@ -708,29 +754,27 @@ impl Storage {
         next_picture: &mut u32,
     ) -> Outcome {
         let more = kv.get(b'm') == Some(1);
-        if self.loading.is_some() {
+        if let Some(loading) = self.loading.as_ref() {
+            // (What goes wrong with a later part is told as what goes wrong with the whole is: under the
+            // name the transfer gave its image, and not at all if it gave none.)
+            let said = (!loading.implicit_id).then_some((loading.id, loading.number, loading.placement_id));
+            let fail =
+                |message| said.and_then(|(id, number, pid)| Response::err(id, number, pid, message).encode(quiet));
             let chunk = match decode_base64(payload, PICTURE_MAX) {
-                Ok(chunk) => chunk,
-                Err(_) => {
-                    let (id, num, pid) = self.loading.as_ref().map_or((0, 0, 0), |l| (l.id, l.number, l.placement_id));
-                    self.abandon_load(pictures);
+                Ok(chunk) if loading.data.len().saturating_add(chunk.len()) <= PICTURE_MAX => chunk,
+                Ok(_) => {
+                    self.abandon(pictures);
                     return Outcome {
-                        reply: Response::err(id, num, pid, "EINVAL: invalid base64").encode(quiet),
+                        reply: fail("ENOMEM: image payload exceeds 4 MiB"),
+                        refused: Some("a kitty picture sent as more than 4 MiB of data was dropped"),
                         ..Outcome::default()
                     };
                 }
+                Err(_) => {
+                    self.abandon(pictures);
+                    return Outcome { reply: fail("EINVAL: invalid base64"), ..Outcome::default() };
+                }
             };
-            let overflow =
-                self.loading.as_ref().is_some_and(|l| l.data.len().saturating_add(chunk.len()) > PICTURE_MAX);
-            if overflow {
-                let (id, num, pid) = self.loading.as_ref().map_or((0, 0, 0), |l| (l.id, l.number, l.placement_id));
-                self.abandon_load(pictures);
-                return Outcome {
-                    reply: Response::err(id, num, pid, "ENOMEM: image payload exceeds 4 MiB").encode(quiet),
-                    refused: Some("a kitty picture over 4 MiB was dropped"),
-                    ..Outcome::default()
-                };
-            }
             if let Some(loading) = self.loading.as_mut() {
                 loading.data.extend_from_slice(&chunk);
             }
@@ -791,7 +835,11 @@ impl Storage {
             spec.image_number = number;
             spec
         });
+        let mut header = kv.without(b"mq");
+        header.put(b'a', u32::from(if and_display { b'T' } else { b't' }));
+        header.put(b't', u32::from(b'd'));
         let loading = Loading {
+            header,
             id,
             number,
             implicit_id,
@@ -823,40 +871,26 @@ impl Storage {
         pictures: &mut Vec<Picture>,
         next_picture: &mut u32,
     ) -> Outcome {
-        let decoded = match decode_image(
-            loading.format,
-            Medium::Direct,
-            loading.compression,
-            loading.width,
-            loading.height,
-            &loading.data,
-            false,
-        ) {
-            Ok(decoded) => decoded,
-            Err(msg) => {
-                if let Some(old_id) = loading.replaces {
-                    self.remove_image_and_placements(old_id, pictures);
-                }
-                return Outcome {
-                    reply: (!loading.implicit_id)
-                        .then(|| Response::err(loading.id, loading.number, loading.placement_id, msg).encode(quiet))
-                        .flatten(),
-                    ..Outcome::default()
-                };
-            }
-        };
+        // (The image this one was sent to take the place of goes, whether or not this one is kept.)
         if let Some(old_id) = loading.replaces {
             self.remove_image_and_placements(old_id, pictures);
         }
-        let img = StoredImage {
-            id: loading.id,
-            number: loading.number,
-            w: decoded.w,
-            h: decoded.h,
-            rgba: decoded.rgba,
-            png: decoded.png,
-        };
-        self.store_image(img, pictures);
+        let (format, compression, data) = (loading.format, loading.compression, &loading.data);
+        let kept = decode_image(format, Medium::Direct, compression, loading.width, loading.height, data, false)
+            .and_then(|decoded| {
+                let DecodedImage { w, h, rgba, png } = decoded;
+                let img = StoredImage { id: loading.id, number: loading.number, w, h, rgba, png, made: None };
+                self.store_image(img, pictures)
+            });
+        if let Err(msg) = kept {
+            return Outcome {
+                reply: (!loading.implicit_id)
+                    .then(|| Response::err(loading.id, loading.number, loading.placement_id, msg).encode(quiet))
+                    .flatten(),
+                refused: (msg == TOO_LARGE).then_some("a kitty picture over the 16 MiB a screen keeps was dropped"),
+                ..Outcome::default()
+            };
+        }
 
         if let Some(spec) = loading.display {
             return self.place(&spec, quiet, cell, screen_cols, cursor, pictures, next_picture, loading.implicit_id);
@@ -898,6 +932,17 @@ impl Storage {
             };
         };
         let img_id = img.id;
+        // (Refused, not drawn at the cursor as a plain placement: that would cover text the program
+        // meant to keep and move its cursor.)
+        if spec.not_drawn {
+            let no = "ENOTSUPPORTED: Unicode placeholders and relative placements are not supported";
+            return Outcome {
+                reply: (!implicit_id)
+                    .then(|| Response::err(img_id, spec.image_number, spec.placement_id, no).encode(quiet))
+                    .flatten(),
+                ..Outcome::default()
+            };
+        }
         let sx = spec.src_x.min(img.w);
         let sy = spec.src_y.min(img.h);
         let sw = if spec.src_w > 0 { spec.src_w } else { img.w }.min(img.w - sx);
@@ -928,29 +973,39 @@ impl Storage {
             };
         }
 
-        // Encode PNG for the pane folder: reuse validated original PNG when uncropped, else encode cropped RGBA.
-        let full = sx == 0 && sy == 0 && sw == img.w && sh == img.h;
-        let png_bytes = if full && let Some(orig) = img.png.as_ref().filter(|b| b.len() <= PICTURE_MAX) {
-            Ok(orig.clone())
-        } else if full {
-            png::encode_rgba(img.w, img.h, &img.rgba, PICTURE_MAX)
-        } else {
-            let cropped = crop_rgba(img.w as usize, &img.rgba, sx as usize, sy as usize, sw as usize, sh as usize);
-            png::encode_rgba(sw, sh, &cropped, PICTURE_MAX)
+        // The PNG for the pane's folder: the one that was sent, for the whole image; else one made of the
+        // pixels, which is kept and used again while the same part of the image is placed.
+        let rect = [sx, sy, sw, sh];
+        let full = rect == [0, 0, img.w, img.h];
+        let kept = match (&img.png, &img.made) {
+            (Some(sent), _) if full && sent.len() <= PICTURE_MAX => Some(sent.clone()),
+            (_, Some((of, made))) if *of == rect => Some(made.clone()),
+            _ => None,
         };
-        let png_bytes = match png_bytes {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                return Outcome {
-                    reply: (!implicit_id)
-                        .then(|| {
-                            Response::err(img_id, spec.image_number, spec.placement_id, "ENOMEM: image exceeds 4 MiB")
-                                .encode(quiet)
-                        })
-                        .flatten(),
-                    refused: Some("a kitty picture over 4 MiB was dropped"),
-                    ..Outcome::default()
+        let png_bytes = match kept {
+            Some(bytes) => bytes,
+            None => {
+                let made = if full {
+                    png::encode_rgba(img.w, img.h, &img.rgba, PICTURE_MAX)
+                } else {
+                    let part = crop_rgba(img.w as usize, &img.rgba, sx as usize, sy as usize, sw as usize, sh as usize);
+                    png::encode_rgba(sw, sh, &part, PICTURE_MAX)
                 };
+                // (The PNG is not compressed: four bytes a pixel and one a row, in a file of 4 MiB at most.)
+                let Ok(made) = made else {
+                    let no = "ENOMEM: a PNG of these pixels would be over 4 MiB (about a million pixels fit)";
+                    return Outcome {
+                        reply: (!implicit_id)
+                            .then(|| Response::err(img_id, spec.image_number, spec.placement_id, no).encode(quiet))
+                            .flatten(),
+                        refused: Some(
+                            "a kitty picture of more pixels than its 4 MiB file holds (about a million) was dropped",
+                        ),
+                        ..Outcome::default()
+                    };
+                };
+                self.keep_made(img_id, rect, &made);
+                made
             }
         };
 
@@ -988,7 +1043,7 @@ impl Storage {
         });
         let reply =
             (!implicit_id).then(|| Response::ok(img_id, spec.image_number, spec.placement_id).encode(quiet)).flatten();
-        Outcome { reply, cursor: cursor_advance, refused }
+        Outcome { reply, cursor: cursor_advance, refused, broke: false }
     }
 
     fn delete(&mut self, kv: &Kv, cursor: (usize, usize), pictures: &mut Vec<Picture>) {
@@ -1139,12 +1194,29 @@ impl Storage {
         }
     }
 
-    fn abandon_load(&mut self, pictures: &mut Vec<Picture>) {
-        if let Some(loading) = self.loading.take()
-            && let Some(old_id) = loading.replaces
-        {
+    /// Keeps the PNG made of `rect` of image `id`. Of the PNGs made of other images, the newest
+    /// images' stay, as many as fit beside it.
+    fn keep_made(&mut self, id: u32, rect: [u32; 4], png: &[u8]) {
+        let mut room = MADE_BYTES_MAX.saturating_sub(png.len());
+        for img in self.images.iter_mut().rev() {
+            let len = img.made.as_ref().map_or(0, |(_, made)| made.len());
+            if img.id == id {
+                img.made = Some((rect, png.to_vec()));
+            } else if len > room {
+                img.made = None;
+            } else {
+                room -= len;
+            }
+        }
+    }
+
+    /// Drops the transfer that is under way, with the image it was to take the place of; whether there was one.
+    pub(crate) fn abandon(&mut self, pictures: &mut Vec<Picture>) -> bool {
+        let Some(loading) = self.loading.take() else { return false };
+        if let Some(old_id) = loading.replaces {
             self.remove_image_and_placements(old_id, pictures);
         }
+        true
     }
 
     fn remove_image_and_placements(&mut self, id: u32, pictures: &mut Vec<Picture>) {
@@ -1162,8 +1234,16 @@ impl Storage {
         }
     }
 
-    fn store_image(&mut self, img: StoredImage, pictures: &mut Vec<Picture>) {
+    /// Keeps `img`. While there are too many, or they are too large together, another goes for it: the
+    /// oldest that is not placed, or the oldest of all when all are. One that is too large alone is not
+    /// kept, and none goes for it here: the image it was sent to replace is gone by then, `finish_load`
+    /// removes that first. (`decode_image` refuses such a one sooner, before its pixels are unpacked;
+    /// the bound is held here whatever comes.)
+    fn store_image(&mut self, img: StoredImage, pictures: &mut Vec<Picture>) -> Result<(), &'static str> {
         let needed = img.byte_len();
+        if needed > STORED_BYTES_MAX {
+            return Err(TOO_LARGE);
+        }
         let total = |imgs: &[StoredImage]| imgs.iter().map(StoredImage::byte_len).sum::<usize>();
         while self.images.len() >= STORED_IMAGES_MAX || total(&self.images).saturating_add(needed) > STORED_BYTES_MAX {
             // Prefer evicting oldest unplaced image first, then oldest placed image (matches Kitty/Ghostty).
@@ -1177,6 +1257,7 @@ impl Storage {
             pictures.retain(|p| !(p.format == PictureFormat::Png && p.kitty_id == evicted.id));
         }
         self.images.push(img);
+        Ok(())
     }
 }
 
@@ -1210,6 +1291,11 @@ fn decode_image(
     } else {
         payload.to_vec()
     };
+    // An image is kept as RGBA, and a PNG's own bytes with it: one that a screen's store has no room
+    // for, even empty, is refused before its pixels are unpacked. (Pixels that were sent, by the
+    // width and height sent with them, before anything is; a PNG by its header, which is read once
+    // the file is whole, and so after `o=z` is undone: that is 4 MiB at most.)
+    let fits = |pixels: usize, more: usize| pixels.saturating_mul(4).saturating_add(more) <= STORED_BYTES_MAX;
     let max_uncompressed = match format {
         Format::Png => PICTURE_MAX,
         Format::Rgb | Format::Rgba => {
@@ -1223,6 +1309,9 @@ fn decode_image(
             let pixels = (width as usize).checked_mul(height as usize).ok_or("EINVAL: dimensions too large")?;
             if pixels > PIXELS_MAX {
                 return Err("EINVAL: dimensions too large");
+            }
+            if !fits(pixels, 0) {
+                return Err(TOO_LARGE);
             }
             pixels.checked_mul(bpp).ok_or("EINVAL: dimensions too large")?
         }
@@ -1238,6 +1327,9 @@ fn decode_image(
 
     match format {
         Format::Png => {
+            if png::dimensions(&data).is_some_and(|(w, h)| !fits(w as usize * h as usize, data.len())) {
+                return Err(TOO_LARGE);
+            }
             let (w, h, rgba) = png::decode(&data, PIXELS_MAX).map_err(|_| "EINVAL: invalid PNG data")?;
             Ok(DecodedImage { w, h, rgba, png: Some(data) })
         }
@@ -1295,4 +1387,18 @@ fn crop_rgba(img_w: usize, rgba: &[u8], sx: usize, sy: usize, sw: usize, sh: usi
         }
     }
     out
+}
+
+/// (Here and not with the other tests: nothing outside this file can hand `store_image` such an image.)
+#[cfg(test)]
+#[test]
+fn an_image_over_what_a_screen_keeps_is_not_stored_whoever_asks() {
+    let image = |id, bytes| StoredImage { id, number: 0, w: 1, h: 1, rgba: vec![0; bytes], png: None, made: None };
+    let ids = |storage: &Storage| storage.images.iter().map(|img| img.id).collect::<Vec<_>>();
+    let (mut storage, mut pictures) = (Storage::default(), Vec::new());
+    assert_eq!(storage.store_image(image(1, 4), &mut pictures), Ok(()));
+    assert_eq!(storage.store_image(image(2, STORED_BYTES_MAX + 1), &mut pictures), Err(TOO_LARGE));
+    assert_eq!(ids(&storage), [1]);
+    assert_eq!(storage.store_image(image(3, STORED_BYTES_MAX), &mut pictures), Ok(()));
+    assert_eq!(ids(&storage), [3]);
 }

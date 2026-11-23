@@ -49,13 +49,18 @@ pub fn zlib(data: &[u8], max_out: usize) -> Result<Vec<u8>, &'static str> {
 pub fn deflate(data: &[u8], max_out: usize) -> Result<Vec<u8>, &'static str> {
     let mut reader = Bits::new(data);
     let mut out = Vec::new();
+    // (The fixed trees are the same for every block that uses them: built for the first, then kept.)
+    let mut fixed = None;
     loop {
         let final_block = reader.take(1)? != 0;
         match reader.take(2)? {
             0 => read_stored(&mut reader, &mut out, max_out)?,
             1 => {
-                let (lit, dist) = fixed_trees()?;
-                decode_block(&mut reader, &lit, &dist, &mut out, max_out)?;
+                let (lit, dist) = match &fixed {
+                    Some(trees) => trees,
+                    None => fixed.insert(fixed_trees()?),
+                };
+                decode_block(&mut reader, lit, dist, &mut out, max_out)?;
             }
             2 => {
                 let (lit, dist) = dynamic_trees(&mut reader)?;
@@ -95,9 +100,13 @@ pub fn zlib_store(data: &[u8]) -> Vec<u8> {
 pub fn adler32(data: &[u8]) -> u32 {
     const MOD: u32 = 65521;
     let (mut a, mut b) = (1u32, 0u32);
-    for &byte in data {
-        a = (a + u32::from(byte)) % MOD;
-        b = (b + a) % MOD;
+    // (5,552 bytes are the most whose sums fit 32 bits: the remainder is taken once for each such run.)
+    for run in data.chunks(5552) {
+        for &byte in run {
+            a += u32::from(byte);
+            b += a;
+        }
+        (a, b) = (a % MOD, b % MOD);
     }
     (b << 16) | a
 }
@@ -164,8 +173,13 @@ struct Tree {
     symbols: Vec<u16>,
 }
 
+#[cfg(test)]
+thread_local!(pub(crate) static TREES_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
 impl Tree {
     fn build(lengths: &[u8]) -> Result<Self, &'static str> {
+        #[cfg(test)]
+        TREES_BUILT.with(|built| built.set(built.get() + 1));
         let mut counts = [0u16; MAX_BITS + 1];
         for &len in lengths {
             let len = usize::from(len);

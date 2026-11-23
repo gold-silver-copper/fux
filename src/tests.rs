@@ -234,6 +234,27 @@ fn render_picture_bridges_sixel_and_kitty_both_ways() {
     let _ = std::fs::remove_file(&png_path);
 }
 
+#[test]
+fn a_pictures_line_with_three_fields_draws_a_png_whatever_the_terminal_draws_pictures_in() {
+    // A line someone wrote by hand says the file, the row and the column and no more. The viewer
+    // measures the picture itself: a PNG of 25 by 45 pixels is three cells by three of 10 by 20,
+    // in a terminal that takes Kitty graphics as in one that takes sixel.
+    let png_path = std::env::temp_dir().join(format!("fux-three-{}.png", std::process::id()));
+    let png = crate::term::png::encode_rgba(25, 45, &[0u8, 0, 255, 255].repeat(25 * 45), 65536).unwrap();
+    std::fs::write(&png_path, &png).unwrap();
+    for (kitty_out, starts) in [(true, "\x1b_Ga=T,f=100,C=1,q=2,m=1;"), (false, "\x1bP")] {
+        let key = (png_path.clone(), None, kitty_out, [0, 0, 0, 0, 0], [10, 10, 10, 20]);
+        let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("a picture");
+        assert!(seq.starts_with(starts), "{kitty_out}: {seq:?}");
+        assert_eq!((cols, rows), (3, 3), "{kitty_out}");
+    }
+    // In a tile with room for two cells by one of it, that much of it is drawn: its own pixels, cut.
+    let key = (png_path.clone(), None, true, [0, 0, 0, 0, 0], [2, 1, 10, 20]);
+    let (seq, cols, rows) = crate::view::render_picture(&key).unwrap().expect("a part");
+    assert!(seq.starts_with("\x1b_Ga=T,f=100,C=1,q=2,x=0,y=0,w=20,h=20,m=1;") && (cols, rows) == (2, 1), "{seq:?}");
+    let _ = std::fs::remove_file(&png_path);
+}
+
 /// A sixel picture written from a rule (the colour of each pixel, or none), plainly: for each
 /// band each colour's row, every run with its count. And its pixels, as the rule gives them.
 

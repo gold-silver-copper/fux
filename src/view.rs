@@ -138,8 +138,14 @@ pub fn render_picture(
         if *kitty_out {
             let Some((w, h)) = png::dimensions(&bytes) else { return Ok(None) };
             let (w, h) = (w as usize, h as usize);
-            let native =
-                *laid_w > 0 && *laid_h > 0 && *total_cols == w.div_ceil(*laid_w) && *total_rows == h.div_ceil(*laid_h);
+            // A line that does not say how many cells the picture has (one written by hand, with the file
+            // and its place alone) means the picture as it is: as many of this terminal's cells as its pixels fill.
+            let unsaid = *total_cols == 0 || *total_rows == 0;
+            let native = unsaid
+                || *laid_w > 0
+                    && *laid_h > 0
+                    && *total_cols == w.div_ceil(*laid_w)
+                    && *total_rows == h.div_ceil(*laid_h);
             if native {
                 let (wide, high) = (w.min(avail_w), h.saturating_sub(above_px).min(avail_h));
                 if wide == 0 || high == 0 {

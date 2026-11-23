@@ -1727,12 +1727,21 @@ impl Term {
     fn end_string(&mut self, end: Option<&str>) {
         self.state = State::Ground;
         let string = std::mem::take(&mut self.string);
-        let Some(end) = end.filter(|_| string.len() <= PICTURE_MAX + 1) else { return };
+        let end = end.filter(|_| string.len() <= PICTURE_MAX + 1);
+        // A graphics command that was broken off, is over the bound or has a control byte in it is dropped,
+        // and with it the transfer in parts it may have been the next part of: what follows is not that one's.
+        if string.starts_with(b"_G") && self.told.kitty_graphics && (end.is_none() || self.string_holed) {
+            if self.kitty.abandon(&mut self.screen.pictures) {
+                self.refuse(kitty::BROKEN_OFF);
+            }
+            return;
+        }
+        let Some(end) = end else { return };
         match string.as_slice() {
             [b'P', b'$', b'q', data @ ..] if !self.string_holed => self.report_setting(data),
             [b'P', b'+', b'q', data @ ..] if !self.string_holed => self.report_caps(data),
             [b'P', data @ ..] if Term::is_sixel(data) => self.picture(data),
-            [b'_', b'G', data @ ..] if self.told.kitty_graphics && !self.string_holed => self.kitty_graphics(data),
+            [b'_', b'G', data @ ..] if self.told.kitty_graphics => self.kitty_graphics(data),
             [b']', data @ ..] => self.command(&String::from_utf8_lossy(data), end),
             _ => {}
         }
@@ -1940,7 +1949,8 @@ impl Term {
             "52" => match rest.split_once(';').map(|(_, what)| what) {
                 // Setting only: a program is never told what is on the clipboard.
                 Some("?") => self.refuse("a program asked to read the clipboard: that is refused"),
-                what => match what.and_then(base64_decode) {
+                // (A string is 4 MiB at most, so what it says in base64 is under that too.)
+                what => match what.and_then(|text| kitty::decode_base64(text.as_bytes(), PICTURE_MAX).ok()) {
                     Some(bytes) if bytes.len() <= 1 << 20 => self.out.clipboard = Some(bytes),
                     Some(_) => self.refuse("a clipboard over 1 MiB was dropped"),
                     None => self.refuse("a clipboard that was not base64 was dropped"),
@@ -2000,6 +2010,9 @@ impl Term {
             &mut self.screen.pictures,
             &mut self.next_picture,
         );
+        if outcome.broke {
+            self.refuse(kitty::BROKEN_OFF);
+        }
         if let Some(refused) = outcome.refused {
             self.refuse(refused);
         }
@@ -2278,6 +2291,9 @@ impl Term {
             1047 => {
                 if !on && self.screen.alt {
                     self.fill(Cell::blank(Style::default()));
+                    // (Its Kitty placements go as its sixel pictures do, and the images kept for them.)
+                    self.screen.pictures.clear();
+                    self.kitty.clear();
                 }
                 // Asked for while already there, it is left as it is (as in xterm).
                 self.set_alt(on, on && !self.screen.alt);
@@ -2363,46 +2379,10 @@ impl Term {
     }
 }
 
-/// Base64, as the clipboard command carries it. `None` for text that is not:
-/// a character outside the set, padding anywhere but at the end, or a length no bytes give.
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    // Padding, if there is any, must be the padding of that length; and what is left over of
-    // the last character must be nothing.
-    let padded = text.len() - text.trim_end_matches('=').len();
-    let text = text.trim_end_matches('=');
-    if text.len() % 4 == 1 || (padded > 0 && !(text.len() + padded).is_multiple_of(4)) || padded > 2 {
-        return None;
-    }
-    let (mut out, mut bits, mut have) = (Vec::new(), 0u32, 0u32);
-    for byte in text.bytes() {
-        let six = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        };
-        (bits, have) = ((bits << 6) | u32::from(six), have + 6);
-        if have >= 8 {
-            have -= 8;
-            out.push((bits >> have) as u8);
-            bits &= (1 << have) - 1;
-        }
-    }
-    (bits == 0).then_some(out)
-}
-
+/// Base64 of `bytes`, with its padding: what [`kitty::encode_base64`] adds to a text.
 pub fn base64_encode(bytes: &[u8]) -> String {
-    const SET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let three = chunk.iter().fold(0u32, |n, b| (n << 8) | u32::from(*b)) << (8 * (3 - chunk.len()));
-        for i in 0..4 {
-            let six = SET.get((three >> (18 - 6 * i)) as usize & 63).copied().unwrap_or(b'=');
-            out.push(if i <= chunk.len() { char::from(six) } else { '=' });
-        }
-    }
+    kitty::encode_base64(bytes, &mut out);
     out
 }
 

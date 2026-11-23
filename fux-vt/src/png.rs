@@ -23,6 +23,8 @@ pub fn dimensions(data: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Decodes a PNG image into `(width, height, rgba)` where `rgba.len() == width * height * 4`.
+/// One of more than `max_pixels` pixels, a side over [`DIMENSION_MAX`], or more than
+/// [`crate::PICTURE_MAX`] (4 MiB) of compressed image data is refused.
 pub fn decode(data: &[u8], max_pixels: usize) -> Result<(u32, u32, Vec<u8>), &'static str> {
     if data.get(..8) != Some(&SIGNATURE) {
         return Err("invalid PNG signature");
@@ -138,7 +140,9 @@ pub fn decode(data: &[u8], max_pixels: usize) -> Result<(u32, u32, Vec<u8>), &'s
 }
 
 /// Encodes 8-bit RGBA pixels (`rgba.len() == w * h * 4`) into a standard valid PNG
-/// using stored zlib blocks, failing if the result would exceed `max` bytes.
+/// using stored zlib blocks, failing if the result would exceed `max` bytes. Nothing is
+/// compressed: the file is `(4 * w + 1) * h` bytes and a few hundred, so `max` bounds the pixels
+/// (4 MiB holds 1024 by 1023 of them, not 1024 by 1024).
 pub fn encode_rgba(w: u32, h: u32, rgba: &[u8], max: usize) -> Result<Vec<u8>, &'static str> {
     if w == 0 || h == 0 || w > DIMENSION_MAX || h > DIMENSION_MAX {
         return Err("invalid PNG dimensions");
@@ -152,6 +156,8 @@ pub fn encode_rgba(w: u32, h: u32, rgba: &[u8], max: usize) -> Result<Vec<u8>, &
     if raw_len + 64 > max {
         return Err("PNG exceeds size limit");
     }
+    #[cfg(test)]
+    ENCODED.with(|encoded| encoded.set(encoded.get() + 1));
     let mut raw = Vec::with_capacity(raw_len);
     for row in rgba.chunks_exact(row_bytes) {
         raw.push(0); // Filter type 0 (None)
@@ -179,6 +185,9 @@ pub fn encode_rgba(w: u32, h: u32, rgba: &[u8], max: usize) -> Result<Vec<u8>, &
     write_chunk(&mut out, b"IEND", &[]);
     Ok(out)
 }
+
+#[cfg(test)]
+thread_local!(pub(crate) static ENCODED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
 
 struct Header {
     w: u32,
@@ -461,13 +470,18 @@ fn write_chunk(out: &mut Vec<u8>, kind: &[u8; 4], payload: &[u8]) {
     out.extend_from_slice(&crc.to_be_bytes());
 }
 
-fn crc32(data: &[u8]) -> u32 {
+/// What eight steps of the CRC make of each byte.
+static CRC_TABLE: std::sync::LazyLock<[u32; 256]> = std::sync::LazyLock::new(|| {
+    let step = |crc: u32, _| if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+    std::array::from_fn(|byte| (0..8).fold(byte as u32, step))
+});
+
+pub(crate) fn crc32(data: &[u8]) -> u32 {
+    let table = &*CRC_TABLE;
     let mut crc = 0xffff_ffffu32;
     for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
-        }
+        let step = table.get(usize::from(crc as u8 ^ byte)).copied().unwrap_or(0);
+        crc = step ^ (crc >> 8);
     }
     !crc
 }
