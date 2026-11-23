@@ -2320,6 +2320,16 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     were, and named here so that they are not thought covered: `log` (made by
     `fux start`), and `history` and `history.styled` (added to in place) are
     opened by name.
+  - **A file is put together under a dot-name.** `NAME.new` was a name like a
+    fact's: whoever copied a pane's folder between two renames copied half a
+    file as if it were one, and `layout.new` was a name no pane could have for
+    that reason alone. It is `.NAME.new` now, the dot on the file's name and
+    not on its path (`main/.screen.new`, `.shown.new`, `.layout.new`), so that
+    the one rule "a name that starts with a dot is nobody's fact" covers it,
+    as it covers the key scripts' own files in a session. `layout.new` is a
+    name like any other. (D117 called the pane folder's format frozen; these
+    names were never a reader's to rely on, and the README named them only to
+    say how a file is replaced.)
 
 ## The old fux3's bugs: which classes are gone
 

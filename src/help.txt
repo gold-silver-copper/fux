@@ -15,7 +15,7 @@ START A PANE
     P=$(fux start agent-demo/job -- sh)       # workspace agent-demo, pane job: prints $D/agent-demo/job
     ls "$D" "$D/agent-demo"                   # workspaces; the panes of one
 NAME is WORKSPACE/PANE (or PANE alone: the workspace in $FUX_WS, else your own pane's, else
-main). Letters, digits, . _ - only, 64 at most, no dot first, and not -, layout, layout.new,
+main). Letters, digits, . _ - only, 64 at most, no dot first, and not -, layout,
 colours or keyboard. No program after -- means $SHELL, else /bin/sh. The program gets the
 starter's environment and working directory, and its first size from COLUMNS and LINES (else 80, 24):
     W=$(cd / && COLUMNS=120 LINES=40 fux start agent-demo/wide -- sh -c 'pwd; exec sleep 600')

@@ -79,7 +79,7 @@ fn workspace(given: Option<&str>, wrong: &str) -> Result<String, String> {
 
 /// The names fux will not make: `-` (which marks a tab in the layout and is "the one before" to
 /// `fux layout`), the session's files of what the terminal is like, and a workspace's layout.
-const TAKEN: [&str; 5] = ["-", "colours", "keyboard", "layout", "layout.new"];
+const TAKEN: [&str; 4] = ["-", "colours", "keyboard", "layout"];
 
 /// A name fux will make: letters, digits, `.`, `_` and `-`, not starting with a dot, and none of `TAKEN`.
 fn is_name(name: &str) -> bool {
@@ -102,13 +102,22 @@ pub fn stamp(file: fs::Metadata) -> (u64, i64, i64, u64) {
 }
 
 /// Replaces a file in one step, so a reader sees the old one or the new one. The new one is put
-/// together beside it, under the name with `.new`, and does not stay there when it cannot be given
-/// its name.
+/// together beside it, under `staging`'s name for it, and does not stay there when it cannot be
+/// given its name.
 pub fn replace(name: impl AsRef<Path>, content: &[u8]) -> std::io::Result<()> {
-    let mut new = name.as_ref().as_os_str().to_owned();
-    new.push(".new");
-    let replaced = write_new(Path::new(&new), content).and_then(|()| fs::rename(&new, name));
+    let new = staging(name.as_ref());
+    let replaced = write_new(&new, content).and_then(|()| fs::rename(&new, name));
     replaced.inspect_err(|_| _ = fs::remove_file(&new))
+}
+
+/// The name a file is put together under before it is given its own: `.NAME.new` in the same
+/// folder (`main/.screen.new` for `main/screen`). A name that starts with a dot is no pane's, no
+/// workspace's and no fact's: whoever lists a folder for what is in it passes it over.
+pub fn staging(name: &Path) -> PathBuf {
+    let mut new = std::ffi::OsString::from(".");
+    new.push(name.file_name().unwrap_or_default());
+    new.push(".new");
+    name.with_file_name(new)
 }
 
 /// Writes a file that is made for it: what had the name goes first, and the file is made only if

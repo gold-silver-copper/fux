@@ -2218,7 +2218,8 @@ fn a_link_where_a_file_is_written_anew_is_not_written_through() {
     let pane = session.start("p", &["sh", "-c", draws]);
     until("the program is there", || read(&pane.join("shown/screen")).contains("ready"));
     let kept = |name: &str| session.0.join(name);
-    for (link, file) in [("state.new", "state-kept"), ("pic-1.sixel", "picture-kept"), ("pic-1.sixel.new", "new-kept")]
+    for (link, file) in
+        [(".state.new", "state-kept"), ("pic-1.sixel", "picture-kept"), (".pic-1.sixel.new", "new-kept")]
     {
         fs::write(kept(file), "not the pane's\n").unwrap();
         std::os::unix::fs::symlink(kept(file), pane.join(link)).unwrap();
@@ -2242,6 +2243,21 @@ fn a_link_where_a_file_is_written_anew_is_not_written_through() {
     until("the round has failed", || read(&titled.join("log")).contains("cannot write the pane's files"));
     let left: Vec<_> = fs::read_dir(&titled).unwrap().flatten().map(|file| file.file_name()).collect();
     assert!(!left.iter().any(|name| name.to_string_lossy().ends_with(".new")), "{left:?}");
+    // The name a file is put together under starts with a dot, in whichever folder the file is: a
+    // folder of that name stops the file being written, and one of the name without the dot does not.
+    for (folder, stops) in [("main/screen.new", false), ("main/.screen.new", true)] {
+        let pane =
+            session.start(if stops { "stopped" } else { "written" }, &["sh", "-c", "read x; echo shown; sleep 600"]);
+        fs::create_dir(pane.join(folder)).unwrap();
+        send(&pane.join("in"), "\n");
+        until("the round is over", || {
+            read(&pane.join("main/screen")).contains("shown") != stops
+                && read(&pane.join("log")).contains("cannot write the pane's files") == stops
+        });
+    }
+    // Nor is the name of a layout being written one that a pane may not have.
+    assert!(session.fux().args(["start", "layout.new", "--", "sleep", "600"]).run().status.success());
+    assert!(session.fux().arg("layout").run().status.success() && session.0.join("main/layout.new/state").exists());
 }
 
 #[test]
@@ -2253,7 +2269,7 @@ fn rounds_of_writing_that_fail_do_not_leave_their_pictures_for_good() {
     let draws = "until [ -e \"$FUX_PANE/go\" ]; do sleep 0.05; done; i=0; while [ $i -lt 12 ]; do i=$((i + 1)); \
         printf '\\033[2J\\033[H\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\'; sleep 0.1; done; : > \"$FUX_PANE/drawn\"; sleep 600";
     let pane = session.start("p", &["sh", "-c", draws]);
-    fs::create_dir(pane.join("main/pictures.new")).unwrap();
+    fs::create_dir(pane.join("main/.pictures.new")).unwrap();
     fs::write(pane.join("go"), "").unwrap();
     let files = || {
         fs::read_dir(&pane)
@@ -2354,13 +2370,13 @@ fn a_shell_named_by_nothing_is_no_shell_named() {
 #[test]
 fn a_pane_started_again_that_never_came_up_leaves_no_state_of_the_run_before() {
     // A pane whose program ended with 37 is started again, and the new holder cannot write its
-    // first screen (`marks.new` is a directory). Its `status` has the new program's number by
+    // first screen (`.marks.new` is a directory). Its `status` has the new program's number by
     // then: the `state` beside it is not the old program's, so `fux wait` has no end to tell of.
     let session = Session::new("wrongrun");
     let pane = session.start("p", &["sh", "-c", "exit 37"]);
     let wait = || session.fux().arg("wait").arg(&pane).run();
     assert!(String::from_utf8_lossy(&wait().stdout).ends_with("state exited 37\n"));
-    fs::create_dir(pane.join("marks.new")).unwrap();
+    fs::create_dir(pane.join(".marks.new")).unwrap();
     let again = session.fux().args(["start", "p", "--", "sleep", "600"]).run();
     assert!(String::from_utf8_lossy(&again.stderr).contains("cannot write the screen"), "{again:?}");
     let (waited, state) = (wait(), read(&pane.join("state")));
@@ -2498,7 +2514,7 @@ fn a_restore_that_failed_keeps_the_text_and_a_pane_started_again_is_told_the_key
         assert!(session.fux().arg("wait").arg(pane).ended().success());
     }
     assert!(read(&lost.join("history")).contains("\n17\n") && read(&told.join("shown/screen")).trim().is_empty());
-    fs::create_dir(lost.join("marks.new")).unwrap();
+    fs::create_dir(lost.join(".marks.new")).unwrap();
     // (Run as a login runs it: by the script's path, with no FUX_KEYS.)
     // (A CDPATH that leads to the script's folder makes `cd` print where it went: the keys are still one path.)
     let mut restore = Command::new("sh");
@@ -2910,14 +2926,14 @@ fn nothing_of_a_pane_changes_under_an_even_generation_also_when_the_odd_one_cann
     let pane = session.start("p", &["sh", "-c", prints]);
     let files = |pane: &Path| (fact(pane, "generation"), read(&pane.join("history")), read(&pane.join("main/screen")));
     let before = files(&pane);
-    fs::create_dir(pane.join("generation.new")).unwrap();
+    fs::create_dir(pane.join(".generation.new")).unwrap();
     send(&pane.join("in"), "\n");
     until("the program has printed and the rounds fail", || {
         pane.join("printed").exists() && read(&pane.join("log")).matches("cannot write the pane's files").count() >= 2
     });
     assert!(files(&pane) == before, "a file changed while `generation` said {}", before.0);
     // When it can be written again, the next round is written whole and ends even, and no line is lost.
-    fs::remove_dir(pane.join("generation.new")).unwrap();
+    fs::remove_dir(pane.join(".generation.new")).unwrap();
     send(&pane.join("ctl"), "notify again\n");
     let even = |pane: &Path| fact(pane, "generation").parse::<u64>().is_ok_and(|n| n % 2 == 0 && n > 2);
     until("a round is written", || even(&pane) && files(&pane).2.contains("\ndone\n"));

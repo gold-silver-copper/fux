@@ -518,9 +518,10 @@ impl Holder {
             ("main" | "alt", Some(_)) => absent(fs::create_dir(name), ErrorKind::AlreadyExists),
             ("alt", None) => absent(fs::remove_dir_all(name), ErrorKind::NotFound),
             ("shown", Some(folder)) => {
-                absent(fs::remove_file("shown.new"), ErrorKind::NotFound)?;
-                std::os::unix::fs::symlink(String::from_utf8_lossy(folder).as_ref(), "shown.new")?;
-                fs::rename("shown.new", name)
+                let new = crate::staging(Path::new(name));
+                absent(fs::remove_file(&new), ErrorKind::NotFound)?;
+                std::os::unix::fs::symlink(String::from_utf8_lossy(folder).as_ref(), &new)?;
+                fs::rename(&new, name)
             }
             (_, Some(bytes)) => replace(name, bytes),
             (_, None) => absent(fs::remove_file(name), ErrorKind::NotFound),

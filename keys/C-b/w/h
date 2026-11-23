@@ -6,7 +6,7 @@ cd "$FUX_DIR" || exit
 prev= found=
 for w in */; do
   w=${w%/}
-  case $w in ''|-|colours|keyboard|layout|layout.new|.*|*[!A-Za-z0-9._-]*) continue ;; esac
+  case $w in ''|-|colours|keyboard|layout|.*|*[!A-Za-z0-9._-]*) continue ;; esac
   [ ${#w} -le 64 ] && [ ! -L "$w" ] && [ -d "$w" ] || continue
   [ "$w" = "$FUX_WS" ] && found=$prev
   prev=$w
