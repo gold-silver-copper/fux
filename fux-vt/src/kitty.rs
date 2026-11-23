@@ -660,7 +660,8 @@ impl Storage {
             match action {
                 b'q' => self.query(&kv, payload, quiet),
                 b't' | b'T' => {
-                    // A later part is as quiet as the first was, unless it asks for more quiet itself.
+                    // A later part that says `q=1` or `q=2` makes the transfer that quiet from there on,
+                    // less quiet than it was too, as in Kitty; one that says neither is as quiet as it was.
                     if let Some(loading) = self.loading.as_mut() {
                         match quiet {
                             Quiet::No => quiet = loading.quiet,
