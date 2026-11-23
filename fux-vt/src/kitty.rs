@@ -715,29 +715,27 @@ impl Storage {
         next_picture: &mut u32,
     ) -> Outcome {
         let more = kv.get(b'm') == Some(1);
-        if self.loading.is_some() {
+        if let Some(loading) = self.loading.as_ref() {
+            // (What goes wrong with a later part is told as what goes wrong with the whole is: under the
+            // name the transfer gave its image, and not at all if it gave none.)
+            let said = (!loading.implicit_id).then_some((loading.id, loading.number, loading.placement_id));
+            let fail =
+                |message| said.and_then(|(id, number, pid)| Response::err(id, number, pid, message).encode(quiet));
             let chunk = match decode_base64(payload, PICTURE_MAX) {
-                Ok(chunk) => chunk,
-                Err(_) => {
-                    let (id, num, pid) = self.loading.as_ref().map_or((0, 0, 0), |l| (l.id, l.number, l.placement_id));
+                Ok(chunk) if loading.data.len().saturating_add(chunk.len()) <= PICTURE_MAX => chunk,
+                Ok(_) => {
                     self.abandon_load(pictures);
                     return Outcome {
-                        reply: Response::err(id, num, pid, "EINVAL: invalid base64").encode(quiet),
+                        reply: fail("ENOMEM: image payload exceeds 4 MiB"),
+                        refused: Some("a kitty picture over 4 MiB was dropped"),
                         ..Outcome::default()
                     };
                 }
+                Err(_) => {
+                    self.abandon_load(pictures);
+                    return Outcome { reply: fail("EINVAL: invalid base64"), ..Outcome::default() };
+                }
             };
-            let overflow =
-                self.loading.as_ref().is_some_and(|l| l.data.len().saturating_add(chunk.len()) > PICTURE_MAX);
-            if overflow {
-                let (id, num, pid) = self.loading.as_ref().map_or((0, 0, 0), |l| (l.id, l.number, l.placement_id));
-                self.abandon_load(pictures);
-                return Outcome {
-                    reply: Response::err(id, num, pid, "ENOMEM: image payload exceeds 4 MiB").encode(quiet),
-                    refused: Some("a kitty picture over 4 MiB was dropped"),
-                    ..Outcome::default()
-                };
-            }
             if let Some(loading) = self.loading.as_mut() {
                 loading.data.extend_from_slice(&chunk);
             }

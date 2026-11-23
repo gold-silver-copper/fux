@@ -2071,3 +2071,25 @@ fn kitty_placements_of_one_image_share_one_png_and_the_checksums_are_the_standar
     }
     assert_eq!(png::ENCODED.with(std::cell::Cell::get), 2);
 }
+
+#[test]
+fn kitty_answers_nothing_about_a_transfer_that_named_no_image() {
+    // A transfer with neither `i` nor `I` gets no answer, also when a later part of it is what
+    // fails: the id the terminal gave the image for itself is not told. One that named its image
+    // is told why, under that name.
+    let half = vec![0u8; (2 << 20) + 4096];
+    for (named, answers) in [
+        ("", ["", ""]),
+        ("i=7,", ["\x1b_Gi=7;EINVAL: invalid base64\x1b\\", "\x1b_Gi=7;ENOMEM: image payload exceeds 4 MiB\x1b\\"]),
+    ] {
+        let mut t = Term::new(20, 10);
+        t.feed(format!("\x1b_Ga=T,{named}f=100,m=1;iVBORw0K\x1b\\\x1b_Gm=0;!!!\x1b\\").as_bytes());
+        assert_eq!(reply(&mut t), answers[0]);
+        t.feed(&apc(&format!("a=T,{named}f=32,s=1,v=1,m=1"), &half));
+        t.feed(&apc("m=1", &half));
+        let out = t.take(0);
+        assert_eq!(String::from_utf8(out.reply).unwrap(), answers[1]);
+        assert_eq!(out.refused, ["a kitty picture over 4 MiB was dropped"]);
+        assert!(t.shown().pictures.is_empty());
+    }
+}
