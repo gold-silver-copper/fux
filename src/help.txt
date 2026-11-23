@@ -19,8 +19,8 @@ main). Letters, digits, . _ - only, 64 at most, no dot first, and not -, layout,
 colours or keyboard. No program after -- means $SHELL, else /bin/sh. The program gets the
 starter's environment and working directory, and its first size from COLUMNS and LINES (else 80, 24):
     W=$(cd / && COLUMNS=120 LINES=40 fux start agent-demo/wide -- sh -c 'pwd; exec sleep 600')
-A second start of a live pane's name fails ("a holder already keeps this pane"); the
-name of a pane whose program has ended is started again in place, its files replaced.
+A pane is one run. A name that is there is refused ("the name is taken"), whether its pane
+runs or has ended, and nothing of it is touched: rm -r its directory to start the name anew.
 
 WAIT FOR WHAT YOU EXPECT
 `shown/screen` is what the pane shows now, as plain text (`shown` is a link to the folder of
@@ -103,6 +103,8 @@ modes   words, or an empty line: appcursor, keypad, paste, focus, mousesgr, mous
 state   running | hungup | exited CODE | killed SIGNAL (lost ERROR: the holder could not wait)
 status  three lines: holder N / pid N (the program's) / command ... (no pid line until the
         program runs: none at all if it could not be started)
+command the program and its arguments as given, each ended by a zero byte (absent until the
+        program runs): tr '\0' '\n' < command
 main/, alt/, shown   a folder for each screen, the same five names in each (screen,
         screen.styled, lines, links, pictures): main always, the screen a shell prints on; alt
         while a full-screen program has the alternate screen (kept if the pane ends under it);
@@ -139,8 +141,8 @@ times it was the same even number; else read again, with a limit:
 each time: one that writes a file writes it anew, `> file` inside it and not after `together`.
 It keeps what it knows in `d`, `g` and `tries`: the command must leave those names alone, and
 not call `together` itself. DIR must name the same pane throughout. The number speaks for what
-the holder alone writes: not for `cwd` (the program's to write too, and removed when a pane is
-started again in place), `log`, the FIFOs or files of your own. A pane whose holder was killed
+the holder alone writes: not for `cwd` (the program's to write too), `log`, the FIFOs or
+files of your own. A pane whose holder was killed
 while it wrote stays odd: the limit runs out, and you take the files as they are.)
 The text a pane keeps, oldest first, wrapped rows joined into lines:
     whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(sed -n 2p "$1/main/lines")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/main/screen"; }

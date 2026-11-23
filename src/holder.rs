@@ -12,6 +12,7 @@ use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -53,8 +54,7 @@ struct Holder {
     pty: Option<(File, Vec<u8>)>,
     /// The files as they were written last (a folder too, with nothing): one is written again only when it changes.
     written: HashMap<&'static str, Option<Vec<u8>>>,
-    /// The number in `generation`: odd from a round's first change to its end, even while the files
-    /// agree. It goes on from what an earlier holder of this pane left, from the next even number.
+    /// The number in `generation`: odd from a round's first change to its end, even while the files agree.
     generation: u64,
     /// How many rounds of writing had a notice: the number in the `notice` file.
     noticed: u32,
@@ -96,8 +96,6 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
     // `fux start` says under what name the pane's directory was started, and its program is told
     // the same. The session is found as by any command in a pane: the one named, or two folders up.
     let session = crate::here().ok_or("hold is started by `fux start`".into()).and_then(|_| crate::session())?;
-    // (The `cwd` an earlier holder left goes before the program starts: the file is the program's to write too.)
-    let _ = fs::remove_file("cwd");
     let child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
@@ -122,7 +120,7 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
         term: Term::new(usize::from(cols), usize::from(rows)),
         pty: Some((master, Vec::new())),
         written: HashMap::new(),
-        generation: crate::text(Path::new("generation"), 32).trim().parse().map_or(0, |n: u64| n.saturating_add(n % 2)),
+        generation: 0,
         noticed: 0,
         ctl_line: Vec::new(),
         pictures: BTreeSet::new(),
@@ -131,9 +129,9 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
         logged: 0,
     };
     holder.term.told().name = format!("{} {}", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION"));
-    // The FIFOs are there for as long as the pane is kept, and not after (what an earlier holder
-    // left of those names goes): not after a program that could not be started either.
-    let result = holder.start(child, &program.to_string_lossy(), &command);
+    // The FIFOs are there for as long as the pane is kept, and not after: not after a program
+    // that could not be started either.
+    let result = holder.start(child, &command);
     let _ = fs::remove_file("in");
     let _ = fs::remove_file("ctl");
     result
@@ -142,7 +140,7 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
 impl Holder {
     /// Makes the FIFOs, says in `status` who holds the pane, starts the program and keeps the pane
     /// until it ends.
-    fn start(&mut self, mut program: Command, name: &str, command: &str) -> Result<(), String> {
+    fn start(&mut self, mut program: Command, command: &str) -> Result<(), String> {
         // Who holds the pane and what it runs are in `status` before the program is started: the
         // program, whose parent this is, finds from its first instruction which pane it is in. (After
         // `generation` says the files are being written.) Its own number follows when it runs: one
@@ -154,8 +152,16 @@ impl Holder {
         let fifos = sys::fifo("in").and_then(|input| Ok((input, sys::fifo("ctl")?)));
         let made = fifos.and_then(|fifos| self.turn(true).and_then(|()| status(None)).map(|()| fifos));
         let (input, ctl) = made.map_err(|e| format!("cannot make the FIFOs or the status: {e}"))?;
+        let name = program.get_program().to_string_lossy().into_owned();
         let mut child = program.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
-        status(Some(child.id())).map_err(|e| format!("cannot write the status: {e}"))?;
+        // What it runs, as it was given: the program and each of its arguments, each ended by a zero
+        // byte (as `/proc/N/cmdline` has them). `status` has that for a person to read, joined by
+        // blanks, which cannot be split again: this is what starts the same anew. Written when the
+        // program has been started: a pane with none has run nothing.
+        let given = std::iter::once(program.get_program()).chain(program.get_args());
+        let given: Vec<u8> = given.flat_map(|word| word.as_bytes().iter().copied().chain([0])).collect();
+        let written = status(Some(child.id())).and_then(|()| replace("command", &given));
+        written.map_err(|e| format!("cannot write the status or the command: {e}"))?;
         // The program's end arrives as a line on a pipe, so the loop waits on it
         // like on everything else.
         let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
@@ -174,14 +180,7 @@ impl Holder {
     }
 
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
-        // What an earlier holder of this pane left goes before this one's first screen is there: its clipboard,
-        // its history, its title (a fact with none) and its program's end, which is not that of the one `status`
-        // names now. Not its pictures' files: each stays until a picture of its number is written.
-        for old in ["clipboard", "notice", "state"] {
-            let _ = fs::remove_file(old);
-        }
         for history in ["history", "history.styled"] {
-            let _ = fs::remove_file(format!("{history}.1"));
             File::create(history).map_err(|e| format!("cannot make {history}: {e}"))?;
         }
         self.publish(None).map_err(|e| format!("cannot write the screen: {e}"))?;

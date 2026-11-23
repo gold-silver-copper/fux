@@ -64,6 +64,7 @@ kept by review and tests):
 ```
 in, ctl                         FIFOs: typed bytes; commands (kill, resize, notify)
 status, state, log              the holder and program: pids and command; running/exited/...; what went wrong
+command                         the program and its arguments as given, each ended by a zero byte
 generation                      odd while the holder writes a round, even when done
 size, cursor, modes             the terminal: size; the cursor on the screen shown; input modes
 title, cwd, clipboard, notice   what the program said

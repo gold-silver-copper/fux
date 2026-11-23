@@ -37,7 +37,7 @@ use std::process::{Command, ExitCode, Stdio};
 
 const USAGE: &str = "\
 fux dir                         print the session directory
-fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/
+fux start [NAME] [-- PROGRAM…]  start a pane; NAME is PANE, WORKSPACE/PANE or WORKSPACE/, and not one that is there
 fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and the state it left
 fux view [WORKSPACE]            show a workspace's panes in tiles and tabs (default: $FUX_WS; else in a pane its own; else main)
 fux layout [EDIT…]              print the layout of the workspace (the same default), or edit it
@@ -189,14 +189,17 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let workspace = session.join(workspace);
     let fail = |path: &Path, e: std::io::Error| format!("{}: {e}", path.display());
     DirBuilder::new().mode(0o700).recursive(true).create(&workspace).map_err(|e| fail(&workspace, e))?;
-    // Making the directory is what claims a new name; a name that is taken is a pane to start
-    // again in place, and a number that is taken is not free. A folder that was made stays,
-    // also when the start fails: its `log` says why.
+    // Making the directory is what claims a name, and a pane is one run: a name that is there is
+    // refused, whatever has it (a pane that runs, one that has ended, a folder nobody started), and a
+    // number that is there is not free. A folder that was made stays, also when the start fails:
+    // its `log` says why.
+    let taken = "the name is taken, and a pane is one run: `rm -r` what has it to start the name anew";
     let dir = (1..10000)
         .map(|n| if pane.is_empty() { workspace.join(n.to_string()) } else { workspace.join(pane) })
         .find_map(|dir| match DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => Some(Ok(dir)),
             Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Some(Err(fail(&dir, e))),
-            made => (made.is_ok() || !pane.is_empty()).then_some(Ok(dir)),
+            Err(_) => (!pane.is_empty()).then(|| Err(format!("{}: {taken}", dir.display()))),
         })
         .ok_or("no free number for a pane")??;
     // The lock on the pane's directory is the proof that a holder lives: the kernel drops it when the holder is
@@ -205,7 +208,8 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let lock = std::env::set_current_dir(&dir).and_then(|()| sys::open(".", false)).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
         Ok(()) => launch(&session, &dir, &cwd, lock, sections.next().unwrap_or_default()),
-        Err(_) => Err("a holder already keeps this pane".into()),
+        // (Of a folder made a moment ago: whoever looked at it in that moment has its lock.)
+        Err(_) => Err("its folder is locked by another".into()),
     };
     started.map_err(|why| format!("{}: {why}", dir.display()))?;
     say(dir.as_os_str().as_bytes())
