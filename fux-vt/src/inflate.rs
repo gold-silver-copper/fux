@@ -100,9 +100,13 @@ pub fn zlib_store(data: &[u8]) -> Vec<u8> {
 pub fn adler32(data: &[u8]) -> u32 {
     const MOD: u32 = 65521;
     let (mut a, mut b) = (1u32, 0u32);
-    for &byte in data {
-        a = (a + u32::from(byte)) % MOD;
-        b = (b + a) % MOD;
+    // (5,552 bytes are the most whose sums fit 32 bits: the remainder is taken once for each such run.)
+    for run in data.chunks(5552) {
+        for &byte in run {
+            a += u32::from(byte);
+            b += a;
+        }
+        (a, b) = (a % MOD, b % MOD);
     }
     (b << 16) | a
 }

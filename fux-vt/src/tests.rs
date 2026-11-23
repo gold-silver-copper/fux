@@ -1986,7 +1986,7 @@ fn zeros(n: usize) -> Vec<u8> {
     code(0b110, 3, &mut stream); // the last block, type 1 (the three bits are read from the other end)
     let copies = n.saturating_sub(1) / 258;
     (0..n.min(1)).for_each(|_| code(0b0011_0000, 8, &mut stream));
-    (0..copies).for_each(|_| code(0b1100_0101_00000, 13, &mut stream)); // 258 bytes from 1 back
+    (0..copies).for_each(|_| code(0b1100_0101 << 5, 13, &mut stream)); // 258 bytes, from 1 back
     (0..n.saturating_sub(1) - copies * 258).for_each(|_| code(0b0011_0000, 8, &mut stream));
     code(0, 7 + 7, &mut stream); // the block's end, and the last byte's rest
     stream.extend_from_slice(&((n as u32 % 65521) << 16 | 1).to_be_bytes());
@@ -2023,4 +2023,51 @@ fn kitty_refuses_an_image_larger_than_a_screen_keeps_and_evicts_nothing_for_it()
     t.feed(&apc("a=t,i=5,f=32,s=2048,v=2048,o=z", &zeros(2048 * 2048 * 4)));
     assert_eq!(reply(&mut t), "\x1b_Gi=5;OK\x1b\\");
     assert!(t.shown().pictures.is_empty());
+}
+
+#[test]
+fn kitty_placements_of_one_image_share_one_png_and_the_checksums_are_the_standard_ones() {
+    use crate::{PICTURE_MAX, inflate, png};
+    // CRC-32 and Adler-32 by their published check values, and Adler-32 over more bytes than its
+    // sums may take before the remainder, against the sum taken byte by byte.
+    assert_eq!((png::crc32(b"123456789"), png::crc32(b"IEND")), (0xcbf4_3926, 0xae42_6082));
+    assert_eq!((inflate::adler32(b"Wikipedia"), inflate::adler32(&[])), (0x11e6_0398, 1));
+    let long = vec![0xffu8; 1 << 20];
+    let slow = long
+        .iter()
+        .fold((1u32, 0u32), |(a, b), &byte| ((a + u32::from(byte)) % 65521, (b + a + u32::from(byte)) % 65521));
+    assert_eq!(inflate::adler32(&long), slow.1 << 16 | slow.0);
+
+    let rgba: Vec<u8> = (0..64u32 * 64).flat_map(|i| [(i % 251) as u8, (i / 64) as u8, 7, 255]).collect();
+    let part: Vec<u8> = rgba.chunks(64 * 4).skip(8).take(16).flat_map(|row| row[8 * 4..24 * 4].to_vec()).collect();
+    let whole_png = png::encode_rgba(64, 64, &rgba, PICTURE_MAX).unwrap();
+    let part_png = png::encode_rgba(16, 16, &part, PICTURE_MAX).unwrap();
+    assert!(whole_png.ends_with(&[0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82]));
+    assert_eq!(png::decode(&part_png, 256).unwrap(), (16, 16, part));
+
+    // Pixels that were sent are made a PNG for the pane's folder when they are placed: once for
+    // the image and the part of it that is asked for, however many times it is placed.
+    let mut t = Term::new(40, 20);
+    t.feed(&apc("a=t,i=1,f=32,s=64,v=64,q=2", &rgba));
+    png::ENCODED.with(|encoded| encoded.set(0));
+    fn placed(t: &mut Term, command: &[u8]) -> Vec<u8> {
+        t.feed(command);
+        let new = t.new_pictures();
+        assert_eq!(new.len(), 1);
+        new.into_iter().next().unwrap().2
+    }
+    for _ in 0..20 {
+        assert!(placed(&mut t, b"\x1b_Ga=p,i=1,q=2\x1b\\") == whole_png);
+    }
+    assert_eq!(png::ENCODED.with(std::cell::Cell::get), 1);
+    for _ in 0..20 {
+        assert!(placed(&mut t, b"\x1b_Ga=p,i=1,x=8,y=8,w=16,h=16,q=2\x1b\\") == part_png);
+    }
+    assert_eq!(png::ENCODED.with(std::cell::Cell::get), 2);
+    // A PNG that was sent is the file as it is, and never made again.
+    t.feed(&apc("a=t,i=2,f=100,q=2", &part_png));
+    for _ in 0..3 {
+        assert!(placed(&mut t, b"\x1b_Ga=p,i=2,q=2\x1b\\") == part_png);
+    }
+    assert_eq!(png::ENCODED.with(std::cell::Cell::get), 2);
 }

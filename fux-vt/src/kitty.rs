@@ -10,6 +10,8 @@ const STORED_IMAGES_MAX: usize = 16;
 /// The most a screen keeps of images, all together: each one's pixels as RGBA, and a PNG's own bytes.
 const STORED_BYTES_MAX: usize = 16 << 20;
 const TOO_LARGE: &str = "ENOMEM: image is over the 16 MiB a screen keeps";
+/// The most a screen keeps of the PNGs it made of images' pixels for the pane's folder, to use them again.
+const MADE_BYTES_MAX: usize = PICTURE_MAX;
 const PIXELS_MAX: usize = sixel::PIXELS_MAX;
 const CHUNK_RAW_BYTES: usize = 3072; // 3072 raw bytes == 4096 base64 characters
 
@@ -524,7 +526,10 @@ struct StoredImage {
     w: u32,
     h: u32,
     rgba: Vec<u8>,
+    /// The PNG that was sent, if one was: the file of a placement of the whole image.
     png: Option<Vec<u8>>,
+    /// The PNG last made of its pixels, and of which of them (`[x, y, w, h]`): placed so again, it is used again.
+    made: Option<([u32; 4], Vec<u8>)>,
 }
 
 impl StoredImage {
@@ -858,6 +863,7 @@ impl Storage {
             h: decoded.h,
             rgba: decoded.rgba,
             png: decoded.png,
+            made: None,
         };
         self.store_image(img, pictures);
 
@@ -931,29 +937,43 @@ impl Storage {
             };
         }
 
-        // Encode PNG for the pane folder: reuse validated original PNG when uncropped, else encode cropped RGBA.
-        let full = sx == 0 && sy == 0 && sw == img.w && sh == img.h;
-        let png_bytes = if full && let Some(orig) = img.png.as_ref().filter(|b| b.len() <= PICTURE_MAX) {
-            Ok(orig.clone())
-        } else if full {
-            png::encode_rgba(img.w, img.h, &img.rgba, PICTURE_MAX)
-        } else {
-            let cropped = crop_rgba(img.w as usize, &img.rgba, sx as usize, sy as usize, sw as usize, sh as usize);
-            png::encode_rgba(sw, sh, &cropped, PICTURE_MAX)
+        // The PNG for the pane's folder: the one that was sent, for the whole image; else one made of the
+        // pixels, which is kept and used again while the same part of the image is placed.
+        let rect = [sx, sy, sw, sh];
+        let full = rect == [0, 0, img.w, img.h];
+        let kept = match (&img.png, &img.made) {
+            (Some(sent), _) if full && sent.len() <= PICTURE_MAX => Some(sent.clone()),
+            (_, Some((of, made))) if *of == rect => Some(made.clone()),
+            _ => None,
         };
-        let png_bytes = match png_bytes {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                return Outcome {
-                    reply: (!implicit_id)
-                        .then(|| {
-                            Response::err(img_id, spec.image_number, spec.placement_id, "ENOMEM: image exceeds 4 MiB")
-                                .encode(quiet)
-                        })
-                        .flatten(),
-                    refused: Some("a kitty picture over 4 MiB was dropped"),
-                    ..Outcome::default()
+        let png_bytes = match kept {
+            Some(bytes) => bytes,
+            None => {
+                let made = if full {
+                    png::encode_rgba(img.w, img.h, &img.rgba, PICTURE_MAX)
+                } else {
+                    let part = crop_rgba(img.w as usize, &img.rgba, sx as usize, sy as usize, sw as usize, sh as usize);
+                    png::encode_rgba(sw, sh, &part, PICTURE_MAX)
                 };
+                let Ok(made) = made else {
+                    return Outcome {
+                        reply: (!implicit_id)
+                            .then(|| {
+                                Response::err(
+                                    img_id,
+                                    spec.image_number,
+                                    spec.placement_id,
+                                    "ENOMEM: image exceeds 4 MiB",
+                                )
+                                .encode(quiet)
+                            })
+                            .flatten(),
+                        refused: Some("a kitty picture over 4 MiB was dropped"),
+                        ..Outcome::default()
+                    };
+                };
+                self.keep_made(img_id, rect, &made);
+                made
             }
         };
 
@@ -1138,6 +1158,22 @@ impl Storage {
                 if !pictures.iter().any(|p| p.format == PictureFormat::Png && p.kitty_id == id) {
                     self.images.retain(|img| img.id != id);
                 }
+            }
+        }
+    }
+
+    /// Keeps the PNG made of `rect` of image `id`. Of the PNGs made of other images, the newest
+    /// images' stay, as many as fit beside it.
+    fn keep_made(&mut self, id: u32, rect: [u32; 4], png: &[u8]) {
+        let mut room = MADE_BYTES_MAX.saturating_sub(png.len());
+        for img in self.images.iter_mut().rev() {
+            let len = img.made.as_ref().map_or(0, |(_, made)| made.len());
+            if img.id == id {
+                img.made = Some((rect, png.to_vec()));
+            } else if len > room {
+                img.made = None;
+            } else {
+                room -= len;
             }
         }
     }
