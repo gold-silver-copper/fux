@@ -2557,6 +2557,17 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     macOS's drops an argument that is empty. Written after the program was
     started, not with the first `status`: a folder whose program never ran
     has none, and is not tried again by every `.restore`.
+  - **A `command` that cannot be written costs the record, not the pane**
+    (after the review of PR #483: with files held to 8 KiB and 16 KiB of
+    arguments, `status` fit and `command` did not; the holder left with the
+    error, and its program, which was running by then, was kept by nothing
+    where a hangup did not end it. Master started that pane). The bytes are
+    put together and the pipe for the program's end is made before the
+    program is started; once it runs, a `status` or a `command` that cannot
+    be written is a line in `log`, and the holder holds. Such a pane has no
+    `command`, and `.restore` passes it over. Still an end of the holder
+    after the program was started: a thread that cannot be made to wait for
+    it, as on master.
   - **`keys/.restore [SESSION]`** starts anew every pane that has a `command`,
     that no holder keeps (the lock, by the perl line of the help page) and
     whose `in` nobody reads (a folder that is read with no holder is a

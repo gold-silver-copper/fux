@@ -2829,6 +2829,30 @@ fn a_panes_status_names_its_holder_before_its_program_is_started() {
 }
 
 #[test]
+fn a_command_that_cannot_be_written_down_does_not_cost_the_pane_its_holder() {
+    // The program is started, and then what it runs cannot be written: here a file may have 8 KiB
+    // (`ulimit -f`, with the signal for it blocked, so that the write fails and nothing is killed)
+    // and the arguments are 16. The holder goes on holding, and its `log` says what is missing: a
+    // holder that left then left a program running that nothing kept.
+    let session = Session::new("norecord");
+    let blocks = "sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGXFSZ)); exec @ARGV";
+    let mut start = Command::new("sh");
+    start.args(["-c", "ulimit -f 16 && exec perl -MPOSIX -e \"$0\" \"$@\"", blocks, env!("CARGO_BIN_EXE_fux")]);
+    start
+        .env("FUX_DIR", &session.0)
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_WS")
+        .env_remove("COLUMNS")
+        .env_remove("LINES");
+    let pane =
+        session.started(start.args(["start", "big", "--", "sh", "-c", "exec sleep 600", "sh", &"x".repeat(16 << 10)]));
+    let (status, log) = (read(&pane.join("status")), read(&pane.join("log")));
+    assert!(fact(&pane, "state") == "running" && status.lines().nth(1).is_some_and(|line| line.starts_with("pid ")));
+    assert!(log.contains("command") && log.contains("File too large"), "{log}");
+    assert!(!pane.join("command").exists() && pane.join("in").exists());
+}
+
+#[test]
 fn here_says_which_pane_a_program_is_in_and_believes_only_a_folder_a_holder_keeps() {
     let session = Session::new("here");
     let here = concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.here");

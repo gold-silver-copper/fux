@@ -152,19 +152,22 @@ impl Holder {
         let fifos = sys::fifo("in").and_then(|input| Ok((input, sys::fifo("ctl")?)));
         let made = fifos.and_then(|fifos| self.turn(true).and_then(|()| status(None)).map(|()| fifos));
         let (input, ctl) = made.map_err(|e| format!("cannot make the FIFOs or the status: {e}"))?;
-        let name = program.get_program().to_string_lossy().into_owned();
-        let mut child = program.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
         // What it runs, as it was given: the program and each of its arguments, each ended by a zero
         // byte (as `/proc/N/cmdline` has them). `status` has that for a person to read, joined by
         // blanks, which cannot be split again: this is what starts the same anew. Written when the
         // program has been started: a pane with none has run nothing.
         let given = std::iter::once(program.get_program()).chain(program.get_args());
         let given: Vec<u8> = given.flat_map(|word| word.as_bytes().iter().copied().chain([0])).collect();
-        let written = status(Some(child.id())).and_then(|()| replace("command", &given));
-        written.map_err(|e| format!("cannot write the status or the command: {e}"))?;
         // The program's end arrives as a line on a pipe, so the loop waits on it
         // like on everything else.
         let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
+        let name = program.get_program().to_string_lossy().into_owned();
+        let mut child = program.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
+        // From here the program runs, and is held whatever cannot be written of it: a holder that
+        // left now would leave it running with nothing that keeps it.
+        if let Err(e) = status(Some(child.id())).and_then(|()| replace("command", &given)) {
+            self.log(&format!("the program runs, but its `status` or its `command` could not be written: {e}"));
+        }
         let waiter = std::thread::Builder::new().spawn(move || {
             let state = match child.wait() {
                 Ok(status) => match (status.code(), status.signal()) {
