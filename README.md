@@ -714,7 +714,10 @@ new pane's folder as `.before` (the `.before` it had itself, then its
 `history.1`, `history` and `main/screen`, one after another), and the old
 folder is removed. Run from a login with no `FUX_KEYS`, it tells the panes
 the folder it is in itself; `.restore SESSION` names another session than
-the one `fux dir` prints.
+the one `fux dir` prints. One run at a time works in a session: it holds a
+lock on the session's folder from its first look to its last start, and a
+second run (two logins after a reboot) waits for the first and then finds
+its panes alive and leaves them.
 Which panes: one that has a `command` (its program was started once), that
 no holder keeps (the lock on its folder is free) and whose `in` nobody reads
 (a folder whose `in` is read with no holder is the picture of a pane kept

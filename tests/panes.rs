@@ -3534,6 +3534,56 @@ fn workspace_prev_next_wrap_skip_invalid_names_and_new_workspace_is_0700() {
 }
 
 #[test]
+fn two_restores_of_a_session_at_once_run_one_after_the_other() {
+    // `.restore` looks whether a pane is over and then moves its folder away. Two runs at once did
+    // both to one pane: the second moved away the folder the first had just started anew, alive.
+    // A run has the session's folder locked from its first look to its last start, and another waits.
+    let session = Session::new("tworestores");
+    let keys = Path::new(env!("CARGO_MANIFEST_DIR")).join("keys");
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let restore = || {
+        let mut restore = Command::new("sh");
+        restore.arg(keys.join(".restore")).arg(&session.0).env_remove("FUX_KEYS").env_remove("FUX_DIR");
+        restore.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+        restore
+    };
+    let panes: Vec<PathBuf> = (1..=12).map(|n| session.start(&format!("c/{n}"), &["sleep", "600"])).collect();
+    let holders = || panes.iter().map(|pane| fact(pane, "status").lines().next().unwrap()[7..].to_string()).collect();
+    let alive = |pid: &String| Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).ended().success();
+    let kill = |holders: &Vec<String>| {
+        assert!(Command::new("kill").arg("-KILL").args(holders).ended().success());
+        until("the holders are gone", || !holders.iter().any(alive));
+    };
+    let first: Vec<String> = holders();
+    kill(&first);
+    // While the session's folder is locked by another (here by the test, as a run locks it), a run
+    // waits: it has moved nothing and started nothing.
+    let lock = fs::File::open(&session.0).unwrap();
+    lock.lock().unwrap();
+    let waits = restore().stdout(Stdio::null()).begin();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(waits.over().is_none() && holders() == first, "a run did not wait for the session's lock");
+    drop(lock);
+    assert!(waits.end().success());
+    let second: Vec<String> = holders();
+    assert!(second.iter().all(alive) && second.iter().all(|holder| !first.contains(holder)), "{second:?}");
+    // Two runs at once: every pane is started once, by one of them, and nothing is left aside.
+    kill(&second);
+    let (one, other) = std::thread::scope(|runs| {
+        let (one, other) = (runs.spawn(|| restore().run()), runs.spawn(|| restore().run()));
+        (one.join().unwrap(), other.join().unwrap())
+    });
+    let said = format!("{}{}", String::from_utf8_lossy(&one.stdout), String::from_utf8_lossy(&other.stdout));
+    let wrong = format!("{}{}", String::from_utf8_lossy(&one.stderr), String::from_utf8_lossy(&other.stderr));
+    assert!(one.status.success() && other.status.success() && wrong.is_empty(), "{wrong}");
+    assert_eq!(said.lines().filter(|line| line.starts_with("started c/")).count(), 12, "{said}");
+    let third: Vec<String> = holders();
+    assert!(third.iter().all(alive) && third.iter().all(|holder| !second.contains(holder)), "{third:?}");
+    let left = fs::read_dir(&session.0).unwrap().flatten().map(|entry| entry.file_name().into_string().unwrap());
+    assert_eq!(left.filter(|name| name.starts_with('.')).collect::<Vec<_>>(), [""; 0]);
+}
+
+#[test]
 fn restore_skips_viewer_and_helper_panes() {
     let session = Session::new("restoreskip");
     let keys = Path::new(env!("CARGO_MANIFEST_DIR")).join("keys");

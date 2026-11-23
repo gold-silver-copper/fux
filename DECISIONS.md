@@ -2584,6 +2584,21 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     be copied, the old run is left whole where the script says, in place of
     its text alone. The price is a dot-named folder left in the session in
     those two cases, which the script names.
+  - **One `.restore` at a time in a session** (after the review of PR #483,
+    which ran two at once on 40 killed panes: names lost, and live holders
+    left under `.restore.*`, where nothing looks). Between a run's look at a
+    pane and its move of the folder, the other run had started that name
+    anew, and the move took a pane that was alive. In place, a second start
+    was refused by the first's lock: this was new with the move. The script
+    now runs itself again under an exclusive lock on the session's folder
+    (perl's `flock`), held to its end and not handed to the panes it
+    starts. A second run waits; it does not say "one is running" and leave.
+    Waiting gives the caller what it asked for (every pane that is over is
+    started, by one run or the other, and both exit 0), where leaving would
+    need a meaning for its exit status. The price: a run waits for as long as
+    a start of the other hangs. Turned down: taking each pane's own lock for
+    the look and the move, which serializes one pane and not the copy after
+    it, for the same number of lines.
   - **Turned down, by the owner's rulings:** `fux start --again`, `fux held`,
     `fux close` and a `close` word on `ctl` (with the verb gone the word has
     no user; it is about fifteen lines in the holder if the owner wants it

@@ -17,6 +17,13 @@
 # the layout stays. If the start fails, nothing is put back: the old run stays where this says, a
 # dot-named folder of the session, and the name has the failed start's folder and its `log`.
 D=$(CDPATH= cd -- "${1:-$(fux dir)}" && pwd) || exit
+# One run at a time in a session: between the look at a pane and the move of its folder another run
+# may have started that name anew, and the move would then take a pane that is alive. So this
+# script runs itself again under a lock on the session's folder (perl's `flock`, held to the end; no
+# pane it starts has it). A run that finds another at work waits for it, and then finds the panes kept.
+[ "$2" = --alone ] || exec perl -e 'use Fcntl ":flock"; my ($d, $me) = @ARGV;
+  open(D, "<", $d) && flock(D, LOCK_EX) or die "$d: $!\n";
+  my $s = system("sh", $me, $d, "--alone"); exit($s >> 8 || ($s ? 1 : 0))' "$D" "$0"
 export FUX_DIR="$D" FUX_KEYS="${FUX_KEYS:-$(CDPATH= cd -- "$(dirname "$0")" && pwd)}"
 kept() { perl -e 'use Fcntl qw(:flock O_WRONLY O_NONBLOCK); open(D, "<", $ARGV[0]) or exit 0;
   flock(D, LOCK_SH|LOCK_NB) or exit 0; -p "$ARGV[0]/in" or exit 1;
