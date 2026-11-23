@@ -12,6 +12,7 @@ const STORED_BYTES_MAX: usize = 16 << 20;
 const TOO_LARGE: &str = "ENOMEM: image is over the 16 MiB a screen keeps";
 /// The log's line for a transfer in parts that something other than its next part broke off.
 pub(crate) const BROKEN_OFF: &str = "a kitty picture that was not sent whole was dropped";
+const UNREADABLE: &str = "a kitty graphics command that could not be read was dropped";
 /// The most a screen keeps of the PNGs it made of images' pixels for the pane's folder, to use them again.
 const MADE_BYTES_MAX: usize = PICTURE_MAX;
 const PIXELS_MAX: usize = sixel::PIXELS_MAX;
@@ -342,41 +343,33 @@ impl Kv {
         }
     }
 
-    fn parse(control: &[u8]) -> Result<Self, &'static str> {
+    /// Reads `key=value` pairs, each key one letter. A key that names one of several things (`a`, `t`,
+    /// `o`, `d`, `e`) takes one letter; `z`, `H` and `V` a number that may have a `-`; every other key
+    /// a number without sign. Anything else makes the command none: no pair of it is believed.
+    fn parse(control: &[u8]) -> Option<Self> {
         let mut kv = Self::default();
         if control.is_empty() {
-            return Ok(kv);
+            return Some(kv);
         }
+        let number = |digits: &[u8]| {
+            let digits = std::str::from_utf8(digits).ok().filter(|text| text.bytes().all(|b| b.is_ascii_digit()))?;
+            digits.parse::<u32>().ok()
+        };
         for pair in control.split(|&b| b == b',') {
-            let eq = pair.iter().position(|&b| b == b'=').ok_or("EINVAL: malformed control key")?;
-            let key_bytes = pair.get(..eq).ok_or("EINVAL: malformed control key")?;
-            let val_bytes = pair.get(eq + 1..).ok_or("EINVAL: malformed control value")?;
-            if val_bytes.is_empty() {
-                return Err("EINVAL: empty control value");
-            }
-            if key_bytes.len() != 1 {
-                continue;
-            }
-            let key = *key_bytes.first().ok_or("EINVAL: malformed control key")?;
-            if Self::index(key).is_none() {
-                continue;
-            }
-            let val = if let [c] = val_bytes
-                && !c.is_ascii_digit()
-            {
-                u32::from(*c)
-            } else {
-                let s = std::str::from_utf8(val_bytes).map_err(|_| "EINVAL: non-ascii control value")?;
-                match key {
-                    b'z' | b'H' | b'V' => {
-                        s.parse::<i32>().map_err(|_| "EINVAL: invalid signed integer")?.cast_unsigned()
-                    }
-                    _ => s.parse::<u32>().map_err(|_| "EINVAL: invalid integer")?,
+            let [key, b'=', value @ ..] = pair else { return None };
+            Self::index(*key)?;
+            let value = match (key, value) {
+                (b'a' | b't' | b'o' | b'd' | b'e', [letter]) if letter.is_ascii_alphabetic() => u32::from(*letter),
+                (b'a' | b't' | b'o' | b'd' | b'e', _) => return None,
+                (b'z' | b'H' | b'V', [b'-', digits @ ..]) => {
+                    0i32.checked_sub_unsigned(number(digits)?)?.cast_unsigned()
                 }
+                (b'z' | b'H' | b'V', digits) => i32::try_from(number(digits)?).ok()?.cast_unsigned(),
+                (_, digits) => number(digits)?,
             };
-            kv.put(key, val);
+            kv.put(*key, value);
         }
-        Ok(kv)
+        Some(kv)
     }
 }
 
@@ -614,13 +607,10 @@ impl Storage {
             Some(sep) => (data.get(..sep).unwrap_or_default(), data.get(sep + 1..).unwrap_or_default()),
             None => (data, &[][..]),
         };
-        let kv = match Kv::parse(control) {
-            Ok(kv) => kv,
-            // (A command that cannot be read names no image to answer under; the log says it was dropped.)
-            Err(_) => {
-                let broke = self.abandon(pictures);
-                return Outcome { refused: broke.then_some(BROKEN_OFF), ..Outcome::default() };
-            }
+        // (A command that cannot be read names no image to answer under: the log says it was dropped.)
+        let Some(kv) = Kv::parse(control) else {
+            let broke = self.abandon(pictures);
+            return Outcome { refused: Some(if broke { BROKEN_OFF } else { UNREADABLE }), ..Outcome::default() };
         };
         let mut quiet = Quiet::from_val(kv.get(b'q'));
         let id = kv.get(b'i').unwrap_or(0);
