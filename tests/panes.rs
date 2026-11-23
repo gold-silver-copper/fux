@@ -3706,6 +3706,8 @@ fn restore_skips_viewer_and_helper_panes() {
     for (name, cmd) in [
         ("v1", format!("{} view w", env!("CARGO_BIN_EXE_fux"))),
         ("v2", "fux view w".to_string()),
+        ("v3", "fux-next view w".to_string()),
+        ("h1", "/opt/fux-next hold /tmp sh".to_string()),
         ("ed", format!("{}/.shell {}/.edit --in /tmp/x 1", keys.display(), keys.display())),
         ("pk", format!("{}/.shell {}/.pick /tmp/x", keys.display(), keys.display())),
         ("mirror", "sleep 600".to_string()),
@@ -3731,6 +3733,7 @@ fn restore_skips_viewer_and_helper_panes() {
     };
     let out = restore();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "", "should skip viewer, helper and mirrored panes: {out:?}");
+    assert!(out.status.success() && out.stderr.is_empty(), "a viewer under another name was not passed over: {out:?}");
     // (The same folder with nobody reading its `in` is a pane that is over, and is started.)
     drop(reader);
     assert_eq!(String::from_utf8_lossy(&restore().stdout), "started w/mirror again\n");

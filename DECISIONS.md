@@ -2657,6 +2657,15 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     left in a dot-named folder), 0 otherwise. Not covered, and said in the
     README: a run cut short between the move and the start leaves the old
     run in `.restore.XXXXXX/pane` without a word; `mv` puts it back.
+  - **Which panes `.restore` passes over as a viewer's** (after the same
+    review): it matched the display line of `status` against `fux view` and
+    `…/fux view`, so a viewer under another name (`fux-next view`, as on the
+    owner's machine) was started anew. It reads the second word of the
+    `command` file now, which is exact: `view` or `hold` as the program's
+    first argument, whatever the program is called. That passes over any
+    other program so started (`git hold`, were there one), and misses a
+    viewer that another program runs (`env X=1 fux view`). The keys'
+    helpers are still matched by the line of `status`.
   - **Turned down, by the owner's rulings:** `fux start --again`, `fux held`,
     `fux close` and a `close` word on `ctl` (with the verb gone the word has
     no user; it is about fifteen lines in the holder if the owner wants it

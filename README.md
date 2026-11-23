@@ -722,7 +722,10 @@ Which panes: one that has a `command` (its program was started once), that
 no holder keeps (the lock on its folder is free) and whose `in` nobody reads
 (a folder whose `in` is read with no holder is the picture of a pane kept
 elsewhere). A pane that is alive is left alone, and so are a viewer's own
-pane and the keys' helpers (an editor, a list). The layouts are files, so
+pane (any pane whose program's first argument is `view` or `hold`, whatever
+the program is called; a viewer run through another program, `env X=1 fux
+view`, is not known for one and is started anew) and the keys' helpers (an
+editor, a list). The layouts are files, so
 tiles and tabs are as they were.
 What it costs, plainly. There is no way back: the old run is over, and its
 folder goes once its text is copied. For a moment the name has no folder: a
