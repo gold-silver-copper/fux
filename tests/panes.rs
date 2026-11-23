@@ -2697,6 +2697,46 @@ fn a_panes_status_names_its_holder_before_its_program_is_started() {
 }
 
 #[test]
+fn here_says_which_pane_a_program_is_in_and_believes_only_a_folder_a_holder_keeps() {
+    let session = Session::new("here");
+    let here = concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.here");
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let path = format!("{bin}:{}", std::env::var("PATH").unwrap());
+    let (dir, out) = (session.0.display(), session.0.join(".out"));
+    fs::create_dir_all(&out).unwrap();
+    let said = |name: &str| read(&out.join(name));
+    // In a pane's shell, in a shell that shell runs, and in a job of it in the background (the
+    // session named, as it may be): the pane's folder.
+    let pane = session.started(session.fux().env("PATH", &path).args(["start", "w/a", "--", "sh"]));
+    let asks = format!(
+        "'{here}' > '{0}/direct' 2>&1; sh -c '\"$0\" > \"$1/nested\" 2>&1' '{here}' '{0}'; '{here}' '{dir}' > '{0}/job' 2>&1 &\n",
+        out.display()
+    );
+    send(&pane.join("in"), asks);
+    until("the three have answered", || !said("job").is_empty() && !said("nested").is_empty());
+    let folder = format!("{}\n", pane.display());
+    assert_eq!((said("direct"), said("nested"), said("job")), (folder.clone(), folder.clone(), folder));
+    // Outside a pane it fails, and says so. A `status` is anyone's to write: a folder that names
+    // the asker (here its parent, this test) and that no holder keeps is not believed.
+    let outside = || Command::new(here).arg(&session.0).env("PATH", &path).run();
+    let none = outside();
+    assert!(none.status.code() == Some(1) && none.stdout.is_empty(), "{none:?}");
+    assert!(String::from_utf8_lossy(&none.stderr).contains("not in a pane of "), "{none:?}");
+    fs::create_dir_all(session.0.join("w/made")).unwrap();
+    fs::write(session.0.join("w/made/status"), format!("holder 1\npid {}\ncommand sh\n", std::process::id())).unwrap();
+    let made = outside();
+    assert!(made.status.code() == Some(1) && made.stdout.is_empty(), "{made:?}");
+    // Two folders that are kept and name one process are no answer: both are named, and it fails.
+    let other = session.start("w/b", &["sleep", "600"]);
+    fs::write(other.join("status"), read(&pane.join("status"))).unwrap();
+    send(&pane.join("in"), format!("'{here}' > '{0}/twice' 2>&1; echo $? > '{0}/code'\n", out.display()));
+    until("it has answered", || !said("code").is_empty());
+    let twice = said("twice");
+    assert!(said("code") == "1\n" && twice.contains("more than one pane names process"), "{twice}");
+    assert!(twice.contains(&format!("{}\n", pane.display())) && twice.contains(&format!("{}\n", other.display())));
+}
+
+#[test]
 fn a_pane_started_again_that_never_came_up_leaves_no_state_of_the_run_before() {
     // A pane whose program ended with 37 is started again, and the new holder cannot write its
     // first screen (`.marks.new` is a directory). Its `status` has the new program's number by

@@ -2463,6 +2463,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     `ctl` go, as they do when a holder ends, so that nothing takes the folder
     for a pane that is read. Removing that `status` again was turned down: it
     is true, and one more thing to do on the way out.
+  - **`keys/.here [SESSION]`** prints the folder of the pane it is run in. It
+    walks its ancestors (`ps -o ppid= -p N`, the same on Linux and macOS) and
+    takes the first that a `status` of the session names as `holder` or
+    `pid`, if that folder's lock is held (perl's `flock`, the line the help
+    page has): a `status` is anyone's to write, a lock is the kernel's word.
+    Two kept folders naming one process are refused, both named. The session
+    is `fux dir`'s or the argument. Turned down: the holder's working
+    directory (`/proc/N/cwd`, `lsof` on macOS), which needs no session and no
+    look at every `status`, for its two branches by system and because an
+    ancestor that has gone into another pane's folder would answer wrongly
+    without the same look at `status`. Not found, and said in the script: a
+    program whose ancestors have all gone, one in a container or behind ssh.
+    Its test: a pane's shell, a shell in it, a background job; outside a
+    pane; a folder nobody keeps that names the asker; two kept folders.
   - **The format moves** (a `status` of two lines for an instant, and what the
     entries below add): D117's "frozen as v1" is withdrawn, there.
 
