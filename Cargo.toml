@@ -1,6 +1,6 @@
 [package]
 name = "fux"
-version = "0.41.0"
+version = "0.42.0"
 edition = "2024"
 description = "A terminal multiplexer that is a view over directories: a pane is a directory kept by one small process"
 license = "MIT"
