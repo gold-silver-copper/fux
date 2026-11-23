@@ -61,10 +61,10 @@ fn deadline() -> Instant {
 /// the moment `by`: what was not done by then, or could not be, is what is given back.
 ///
 /// Only those: no file of the session says whom to kill (a `status` there may be a test's own
-/// making, and name anything). A pane that was started another way (by `fux start` run as a test's
-/// own command, by a key's script, by `.restore`) ends as panes did before: its holder finds the
-/// folder gone within two seconds and hangs up its program. None of the tests starts a program
-/// that ignores the hangup that way.
+/// making, and name anything). A pane that was started another way (by a key's script, by
+/// `.restore`, by a `fux start` that a test runs as a command of its own and not through `start` or
+/// `started`) ends as panes did before: its holder finds the folder gone within two seconds and
+/// hangs up its program. None of the tests starts a program that ignores the hangup that way.
 fn end(session: &Path, started: &[Started], by: Instant) -> Vec<String> {
     let mut wrong = Vec::new();
     let numbers: Vec<u32> = started.iter().flat_map(|(holder, program)| [*holder, *program]).collect();
@@ -207,10 +207,14 @@ impl Session {
             sessions().iter_mut().find(|session| session.0 == self.0).map(|session| std::mem::take(&mut session.1));
         end(&self.0, &started.unwrap_or_default(), Instant::now() + budget())
     }
-    /// Starts a pane, and notes whose it is: its holder and its program, as its `status` names them
-    /// now that `fux start` has said the pane is up (one that has ended by now names two that are gone).
     fn start(&self, name: &str, program: &[&str]) -> PathBuf {
-        let out = self.fux().arg("start").arg(name).arg("--").args(program).run();
+        self.started(self.fux().arg("start").arg(name).arg("--").args(program))
+    }
+    /// Runs a `fux start` (this one, with what a test has added to it) and notes whose the pane is:
+    /// its holder and its program, as its `status` names them now that `fux start` has said the
+    /// pane is up (one that has ended by now names two that are gone).
+    fn started(&self, start: &mut Command) -> PathBuf {
+        let out = start.run();
         assert!(out.status.success(), "start failed: {}", String::from_utf8_lossy(&out.stderr));
         let pane = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
         let status = read(&pane.join("status"));
@@ -630,7 +634,7 @@ fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
         for (i = 0; i < 36000; i++) { printf \"\\033[3%dm%06d\\033[m%s\\n\", i % 8, i, pad; if (i % 700 == 699) { fflush(); system(\"sleep 0.01\") } } }'";
     let mut start = session.fux();
     start.env("COLUMNS", "120").env("LINES", "36").args(["start", "lines", "--", "sh", "-c", prints]);
-    let pane = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let pane = session.started(&mut start);
     let mut turns = Vec::new();
     until("the program has ended", || {
         // (Each `history.1` is looked at as it appears: its last line is whole.)
@@ -638,7 +642,7 @@ fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
         let aside = fs::read(pane.join("history.1")).unwrap_or_default();
         let first = aside.get(..6).map(<[u8]>::to_vec);
         if aside.len() > 252 && turns.last().map(|(_, _, first)| first) != Some(&first) {
-            turns.push((aside.len(), aside.ends_with(b"\n") && aside.len() % 252 == 0, first));
+            turns.push((aside.len(), aside.ends_with(b"\n") && aside.len().is_multiple_of(252), first));
         }
         fact(&pane, "state") == "exited 0"
     });
@@ -665,7 +669,7 @@ fn the_two_histories_keep_their_bounds_and_the_same_lines() {
     let bar = "printf '\\033[?2026h\\033[44m'; yes '' | head -n 200000; printf '\\033[?2026l\\033[mdone'; sleep 600";
     let mut start = session.fux();
     start.env("COLUMNS", "100").env("LINES", "24").args(["start", "bar", "--", "sh", "-c", bar]);
-    let pane = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let pane = session.started(&mut start);
     let mut most = 0;
     until("the bars are printed", || {
         most = most.max(size(&pane, "history.styled")).max(size(&pane, "history.styled.1"));
@@ -678,7 +682,7 @@ fn the_two_histories_keep_their_bounds_and_the_same_lines() {
     let long = "printf '\\033[31m'; head -c 700000 /dev/zero | tr '\\0' a; printf 'b\\nZ'; sleep 600";
     let mut start = session.fux();
     start.env("COLUMNS", "2").env("LINES", "2").args(["start", "long", "--", "sh", "-c", long]);
-    let pane = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let pane = session.started(&mut start);
     let texts = |pane: &Path| (read(&pane.join("shown/screen")), read(&pane.join("history")));
     until("the line is printed", || texts(&pane).0 == "b\nZ\n" && size(&pane, "history") == 700_000);
     assert!(size(&pane, "history.styled") > 4 << 20);
@@ -1170,8 +1174,7 @@ fn a_viewer_whose_panes_do_not_change_does_no_work_and_draws_the_next_change() {
     let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
     let mut start = outer.fux();
     start.env("COLUMNS", "500").env("LINES", "500").args(["start", "view", "--"]).args(command);
-    let started = start.args([env!("CARGO_BIN_EXE_fux"), "view"]).run();
-    let view = PathBuf::from(String::from_utf8(started.stdout).unwrap().trim());
+    let view = outer.started(start.args([env!("CARGO_BIN_EXE_fux"), "view"]));
     until("the pane has its tile's size and is drawn", || {
         fact(&one, "size") == "500 500" && read(&view.join("shown/screen")).starts_with("ready\n")
     });
@@ -1251,7 +1254,7 @@ fn the_bar_covers_the_whole_last_row_of_a_wide_terminal() {
     let wide = |session: &Session, name: &str, program: &[&str]| {
         let mut start = session.fux();
         start.env("COLUMNS", "300").env("LINES", "20").args(["start", name, "--"]).args(program);
-        PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim())
+        session.started(&mut start)
     };
     let fills = "printf '\\033[20;1H%s' \"$(head -c 300 /dev/zero | tr '\\0' x)\"; sleep 600";
     wide(&inner, "full", &["sh", "-c", fills]);
@@ -1641,7 +1644,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
         m A; printf '$ '; m B; echo second; m C; echo alpha; echo beta; m 'D;1'; m A; printf '$ '; m B; sleep 600";
     let mut start = session.fux();
     start.env("COLUMNS", "12").env("LINES", "5").args(["start", "sh", "--", "sh", "-c", shell]);
-    let pane = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let pane = session.started(&mut start);
     until("the marks are there", || read(&pane.join("marks")).lines().count() == 10);
     let marks = read(&pane.join("marks"));
     let (first, last) =
@@ -1776,7 +1779,7 @@ fn a_shell_that_ends_with_127_closes_its_pane_and_a_command_that_cannot_be_run_s
     assert!(Command::new("chmod").arg("+x").arg(session.0.join("sh127")).ended().success());
     let mut start = session.fux();
     start.env("SHELL", session.0.join("sh127")).args(["start", "ran", "--", wrapper]);
-    let ran = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let ran = session.started(&mut start);
     let seen = || format!(": its screen is {:?}", read(&ran.join("shown/screen")).trim());
     until_or("the pane of a shell that ended with 127 is gone", seen, || !ran.exists());
     // A command that is not there could not be run: that is said, and stays until Enter.
@@ -2301,7 +2304,7 @@ fn a_menu_on_a_terminal_of_one_row_leaves_the_bar_to_be_read() {
     let mut start = outer.fux();
     start.env("COLUMNS", "80").env("LINES", "1").args(["start", "view", "--"]).args(command);
     start.args([env!("CARGO_BIN_EXE_fux"), "view"]);
-    let view = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let view = outer.started(&mut start);
     let screen = || read(&view.join("shown/screen"));
     until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
     send(&view.join("in"), "\x02");
@@ -2324,7 +2327,7 @@ fn a_menu_with_no_room_for_its_count_shows_no_part_of_a_number() {
     let mut start = outer.fux();
     start.env("COLUMNS", "4").env("LINES", "3").args(["start", "view", "--"]).args(command);
     start.args([env!("CARGO_BIN_EXE_fux"), "view"]);
-    let view = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let view = outer.started(&mut start);
     let screen = || read(&view.join("shown/screen"));
     until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
     send(&view.join("in"), "\x02");
@@ -3189,7 +3192,7 @@ fn a_mark_in_a_line_that_never_ends_is_found_in_the_text_after_history_was_put_a
         printf '\\033]133;C\\007MARKED-TAIL\\033]133;D;0\\007yy\\r\\nafter\\r\\n'";
     let mut start = session.fux();
     start.env("COLUMNS", "1").env("LINES", "2").args(["start", "line", "--", "sh", "-c", prints]);
-    let pane = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let pane = session.started(&mut start);
     until("the program has ended", || fact(&pane, "state") == "exited 0");
     assert!(session.fux().arg("wait").arg(&pane).ended().success());
     // (The line was ended where history was put aside, and `log` says so each time.)
@@ -3274,7 +3277,7 @@ fn a_menu_shades_its_group_headings() {
     let mut start = outer.fux();
     start.env("COLUMNS", "80").env("LINES", "12").args(["start", "view", "--"]).args(command);
     start.args([env!("CARGO_BIN_EXE_fux"), "view"]);
-    let view = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let view = outer.started(&mut start);
     let screen = || read(&view.join("shown/screen"));
     until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
     send(&view.join("in"), "\x02");
@@ -3385,7 +3388,7 @@ fn bracketed_paste_does_not_leak_while_prefix_menu_is_open() {
     let mut start = outer.fux();
     start.env("COLUMNS", "80").env("LINES", "12").args(["start", "view", "--"]).args(command);
     start.args([env!("CARGO_BIN_EXE_fux"), "view", "main"]);
-    let view = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let view = outer.started(&mut start);
     let screen = || read(&view.join("shown/screen"));
     until_or("viewer shows READY", screen, || screen().contains("READY"));
     // Open prefix menu, paste text, close menu, then type a marker so we know the paste was processed.
@@ -3474,7 +3477,7 @@ PY
     let mut start = outer.fux();
     start.env("COLUMNS", "80").env("LINES", "12").args(["start", "view", "--"]).args(command);
     start.args([env!("CARGO_BIN_EXE_fux"), "view", "main"]);
-    let view = PathBuf::from(String::from_utf8(start.run().stdout).unwrap().trim());
+    let view = outer.started(&mut start);
     let screen = || read(&view.join("shown/screen"));
     until_or("viewer shows PANE_ONE", screen, || screen().contains("PANE_ONE"));
     // Press C-b f p and press Enter 20ms later (before the 80ms finder calls TCSAFLUSH).

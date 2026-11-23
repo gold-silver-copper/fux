@@ -2313,10 +2313,10 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     whatever width the terminal is said to have) after those numbers only: a
     holder that is this fux holding goes, with the program that is its child;
     with its holder gone, the program goes if it still leads its process
-    group. A pane started another way (`fux start` run as a test's own
-    command, a key's script, `.restore`) ends as before, when its holder
-    finds the folder gone; no test starts a program that ignores the hangup
-    that way. Ending a session has a time of its own, so that a `ps` or a
+    group. A pane started another way (a key's script, `.restore`, a `fux
+    start` a test runs as a command of its own) ends as before, when its
+    holder finds the folder gone; no test starts a program that ignores the
+    hangup that way. Ending a session has a time of its own, so that a `ps` or a
     `kill` that does not return holds nothing up. A command a test started is
     on a list from that moment. A watcher that stops the tests first says
     that they are being shut, from when no test's command is started; the
