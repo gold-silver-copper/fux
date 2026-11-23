@@ -1689,10 +1689,11 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     // One file says how the screen's rows are lines of the pane's text: the number of the line
     // its first row is of (the wrapped one, 13 lines in), then the rows that go on from the row
     // above (the first, from history). No other file says either.
-    assert_eq!(
-        read(&pane.join("main/lines")),
-        "13\n0\n",
-        "the number of the first row's line, then the rows that go on"
+    // (Waited for: `marks` is written before it in a round, and was read a moment ago.)
+    until_or(
+        "`main/lines` has the number of the first row's line, then the rows that go on",
+        || read(&pane.join("main/lines")),
+        || read(&pane.join("main/lines")) == "13\n0\n",
     );
     assert!(!pane.join("top").exists() && !pane.join("wraps").exists());
     // An editor for the test: it is called `vim`, so it is given a line number; it notes that
