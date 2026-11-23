@@ -1727,12 +1727,21 @@ impl Term {
     fn end_string(&mut self, end: Option<&str>) {
         self.state = State::Ground;
         let string = std::mem::take(&mut self.string);
-        let Some(end) = end.filter(|_| string.len() <= PICTURE_MAX + 1) else { return };
+        let end = end.filter(|_| string.len() <= PICTURE_MAX + 1);
+        // A graphics command that was broken off, is over the bound or has a control byte in it is dropped,
+        // and with it the transfer in parts it may have been the next part of: what follows is not that one's.
+        if string.starts_with(b"_G") && self.told.kitty_graphics && (end.is_none() || self.string_holed) {
+            if self.kitty.abandon(&mut self.screen.pictures) {
+                self.refuse(kitty::BROKEN_OFF);
+            }
+            return;
+        }
+        let Some(end) = end else { return };
         match string.as_slice() {
             [b'P', b'$', b'q', data @ ..] if !self.string_holed => self.report_setting(data),
             [b'P', b'+', b'q', data @ ..] if !self.string_holed => self.report_caps(data),
             [b'P', data @ ..] if Term::is_sixel(data) => self.picture(data),
-            [b'_', b'G', data @ ..] if self.told.kitty_graphics && !self.string_holed => self.kitty_graphics(data),
+            [b'_', b'G', data @ ..] if self.told.kitty_graphics => self.kitty_graphics(data),
             [b']', data @ ..] => self.command(&String::from_utf8_lossy(data), end),
             _ => {}
         }

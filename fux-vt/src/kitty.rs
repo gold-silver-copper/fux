@@ -10,6 +10,8 @@ const STORED_IMAGES_MAX: usize = 16;
 /// The most a screen keeps of images, all together: each one's pixels as RGBA, and a PNG's own bytes.
 const STORED_BYTES_MAX: usize = 16 << 20;
 const TOO_LARGE: &str = "ENOMEM: image is over the 16 MiB a screen keeps";
+/// The log's line for a transfer in parts that something other than its next part broke off.
+pub(crate) const BROKEN_OFF: &str = "a kitty picture that was not sent whole was dropped";
 /// The most a screen keeps of the PNGs it made of images' pixels for the pane's folder, to use them again.
 const MADE_BYTES_MAX: usize = PICTURE_MAX;
 const PIXELS_MAX: usize = sixel::PIXELS_MAX;
@@ -294,7 +296,7 @@ fn xterm_256(n: u8) -> [u8; 3] {
 // ---- Kitty APC command parser & screen storage --------------------------------
 
 /// Dense key-value table for single-ASCII-letter Kitty control keys (`a`..`z`, `A`..`Z`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Kv {
     values: [u32; 52],
     present: u64,
@@ -318,6 +320,17 @@ impl Kv {
     fn get(&self, key: u8) -> Option<u32> {
         let idx = Self::index(key)?;
         (self.present & (1u64 << idx) != 0).then(|| self.values.get(idx).copied().unwrap_or(0))
+    }
+
+    /// The table without `keys`.
+    fn without(mut self, keys: &[u8]) -> Self {
+        for idx in keys.iter().filter_map(|key| Self::index(*key)) {
+            self.present &= !(1u64 << idx);
+            if let Some(slot) = self.values.get_mut(idx) {
+                *slot = 0;
+            }
+        }
+        self
     }
 
     fn put(&mut self, key: u8, val: u32) {
@@ -539,6 +552,8 @@ impl StoredImage {
 }
 
 struct Loading {
+    /// What its first part said, but for `m` and `q`: a later part may say the same again.
+    header: Kv,
     id: u32,
     number: u32,
     implicit_id: bool,
@@ -601,58 +616,63 @@ impl Storage {
         };
         let kv = match Kv::parse(control) {
             Ok(kv) => kv,
-            Err(msg) => {
-                return Outcome { reply: Response::err(0, 0, 0, msg).encode(Quiet::No), ..Outcome::default() };
+            // (A command that cannot be read names no image to answer under; the log says it was dropped.)
+            Err(_) => {
+                let broke = self.abandon(pictures);
+                return Outcome { refused: broke.then_some(BROKEN_OFF), ..Outcome::default() };
             }
         };
         let mut quiet = Quiet::from_val(kv.get(b'q'));
         let id = kv.get(b'i').unwrap_or(0);
         let number = kv.get(b'I').unwrap_or(0);
         let placement_id = kv.get(b'p').unwrap_or(0);
-
-        if id > 0 && number > 0 {
-            return Outcome {
-                reply: Response::err(id, number, placement_id, "EINVAL: image ID and number are mutually exclusive")
-                    .encode(quiet),
-                ..Outcome::default()
-            };
-        }
-
         let action = kv.get(b'a').and_then(|v| u8::try_from(v).ok()).unwrap_or(b't');
-        match action {
-            b'q' => self.query(&kv, payload, quiet),
-            b't' | b'T' => {
-                // Non-direct transmission abandons any in-progress chunked load.
-                if self.loading.is_some() && Medium::from_val(kv.get(b't')) != Medium::Direct {
-                    self.abandon_load(pictures);
-                }
-                // Continuation chunks inherit `q` from the initial chunk unless `q >= 1` is set.
-                if let Some(loading) = self.loading.as_mut() {
-                    match quiet {
-                        Quiet::No => quiet = loading.quiet,
-                        Quiet::Ok | Quiet::Failures => loading.quiet = quiet,
+
+        // A transfer in parts goes on with a part that says `m` (and `q`) alone, as it must, or all
+        // that the first part said, as some programs send and Kitty takes. A query stores nothing and
+        // leaves it be. Anything else is not part of it: the transfer is dropped, and the command is itself.
+        let goes_on = self.loading.as_ref().is_some_and(|loading| {
+            let said = kv.without(b"mq");
+            matches!(action, b't' | b'T') && (said.without(b"a") == Kv::default() || said == loading.header)
+        });
+        let broke = !goes_on && action != b'q' && self.abandon(pictures);
+        let mut outcome = if id > 0 && number > 0 {
+            let both = "EINVAL: image ID and number are mutually exclusive";
+            Outcome { reply: Response::err(id, number, placement_id, both).encode(quiet), ..Outcome::default() }
+        } else {
+            match action {
+                b'q' => self.query(&kv, payload, quiet),
+                b't' | b'T' => {
+                    // A later part is as quiet as the first was, unless it asks for more quiet itself.
+                    if let Some(loading) = self.loading.as_mut() {
+                        match quiet {
+                            Quiet::No => quiet = loading.quiet,
+                            Quiet::Ok | Quiet::Failures => loading.quiet = quiet,
+                        }
                     }
+                    let show = action == b'T';
+                    self.transmit(&kv, show, payload, quiet, cell, screen_cols, cursor, pictures, next_picture)
                 }
-                self.transmit(&kv, action == b'T', payload, quiet, cell, screen_cols, cursor, pictures, next_picture)
+                b'p' => {
+                    let spec = DisplaySpec::from_kv(&kv);
+                    self.place(&spec, quiet, cell, screen_cols, cursor, pictures, next_picture, false)
+                }
+                b'd' => {
+                    self.delete(&kv, cursor, pictures);
+                    Outcome::default()
+                }
+                b'f' | b'a' | b'c' => {
+                    let no = "ENOTSUPPORTED: animation not supported";
+                    Outcome { reply: Response::err(id, number, placement_id, no).encode(quiet), ..Outcome::default() }
+                }
+                _ => {
+                    let no = "EINVAL: unsupported action";
+                    Outcome { reply: Response::err(id, number, placement_id, no).encode(quiet), ..Outcome::default() }
+                }
             }
-            b'p' => {
-                let spec = DisplaySpec::from_kv(&kv);
-                self.place(&spec, quiet, cell, screen_cols, cursor, pictures, next_picture, false)
-            }
-            b'd' => {
-                self.abandon_load(pictures);
-                self.delete(&kv, cursor, pictures);
-                Outcome::default()
-            }
-            b'f' | b'a' | b'c' => Outcome {
-                reply: Response::err(id, number, placement_id, "ENOTSUPPORTED: animation not supported").encode(quiet),
-                ..Outcome::default()
-            },
-            _ => Outcome {
-                reply: Response::err(id, number, placement_id, "EINVAL: unsupported action").encode(quiet),
-                ..Outcome::default()
-            },
-        }
+        };
+        outcome.refused = outcome.refused.or(broke.then_some(BROKEN_OFF));
+        outcome
     }
 
     fn query(&self, kv: &Kv, payload: &[u8], quiet: Quiet) -> Outcome {
@@ -724,7 +744,7 @@ impl Storage {
             let chunk = match decode_base64(payload, PICTURE_MAX) {
                 Ok(chunk) if loading.data.len().saturating_add(chunk.len()) <= PICTURE_MAX => chunk,
                 Ok(_) => {
-                    self.abandon_load(pictures);
+                    self.abandon(pictures);
                     return Outcome {
                         reply: fail("ENOMEM: image payload exceeds 4 MiB"),
                         refused: Some("a kitty picture over 4 MiB was dropped"),
@@ -732,7 +752,7 @@ impl Storage {
                     };
                 }
                 Err(_) => {
-                    self.abandon_load(pictures);
+                    self.abandon(pictures);
                     return Outcome { reply: fail("EINVAL: invalid base64"), ..Outcome::default() };
                 }
             };
@@ -797,6 +817,7 @@ impl Storage {
             spec
         });
         let loading = Loading {
+            header: kv.without(b"mq"),
             id,
             number,
             implicit_id,
@@ -1176,12 +1197,13 @@ impl Storage {
         }
     }
 
-    fn abandon_load(&mut self, pictures: &mut Vec<Picture>) {
-        if let Some(loading) = self.loading.take()
-            && let Some(old_id) = loading.replaces
-        {
+    /// Drops the transfer that is under way, with the image it was to take the place of; whether there was one.
+    pub(crate) fn abandon(&mut self, pictures: &mut Vec<Picture>) -> bool {
+        let Some(loading) = self.loading.take() else { return false };
+        if let Some(old_id) = loading.replaces {
             self.remove_image_and_placements(old_id, pictures);
         }
+        true
     }
 
     fn remove_image_and_placements(&mut self, id: u32, pictures: &mut Vec<Picture>) {

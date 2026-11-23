@@ -2093,3 +2093,72 @@ fn kitty_answers_nothing_about_a_transfer_that_named_no_image() {
         assert!(t.shown().pictures.is_empty());
     }
 }
+
+#[test]
+fn kitty_transfer_in_parts_goes_on_only_with_its_own_parts() {
+    const DROPPED: &str = "a kitty picture that was not sent whole was dropped";
+    let b64 = |bytes: &[u8]| {
+        let mut text = String::new();
+        crate::kitty::encode_base64(bytes, &mut text);
+        text
+    };
+    // A 64 by 48 image is three parts of 4,096 characters: placed once, where the cursor is at
+    // the last, and answered once. The later parts say `m` alone, or (as ranger does, and Kitty
+    // takes) all that the first said.
+    let rgb: Vec<u8> = (0..64u32 * 48).flat_map(|i| [i as u8, (i >> 8) as u8, 9]).collect();
+    let text = b64(&rgb);
+    let parts = [&text[..4096], &text[4096..8192], &text[8192..]];
+    let first = "a=T,i=3,f=24,s=64,v=48,C=1";
+    for later in ["", "a=T,i=3,f=24,s=64,v=48,C=1,"] {
+        let mut t = Term::new(20, 10);
+        t.feed(format!("\x1b_G{first},m=1;{}\x1b\\\x1b_G{later}m=1;{}\x1b\\", parts[0], parts[1]).as_bytes());
+        assert!(reply(&mut t).is_empty() && t.shown().pictures.is_empty());
+        t.feed(format!("\x1b[2;3H\x1b_G{later}m=0;{}\x1b\\", parts[2]).as_bytes());
+        assert_eq!(reply(&mut t), "\x1b_Gi=3;OK\x1b\\");
+        assert_eq!(t.shown().pictures.iter().map(|p| (p.row, p.col)).collect::<Vec<_>>(), [(1, 2)]);
+        assert_eq!(crate::png::decode(&t.new_pictures()[0].2, 64 * 48).unwrap().2.len(), 64 * 48 * 4);
+    }
+
+    // What breaks a transfer off: each, after the first part, drops it (the log says so), so the
+    // last part then belongs to nothing and the image is not there. With nothing between, it is.
+    let broken_off: [(&str, &[u8]); 9] = [
+        ("nothing", b""),
+        ("another transfer", b"\x1b_Ga=T,i=2,f=24,s=1,v=1;AAAA\x1b\\"),
+        ("a placement", b"\x1b_Ga=p,i=9,q=2\x1b\\"),
+        ("a deletion", b"\x1b_Ga=d,d=i,i=9\x1b\\"),
+        ("a command that is none", b"\x1b_Gm=;AAAA\x1b\\"),
+        ("a part cut short by CAN", b"\x1b_Gm=1;AAAA\x18"),
+        ("a part cut short by another escape", b"\x1b_Gm=1;AAAA\x1b[m"),
+        ("a part with a control byte in it", b"\x1b_Gm=1;AA\nAA\x1b\\"),
+        ("a part over 4 MiB", b""),
+    ];
+    for (what, between) in broken_off {
+        let mut t = Term::new(20, 10);
+        t.feed(
+            format!("\x1b_Ga=t,i=1,q=2,f=24,s=64,v=48,m=1;{}\x1b\\\x1b_Gm=1;{}\x1b\\", parts[0], parts[1]).as_bytes(),
+        );
+        t.feed(between);
+        if what == "a part over 4 MiB" {
+            t.feed(format!("\x1b_Gm=1;{}\x1b\\", "A".repeat((4 << 20) + 4)).as_bytes());
+        }
+        let out = t.take(0);
+        let whole = what == "nothing";
+        assert_eq!(out.refused.contains(&DROPPED), !whole, "{what}");
+        // (What followed it is itself: the other transfer is answered, though the first had asked for silence.)
+        let answer = if what == "another transfer" { "\x1b_Gi=2;OK\x1b\\" } else { "" };
+        assert_eq!(String::from_utf8(out.reply).unwrap(), answer, "{what}");
+        t.feed(format!("\x1b_Gm=0;{}\x1b\\\x1b_Ga=p,i=1\x1b\\", parts[2]).as_bytes());
+        let answer = if whole { "\x1b_Gi=1;OK\x1b\\" } else { "\x1b_Gi=1;ENOENT: image not found\x1b\\" };
+        assert_eq!(reply(&mut t), answer, "{what}");
+        assert_eq!(t.shown().pictures.len(), usize::from(whole) + usize::from(what == "another transfer"), "{what}");
+    }
+
+    // A query stores nothing and breaks nothing off, whenever it comes.
+    let mut t = Term::new(20, 10);
+    t.feed(format!("\x1b_Ga=t,i=1,f=24,s=64,v=48,m=1;{}\x1b\\\x1b_Gm=1;{}\x1b\\", parts[0], parts[1]).as_bytes());
+    t.feed(b"\x1b_Ga=q,i=31,s=1,v=1,f=24;AAAA\x1b\\\x1b_Ga=q,i=32,e=T\x1b\\");
+    assert_eq!(reply(&mut t), "\x1b_Gi=31;OK\x1b\\\x1b_Gi=32,e=T;OK\x1b\\");
+    t.feed(format!("\x1b_Gm=0;{}\x1b\\", parts[2]).as_bytes());
+    let out = t.take(0);
+    assert_eq!((String::from_utf8(out.reply).unwrap().as_str(), out.refused.len()), ("\x1b_Gi=1;OK\x1b\\", 0));
+}
