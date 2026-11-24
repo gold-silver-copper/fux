@@ -87,7 +87,7 @@ environment says which pane it is in. The session is the one `fux dir` prints, o
 given: `.here SESSION`. A program in a pane of a session that is not the
 default one must give it (nothing in a pane says which session it is in);
 without it the answer there is "not in a pane". Its own workspace is the
-folder above: `fux start "$(dirname "$(sh ~/.config/fux/keys/.here)")/build" -- make`. It needs `ps`, `grep` and perl, and `fux` on `PATH` where no session is given (it says so if `fux dir` names none). Not found: a program
+folder above: `fux start "$(dirname "$(sh ~/.config/fux/keys/.here)")/build" -- make`. It needs `ps` and perl, and `fux` on `PATH` where no session is given (it says so if `fux dir` names none). Not found: a program
 whose ancestors have all gone (a daemon, `(job &)`), and one in a container or
 behind ssh. Two kept folders whose `status` name one process are no answer:
 it names both and fails.

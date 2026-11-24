@@ -1549,6 +1549,18 @@ fn a_path_with_a_line_end_in_it_is_whole_to_the_keys_scripts() {
     let restored = session.command("sh").arg(keys.join(".restore")).arg(&shown).env("PATH", &path).run();
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started r/over again\n", "{restored:?}");
     stands("over", &said);
+    // In that session `.here` finds the pane it is asked in, and a shell's pane closes when its shell
+    // ends (`.shell` asks `.here` which folder to remove).
+    let second = shown.join("main/2");
+    send(&second.join("in"), "sh \"$HERE\" \"$SHOWN\" > \"$HOME/here\" 2>&1; echo \"ended $?\" >> \"$HOME/here\"\r");
+    until("`.here` has answered", || read(&home.join("here")).contains("ended "));
+    assert_eq!(read(&home.join("here")), format!("{}\nended 0\n", second.display()));
+    send(&second.join("in"), "exit\r");
+    until_or(
+        "the pane of the shell that ended is gone",
+        || format!(": {}", fact(&second, "state")),
+        || !second.exists(),
+    );
 }
 
 #[test]
