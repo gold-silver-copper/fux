@@ -1448,6 +1448,9 @@ until [ -e "$s/.go" ]; do sleep 0.05; done
         ran()
     );
     assert_eq!(fs::read_dir(&own).unwrap().count(), 34);
+    // (The keys wait two seconds for each script, and the viewer says so in its corner when a wait is
+    // over: all 32 are over before one more is asked for, so that what it says of that one stays.)
+    std::thread::sleep(Duration::from_millis(2500));
     send(&own.join("ctl"), "workspace e2\n");
     until("the viewer says that one more was not started", || {
         read(&view.join("shown/screen")).contains("32 key scripts are still running")
