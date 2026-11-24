@@ -61,7 +61,9 @@ directory puts the pane's folder there. What `fux start` prints is the
 folder's own path, with links followed and `..` read as the system reads
 it, so it holds when the way that led there is gone. The viewer of a
 workspace named by a path is the viewer of the session that folder is in
-(its parent), and the folder's own name must be a workspace's name.
+(its parent), and the folder's own name must be a workspace's name; the
+viewer of one named by its name is the default session's, whatever the
+folder of that name is a link to.
 
 **No variable, and no "here".** fux reads no environment variable of its
 own and sets none: what it is told, it is told in its arguments, and what it

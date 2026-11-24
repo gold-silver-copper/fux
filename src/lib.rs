@@ -262,8 +262,10 @@ fn run(args: &[OsString]) -> Result<(), String> {
             let wrong = "view takes a workspace, by its name or its directory, and then perhaps the keys' directory";
             let ([] | [_] | [_, _]) = rest else { return Err(wrong.into()) };
             let named = rest.first().map_or(Some("main"), |name| name.to_str()).ok_or(wrong)?;
-            // (The viewer is its session's: the folder the workspace is in, and the workspace's name there.)
-            let workspace = made(&workspace(named, wrong)?)?;
+            // (The viewer is its session's: the folder the workspace is in, and the workspace's name there.
+            // A name's is the default session, whatever its folder there is a link to: only a path is resolved.)
+            let workspace = workspace(named, wrong)?;
+            let workspace = if named.starts_with(['/', '.']) { made(&workspace)? } else { workspace };
             let name = workspace.file_name().and_then(|name| name.to_str()).filter(|name| is_name(name));
             let config = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")));
             let keys = rest.get(1).map(PathBuf::from).or_else(|| config.map(|config| config.join(FOLDER).join("keys")));

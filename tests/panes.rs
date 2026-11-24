@@ -1134,12 +1134,25 @@ fn a_pane_and_a_workspace_are_named_by_a_path_as_by_a_name() {
     });
     // It is the viewer of the session that workspace is in: its FIFO is there, and a workspace it is
     // told to show is one of that session.
-    until("the viewer's FIFO is in the workspace's session", || {
-        fs::read_dir(&other).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with(".view."))
-    });
+    let viewers = |session: &Path| {
+        let files = fs::read_dir(session).unwrap().flatten();
+        files.filter(|entry| entry.file_name().to_string_lossy().starts_with(".view.")).count()
+    };
+    until("the viewer's FIFO is in the workspace's session", || viewers(&other) == 1);
     send(&view_fifo(&other), "workspace v\n");
     until("the other workspace of that session is shown", || read(&other.join("v/layout")).contains("* r focus=r"));
     send(&view_fifo(&other), "quit\n");
+    assert!(session.fux().arg("wait").arg(&view).ended().success());
+    // A name is a name to the viewer too: a workspace of the default session, whatever the folder of
+    // that name is a link to. Here it leads to the workspace elsewhere, and the viewer is the default
+    // session's all the same: only a path says another session.
+    std::os::unix::fs::symlink(other.join("w"), session.0.join("alias")).unwrap();
+    let mut start = session.fux();
+    start.env("COLUMNS", "60").env("LINES", "10").args(["start", "v/named", "--", env!("CARGO_BIN_EXE_fux")]);
+    let view = session.started(start.args(["view", "alias"]).arg(&keys));
+    until("the viewer of a name has its folder", || viewers(&session.0) + viewers(&other) == 1);
+    assert_eq!((viewers(&session.0), viewers(&other)), (1, 0), "a name's viewer is another session's");
+    send(&view_fifo(&session.0), "quit\n");
     assert!(session.fux().arg("wait").arg(&view).ended().success());
     // A folder that is no workspace's name cannot be shown, and more than two arguments are refused.
     for odd in [vec!["view", "/"], vec!["view", "./my keys"], vec!["view", "main", "keys", "more"]] {
