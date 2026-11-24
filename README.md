@@ -525,8 +525,36 @@ Keys that waited (for a script, or for a workspace's first frame) are read as on
 What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key (its first 200 characters; a line over 4096 bytes is dropped whole, and the corner says so). A key with no file, pressed in an
-open menu, closes the menu and goes nowhere (in a menu that stays open, as resize and move do, the prefix opens its own menu again: `C-b r l l C-b v` resizes and then splits). Writing the same lines to the FIFO
-`$FUX_VIEW` does the same from anywhere.
+open menu, closes the menu and goes nowhere (in a menu that stays open, as resize and move do, the prefix opens its own menu again: `C-b r l l C-b v` resizes and then splits). Writing the same lines to the viewer's FIFO
+(`$FUX_VIEW`: `ctl` in the viewer's folder, below) does the same from anywhere.
+
+**The viewer's folder, and a script's.** A viewer keeps a folder of its own
+in the session, `.view.PID` (its process number; yours alone to read), for as
+long as it runs: `ctl`, its FIFO; `cwd`, one line, the directory it was
+started in; and a folder for each key script that is running, named by a
+number (`1`, `2`, … as they were started). A script is run in its folder,
+and what it is told is there to read:
+
+| In a script's folder | What it is |
+|---|---|
+| `pane` | a link to the folder of the pane that has the keys; not there when none has (`[ -L pane ]`) |
+| `workspace`, `session`, `keys` | links to the workspace shown, its session and the keys directory |
+| `ctl` | a link to the viewer's FIFO |
+| `row`, `col` | `COLS ROWS`, as a pane's `size` has them: the size of the tile a split of the focused pane would make, side by side and one above the other (the whole view's, with no pane) |
+
+A folder is a link and a value is text. Each link holds the folder's whole
+path, so `pane/in` and `cat pane/cwd` work as they stand, and `readlink
+pane` gives the path to hand on. Hand that on, and not a path through the
+script's folder, to anything that outlives the script (a pane it starts, a
+job it leaves in the background): the folder is written whole before the
+script starts, never written again, and removed when the script has ended.
+So a script that still runs when the next key is pressed keeps what it was
+told at its own key, the focus as it was then; the next has a folder of its
+own. Up to 32 scripts run at once: one more is refused, and the corner says
+so. A key whose file cannot be run leaves no folder. When the viewer leaves,
+its folder goes, with the folders of scripts that still run (a job of theirs
+is left with a working directory that is gone, which harms nothing that
+uses whole paths). Several viewers of one session each have their own.
 
 The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `s` split stacked (both, and a new tab, start where the focused pane's program says it is, its `cwd`, and else in the directory the viewer was started in),
@@ -798,8 +826,8 @@ fux adds nothing to stop these. What happens is what Unix does:
   terminal back as it found it (the main screen, the mouse, the keyboard
   flags): the terminal stays raw; with a program's keyboard flags left on,
   Ctrl-C reaches your shell as an escape sequence; and the cursor keeps the
-  colour a pane gave it. A FIFO `.view.PID` stays in the session directory
-  (`rm` it). The panes do not care.
+  colour a pane gave it. Its folder `.view.PID` stays in the session directory
+  (`rm -r` it; a viewer that is given the same number later removes it). The panes do not care.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `state` stays as it was (`running`, as a rule) and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain

@@ -1305,6 +1305,122 @@ fn a_program_that_draws_frame_after_frame_without_a_pause_is_shown_while_it_does
 }
 
 #[test]
+fn a_keys_script_is_told_by_a_folder_of_its_own_which_goes_with_it() {
+    // The viewer has a folder of its own in the session, `.view.PID`: its FIFO (`ctl`), where it
+    // was started (`cwd`), and for each key's script that runs a folder that is the script's working
+    // directory, with links to what the script is about and two sizes. Here a viewer of 100 by 30
+    // in a pane, started in a folder of its own, where a killed viewer of the same number had left
+    // its folder (the shell that becomes the viewer makes it): that goes.
+    use std::os::unix::fs::MetadataExt;
+    let (outer, inner) = (Session::new("ownouter"), Session::new("owninner"));
+    let (keys, project) = (inner.root().join("keys"), inner.root().join("project"));
+    fs::create_dir_all(keys.join("C-b")).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    let script = |name: &str, text: &str, mode: &str| {
+        fs::write(keys.join(name), format!("#!/bin/sh\n# {name}\n{text}")).unwrap();
+        assert!(Command::new("chmod").arg(mode).arg(keys.join(name)).ended().success());
+    };
+    // A key that writes down all it is told, and then stays until it is let go.
+    let tells = r#"s=$(readlink session)
+{ pwd -P; for l in pane workspace session keys ctl; do echo "$l $(readlink $l)"; done; echo "row $(cat row)"
+  echo "col $(cat col)"; echo "size $COLUMNS $LINES"; ls | tr '\n' ' '; } > "$s/.told.new" 2>&1 && mv "$s/.told.new" "$s/.told.${PWD##*/}"
+until [ -e "$s/.go" ]; do sleep 0.05; done
+"#;
+    script("C-b/t", tells, "755");
+    script("C-b/n", "echo ran\n", "644");
+    // (What is run for a workspace with no pane: it notes its folder, its number and what it has, and stays too.)
+    let empty = r#"s=$(readlink session)
+echo "${PWD##*/} $$ $(basename "$(readlink workspace)") $(ls | tr '\n' ' ')" >> "$s/.ran"
+until [ -e "$s/.go" ]; do sleep 0.05; done
+"#;
+    script(".empty", empty, "755");
+    let (a, _b) = (inner.start("a", &["cat"]), inner.start("b", &["cat"]));
+    lay(&inner.0, "* row(a b) focus=a\n");
+    let becomes = "mkdir -p \"$0/.view.$$/7\" && : > \"$0/.view.$$/7/stale\" && exec \"$@\"";
+    let mut start = outer.fux();
+    start.env("COLUMNS", "100").env("LINES", "30").current_dir(&project).args(["start", "view", "--", "sh", "-c"]);
+    start.args([becomes, inner.0.to_str().unwrap(), env!("CARGO_BIN_EXE_fux"), "view"]);
+    let view = outer.started(start.arg(inner.0.join("main")).arg(&keys));
+    until("the panes are drawn", || read(&view.join("shown/screen")).contains('│'));
+    let own = view_fifo(&inner.0).parent().unwrap().to_path_buf();
+    let has = |folder: &Path| {
+        let mut names: Vec<String> =
+            fs::read_dir(folder).unwrap().flatten().map(|entry| entry.file_name().into_string().unwrap()).collect();
+        names.sort();
+        names.join(" ")
+    };
+    assert_eq!(has(&own), "ctl cwd", "the viewer's folder, with nothing a viewer before it left");
+    assert_eq!(read(&own.join("cwd")), format!("{}\n", project.display()));
+    assert_eq!(own.metadata().unwrap().mode() & 0o777, 0o700);
+
+    // A key's script: its folder is made whole before it starts, and is where it runs.
+    send(&view.join("in"), "\x02t");
+    until("the first script has said what it was told", || inner.0.join(".told.1").exists());
+    let told = |n: u32, pane: &str, sizes: &str| {
+        let (folder, session, ctl) = (own.join(n.to_string()), inner.0.display(), own.join("ctl"));
+        let links = format!(
+            "pane {session}/main/{pane}\nworkspace {session}/main\nsession {session}\nkeys {}\n",
+            keys.display()
+        );
+        format!(
+            "{}\n{links}ctl {}\n{sizes}\nsize 100 30\ncol ctl keys pane row session workspace ",
+            folder.display(),
+            ctl.display()
+        )
+    };
+    assert_eq!(read(&inner.0.join(".told.1")), told(1, "a", "row 33 30\ncol 50 14"));
+    // The next key has a folder of its own, with the focus as it is at that key; the script that
+    // still runs keeps its own as it was. (The keys waited two seconds for the first.)
+    assert!(inner.fux().env("FUX_WS", "main").args(["layout", "pane", "b"]).ended().success());
+    send(&view.join("in"), "\x02t");
+    until("the second script has said what it was told", || inner.0.join(".told.2").exists());
+    assert_eq!(read(&inner.0.join(".told.2")), told(2, "b", "row 32 30\ncol 49 14"));
+    assert_eq!((has(&own), fs::read_link(own.join("1/pane")).unwrap()), ("1 2 ctl cwd".to_string(), a.clone()));
+    // A script's folder goes when the script has ended.
+    fs::write(inner.0.join(".go"), "").unwrap();
+    until("the folders of the two scripts are gone", || has(&own) == "ctl cwd");
+    fs::remove_file(inner.0.join(".go")).unwrap();
+    // A key whose file cannot be run says so, and leaves no folder.
+    send(&view.join("in"), "\x02n");
+    until("the viewer says that the key's file cannot be run", || {
+        read(&view.join("shown/screen")).contains("Permission denied")
+    });
+    assert_eq!(has(&own), "ctl cwd");
+
+    // 32 scripts at once and no more: here the one a workspace with no pane is first shown with,
+    // 32 times (it has no `pane`: nothing has the keys there). One more is refused, and has no folder.
+    for name in ["e1", "e2"] {
+        fs::create_dir_all(inner.0.join(name)).unwrap();
+    }
+    let ran = || read(&inner.0.join(".ran")).lines().map(String::from).collect::<Vec<_>>();
+    for n in 1..=32 {
+        send(&own.join("ctl"), format!("workspace e{}\n", n % 2 + 1));
+        until("the script of the empty workspace runs", || ran().len() == n);
+    }
+    let pids: Vec<String> = ran().iter().map(|line| line.split(' ').nth(1).unwrap().to_string()).collect();
+    assert!(
+        ran()[31].starts_with("35 ") && ran()[31].ends_with(" e1 col ctl keys row session workspace "),
+        "{:?}",
+        ran()
+    );
+    assert_eq!(fs::read_dir(&own).unwrap().count(), 34);
+    send(&own.join("ctl"), "workspace e2\n");
+    until("the viewer says that one more was not started", || {
+        read(&view.join("shown/screen")).contains("32 key scripts are still running")
+    });
+    assert_eq!((ran().len(), fs::read_dir(&own).unwrap().count()), (32, 34));
+    // The viewer leaves: its folder goes, with the folders of the scripts that still run.
+    send(&own.join("ctl"), "quit\n");
+    assert!(outer.fux().arg("wait").arg(&view).ended().success());
+    assert!(!own.exists(), "the viewer left its folder: {}", has(&own));
+    // (The scripts are let go, and end: none of the tests' is left running.)
+    fs::write(inner.0.join(".go"), "").unwrap();
+    until("the scripts have ended", || {
+        !Command::new("kill").arg("-0").args(&pids).stderr(Stdio::null()).ended().success()
+    });
+}
+
+#[test]
 fn a_viewer_whose_panes_do_not_change_does_no_work_and_draws_the_next_change() {
     // The viewer on a terminal of 500 by 500 cells: putting a frame of that size together is
     // work that shows in its processor time, which `ps` tells (in whole seconds, on Linux).
@@ -1373,9 +1489,7 @@ fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
     // notes that it ran.
     fs::write(keys.join(".empty"), "#!/bin/sh\necho \"$FUX_WS\" >> \"$FUX_KEYS/ran\"\n").unwrap();
     fs::create_dir_all(inner.0.join("other")).unwrap();
-    let ctl =
-        fs::read_dir(&inner.0).unwrap().flatten().find(|file| file.file_name().to_string_lossy().starts_with(".view."));
-    let ctl = ctl.unwrap().path();
+    let ctl = view_fifo(&inner.0);
     send(&ctl, "workspace other\n");
     until("the other workspace is shown", || read(&view.join("shown/screen")).contains("no panes in other"));
     assert_eq!(read(&keys.join("ran")), "other\n");
@@ -1535,9 +1649,7 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     until("the program asks for pastes marked", || read(&inner.0.join("main/two/shown/screen")).contains("\nready\n"));
     until("the pane's modes say so", || fact(&inner.0.join("main/two"), "modes").contains("paste"));
     fs::create_dir(inner.0.join("other")).unwrap();
-    let mut own = fs::read_dir(&inner.0).unwrap().flatten().map(|entry| entry.path());
-    let own = own.find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".view.")).unwrap();
-    send(&own, b"workspace other\nworkspace main\n");
+    send(&view_fifo(&inner.0), b"workspace other\nworkspace main\n");
     std::thread::sleep(Duration::from_millis(300));
     send(&view.join("in"), "\x1b[200~pasted\x1b[201~\x1b[<0;51;4M\r");
     until_or(
@@ -1650,11 +1762,7 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
     // it was told stays true.
     assert!(!modes(&early).contains("keys") && shown(&early) == "^[[?0u", "{}", modes(&early));
     // When the viewer leaves, the terminal has the flags it had: 4, on its alternate screen.
-    let ctl = fs::read_dir(&inner.0)
-        .unwrap()
-        .flatten()
-        .find(|entry| entry.file_name().to_string_lossy().starts_with(".view."));
-    send(&ctl.unwrap().path(), "quit\n");
+    send(&view_fifo(&inner.0), "quit\n");
     until("the terminal is as it was found", || shown(&view).contains("^[[?4u"));
 }
 
@@ -2086,11 +2194,7 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     send(&view.join("in"), "\x1b[0;;229u\x1b[99;1:1u");
     let held = format!("{held}^[[0;;229u");
     until("c is down", || shown(&asks) == format!("{held}^[[99;1:1u"));
-    let ctl = fs::read_dir(&inner.0)
-        .unwrap()
-        .flatten()
-        .find(|entry| entry.file_name().to_string_lossy().starts_with(".view."));
-    send(&ctl.unwrap().path(), "quit\n");
+    send(&view_fifo(&inner.0), "quit\n");
     until("c is let go", || shown(&asks) == format!("{held}^[[99;1:1u^[[99;1:3u"));
     assert_eq!(shown(&plain), "z");
 }
@@ -2573,9 +2677,7 @@ fn a_clipboard_set_while_a_workspace_with_no_pane_was_shown_is_not_sent_on_the_w
     until("the first copy is passed on", || sent() == "one");
     // What it copies while the viewer shows a workspace with no pane is old when the viewer
     // comes back: it is not sent.
-    let ctl =
-        fs::read_dir(&inner.0).unwrap().flatten().find(|file| file.file_name().to_string_lossy().starts_with(".view."));
-    let ctl = ctl.unwrap().path();
+    let ctl = view_fifo(&inner.0);
     send(&ctl, "workspace other\n");
     until("the workspace with no pane is shown", || screen().contains("no panes in other"));
     send(&pane.join("in"), "dHdv\n");
@@ -3002,7 +3104,7 @@ fn the_windows_focus_is_not_told_to_a_program_that_asks_no_more() {
     let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
     until("the viewer asks its terminal for the focus", || fact(&view, "modes").contains("focus"));
     std::thread::sleep(Duration::from_millis(500));
-    let pid = view_fifo(&inner.0).extension().unwrap().to_string_lossy().into_owned();
+    let pid = view_fifo(&inner.0).parent().unwrap().extension().unwrap().to_string_lossy().into_owned();
     assert!(Command::new("kill").args(["-STOP", &pid]).ended().success());
     fs::write(one.join("go"), "").unwrap();
     until("it asks no more", || fact(&one, "modes").is_empty());
@@ -3015,10 +3117,11 @@ fn the_windows_focus_is_not_told_to_a_program_that_asks_no_more() {
     assert_eq!(read(&one.join("shown/screen")).trim_end(), "^[[IEND");
 }
 
-/// The FIFO of the one viewer of a session (`.view.PID`).
+/// The FIFO of the one viewer of a session (`.view.PID/ctl`).
 fn view_fifo(session: &Path) -> PathBuf {
     let files = fs::read_dir(session).unwrap().flatten().map(|entry| entry.path());
-    files.into_iter().find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".view.")).unwrap()
+    let own = files.into_iter().find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".view."));
+    own.unwrap().join("ctl")
 }
 
 #[test]
@@ -4192,9 +4295,7 @@ fn the_viewer_draws_a_sixel_file_where_its_terminal_draws_sixel_and_sends_no_oth
         until("the viewer has asked its terminal what it is", || terminal.seen().contains("\x1b[c"));
         (&terminal.0).write_all(format!("{what_it_is}x").as_bytes()).unwrap();
         until_or("the viewer has drawn the pane", || terminal.seen(), || terminal.seen().contains("drew has ended"));
-        let own = fs::read_dir(&session.0).unwrap().filter_map(|entry| Some(entry.ok()?.file_name()));
-        let own = own.filter(|name| name.as_encoded_bytes().starts_with(b".view.")).collect::<Vec<_>>();
-        send(&session.0.join(&own[0]), "quit\n");
+        send(&view_fifo(&session.0), "quit\n");
         until("the viewer has given the terminal back", || terminal.seen().contains("\x1b[?1049l"));
         assert!(view.end().success());
         // Of all it wrote from its start to its end: no command of the Kitty graphics protocol

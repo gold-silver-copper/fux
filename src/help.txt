@@ -257,8 +257,8 @@ and its tab is marked; a viewer in a pane has that in its own pane's `notice`, a
 From inside a pane: printf 'notify %s\n' 'done' > "$FUX_PANE/ctl".
 A viewer writes in the session `keyboard` and, only if its terminal answered, `colours`
 (what its terminal can do; harmless, left behind), its key scripts in $FUX_KEYS (else
-$XDG_CONFIG_HOME/fux/keys, else ~/.config/fux/keys), and while it runs a FIFO
-`.view.PID` in the session.
+$XDG_CONFIG_HOME/fux/keys, else ~/.config/fux/keys), and while it runs a folder
+`.view.PID` in the session (its FIFO `ctl` among what is in it: `quit` written there ends it).
 
 IF YOU HAVE PERL (optional: nothing else on this page needs it)
 The sh forms above can lose a write to a dead pane without a word, wait under a program that
