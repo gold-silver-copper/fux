@@ -256,9 +256,12 @@ struct View {
 /// not to what another program may have made them before.)
 const LEAVING: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b]112\x1b\\\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t";
 
+/// What a viewer with no terminal says: here, and before a folder is made for a path it was given.
+pub const NO_TERMINAL: &str = "the viewer needs a terminal on its standard input";
+
 pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), String> {
     let tty = io::stdin().as_fd().try_clone_to_owned().map(File::from).map_err(|e| format!("standard input: {e}"))?;
-    let size = sys::winsize(&tty).map_err(|_| "the viewer needs a terminal on its standard input")?;
+    let size = sys::winsize(&tty).map_err(|_| NO_TERMINAL)?;
     // What is made is the owner's alone; what is there already is left as it is.
     let made = fs::DirBuilder::new().mode(0o700).recursive(true).create(session.join(&workspace));
     made.map_err(|e| format!("{}: {e}", session.display()))?;

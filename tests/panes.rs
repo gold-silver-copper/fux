@@ -1154,11 +1154,24 @@ fn a_pane_and_a_workspace_are_named_by_a_path_as_by_a_name() {
     assert_eq!((viewers(&session.0), viewers(&other)), (1, 0), "a name's viewer is another session's");
     send(&view_fifo(&session.0), "quit\n");
     assert!(session.fux().arg("wait").arg(&view).ended().success());
-    // A folder that is no workspace's name cannot be shown, and more than two arguments are refused.
-    for odd in [vec!["view", "/"], vec!["view", "./my keys"], vec!["view", "main", "keys", "more"]] {
-        let out = session.fux().current_dir(session.root()).args(&odd).run();
-        assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("view takes"), "{out:?}");
-    }
+    // With no terminal there is no viewer, and nothing is made for one: not the folders of a path
+    // that are not there, nor a name's. More than two arguments are refused.
+    let view = |odd: &[&str]| {
+        let out = session.fux().current_dir(session.root()).arg("view").args(odd).run();
+        assert!(!out.status.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    assert!(view(&["./off/w"]).contains("needs a terminal") && view(&["new"]).contains("needs a terminal"));
+    assert!(!session.root().join("off").exists() && !session.0.join("new").exists(), "a folder was made");
+    assert!(view(&["main", "keys", "more"]).contains("view takes"));
+    // A folder that is no workspace's name cannot be shown (asked where there is a terminal: in a pane).
+    let asks = "cd \"$0\"; for odd in / './my keys'; do \"$1\" view \"$odd\"; done 2> said; echo done >> said";
+    let mut start = session.fux();
+    start.args(["start", "v/odd", "--", "sh", "-c", asks]).arg(session.root()).arg(env!("CARGO_BIN_EXE_fux"));
+    session.started(&mut start);
+    let said = || read(&session.root().join("said"));
+    until("the two have answered", || said().ends_with("done\n"));
+    assert_eq!(said().matches(": view takes a workspace").count(), 2, "{}", said());
 }
 
 #[test]

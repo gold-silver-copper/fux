@@ -23,7 +23,7 @@ use fuxix as sys;
 
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
@@ -263,8 +263,10 @@ fn run(args: &[OsString]) -> Result<(), String> {
             let ([] | [_] | [_, _]) = rest else { return Err(wrong.into()) };
             let named = rest.first().map_or(Some("main"), |name| name.to_str()).ok_or(wrong)?;
             // (The viewer is its session's: the folder the workspace is in, and the workspace's name there.
-            // A name's is the default session, whatever its folder there is a link to: only a path is resolved.)
+            // A name's is the default session, whatever its folder there is a link to: only a path is resolved,
+            // and its folder made for that. Not where there is no terminal to show it on: nothing is made then.)
             let workspace = workspace(named, wrong)?;
+            std::io::stdin().is_terminal().then_some(()).ok_or(view::NO_TERMINAL)?;
             let workspace = if named.starts_with(['/', '.']) { made(&workspace)? } else { workspace };
             let name = workspace.file_name().and_then(|name| name.to_str()).filter(|name| is_name(name));
             let config = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")));

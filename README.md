@@ -63,7 +63,8 @@ it, so it holds when the way that led there is gone. The viewer of a
 workspace named by a path is the viewer of the session that folder is in
 (its parent), and the folder's own name must be a workspace's name; the
 viewer of one named by its name is the default session's, whatever the
-folder of that name is a link to.
+folder of that name is a link to. A viewer with no terminal on its standard
+input says so and makes nothing, not a folder of the path it was given.
 
 **No variable, and no "here".** fux reads no environment variable of its
 own and sets none: what it is told, it is told in its arguments, and what it
