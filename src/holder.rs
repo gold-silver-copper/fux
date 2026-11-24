@@ -489,6 +489,7 @@ impl Holder {
         let pane = [
             ("title", title),
             ("marks", Some(files::marks(term))),
+            ("marks.dropped", Some(format!("{}\n", term.marks_dropped()))),
             ("size", Some(format!("{} {}\n", screen.cols, screen.rows))),
             ("cursor", Some(format!("{} {} {shown} {}{colour}\n", at.row, at.col, screen.cursor_shape))),
             ("modes", Some(format!("{}\n", words))),

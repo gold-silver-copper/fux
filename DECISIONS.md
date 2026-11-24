@@ -3014,6 +3014,88 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     the viewer's program first in its `PATH`: on a machine with a carrier
     and no `fux`, keys that call it find none. That is the carrier's keys'
     to settle. 16 lines more in `src/lib.rs`, 10 of them its three comments.
+- **D125. `marks.dropped`: a reader numbers the marks, and subtracts** (the
+  owner, 2026-11-24, for koh's `wait --session`: "the holder knows the
+  answer and does not say it. A reader should subtract, not infer").
+  - **What was missing.** A reader that asks "has a command ended since I
+    looked?" needs to know that `marks` has one more `end`. The file could
+    not say it. Its count stops at a thousand. Its places say nothing: a
+    mark moves with its text, and what is erased puts its marks at one
+    place. Three rules that inferred it from the file's contents were tried
+    in koh, and each was broken in review by ordinary use: a shell that
+    clears at each prompt, 255 times, in a pane of 80 by 24 (a full file,
+    every mark on the screen, a thousand lines alike); a line inserted at
+    the top, or a scroll down, with every mark still on the screen (every
+    place changes, nothing was marked: a command "ended" that had not); the
+    marks of three hundred commands in one write (more than the file keeps
+    between two looks: a later command given as the first).
+  - **The fact: how many marks were dropped from the file's front.** One
+    number, in a file of its own, `marks.dropped`. Line n of `marks` (from
+    1) is then mark number N + n, for as long as it is listed. Two readings
+    say what was marked between them by subtraction: the `end`s numbered
+    above the last `end` read before are new, each once; and when N has
+    passed the number of the last mark read before, that many marks came
+    and went unread, which is the honest answer where the file kept less
+    than was made.
+  - **Why that one, and not the number of marks ever made.** The list
+    loses marks at both ends: the oldest past a thousand at its front, and
+    at its end a `prompt` and the `command` after it when the prompt is
+    drawn again in its place ("one prompt"). So "ever made" is either the
+    number of the last mark, which goes back when a prompt is drawn again
+    and is N and the file's lines told a second time; or a count of every
+    mark made, which numbers no line (less the file's lines it is not the
+    first line's number once a prompt was drawn again). What was dropped is
+    the one fact the holder has and the files lacked, it never goes back,
+    and with it a redrawn prompt keeps its number, as it is one prompt.
+    Not a count of `end`s: that is one kind's fact for one reader's
+    question, and the marks' number answers it for every kind.
+  - **Why a file, and that name.** A first line in `marks` would change the
+    file's shape for every reader (the two keys, the page's recipes, koh)
+    and raise `fux::FORMAT`; a file added does not raise it (D124), and
+    there are no header lines in files. One fact, one file. The name is the
+    thing counted, the marks that were dropped, beside the file they were
+    dropped from, at the pane's root as the marks are (they are in the
+    pane's text, not a screen's): as `history.1` is what was before
+    `history`, of which here only the number is kept. Not `marks.count`,
+    `marks.first` or `marks.base`: those say what a reader does with the
+    number. It counts marks in the marks' own order, as `main/lines` begins
+    with how many lines are before the screen's first row: counted from 0,
+    N is the number of the file's first mark.
+  - **What it is, when.** `0` from a pane's first round, with no mark yet
+    too: the file is always there, so a pane without it is one kept by an
+    older fux, where the marks cannot be numbered (no file, and not a
+    guess of 0). It grows only where a mark is dropped. A reset (`ESC c`)
+    keeps it, as it keeps the marks; a clear, a scroll, a resize, a line
+    ended in `history` and lines older than the files move marks or leave
+    them, and number none anew. It never goes back while a holder lives,
+    and a folder is one run (D121). It is written in the round `marks` is,
+    so the two agree under one even `generation`.
+  - **What a reader must know.** A prompt drawn again in its place takes
+    back the `prompt` and `command` marks that end the file, and what is
+    marked next has their numbers: a shell that draws its prompt again as a
+    command starts and marks no `output` has that command's `end` under the
+    number its `command` mark had. An `output` and an `end` are never taken
+    back, nor any mark before one. So a kind is counted from the last mark
+    of that kind read before, not from the file's last mark; the README's
+    row says so and the test has the case.
+  - **fux's own two keys do not use it.** `C-b p` and `C-b S-c` read the
+    marks once, with the text of the same round, and find the last prompt
+    but one and the last output: neither compares two readings. The number
+    would be a read more and nothing more right. The page's recipe for a
+    marking shell does use it: it counted the `end`s in the file and said
+    that in a pane with more than a thousand marks "the count stands still,
+    and a tag is the way"; it now waits for an `end` of a higher number.
+  - **Tests.** In the emulator, a reader's two functions (a reading, and
+    what is between two) over the reviewers' sequences: the 255 clears in
+    80 by 24, then a line inserted and a scroll down with nothing ended,
+    then the ends that follow; three hundred commands in one write (250
+    `end`s read, 200 marks known to be unread); every seventh command over
+    three thousand; a clear, a reset, a prompt drawn again. With the real
+    binary: `0` with no mark, the three hundred, and a flood of marks in
+    which every reading kept under `generation` numbers each `end` rightly.
+  - **Size.** 11 lines in `fux-vt/src/lib.rs` (a field, where it starts,
+    where a reset keeps it, where it grows, and what tells it; 3 of them
+    comments) and 1 in `src/holder.rs`.
 
 ## The old fux3's bugs: which classes are gone
 
