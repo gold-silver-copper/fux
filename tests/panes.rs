@@ -3215,6 +3215,43 @@ fn a_pane_whose_tab_is_shown_again_is_asked_its_size_once_more_and_no_more() {
 }
 
 #[test]
+fn a_folder_given_the_number_of_the_one_before_it_is_another_pane_by_its_run() {
+    // A pane is removed and its name started anew, and the new folder is given the number the old
+    // one had (ext4 gives it; btrfs and APFS never do, so here the folder stays and what is in it
+    // becomes another run's: to a viewer, which reads by the name, that is the same). Neither run
+    // has a `generation` to say that its files are others. The `run` says it: the viewer draws
+    // the screen of the run that has the name now, not what it read of the one before.
+    let (outer, inner) = (Session::new("numberouter"), Session::new("numberinner"));
+    let (keys, made) = (inner.0.join(".keys"), inner.0.join("main/a"));
+    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(made.join("main")).unwrap();
+    std::os::unix::fs::symlink("main", made.join("shown")).unwrap();
+    fs::write(made.join("state"), "running\n").unwrap();
+    // (Each file whole at every moment, as a holder writes it.)
+    let run = |number: u8, screen: &str| {
+        for (name, text) in [("main/screen.styled", format!("{screen}\n")), ("run", format!("{number:032x}\n"))] {
+            fs::write(made.join(".new"), text).unwrap();
+            fs::rename(made.join(".new"), made.join(name)).unwrap();
+        }
+    };
+    run(1, "AYE");
+    inner.start("b", &["sh", "-c", "echo BEE; exec sleep 600"]);
+    lay(&inner.0, "* a focus=a\n  b focus=b\n");
+    let view = outer.start("view", &viewer(&inner, &keys));
+    let shows = |word: &str| read(&view.join("shown/screen")).starts_with(word);
+    until("the first run is drawn", || shows("AYE"));
+    // While its tab is not shown (the sequence HANDOFF had as known, and left)…
+    assert!(inner.fux().args(["layout", "main", "tab", "next"]).ended().success());
+    until("the other tab is shown", || shows("BEE"));
+    run(2, "SEE");
+    assert!(inner.fux().args(["layout", "main", "tab", "prev"]).ended().success());
+    until("the second run is drawn when its tab is shown again", || shows("SEE"));
+    // …and while the viewer shows it.
+    run(3, "DEE");
+    until("the third run is drawn in its tile", || shows("DEE"));
+}
+
+#[test]
 fn rename_gives_a_pane_another_name_and_keeps_its_place_in_the_layout() {
     use std::os::unix::fs::MetadataExt;
     let session = Session::new("rename");
