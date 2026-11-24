@@ -150,6 +150,8 @@ program's next output, a line on `ctl` or the program's end brings; a clipboard,
 notice or a picture that a failed round did not write is lost, as history is; `log`
 says so for each round that failed.
 
+**The format's number** is 1 (`fux::FORMAT`, for a program that carries a pane's folder elsewhere and compares the fux at each end): it is raised when a reader of a folder written by the fux before would misread one written by this one (a file's meaning or shape changed, a file a reader needs is gone), and not when a file is added. No file in a pane says it: a pane kept by a holder of an older build has that build's files.
+
 **Files that agree.** One file read by itself needs nothing more: it is
 whole, and of one moment. Two files read one after the other may be of two
 rounds of writing: a `main/lines` one scroll behind its `main/screen`, a

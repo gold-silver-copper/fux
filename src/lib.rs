@@ -7,6 +7,10 @@
 const FOLDER: &str = "fux";
 /// What `TERM_PROGRAM` says in a pane.
 pub const TERM_PROGRAM: &str = "fux";
+/// The number a carrier of pane folders compares: raised when a reader of a folder written by the fux before
+/// would misread one this fux writes (a file's meaning or shape changed, a file a reader needs gone), and not
+/// when a file is added.
+pub const FORMAT: u32 = 1;
 
 mod holder;
 mod keys;
