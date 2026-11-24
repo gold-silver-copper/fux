@@ -2869,6 +2869,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     pane is given the viewer's FIFO by its own path (a reviewer reproduced
     the choice being lost through the script's link), the close key's
     `fux wait` the pane's.
+  - **A pane that a key starts is started from elsewhere.** A pane's
+    program runs in the directory `fux start` was run in, and a key's script
+    runs in a folder that goes when it ends. Found by running the keys
+    through a viewer, after the tests had passed: the editor's pane, the
+    picker's and the search's stood in a folder that was gone, every shell
+    there complained of it, and the search could open nothing, as a
+    `fux start` from a folder that is gone is refused. So a default script
+    that starts a pane goes first to where the viewer was started
+    (`../cwd`; a new shell to the focused pane's `cwd` before that), once it
+    has read its links. The tests' stand-in for the viewer had kept the
+    folder; it removes it now when the script has ended, as the viewer
+    does. A script of one's own must do the same, and the README says so.
   - **`COLUMNS` and `LINES` stay for a script, and there is no `size`
     file** (the orchestrator's ruling on the plan's third question): they
     are POSIX, were set already, and both readers default without them. The
@@ -2879,7 +2891,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     when it starts: it asks `.here` when its shell has ended, so a pane that
     was renamed closes too, which it did not before. The cost: a default
     shell pane now needs perl to close itself (`.here` tests the lock with
-    it); without perl the folder stays for the close key. `FUX_EDIT` is an
+    it); without perl the folder stays for the close key, and the pane's
+    `state` is how the shell ended. `FUX_EDIT` is an
     executable `.editor` in the keys directory, run as `.editor FILE LINE`:
     a file where a setting was a variable. `.restore` starts a pane by its
     folder's path and exports nothing; a pane it starts again finds the keys
@@ -2895,14 +2908,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     would start its pane in the wrong session and fail its test. The only
     `FUX_` left in the tree's code is the test that such names are passed
     on untouched and read by nobody.
-  - **Size.** Non-test Rust grew by 29 lines (115 in, 86 out), where the
-    plan had hoped for a small deletion: the variables' code went (the
+  - **Size.** Non-test Rust grew by 29 lines (116 in, 87 out), where the
+    plan had hoped for a small deletion. The variables' code went: the
     `name!` macro, `here()`, the branches of `session()` and `workspace()`
     that read a pane's own, what `launch`, the holder and the viewer set and
-    removed), and what a review asked for beyond the plan came in: the
-    resolved path, `cwd`, the keys argument, and a folder that is removed on
-    every way out. The keys grew by 26 lines. No extern was added to fuxix
-    and none left.
+    removed. The arguments that replace it are as long as it was (in
+    `src/lib.rs` 2 lines more, in the holder 8 fewer). The 35 lines more are
+    the viewer's: its folder and one for each script, their seven facts, and
+    their removal on every way out, where the plan had counted 20 in and 6
+    out and the review added `cwd` and the cleanup. The keys grew by 35
+    lines (what `.shell` asks of `.here`, the directory a pane is started
+    from, the arguments' comments). No extern was added to fuxix and none
+    left.
   - **Replaces** D34's five names and D35; of D94, that `.restore` tells
     the panes where the keys are.
   - **koh** (0.18 as it stands uses fux 0.42 as a library, and must change
