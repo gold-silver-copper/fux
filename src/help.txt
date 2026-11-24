@@ -127,7 +127,10 @@ cwd     the program's directory, if it announces it (absent else): a shell must,
 notice  `N WORDS`: N grows with each writing of the files that had a notice, WORDS may be
         none (a bell). E.g.
         `1 the build is done`. Absent until the first.
-marks   `LINE AT KIND`, a line for each prompt mark of a shell that makes them (below)
+marks   `LINE AT KIND`, a line for each prompt mark of a shell that makes them (below): the
+        last thousand
+marks.dropped   a number: how many marks were dropped from the front of `marks` (`0` until
+        there were more than a thousand). Line n of `marks` is mark number that + n (below)
 links   (in a screen's folder) `LINE COL LEN ADDRESS` for each link (OSC 8) on that screen,
         e.g. `24 0 4 https://x.y`: LINE counts as the first line of that folder's `lines`
         does (screen row = LINE - that number, if no row above wraps), COL is the first cell
@@ -180,12 +183,20 @@ in `marks`. This bash makes three kinds: `prompt`, `command` (where typing start
 `end CODE` (written before each prompt, the first one too: `end 0` is there from the
 start). The fourth, `output`, needs PS0='\e]133;C\a' and bash 4.4.
     S=$(fux start agent-demo/marked -- env PS1='\[\e]133;A\a\]$ \[\e]133;B\a\]' PROMPT_COMMAND='printf "\e]133;D;%s\a\e]7;file://%s\a" "$?" "${PWD//%/%25}"' bash --norc -i)
-So never wait for "an end": wait for one MORE than there were before you typed (`marks` keeps
-the last thousand: in a pane with more, the count stands still, and a tag is the way).
-    count() { grep -c " $2" "$1/marks" || :; }
-    more() { n=0; while [ "$(count "$1" "$2")" -le "$3" ]; do n=$((n+1)); [ $n -lt "${4:-100}" ] || return 1; sleep 0.1; done; }
-    seen ' prompt$' "$S/marks"; e=$(count "$S" end); p=$(count "$S" prompt)
+So never wait for "an end": wait for a NEWER one than there was before you typed. Neither the
+file's count nor a mark's place says that (`marks` keeps the last thousand, and a mark moves
+with its text: a clear, a line inserted). Its number does: line n of `marks`, from 1, is mark
+number `marks.dropped` + n, for as long as it is listed. `last` prints the number of the last
+mark of a kind (with none listed, of the last mark dropped): an `end`'s never goes back.
+    last() { awk -v kind="$2" 'NR == 1 { n = $1; last = n; next } $3 == kind { last = n + NR - 1 } END { print last }' "$1/marks.dropped" "$1/marks"; }
+    more() { n=0; while [ "$(last "$1" "$2")" -le "$3" ]; do n=$((n+1)); [ $n -lt "${4:-100}" ] || return 1; sleep 0.1; done; }
+    look() { e=$(last "$S" end) && p=$(last "$S" prompt); }
+    seen ' prompt$' "$S/marks"; together "$S" look
     printf 'cd /; false\r' > "$S/in"; more "$S" end "$e"; more "$S" prompt "$p"       # its end, then the next prompt
+(The `end`s numbered above $e are the commands that ended since, each once. If `marks.dropped`
+is by then above the number of the last mark read before, over a thousand marks came between
+the two looks: that many came and went unread. `more` reads the two files as they are: read
+between two writings its number is too small, never too big, and it looks again.)
     grep ' end' "$S/marks" | tail -n 1; cat "$S/cwd"       # LINE AT end 1, and /
 
 FULL-SCREEN PROGRAMS (vim, less, htop)
