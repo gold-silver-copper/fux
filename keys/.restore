@@ -46,7 +46,7 @@ for p in "$D"/*/*/; do
   kept "$p" && continue
   # (A pane that cannot be moved aside is left as it is: `mktemp` or `mv` has said why, and the end says so too.)
   old=$(mktemp -d "$D/.restore.XXXXXX") && mv "$p" "$old/pane" || { rmdir "$old" 2>/dev/null; left=1; continue; }
-  dir=; IFS= read -r dir 2>/dev/null < "$old/pane/cwd"
+  dir=$(cat "$old/pane/cwd" 2>/dev/null)
   # (The arguments are read by perl: an empty one is one too, which not every `xargs -0` keeps.)
   if said=$(cd "${dir:-$HOME}" 2>/dev/null || cd; perl -e 'local $/ = "\0"; open(F, "<", shift) or die "$!\n";
       chomp(my @given = <F>); exec(@ARGV, @given) or die "$ARGV[0]: $!\n"' "$old/pane/command" fux start "$p" -- 2>&1 > /dev/null)

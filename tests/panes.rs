@@ -1494,6 +1494,64 @@ until [ -e "$s/.go" ]; do sleep 0.05; done
 }
 
 #[test]
+fn a_path_with_a_line_end_in_it_is_whole_to_the_keys_scripts() {
+    // The default keys through a viewer, where every folder's name has a line end in it, with a `-`
+    // first, a blank and a `*`: the session's, the keys', the one the viewer is started in and the
+    // one a pane says it is in. A path in a file is the whole file, and is read so, not its first line.
+    let session = Session::new("lines");
+    let odd = |name: &str| session.root().join(format!("-{name} *\nend"));
+    let (shown, keys, project, said) = (odd("session"), odd("keys"), odd("project"), odd("said"));
+    let home = session.root().join("home");
+    for folder in [&project, &said] {
+        fs::create_dir_all(folder).unwrap();
+    }
+    // (A shell that notes where it is started, as an editor does below, and then is a shell.)
+    let notes = |name: &str| format!("pwd -P > \"$HOME/{name}.new\" && mv \"$HOME/{name}.new\" \"$HOME/{name}\"");
+    fs::write(session.root().join("shell"), format!("#!/bin/sh\n{}\nexec /bin/sh\n", notes("shell"))).unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(session.root().join("shell")).ended().success());
+    let stands = |name: &str, folder: &Path| {
+        until_or(
+            &format!("the {name} has said where it stands"),
+            || format!(": {:?}", read(&home.join(name))),
+            || read(&home.join(name)) == format!("{}\n", folder.display()),
+        );
+        fs::remove_file(home.join(name)).unwrap();
+    };
+    let mut start = session.fux();
+    start.env("SHELL", session.root().join("shell")).env("HERE", keys.join(".here")).env("SHOWN", &shown);
+    start.env("COLUMNS", "100").env("LINES", "30").current_dir(&project);
+    let view = session.started(
+        start.args(["start", "view", "--", env!("CARGO_BIN_EXE_fux"), "view"]).arg(shown.join("main")).arg(&keys),
+    );
+    // The first shell, which has no pane to follow, stands where the viewer was started (`../cwd`).
+    stands("shell", &project);
+    // A split stands where the focused pane's program says it is (`pane/cwd`: the holder writes no
+    // path with a line end in it, a shell that writes the file itself may).
+    let first = shown.join("main/1");
+    fs::write(first.join("cwd"), format!("{}\n", said.display())).unwrap();
+    send(&view.join("in"), "\x02v");
+    stands("shell", &said);
+    // The editor's pane and a new workspace's shell stand where the viewer was started.
+    editor(&keys, &notes("editor"));
+    send(&view.join("in"), "\x02c");
+    stands("editor", &project);
+    send(&view.join("in"), "\x02wn");
+    stands("shell", &project);
+    // A pane that is over is started again where its program last said it was.
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let path = format!("{bin}:{}", std::env::var("PATH").unwrap());
+    let mut over = session.fux();
+    over.current_dir(session.root());
+    let over = session.started(over.arg("start").arg(shown.join("r/over")).args(["--", "sh", "-c", &notes("over")]));
+    assert!(session.fux().arg("wait").arg(&over).ended().success());
+    stands("over", session.root());
+    fs::write(over.join("cwd"), format!("{}\n", said.display())).unwrap();
+    let restored = session.command("sh").arg(keys.join(".restore")).arg(&shown).env("PATH", &path).run();
+    assert_eq!(String::from_utf8_lossy(&restored.stdout), "started r/over again\n", "{restored:?}");
+    stands("over", &said);
+}
+
+#[test]
 fn a_viewer_whose_panes_do_not_change_does_no_work_and_draws_the_next_change() {
     // The viewer on a terminal of 500 by 500 cells: putting a frame of that size together is
     // work that shows in its processor time, which `ps` tells (in whole seconds, on Linux).

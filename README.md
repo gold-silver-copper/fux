@@ -540,8 +540,9 @@ open menu, closes the menu and goes nowhere (in a menu that stays open, as resiz
 
 **The viewer's folder, and a script's.** A viewer keeps a folder of its own
 in the session, `.view.PID` (its process number; yours alone to read), for as
-long as it runs: `ctl`, its FIFO; `cwd`, one line, the directory it was
-started in; and a folder for each key script that is running, named by a
+long as it runs: `ctl`, its FIFO; `cwd`, the directory it was started in
+(the path and a line end: read the file whole, as a path may have line ends of
+its own); and a folder for each key script that is running, named by a
 number (`1`, `2`, … as they were started). A script is run in its folder,
 and what it is told is there to read:
 
@@ -572,6 +573,9 @@ so. A key whose file cannot be run leaves no folder. When the viewer leaves,
 its folder goes, with the folders of scripts that still run (a job of theirs
 is left with a working directory that is gone, which harms nothing that
 uses whole paths). Several viewers of one session each have their own.
+The default keys read every path with `$( )`, which keeps a line end inside
+a path and drops those at its end: a folder whose own name ends in a line end
+is not for a session, for the keys or to start a viewer in.
 
 The defaults are fux 1's keys, all under `keys/C-b/`: `v` split side by side,
 `s` split stacked (both, and a new tab, start where the focused pane's program says it is, its `cwd`, and else in the directory the viewer was started in),

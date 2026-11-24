@@ -12,7 +12,7 @@ if [ "$1" = --tab ]; then
   # (The pane is told the workspace by its whole path, and is started from where the viewer was
   # started: it outlasts this script's folder, and its program runs where `fux start` does.)
   k=$(dirname "$0") w=$(readlink workspace)
-  { IFS= read -r d < ../cwd && [ -n "$d" ] && cd "$d" || cd || cd /; } 2>/dev/null
+  { d=$(cat ../cwd) && [ -n "$d" ] && cd "$d" || cd || cd /; } 2>/dev/null
   [ $# -gt 2 ] || set -- "$@" sh -c 'fux layout "$0" tab - 2>/dev/null; fux layout "$0" pane "$1"' "$w"
   shift
   p=$(fux start "$w/" -- "$k/.shell" "$(dirname "$w")" "$k/.pick" "$@") || { rm -f "$1"; exit; }

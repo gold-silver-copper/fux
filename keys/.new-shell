@@ -5,11 +5,12 @@
 # workspace, the pane and the size (`row`, `col`) are what the viewer put there.
 # The shell starts in the focused pane's directory if its program said one (`pane/cwd`), else
 # where the viewer was started (`../cwd`), else at home: never in this folder, which goes when
-# the key's script has ended. (The paths are read before that, as whole ones.)
+# the key's script has ended. (The paths are read before that, as whole ones; a directory is the
+# whole of its file, which may be more than a line.)
 k=$(readlink keys) s=$(readlink session) w=$(readlink workspace) from=
 [ ! -L pane ] || from=$(basename "$(readlink pane)")
 [ $# -eq 0 ] || { read -r COLUMNS LINES < "$1" && export COLUMNS LINES; }
-at() { IFS= read -r d < "$1" && [ -n "$d" ] && cd "$d"; } 2>/dev/null
+at() { d=$(cat "$1") && [ -n "$d" ] && cd "$d"; } 2>/dev/null
 at pane/cwd || at ../cwd || cd 2>/dev/null || cd /
 p=$(fux start "$w/" -- "$k/.shell" "$s") || exit
 # (A pane to split from that has gone meanwhile: the layout says so, and the new shell is shown in its own tab.)
