@@ -1,6 +1,7 @@
 //! The program itself, driven the way a person drives it: with files.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::disallowed_methods)]
 
+use fux::pane::{Change, Changes};
 use fux_vt::sixel;
 use std::cell::RefCell;
 use std::fs;
@@ -951,6 +952,276 @@ fn each_screen_has_a_folder_of_its_own_and_shown_leads_to_the_one_that_is_drawn(
     send(&pane.join("in"), "\n");
     until("the main screen is shown again", || shown() == Path::new("main") && !pane.join("alt").exists());
     assert!(file("shown/screen") == covered && file("main/lines") == "0\n1 2\n");
+}
+
+/// What a name in a pane's folder is; a file with its bytes.
+#[derive(Clone, PartialEq)]
+enum Thing {
+    File(Arc<Vec<u8>>),
+    Folder,
+    Link(PathBuf),
+    Fifo,
+}
+type Folder = std::collections::BTreeMap<String, Thing>;
+
+/// A pane's folder read whole in one round of its holder's: that round's number, every name in the
+/// folder but the two a holder keeps for itself (`generation` and `changes`) and a file that is being
+/// put together, and what `changes` said. None if it was not one round: a look to take again.
+fn folder(pane: &Path) -> Option<(u64, Folder, String)> {
+    use std::os::unix::fs::FileTypeExt;
+    let number = || fact(pane, "generation").parse::<u64>().ok().filter(|number| number % 2 == 0);
+    let (first, mut folder, mut folders) = (number()?, Folder::new(), vec![String::new()]);
+    while let Some(inside) = folders.pop() {
+        for entry in fs::read_dir(pane.join(&inside)).ok()?.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let (name, kind) = (inside.clone() + &name, entry.file_type().ok()?);
+            let thing = match () {
+                () if name.contains("/.") || name.starts_with('.') || name == "generation" || name == "changes" => {
+                    continue;
+                }
+                () if kind.is_dir() => Thing::Folder,
+                () if kind.is_symlink() => Thing::Link(fs::read_link(entry.path()).ok()?),
+                () if kind.is_fifo() => Thing::Fifo,
+                () => Thing::File(Arc::new(fs::read(entry.path()).ok()?)),
+            };
+            folders.extend((thing == Thing::Folder).then(|| name.clone() + "/"));
+            folder.insert(name, thing);
+        }
+    }
+    let changes = read(&pane.join("changes"));
+    (number() == Some(first)).then_some((first, folder, changes))
+}
+
+/// What a reader of `changes` does, and whether it then has the pane: `copy` is the folder as an
+/// earlier round left it, `lines` what `changes` says the rounds after that one did, `pane` the folder
+/// as it is. Each line in its order: a `put` leaves none of the copy's bytes, an `append` those before
+/// AT, a `move` gives the copy's file its other name, and the rest make and remove. Then each file a
+/// `put` or an `append` named, under the name it has by then, takes from the pane's file the bytes
+/// after those it kept, and no other file is read. How many bytes it read, or what it has wrong.
+fn replayed(copy: &Folder, lines: &[(u64, Change)], pane: &Folder) -> Result<usize, String> {
+    let under = |name: &str, folder: &str| {
+        name.strip_prefix(folder).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    };
+    // Of each name: what the reader has, how many of a file's bytes it keeps (all, until a line says
+    // otherwise), and whether it is to read the rest, with how long the last `append` said the file is.
+    let all = |thing: &Thing| (thing.clone(), usize::MAX, None::<Option<u64>>);
+    let mut has: std::collections::BTreeMap<String, _> =
+        copy.iter().map(|(name, thing)| (name.clone(), all(thing))).collect();
+    let empty = || Thing::File(Arc::new(Vec::new()));
+    for (_, change) in lines {
+        match change {
+            Change::Put(name) => _ = has.insert(name.clone(), (empty(), 0, Some(None))),
+            Change::Append(name, at, len) => {
+                let file = has.entry(name.clone()).or_insert_with(|| (empty(), 0, None));
+                (file.1, file.2) = (file.1.min(*at as usize), Some(Some(*len)));
+            }
+            Change::Move(from, to) => {
+                let moved = has.remove(from).ok_or(format!("{from} is moved, and the reader has none"))?;
+                has.insert(to.clone(), moved);
+            }
+            Change::Folder(name) => _ = has.insert(name.clone(), all(&Thing::Folder)),
+            Change::Link(name, to) => _ = has.insert(name.clone(), all(&Thing::Link(to.into()))),
+            Change::Fifo(name) => _ = has.insert(name.clone(), all(&Thing::Fifo)),
+            Change::Gone(name) => has.retain(|other, _| !under(other, name)),
+        }
+    }
+    if !has.keys().eq(pane.keys()) {
+        return Err(format!("the reader has {:?}, the pane {:?}", has.keys(), pane.keys()));
+    }
+    let mut read = 0;
+    for ((name, (thing, kept, lacks)), there) in has.iter().zip(pane.values()) {
+        let same = match (thing, there, lacks) {
+            (Thing::File(file), Thing::File(there), Some(len)) => {
+                let kept = (*kept).min(file.len());
+                read += there.len().saturating_sub(kept);
+                file.get(..kept) == there.get(..kept) && len.is_none_or(|len| len == there.len() as u64)
+            }
+            (thing, there, _) => thing == there,
+        };
+        if !same {
+            return Err(format!("{name} is not the pane's: {lacks:?}, kept {kept}"));
+        }
+    }
+    Ok(read)
+}
+
+#[test]
+fn a_reader_that_replays_changes_from_any_earlier_round_has_the_pane_as_it_is() {
+    // A pane is looked at as it goes through all a holder does to its folder: each look is the whole
+    // folder of one round. A reader that has the folder of any earlier look, the empty one of round 0
+    // among them, and does what `changes` of a later look says the rounds between did, has the folder
+    // of that look, file for file and byte for byte: and has read no file but those it named.
+    let session = Session::new("changes");
+    let pane = session.start("p", &["env", "PS1=$ ", "sh"]);
+    let (looks, cuts) = (RefCell::new(vec![(0u64, Folder::new())]), RefCell::new(0));
+    // A look, if the folder was of one round: held against every look before it. Says how many bytes
+    // the reader that has the look before this one read.
+    let look = || {
+        let (number, folder, text) = folder(&pane)?;
+        let changes = Changes::parse(&text).unwrap_or_else(|| panic!("round {number}: no `changes`: {text:?}"));
+        let cut = |(_, change): &(u64, Change)| matches!(change, Change::Append(_, at, len) if at == len);
+        *cuts.borrow_mut() += changes.list.iter().filter(|line| cut(line)).count();
+        let mut looks = looks.borrow_mut();
+        let mut read = 0;
+        for (earlier, copy) in looks.iter().filter(|(earlier, _)| *earlier < number) {
+            let lines = changes.after(*earlier).unwrap_or_else(|| panic!("round {earlier} is not told: {text}"));
+            read = replayed(copy, lines, &folder)
+                .unwrap_or_else(|e| panic!("from round {earlier} to {number}: {e}\n{text}"));
+        }
+        // (A file that is as in the look before is kept once.)
+        let before = looks.last().map(|(_, before)| before.clone()).unwrap_or_default();
+        let shared = |(name, thing): (String, Thing)| match before.get(&name) {
+            Some(same) if *same == thing => (name, same.clone()),
+            _ => (name, thing),
+        };
+        looks.push((number, folder.into_iter().map(shared).collect()));
+        Some((read, changes))
+    };
+    let see = |what: &str| {
+        let mut seen = None;
+        until(&format!("the folder is of one round, {what}"), || {
+            seen = look();
+            seen.is_some()
+        });
+        seen.unwrap()
+    };
+    let screen = || read(&pane.join("shown/screen"));
+    let typed = |line: &str, shows: &str| {
+        send(&pane.join("in"), line);
+        until_or(&format!("the screen shows {shows:?}"), screen, || screen().contains(shows));
+    };
+    // A shell, what it says once (a directory, a title, a clipboard, a bell), and what takes it back.
+    typed("echo o''ne\n", "\none\n");
+    assert!(see("with a shell in it").1.list.iter().any(|(_, change)| *change == Change::Fifo("in".into())));
+    typed("printf '\\033]7;file:///tmp\\007\\033]0;a title\\007\\033]52;c;aGk=\\007\\a'; echo s''aid\n", "\nsaid\n");
+    until("the files are there", || {
+        ["cwd", "title", "clipboard", "notice"].iter().all(|name| pane.join(name).exists())
+    });
+    see("with what the program said");
+    typed("printf '\\033]7;file://elsewhere/tmp\\007\\033]0;\\007'; echo t''aken\n", "\ntaken\n");
+    until("the files are gone", || !pane.join("cwd").exists() && !pane.join("title").exists());
+    see("without it");
+    // A line in the log is in a round.
+    send(&pane.join("ctl"), "fly\n");
+    until("the refusal is logged", || read(&pane.join("log")).contains("fly: not a command"));
+    see("with a line in its log");
+    // A flood that has `history` put aside twice (10 MiB of lines), looked at while it runs.
+    send(&pane.join("in"), "awk 'BEGIN { for (i = 0; i < 130000; i++) printf \"%079d\\n\", i }'; echo flood''ed\n");
+    let mut last = Instant::now();
+    until("the flood is over", || {
+        if last.elapsed() > Duration::from_millis(300) && look().is_some() {
+            last = Instant::now();
+        }
+        screen().contains("\nflooded\n")
+    });
+    let (_, changes) = see("after the flood");
+    let moves = changes.list.iter().filter(|(_, change)| matches!(change, Change::Move(..))).count();
+    assert!(moves == 4 && changes.since == 0 && changes.list.len() < 60, "{changes}");
+    // The alternate screen, and back.
+    send(&pane.join("in"), "printf '\\033[?1049hfull'; read x; printf '\\033[?1049l'\n");
+    until("the program has the alternate screen", || {
+        fs::read_link(pane.join("shown")).is_ok_and(|to| to == Path::new("alt"))
+    });
+    see("with the alternate screen");
+    send(&pane.join("in"), "\n");
+    until("the main screen is shown again", || !pane.join("alt").exists());
+    see("without the alternate screen");
+    // Resizes that cut history and output that grows it again past the cut, with other bytes: a smaller
+    // screen sends rows to `history`, a taller one takes them back from it (if nothing scrolled since),
+    // and what the shell then prints, after it cleared the screen, scrolls into their place. Every other
+    // time the reader looks between the two, and has the rows that are then cut. From here a reader that
+    // has the look before reads little: what the rounds added, not the megabytes of history before it.
+    let prints = "while read n && [ $n != q ]; do printf '\\033[H\\033[2J'; i=0; \
+        while [ $i -lt $n ]; do echo $n row $i; i=$((i + 1)); done; echo pr''inted $n; done\n";
+    send(&pane.join("in"), prints);
+    let mut most = 0;
+    for n in 50..58 {
+        send(&pane.join("ctl"), "resize 80 10\n");
+        until("the screen is smaller", || fact(&pane, "size") == "80 10");
+        most = most.max(if n % 2 == 0 { see("with rows sent to history").0 } else { 0 });
+        send(&pane.join("ctl"), "resize 80 40\n");
+        send(&pane.join("in"), format!("{n}\n"));
+        until_or("the lines are printed", screen, || {
+            most = most.max(look().map_or(0, |(read, _)| read));
+            screen().contains(&format!("\nprinted {n}\n"))
+        });
+        most = most.max(see("after the lines").0);
+    }
+    typed("q\n", "\nq\n$");
+    assert!(*cuts.borrow() > 0 && most < 64 << 10, "{} cuts seen, {most} bytes read", cuts.borrow());
+    // A picture, and the picture gone.
+    typed("printf '\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\'; echo dr''awn\n", "\ndrawn\n");
+    until("the picture has its file", || pane.join("pic-1.sixel").exists());
+    see("with a picture");
+    typed("printf '\\033[2J\\033[H'; echo cl''eared\n", "cleared\n");
+    until("the picture's file is gone", || !pane.join("pic-1.sixel").exists());
+    see("without the picture");
+    // The end: the last round takes the FIFOs with it and says so.
+    send(&pane.join("in"), "exit 3\n");
+    assert!(String::from_utf8_lossy(&session.fux().arg("wait").arg(&pane).run().stdout).contains("state exited 3"));
+    let (read, changes) = see("at its end");
+    let gone = |name: &str| changes.list.iter().any(|(_, change)| *change == Change::Gone(name.into()));
+    assert!(gone("in") && gone("ctl") && gone("pic-1.sixel") && gone("alt") && read < 64 << 10, "{read}\n{changes}");
+    assert!(
+        changes.since == 0 && changes.list.len() < 80 && looks.borrow().len() > 20,
+        "{} looks\n{changes}",
+        looks.borrow().len()
+    );
+}
+
+#[test]
+fn what_a_round_that_failed_did_is_said_when_one_ends_well_and_what_cannot_be_said_is_not() {
+    let session = Session::new("unsaid");
+    let pane = session.start("p", &["env", "PS1=$ ", "sh"]);
+    let screen = || read(&pane.join("shown/screen"));
+    let typed = |line: &str, shows: &str| {
+        send(&pane.join("in"), line);
+        until_or(&format!("the screen shows {shows:?}"), screen, || screen().contains(shows));
+    };
+    // A look at the folder that is of one round, waited for: the round, the folder, what `changes` says.
+    let round = || {
+        let mut seen = None;
+        until("the folder is of one round", || {
+            seen = folder(&pane);
+            seen.is_some()
+        });
+        let (number, folder, text) = seen.unwrap();
+        (number, folder, Changes::parse(&text).unwrap_or_else(|| panic!("round {number}: no `changes`: {text:?}")))
+    };
+    typed("echo o''ne\n", "\none\n");
+    let (first, before, _) = round();
+    // A round that fails (the list of the screen's pictures cannot be written: a folder is where its
+    // new file is put together) has written a picture's file and a line in the log, and has said
+    // neither: `generation` is odd, and `changes` as the round before left it.
+    fs::create_dir(pane.join("main/.pictures.new")).unwrap();
+    send(&pane.join("in"), "printf '\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\'\n");
+    until("the round has failed", || read(&pane.join("log")).contains("cannot write the pane's files"));
+    let odd = fact(&pane, "generation").parse::<u64>().unwrap();
+    assert!(odd % 2 == 1 && pane.join("pic-1.sixel").exists() && !read(&pane.join("changes")).contains("pic-1"));
+    // The next round that ends well says all of it, under its own number: nothing was lost with the
+    // round that failed, and a reader that has the folder as it was before it has the folder as it is.
+    fs::remove_dir(pane.join("main/.pictures.new")).unwrap();
+    send(&pane.join("ctl"), "notify now\n");
+    let (number, folder, changes) = round();
+    let (lines, log) = (changes.after(first).unwrap(), read(&pane.join("log")).len() as u64);
+    assert!(number == odd + 1 && lines.contains(&(number, Change::Put("pic-1.sixel".into()))), "{changes}");
+    assert!(lines.contains(&(number, Change::Append("log".into(), 0, log))), "{log}: {changes}");
+    assert_eq!(replayed(&before, lines, &folder).map(|_| ()), Ok(()), "{changes}");
+    // What cannot be said is not guessed at: a history file that could not be written may have some
+    // of the lines or none. `changes` then begins with the round in which that was, and tells no
+    // reader of an earlier one anything: it reads the folder whole. From that round on it is told again.
+    let mode = |mode| {
+        fs::set_permissions(pane.join("history.styled"), std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap()
+    };
+    mode(0o000);
+    typed("i=0; while [ $i -lt 40 ]; do echo $i; i=$((i + 1)); done; echo sc''rolled\n", "\nscrolled\n");
+    until("the log says what was lost", || read(&pane.join("log")).contains("history.styled was lost"));
+    mode(0o600);
+    let (lost, before, changes) = round();
+    assert!(changes.since > number && changes.since <= lost && changes.after(number).is_none(), "{changes}");
+    typed("echo l''ater\n", "\nlater\n");
+    let (_, folder, changes) = round();
+    assert_eq!(replayed(&before, changes.after(lost).unwrap(), &folder).map(|_| ()), Ok(()), "{changes}");
 }
 
 /// Gives a session's `main` workspace a layout, as an editor that saves in one step does: the

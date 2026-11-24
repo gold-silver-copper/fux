@@ -4,6 +4,7 @@
 //! FIFOs. It handles no signals: killed, it is gone, and the kernel hangs up
 //! its program.
 
+use crate::pane::{CHANGES_MAX, Change, Changes};
 use crate::sys::{self, Winsize};
 use crate::term::{Out, Picture, SIZE_MAX, TERM, Term, files};
 use crate::{plain, replace};
@@ -63,7 +64,14 @@ struct Holder {
     pictures: BTreeSet<u32>,
     /// Which `colours` and `keyboard` of the session were read last.
     told: (crate::Stamp, crate::Stamp),
-    logged: usize,
+    /// How long `log` is: nothing, once its last line says that it is full.
+    logged: Option<usize>,
+    /// What `changes` says, as the last round that ended well wrote it; and what was done since and
+    /// is not yet in it, each put there after its system call went well.
+    changes: Changes,
+    changed: Vec<Change>,
+    /// Something was done since that cannot be said (a file's write that failed half-way).
+    unsaid: bool,
 }
 
 /// Keeps the pane whose directory is the working directory until its program
@@ -117,7 +125,11 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
         ctl_line: Vec::new(),
         pictures: BTreeSet::new(),
         told: (None, None),
-        logged: 0,
+        logged: Some(0),
+        changes: Changes::default(),
+        // (`fux start` made the log, for this holder to write.)
+        changed: vec![Change::Put("log".into())],
+        unsaid: false,
     };
     holder.term.told().name = format!("{} {}", crate::TERM_PROGRAM, env!("CARGO_PKG_VERSION"));
     // The FIFOs are there for as long as the pane is kept, and not after: not after a program
@@ -143,6 +155,8 @@ impl Holder {
         let fifos = sys::fifo("in").and_then(|input| Ok((input, sys::fifo("ctl")?)));
         let made = fifos.and_then(|fifos| self.turn(true).and_then(|()| status(None)).map(|()| fifos));
         let (input, ctl) = made.map_err(|e| format!("cannot make the FIFOs or the status: {e}"))?;
+        self.changed.extend(["in", "ctl"].map(|fifo| Change::Fifo(fifo.into())));
+        self.changed.push(Change::Put("status".into()));
         // What it runs, as it was given: the program and each of its arguments, each ended by a zero
         // byte (as `/proc/N/cmdline` has them). `status` has that for a person to read, joined by
         // blanks, which cannot be split again: this is what starts the same anew. Written when the
@@ -156,8 +170,11 @@ impl Holder {
         let mut child = program.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
         // From here the program runs, and is held whatever cannot be written of it: a holder that
         // left now would leave it running with nothing that keeps it.
-        if let Err(e) = status(Some(child.id())).and_then(|()| replace("command", &given)) {
-            self.log(&format!("the program runs, but its `status` or its `command` could not be written: {e}"));
+        match status(Some(child.id())).and_then(|()| replace("command", &given)) {
+            Ok(()) => self.changed.push(Change::Put("command".into())),
+            Err(e) => {
+                self.log(&format!("the program runs, but its `status` or its `command` could not be written: {e}"))
+            }
         }
         let waiter = std::thread::Builder::new().spawn(move || {
             let state = match child.wait() {
@@ -176,6 +193,7 @@ impl Holder {
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
         for history in ["history", "history.styled"] {
             File::create(history).map_err(|e| format!("cannot make {history}: {e}"))?;
+            self.changed.push(Change::Put(history.into()));
         }
         self.publish(None).map_err(|e| format!("cannot write the screen: {e}"))?;
         // (The pane is up: `fux start` waits for this line.)
@@ -279,16 +297,19 @@ impl Holder {
     /// A line in `log` (the holder's standard error). The file never passes
     /// 64 KiB: its last line says that it is full. Control characters in what
     /// is quoted are written as `?`, so `cat log` is as safe as the screens.
+    /// It is written in a round of writing and said in `changes`, as history is: outside a round it
+    /// begins one, which what had the line written ends (a line on `ctl`, the program's output). While
+    /// none can begin it is written all the same.
     fn log(&mut self, line: &str) {
         const FULL: &str = "the log is full: nothing more is written here";
-        let line = plain(line);
+        let (Some(at), line) = (self.logged, plain(line)) else { return };
+        let full = at + line.len() + 1 + FULL.len() >= LOG_MAX;
+        let line = if full { FULL } else { &line };
+        let _ = self.turn(true);
         // Only what was written counts, so a write that fails does not close the log.
-        if self.logged + line.len() + 1 + FULL.len() < LOG_MAX {
-            if writeln!(io::stderr(), "{line}").is_ok() {
-                self.logged += line.len() + 1;
-            }
-        } else if self.logged < LOG_MAX && writeln!(io::stderr(), "{FULL}").is_ok() {
-            self.logged = LOG_MAX;
+        if writeln!(io::stderr(), "{line}").is_ok() {
+            self.logged = (!full).then_some(at + line.len() + 1);
+            self.changed.push(Change::Append("log".into(), at as u64, (at + line.len() + 1) as u64));
         }
     }
 
@@ -401,34 +422,54 @@ impl Holder {
     /// Before them, the bytes a resize took back from each file's end go from it (the third of each).
     fn history(&mut self, files: [(&str, &str, usize); 2]) {
         for (name, _, back) in &files {
-            let cut = |file: File| file.set_len(file.metadata()?.len().saturating_sub(*back as u64));
-            let cut = if *back > 0 { OpenOptions::new().write(true).open(name).and_then(cut) } else { Ok(()) };
-            let kept = cut.err().map(|e| format!("{name} keeps bytes that are on the screen again: {e}"));
-            kept.into_iter().for_each(|kept| self.log(&kept));
+            let cut = |file: File| {
+                let len = file.metadata()?.len().saturating_sub(*back as u64);
+                file.set_len(len).map(|()| Change::Append(name.to_string(), len, len))
+            };
+            let cut =
+                if *back > 0 { OpenOptions::new().write(true).open(name).and_then(cut).map(Some) } else { Ok(None) };
+            match cut {
+                Ok(cut) => self.changed.extend(cut),
+                Err(e) => self.log(&format!("{name} keeps bytes that are on the screen again: {e}")),
+            }
         }
         // Once either file is past its size both are put aside, where the last of these lines ends: no line is in
         // two files, and the two have the same lines. Neither while their last rows are a resize's to take back, which
         // it takes from these files. One that cannot be put aside begins anew, its lines lost: still past its size, it
         // would have the other put aside every round.
-        let size = files.iter().filter_map(|(name, ..)| fs::metadata(name).ok()).map(|m| m.len()).max().unwrap_or(0);
+        let lens = files.map(|(name, ..)| fs::metadata(name).map_or(0, |file| file.len()));
+        let size = lens.into_iter().max().unwrap_or(0);
         let aside = size > HISTORY_MAX && !self.term.lent();
         // A line that never ends is ended when a file is twice its size: after these rows the text has a line's end
         // the program did not print, in both files, and goes on as the next line (the marks count from there).
         let endless = aside && size > 2 * HISTORY_MAX && !files.iter().any(|(_, text, _)| text.contains('\n'));
         let ended = endless && self.term.end_line();
         ended.then(|| self.log("a line that never ends was ended in history: the text has a line's end there"));
-        for (name, text, _) in &files {
+        for ((name, text, _), at) in files.iter().zip(lens) {
             let end = if ended { Some(text.len()) } else { text.rfind('\n').map(|end| end + 1) };
             let (old, new) = text.split_at_checked(end.filter(|_| aside).unwrap_or(text.len())).unwrap_or((text, ""));
             let append =
                 |text: &str| OpenOptions::new().append(true).create(true).open(name)?.write_all(text.as_bytes());
+            let (turned, older) = (aside && end.is_some(), format!("{name}.1"));
             let turn = || {
-                let aside = append(if ended { "\n" } else { "" }).and_then(|()| fs::rename(name, format!("{name}.1")));
+                let aside = append(if ended { "\n" } else { "" }).and_then(|()| fs::rename(name, &older));
                 aside.or_else(|e| File::create(name).and(Err(e))).and(append(new))
             };
-            if let Err(e) = append(old).and_then(|()| if aside && end.is_some() { turn() } else { Ok(()) }) {
-                self.log(&format!("{name} was lost (some or all of {} bytes): {e}", text.len()));
-                self.term.keep_lent();
+            // What was done to a file is said when all of it went well: how long it was, how long it is with
+            // what was added, and that it was put aside and made anew. What is in one that failed half-way
+            // nobody can say: `changes` then tells nothing before this round.
+            match append(old).and_then(|()| if turned { turn() } else { Ok(()) }) {
+                Ok(()) => {
+                    let len = at + (old.len() + usize::from(ended)) as u64;
+                    self.changed.extend((len > at).then(|| Change::Append(name.to_string(), at, len)));
+                    let aside = turned.then(|| [Change::Move(name.to_string(), older), Change::Put(name.to_string())]);
+                    self.changed.extend(aside.into_iter().flatten());
+                }
+                Err(e) => {
+                    self.log(&format!("{name} was lost (some or all of {} bytes): {e}", text.len()));
+                    self.term.keep_lent();
+                    self.unsaid = true;
+                }
             }
         }
     }
@@ -442,23 +483,43 @@ impl Holder {
         Ok(())
     }
 
-    /// A round of writing: `generation` is odd, what changed is written, history first, and
-    /// `generation` is even, last of all (after a round that failed it stays odd until a later
-    /// one ends well). `ended` is what became of the program (`exited CODE`, `killed SIGNAL`), once
-    /// it has ended: the `state` file, which until then says `running`, or `hungup` once the pty is closed.
+    /// A round of writing: `generation` is odd, what changed is written, history first, then `changes`
+    /// (what this round and those before it changed), and `generation` is even, last of all (after a
+    /// round that failed it stays odd until a later one ends well). `ended` is what became of the
+    /// program (`exited CODE`, `killed SIGNAL`), once it has ended: the `state` file, which until then
+    /// says `running`, or `hungup` once the pty is closed.
     fn publish(&mut self, ended: Option<&str>) -> io::Result<()> {
+        // (What waits to be said while round after round fails is bounded as the file is: past that it cannot be.)
+        if self.changed.len() > CHANGES_MAX {
+            (self.unsaid, self.changed) = (true, Vec::new());
+        }
         // (Nothing is changed while `generation` says the files agree, no picture's file either.)
         self.turn(true)?;
         let written = self.write(ended);
         // A picture neither screen has any more has no reader left, after a round that failed too.
         self.pictures.retain(|id| {
             let kept = self.term.has_picture(*id);
-            if !kept {
-                let _ = fs::remove_file(format!("pic-{id}.sixel"));
+            if !kept && fs::remove_file(format!("pic-{id}.sixel")).is_ok() {
+                self.changed.push(Change::Gone(format!("pic-{id}.sixel")));
             }
             kept
         });
-        written.and_then(|()| self.turn(false))
+        written?;
+        // What was done since the last round that ended well is said under the number this one ends at.
+        // What cannot be said is not guessed at: the file then begins with this round and has no line, so
+        // every reader that has an earlier one reads the folder whole. What the holder keeps of it is
+        // changed when the round is out and no sooner: one that fails has said nothing, and is said again.
+        let number = self.generation.wrapping_add(1);
+        let mut changes = self.changes.clone();
+        self.changed.iter().for_each(|change| changes.fold(number, change.clone()));
+        if self.unsaid {
+            changes = Changes { since: number, list: Vec::new() };
+        }
+        replace("changes", changes.to_string().as_bytes())?;
+        self.turn(false)?;
+        (self.changes, self.unsaid) = (changes, false);
+        self.changed.clear();
+        Ok(())
     }
 
     fn write(&mut self, ended: Option<&str>) -> io::Result<()> {
@@ -467,9 +528,12 @@ impl Holder {
             // (One that cannot be written is not on the screen: it goes, its file below, and the log says why.)
             self.pictures.insert(id);
             // (As any file of the pane: put together beside its name and then given it, whatever has the name.)
-            if let Err(e) = replace(format!("pic-{id}.sixel"), &data) {
-                self.term.keep_pictures(|kept| kept != id);
-                self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
+            match replace(format!("pic-{id}.sixel"), &data) {
+                Ok(()) => self.changed.push(Change::Put(format!("pic-{id}.sixel"))),
+                Err(e) => {
+                    self.term.keep_pictures(|kept| kept != id);
+                    self.log(&format!("a picture was dropped, as its file could not be written: {e}"));
+                }
             }
         }
         // Every file is written when it changes. (A picture's rows that went off the top are counted
@@ -508,9 +572,15 @@ impl Holder {
         // turned there, and goes (with all that is in it) after it is turned back.
         let turn = [("shown", Some(if alt.is_some() { "alt" } else { "main" }.to_string()))];
         let gone = alt.is_none().then_some(("alt", None));
+        // The program's end takes the FIFOs with it, in its last round.
+        let ends = ended.map(|_| [("in", None), ("ctl", None)]).into_iter().flatten();
         let files = pane.into_iter().chain(main.into_iter().flatten()).chain(alt.into_iter().flatten());
-        let files = files.chain(turn).chain(gone).map(|(name, text)| (name, text.map(String::into_bytes)));
-        let absent = |made: io::Result<()>, kind| made.or_else(|e| if e.kind() == kind { Ok(()) } else { Err(e) });
+        let files = files.chain(turn).chain(gone).chain(ends).map(|(name, text)| (name, text.map(String::into_bytes)));
+        // (Whether anything was done: a folder that was there is not made, nor does what was not there go.)
+        let absent = |made: io::Result<()>, kind| match made {
+            Err(e) if e.kind() != kind => Err(e),
+            made => Ok(made.is_ok()),
+        };
         let write = |name: &str, bytes: Option<&[u8]>| match (name, bytes) {
             ("main" | "alt", Some(_)) => absent(fs::create_dir(name), ErrorKind::AlreadyExists),
             ("alt", None) => absent(fs::remove_dir_all(name), ErrorKind::NotFound),
@@ -518,9 +588,9 @@ impl Holder {
                 let new = crate::staging(Path::new(name));
                 absent(fs::remove_file(&new), ErrorKind::NotFound)?;
                 std::os::unix::fs::symlink(String::from_utf8_lossy(folder).as_ref(), &new)?;
-                fs::rename(&new, name).inspect_err(|_| _ = fs::remove_file(&new))
+                fs::rename(&new, name).inspect_err(|_| _ = fs::remove_file(&new)).map(|()| true)
             }
-            (_, Some(bytes)) => replace(name, bytes),
+            (_, Some(bytes)) => replace(name, bytes).map(|()| true),
             (_, None) => absent(fs::remove_file(name), ErrorKind::NotFound),
         };
         // (One that cannot be written fails the round: it is written in a later one, the newest of each.)
@@ -528,7 +598,14 @@ impl Holder {
             if self.written.get(name) != Some(&bytes) {
                 // (What was in a folder that goes is forgotten first: removing it may fail with its files gone.)
                 self.written.retain(|file, _| bytes.is_some() || !file.starts_with(name));
-                write(name, bytes.as_deref())?;
+                if write(name, bytes.as_deref())? {
+                    self.changed.push(match (name, &bytes) {
+                        ("main" | "alt", Some(_)) => Change::Folder(name.into()),
+                        ("shown", Some(folder)) => Change::Link(name.into(), String::from_utf8_lossy(folder).into()),
+                        (_, Some(_)) => Change::Put(name.into()),
+                        (_, None) => Change::Gone(name.into()),
+                    });
+                }
                 self.written.insert(name, bytes);
             }
         }
@@ -537,6 +614,7 @@ impl Holder {
         // written again (what is on the terminal's clipboard may be another's by now).
         if let Some(bytes) = &out.clipboard {
             replace("clipboard", bytes)?;
+            self.changed.push(Change::Put("clipboard".into()));
         }
         // The directory the program says it is in: kept if it is one of this machine (no host
         // named, or this one's name or address), and forgotten if it is another machine's (a
@@ -548,9 +626,12 @@ impl Holder {
                 || ["localhost", "127.0.0.1", "[::1]"].into_iter().any(same)
                 || sys::host().is_some_and(|name| same(&name));
             match (here, path.starts_with('/')) {
-                (true, true) => replace("cwd", format!("{path}\n").as_bytes())?,
+                (true, true) => {
+                    replace("cwd", format!("{path}\n").as_bytes())?;
+                    self.changed.push(Change::Put("cwd".into()));
+                }
                 (true, false) => {}
-                (false, _) => write("cwd", None)?,
+                (false, _) => self.changed.extend(write("cwd", None)?.then(|| Change::Gone("cwd".into()))),
             }
         }
         // What the program wanted noticed last: a number that grows with each round that writes
@@ -558,6 +639,7 @@ impl Holder {
         if let Some(text) = &out.notice {
             self.noticed = self.noticed.wrapping_add(1);
             replace("notice", (format!("{} {text}", self.noticed).trim_end().to_string() + "\n").as_bytes())?;
+            self.changed.push(Change::Put("notice".into()));
         }
         Ok(())
     }
