@@ -84,7 +84,7 @@ class Mux:
     def __init__(self, kind, fux, root):
         self.kind, self.root = kind, os.path.join(root, kind)
         os.makedirs(self.root)
-        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("FUX", "TMUX")) and k != "ENV"}
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("TMUX") and k != "ENV"}
         self.env.update(TERM="xterm-256color", PS1="$ ", EDITOR="true", COLUMNS=str(COLS), LINES=str(ROWS))
         self.slow = None  # (bytes, seconds): the most read from the viewer in one go, and how often
         self.next_read = 0.0
@@ -98,7 +98,8 @@ class Mux:
     def start(self, fux):
         kind, rows = self.kind, ROWS
         if kind == "fux":
-            self.env.update(FUX_DIR=os.path.join(self.root, "session"), FUX_KEYS=os.path.join(self.root, "keys"))
+            # (Its session is the default one of a runtime directory of its own, and so are its keys.)
+            self.env.update(XDG_RUNTIME_DIR=self.root, XDG_CONFIG_HOME=os.path.join(self.root, "config"))
             pane = subprocess.run([fux, "start", "main/p", "--", "sh"], env=self.env, capture_output=True, text=True, check=True)
             self.fux, self.pane = fux, pane.stdout.strip()
             status = dict(line.split(" ", 1) for line in open(os.path.join(self.pane, "status")).read().splitlines())

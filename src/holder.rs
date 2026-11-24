@@ -15,7 +15,7 @@ use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -61,9 +61,7 @@ struct Holder {
     ctl_line: Vec<u8>,
     /// The numbers of the picture files written and not yet removed.
     pictures: BTreeSet<u32>,
-    /// The session's folder, where the files are that say what the terminal outside is like, and
-    /// which `colours` and `keyboard` were read last.
-    session: PathBuf,
+    /// Which `colours` and `keyboard` of the session were read last.
     told: (crate::Stamp, crate::Stamp),
     logged: usize,
 }
@@ -93,17 +91,11 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
     // The slave stays open until this function ends, so that output a program wrote just before it
     // ended is not thrown away (macOS drops it when the last slave closes).
     let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
-    // `fux start` says under what name the pane's directory was started, and its program is told
-    // the same. The session is found as by any command in a pane: the one named, or two folders up.
-    let session = crate::here().ok_or("hold is started by `fux start`".into()).and_then(|_| crate::session())?;
     let child = {
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
         let mut child = Command::new(program);
-        // The program is told what terminal it is in and which pane, and no size but the terminal's
-        // own. What a key script is told of its viewer is not this pane's.
-        for name in [name!("WS"), name!("VIEW"), name!("ROW"), name!("COL")] {
-            child.env_remove(name);
-        }
+        // The program is told what terminal it is in, and no size but the terminal's own. (Which
+        // pane it is in, it finds in the files: `keys/.here`.)
         child.args(program_args).current_dir(cwd).env("TERM", TERM).env_remove("COLUMNS").env_remove("LINES");
         child
             .env("COLORTERM", "truecolor")
@@ -124,7 +116,6 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
         noticed: 0,
         ctl_line: Vec::new(),
         pictures: BTreeSet::new(),
-        session,
         told: (None, None),
         logged: 0,
     };
@@ -303,11 +294,12 @@ impl Holder {
 
     /// Reads what the terminal outside is like, if it has changed. It is in two files of the
     /// session, if a viewer (or a person) wrote them: `colours`, and `keyboard` (the flags of
-    /// the kitty protocol that terminal takes, a number). 16 KiB of each at most.
+    /// the kitty protocol that terminal takes, a number). 16 KiB of each at most. The session is
+    /// the folder two above the pane's, which is where the holder stands, wherever it is moved.
     fn told(&mut self) {
         for (name, known) in [("colours", &mut self.told.0), ("keyboard", &mut self.told.1)] {
             // (A file, not something that only has a file's name.)
-            let file = self.session.join(name);
+            let file = Path::new("../..").join(name);
             let stamp = fs::metadata(&file).ok().filter(|file| file.is_file()).map(crate::stamp);
             if stamp != *known {
                 let text = stamp.map_or_else(String::new, |_| crate::text(&file, 16 << 10));

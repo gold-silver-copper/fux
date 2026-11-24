@@ -154,6 +154,15 @@ impl Folder {
     }
 }
 
+/// A folder of the viewer's, which goes with all that is in it when it is let go, however that
+/// comes about: its own in the session, and in that one a key script's.
+struct Own(PathBuf);
+impl Drop for Own {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Where the press of a key went, if its repeats or its release have somewhere to go: to a
 /// script the viewer ran for it, or to a pane (its directory, and which folder that was: the
 /// pane, whatever has the name by now).
@@ -235,11 +244,10 @@ struct View {
     pasting: Option<bool>,
     /// The key scripts that still run, each with its folder, and with when it started while the keys
     /// wait for it (two seconds). And how many were given a folder: the next one's is that number.
-    scripts: Vec<(Child, PathBuf, Option<Instant>)>,
+    scripts: Vec<(Child, Own, Option<Instant>)>,
     ran: usize,
-    /// The viewer's own folder in the session, `.view.PID`: its FIFO (`ctl`), where it was started
-    /// (`cwd`), and a folder for each key's script that runs.
-    own: PathBuf,
+    /// The viewer's folder in the session, `.view.PID`: its FIFO (`ctl`), where it was started (`cwd`).
+    own: Own,
     ctl_line: Vec<u8>,
 }
 
@@ -264,15 +272,15 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
             made.map_err(|e| format!("{}: {e}", path.display()))?;
         }
     }
-    let own = session.join(format!(".view.{}", std::process::id()));
+    let own = Own(session.join(format!(".view.{}", std::process::id())));
     // (One of that name is a dead viewer's, whose number this process has now: it goes, a folder
     // with all that is in it, or the FIFO an older fux had there.)
-    let _ = fs::remove_file(&own).or_else(|_| fs::remove_dir_all(&own));
-    let made = fs::DirBuilder::new().mode(0o700).create(&own).and_then(|()| sys::fifo(own.join("ctl")));
-    let ctl = made.map_err(|e| format!("{}: {e}", own.display()))?;
+    let _ = fs::remove_file(&own.0).or_else(|_| fs::remove_dir_all(&own.0));
+    let made = fs::DirBuilder::new().mode(0o700).create(&own.0).and_then(|()| sys::fifo(own.0.join("ctl")));
+    let ctl = made.map_err(|e| format!("{}: {e}", own.0.display()))?;
     // (Where it was started: a new shell that has no pane to follow starts there.)
     let cwd = std::env::current_dir().map(|cwd| [cwd.as_os_str().as_encoded_bytes(), b"\n"].concat());
-    let _ = cwd.and_then(|cwd| fs::write(own.join("cwd"), cwd));
+    let _ = cwd.and_then(|cwd| fs::write(own.0.join("cwd"), cwd));
     let restore = sys::raw_mode(tty.try_clone().map_err(|e| e.to_string())?, LEAVING);
     let restore = restore.map_err(|e| format!("cannot set the terminal: {e}"))?;
     let (out, queue) = mpsc::channel::<String>();
@@ -353,7 +361,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     drop(view.out);
     let result = result.and(writer.join().unwrap_or(Ok(())));
     drop(restore);
-    let _ = fs::remove_dir_all(&view.own);
     result.map_err(|e| format!("the viewer stopped: {e}"))
 }
 
@@ -373,12 +380,8 @@ impl View {
             // in a shell does: they wait until it ends (and what it printed is
             // read, and what it changed is drawn). One that takes longer than
             // two seconds is left running and the keys go on.
-            // (Its folder goes with it.)
-            self.scripts.retain_mut(|(script, folder, _)| {
-                let ended = matches!(script.try_wait(), Ok(Some(_)));
-                let _ = ended.then(|| fs::remove_dir_all(folder));
-                !ended
-            });
+            // (One that has ended is let go, and its folder with it.)
+            self.scripts.retain_mut(|(script, ..)| !matches!(script.try_wait(), Ok(Some(_))));
             for (.., since) in
                 self.scripts.iter_mut().filter(|(.., since)| since.is_some_and(|at| at.elapsed() > SCRIPT_WAIT))
             {
@@ -846,12 +849,11 @@ impl View {
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
         // A writer of the script's own, which waits when the FIFO is full (ours never waits).
-        let ctl = self.own.join("ctl");
+        let ctl = self.own.0.join("ctl");
         let output = || OpenOptions::new().write(true).open(&ctl).map(Stdio::from);
         let (Ok(out), Ok(err)) = (output(), output()) else { return };
         let mut script = Command::new(file);
-        script.env(name!("DIR"), &self.session).env(name!("WS"), &self.workspace).env(name!("KEYS"), &self.keys);
-        script.env(name!("PANE"), pane.clone().unwrap_or_default()).env(name!("VIEW"), &ctl).env("PATH", path);
+        script.env("PATH", path);
         // A pane a script starts begins at the size of the whole view, right for a new tab. The
         // size a tile would have if the focused pane were split is given too, side by side
         // (`row`) and one above the other (`col`): a script that splits passes it on to `fux start`,
@@ -865,7 +867,7 @@ impl View {
             usize::from(if size > 0 { size } else { or })
         });
         let area = Rect { x: 0, y: 0, w, h };
-        let split = [("row", name!("ROW"), true), ("col", name!("COL"), false)].map(|(file, name, row)| {
+        let split = [("row", true), ("col", false)].map(|(file, row)| {
             // A pane no folder can be named after is put, in a copy of the tab shown, beside the
             // pane the script is told of, as the split keys split.
             let tile = layout.tab().zip(self.focus.as_ref()).and_then(|(tab, focus)| {
@@ -874,7 +876,6 @@ impl View {
                 split.tiles(area).into_iter().find(|(pane, _)| pane == "\0").map(|(_, tile)| tile)
             });
             let tile = tile.unwrap_or(area);
-            script.env(name, format!("{}x{}", tile.w, tile.h));
             (file, format!("{} {}\n", tile.w, tile.h))
         });
         // What a script is told is in a folder of its own, which is where it runs: a link to each
@@ -883,21 +884,18 @@ impl View {
         // file each. All of it is there before the script starts and none of it is written again:
         // a script that still runs at the next key keeps what it was told at its own.
         self.ran += 1;
-        let folder = self.own.join(self.ran.to_string());
+        let folder = Own(self.own.0.join(self.ran.to_string()));
         let links = [("pane", pane.as_ref()), ("workspace", Some(&workspace)), ("session", Some(&self.session))];
         let links = links.into_iter().chain([("keys", Some(&self.keys)), ("ctl", Some(&ctl))]);
-        let told = fs::DirBuilder::new().mode(0o700).create(&folder).and_then(|()| {
+        let told = fs::DirBuilder::new().mode(0o700).create(&folder.0).and_then(|()| {
             let mut links = links.filter_map(|(name, to)| Some((name, to?)));
-            links.try_for_each(|(name, to)| std::os::unix::fs::symlink(to, folder.join(name)))?;
-            split.iter().try_for_each(|(name, size)| fs::write(folder.join(name), size))
+            links.try_for_each(|(name, to)| std::os::unix::fs::symlink(to, folder.0.join(name)))?;
+            split.iter().try_for_each(|(name, size)| fs::write(folder.0.join(name), size))
         });
-        script.current_dir(&folder).stdin(Stdio::null()).stdout(out).stderr(err);
+        script.current_dir(&folder.0).stdin(Stdio::null()).stdout(out).stderr(err);
         match told.and_then(|()| script.spawn()) {
             Ok(child) => self.scripts.push((child, folder, Some(Instant::now()))),
-            Err(e) => {
-                let _ = fs::remove_dir_all(&folder);
-                self.message = format!("{}: {e}", file.file_name().unwrap_or_default().to_string_lossy());
-            }
+            Err(e) => self.message = format!("{}: {e}", file.file_name().unwrap_or_default().to_string_lossy()),
         }
     }
 

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Runs every command of `fux --help` (its lines indented by four blanks), in order, as one
-# shell session in a session directory of its own; any command that fails, fails this. CI runs
+# shell session in a session of its own (the default one of a runtime directory made for it,
+# with a config directory and a home there); any command that fails, fails this. CI runs
 # it on Linux and macOS. The page's section "IF YOU HAVE PERL" is run only where perl is found
 # (CI's machines have it on both systems): the rest must hold without it.
 # usage: tools/help-agents.sh [path to fux]   (default: target/release/fux)
@@ -19,8 +20,8 @@ if "$fux" --help | awk "$section"' !skip' | grep -n -i -e perl -e python; then
   echo "help-agents: perl or python outside the optional section" >&2; exit 1
 fi
 [ "$(wc -l < "$work/page.sh")" -ge 40 ]
-unset FUX_PANE FUX_WS FUX_KEYS FUX_EDIT
-(cd "$work" && PATH="$work/bin:$PATH" FUX_DIR="$work/d" FUX_KEYS="$work/keys" EDITOR=true sh -eux page.sh) > "$work/out" 2> "$work/trace" || {
+mkdir "$work/home"
+(cd "$work" && PATH="$work/bin:$PATH" XDG_RUNTIME_DIR="$work" XDG_CONFIG_HOME="$work/config" HOME="$work/home" EDITOR=true sh -eux page.sh) > "$work/out" 2> "$work/trace" || {
   cat "$work/out" >&2; tail -n 5 "$work/trace" >&2; echo "help-agents: a command of the page failed" >&2; exit 1; }
 # What the page says its commands print, they print; and what it started, it removed.
 for said in '^alt$' '^main$' "the main screen's first row is line [0-9]* of the pane's text" '^exit code 3$' '^state exited 3$' '^agent-demo/ls/ exited 3 : sh -c ls /; exit 3$' '^<<t1:[1-9][0-9]*>>$' ' end 1$' '^/$' '^state killed 15$' '^state exited 2$' \
@@ -31,7 +32,7 @@ done
 if [ -n "$perl" ]; then
   grep -q '^refused at once$' "$work/out" && grep -q '^crash holds no lock$' "$work/out" || { cat "$work/out" >&2; echo "help-agents: the perl forms" >&2; exit 1; }
 fi
-[ -d "$work/d" ] && [ ! -e "$work/d/agent-demo" ] && [ ! -e "$work/d/agent-view" ]
-# (And nothing in the session but what the page says a viewer leaves.)
-[ -z "$(ls -A "$work/d" | grep -v -x -e keyboard -e colours)" ]
+[ -d "$work/fux" ] && [ ! -e "$work/fux/agent-demo" ] && [ ! -e "$work/fux/agent-view" ]
+# (And nothing in the session but what the page says a viewer leaves; its keys are where it says.)
+[ -z "$(ls -A "$work/fux" | grep -v -x -e keyboard -e colours)" ] && [ -x "$work/config/fux/keys/C-b/v" ]
 echo "help-agents: ok ($(wc -l < "$work/page.sh" | tr -d ' ') lines run${perl:+, the perl section among them})"

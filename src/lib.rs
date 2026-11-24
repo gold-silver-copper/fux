@@ -3,12 +3,6 @@
 //! the viewer and every other client only read and write files.
 #![forbid(unsafe_code)]
 
-/// Environment-variable prefix (`FUX_DIR`, `FUX_KEYS`, `FUX_WS`, `FUX_VIEW`, `FUX_PANE`, ...).
-macro_rules! name {
-    ($suffix:literal) => {
-        concat!("FUX_", $suffix)
-    };
-}
 /// The folder of a session (in the runtime or cache directory) and of the keys (in the config directory).
 const FOLDER: &str = "fux";
 /// What `TERM_PROGRAM` says in a pane.
@@ -36,14 +30,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 const USAGE: &str = "\
-fux dir                         print the session directory
-fux start [PANE] [-- PROGRAM…]  start a pane; PANE is NAME, WORKSPACE/NAME or WORKSPACE/, and not one that is there
+fux dir                         print the default session's directory
+fux start [PANE] [-- PROGRAM…]  start a pane; PANE is NAME (in main), WORKSPACE/NAME or WORKSPACE/, and not one that is there
 fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and the state it left
-fux view [WORKSPACE [KEYS]]     show a workspace's panes in tiles and tabs (default: $FUX_WS; else in a pane its own; else main)
+fux view [WORKSPACE [KEYS]]     show a workspace's panes in tiles and tabs (default: main), with the key scripts of KEYS
 fux layout [WORKSPACE [EDIT…]]  print the layout of a workspace (default: main), or edit it
 fux --help                      this summary and the complete guide (for people, scripts and agents)
-A WORKSPACE that begins with / or . is a directory's path (so is a PANE: its workspace's, then its name);
-any other is a name in the session. KEYS is the directory of the key scripts.";
+WORKSPACE (and what PANE has before its last /) is a name in the default session, or a directory's path if it begins with / or .";
 /// The single help page for people, scripts and agents; every command on it is run by `tools/help-agents.sh`.
 const HELP: &str = include_str!("help.txt");
 
@@ -52,47 +45,28 @@ fn var(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-/// The pane a command was typed in: `$FUX_PANE`, when it is a directory's whole path.
-fn here() -> Option<PathBuf> {
-    var(name!("PANE")).filter(|pane| pane.is_absolute())
-}
-
-/// The session directory: `$FUX_DIR`; else, in a pane, the session that pane
-/// is in; else `$XDG_RUNTIME_DIR/fux`; else `~/.cache/fux`. By its whole path: one named by
-/// a relative path is meant from here, and every path of a workspace or a pane is made from this one.
+/// The default session's directory, the one a name is a name in: `$XDG_RUNTIME_DIR/fux`; else
+/// `~/.cache/fux`. By its whole path. (Any other session is named by the paths of what is in it.)
 fn session() -> Result<PathBuf, String> {
-    let from_pane = || Some(here()?.parent()?.parent()?.to_path_buf());
-    let xdg = || var("XDG_RUNTIME_DIR").map(|d| d.join(FOLDER));
     let home = || var("HOME").map(|d| d.join(".cache").join(FOLDER));
-    let dir = var(name!("DIR")).or_else(from_pane).or_else(xdg).or_else(home);
-    let dir = dir.ok_or(concat!("no session directory: set ", name!("DIR")))?;
+    let dir = var("XDG_RUNTIME_DIR").map(|d| d.join(FOLDER)).or_else(home);
+    let dir = dir.ok_or("no session directory: neither XDG_RUNTIME_DIR nor HOME is set")?;
     std::path::absolute(&dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
-/// The workspace a command means that names none: `$FUX_WS` (a key script's); else, in a pane, the
-/// folder that holds the pane; else `main`.
-fn meant() -> String {
-    let from_pane = || here()?.parent()?.file_name().map(PathBuf::from);
-    var(name!("WS")).or_else(from_pane).unwrap_or("main".into()).to_string_lossy().into_owned()
-}
-
 /// The folder of the workspace an argument names. One that begins with `/` or `.` is a directory's
-/// path, taken as it is; any other is a name, of a workspace of the session, and refused as
+/// path, taken as it is; any other is a name, of a workspace of the default session, and refused as
 /// `wrong` says if it is none.
 fn workspace(named: &str, wrong: &str) -> Result<PathBuf, String> {
-    if named.starts_with(['/', '.']) {
-        Ok(named.into())
-    } else if is_name(named) {
-        Ok(session()?.join(named))
-    } else {
-        Err(wrong.into())
+    match named {
+        path if path.starts_with(['/', '.']) => Ok(path.into()),
+        name if is_name(name) => Ok(session()?.join(name)),
+        _ => Err(wrong.into()),
     }
 }
 
-/// Makes a workspace's folder if it is not there (the owner's alone; what is there is left as it
-/// is), and gives its own whole path: links followed, `.` and `..` as the system reads them. What
-/// is said of that path holds when the way that led to the folder is gone (a link in the folder
-/// of a key's script).
+/// Makes a workspace's folder if it is not there (the owner's alone), and gives its own whole path:
+/// links followed, `..` as the system reads it. That holds when the way that led there (a link) is gone.
 fn made(workspace: &Path) -> Result<PathBuf, String> {
     let made = DirBuilder::new().mode(0o700).recursive(true).create(workspace);
     made.and_then(|()| fs::canonicalize(workspace)).map_err(|e| format!("{}: {e}", workspace.display()))
@@ -197,17 +171,15 @@ fn start(args: &[OsString]) -> Result<(), String> {
     };
     // The pane's name is what follows the last `/` (nothing: the first free number), and what is
     // before it names the workspace: a path with the `/` it ends in (`/p` is the pane `p` of `/`),
-    // a name without. (The workspace of whoever starts it is asked for only if none is named.)
+    // a name without, and with no `/` at all, `main`.
     let pane = name.rsplit('/').next().unwrap_or_default();
     let given = name.strip_suffix(pane).unwrap_or_default();
-    let path = name.starts_with(['/', '.']);
-    let given = if path { given.to_string() } else { given.strip_suffix('/').map_or_else(meant, String::from) };
+    let given = if name.starts_with(['/', '.']) { given } else { given.strip_suffix('/').unwrap_or("main") };
     let wrong = format!(
         "{name}: a name is letters, digits, '.', '_' and '-', at most 64, not starting with a dot, and none of: {}",
         TAKEN.join(" ")
     );
-    let unnamed = if path || name.contains('/') { wrong.clone() } else { format!("{given}: not a workspace's name") };
-    let workspace = workspace(&given, &unnamed)?;
+    let workspace = workspace(given, &wrong)?;
     if !(pane.is_empty() || is_name(pane)) {
         return Err(wrong);
     }
@@ -232,7 +204,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     // first, it is the one that is locked and the one the holder works in, even if it is renamed meanwhile.
     let lock = std::env::set_current_dir(&dir).and_then(|()| sys::open(".", false)).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
-        Ok(()) => launch(&dir, &cwd, lock, sections.next().unwrap_or_default()),
+        Ok(()) => launch(&cwd, lock, sections.next().unwrap_or_default()),
         // (Of a folder made a moment ago: whoever looked at it in that moment has its lock.)
         Err(_) => Err("its folder is locked by another".into()),
     };
@@ -241,15 +213,12 @@ fn start(args: &[OsString]) -> Result<(), String> {
 }
 
 /// Starts the holder of a pane we hold the lock of and are in, and waits until it is up. `cwd` is where we were.
-fn launch(dir: &Path, cwd: &Path, lock: File, program: &[OsString]) -> Result<(), String> {
+fn launch(cwd: &Path, lock: File, program: &[OsString]) -> Result<(), String> {
     let log = File::create("log").map_err(|e| format!("cannot make the log: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let mut holder = Command::new(me);
     holder.arg("hold").arg(cwd).args(program);
     holder.args(program.is_empty().then(|| var("SHELL").unwrap_or_else(|| "/bin/sh".into())));
-    // The pane's directory by the name it was started under (the holder's own working directory may read
-    // otherwise, through a link), and the session, if it was named: whole paths, as the program may go anywhere.
-    holder.env(name!("PANE"), dir).envs(var(name!("DIR")).and_then(|_| Some((name!("DIR"), dir.parent()?.parent()?))));
     holder.stdin(Stdio::from(lock)).stdout(Stdio::piped()).stderr(log);
     sys::new_session(&mut holder, false);
     let mut holder = holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?;
@@ -292,19 +261,17 @@ fn run(args: &[OsString]) -> Result<(), String> {
         Some("view") => {
             let wrong = "view takes a workspace, by its name or its directory, and then perhaps the keys' directory";
             let ([] | [_] | [_, _]) = rest else { return Err(wrong.into()) };
-            let named = rest.first().map_or_else(meant, |name| name.to_string_lossy().into_owned());
-            // (The viewer is its session's: the folder the workspace is in, by its own path, and the
-            // workspace's name there.)
-            let workspace = made(&workspace(&named, &format!("{named}: not a workspace's name: {wrong}"))?)?;
+            let named = rest.first().map_or("main".into(), |name| name.to_string_lossy());
+            // (The viewer is its session's: the folder the workspace is in, and the workspace's name there.)
+            let workspace = made(&workspace(&named, wrong)?)?;
             let name = workspace.file_name().and_then(|name| name.to_str()).filter(|name| is_name(name));
-            let (Some(session), Some(name)) = (workspace.parent(), name) else {
-                return Err(format!("{}: not a workspace's name: {wrong}", workspace.display()));
-            };
             let config = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")));
-            let keys = rest.get(1).map(PathBuf::from).or_else(|| var(name!("KEYS")));
-            let keys = keys.or_else(|| config.map(|config| config.join(FOLDER).join("keys")));
+            let keys = rest.get(1).map(PathBuf::from).or_else(|| config.map(|config| config.join(FOLDER).join("keys")));
             let keys = keys.map(|keys| std::path::absolute(&keys).unwrap_or(keys));
-            view::view(session.into(), name.into(), keys.ok_or("no keys directory: name it after the workspace")?)
+            let (Some(session), Some(name), Some(keys)) = (workspace.parent(), name, keys) else {
+                return Err(format!("{}: {wrong}", workspace.display()));
+            };
+            view::view(session.into(), name.into(), keys)
         }
         Some("layout") => {
             let words = rest.iter().map(|w| w.to_str()).collect::<Option<Vec<_>>>().ok_or("layout edit is not text")?;

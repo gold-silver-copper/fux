@@ -22,7 +22,7 @@ printf 'echo hi\n' > "$D/main/build/in"; cat "$D/main/build/shown/screen"     # 
 ls "$D" "$D/main"                           # workspaces are folders, panes are folders in them
 fux view                                   # tiles, tabs, workspaces; vim, less and htop work in a pane
 # a key is a script: C-b then `v` runs an executable file you can read and replace
-cat ~/.config/fux/keys/C-b/v         # or under $FUX_KEYS or $XDG_CONFIG_HOME, if you set them
+cat ~/.config/fux/keys/C-b/v         # or under $XDG_CONFIG_HOME, if you set it
 echo kill > "$D/main/build/ctl"             # hangs up the program; what Unix does next is what happens
 ```
 
@@ -36,7 +36,7 @@ scripts" says where that is).
 
 | | |
 |---|---|
-| `fux dir` | prints the session directory |
+| `fux dir` | prints the default session's directory: `$XDG_RUNTIME_DIR/fux`, else `~/.cache/fux` |
 | `fux start [PANE] [-- PROGRAM…]` | starts a pane and prints its directory, by the folder's own whole path. PANE is `NAME`, `WORKSPACE/NAME`, or `WORKSPACE/` or nothing for the first free number, 1 to 9999 (no workspace named: below); the workspace is a name or a directory's path (below). No program: `$SHELL`, else `/bin/sh`. A pane is one run: a name that is there is refused, whether its pane runs, has ended or never came up, and nothing of it is touched (`rm -r` the folder to start the name anew; a number is the first that is not there). A start that fails leaves the folder, with a `log` that says why |
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. A pane whose holder ended before its first screen was written has no `state`: `fux wait` says so and fails (`log` says why the holder ended). Wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE [KEYS]]` | the viewer of a workspace, with the key scripts of the directory KEYS ("Keys are scripts" says which it is if none is named) |
@@ -63,10 +63,14 @@ it, so it holds when the way that led there is gone. The viewer of a
 workspace named by a path is the viewer of the session that folder is in
 (its parent), and the folder's own name must be a workspace's name.
 
-With no workspace named, `fux layout` means `main`. `fux start` and `fux view` mean the one in `FUX_WS` (a key script is
-told the workspace shown there); else, typed in a pane, "here": the workspace that pane
-is in (and that pane's session, unless `FUX_DIR` says otherwise); else `main`. So the
-example above, typed in a pane of another workspace, starts `build` there and not in `main`.
+**No variable, and no "here".** fux reads no environment variable of its
+own and sets none: what it is told, it is told in its arguments, and what it
+tells is in files. A name is a name in the default session and no workspace
+named is `main`, wherever the command is typed: the binary does not know
+which pane a command is typed in. So the example above, typed in a pane of
+another workspace or of another session, still starts `build` in `main` of
+the default session, and `fux layout` there prints that `main`'s layout,
+without a word of warning. To mean another place, name it by its path.
 
 **Which pane am I in** is a script's to say, from the files: `keys/.here` (it
 comes with the keys; `sh ~/.config/fux/keys/.here`) prints the folder of the
@@ -75,9 +79,12 @@ ancestors, nearest first, and looks in the session for the `status` that
 names one of them (`holder N`, `pid N`), believing only a folder a holder
 keeps (its lock is held: a `status` alone is anyone's to write). So it finds
 the pane from a program's first instruction, after the pane was renamed, and
-in a program started with another environment, where `FUX_PANE` says nothing
-or something old. The session is the one `fux dir` prints, or the directory
-given: `.here SESSION`. It needs `ps`, `grep` and perl, and `fux` on `PATH` where no session is given (it says so if `fux dir` names none). Not found: a program
+whatever environment the program was started with: nothing in a program's
+environment says which pane it is in. The session is the one `fux dir` prints, or the directory
+given: `.here SESSION`. A program in a pane of a session that is not the
+default one must give it (nothing in a pane says which session it is in);
+without it the answer there is "not in a pane". Its own workspace is the
+folder above: `fux start "$(dirname "$(sh ~/.config/fux/keys/.here)")/build" -- make`. It needs `ps`, `grep` and perl, and `fux` on `PATH` where no session is given (it says so if `fux dir` names none). Not found: a program
 whose ancestors have all gone (a daemon, `(job &)`), and one in a container or
 behind ssh. Two kept folders whose `status` name one process are no answer:
 it names both and fails.
@@ -123,7 +130,7 @@ name as an empty pane for one frame.
 | `pic-N.sixel` | a picture the program drew, whole, for as long as a screen places it: `cat` it in a sixel terminal |
 | `title` | the window title the program set (OSC 0 or 2), one line, at most 256 characters, control characters taken out; rewritten only when it changes, and not there while the program has set none, or an empty one |
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
-| `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself: `pwd > "$FUX_PANE/cwd"` |
+| `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself, into its pane's folder (`keys/.here` says which that is): `pwd > "$P/cwd"` |
 | `notice` | what was last to be noticed: a number that grows with each round of writing that had one (from 1), then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture that is too large, history it could not write); stops at 64 KiB |
 
@@ -234,11 +241,13 @@ the frames a program can write. From run to run the key rows move by a milliseco
 hundredths of a second.)
 
 The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux`,
-`TERM_PROGRAM_VERSION`, `COLORTERM=truecolor` and `FUX_PANE` (its pane's directory, whole path), in
+`TERM_PROGRAM_VERSION` and `COLORTERM=truecolor`, in
 the directory `fux start` was run in, with the rest of that environment and
-the signals 1 to 31 at their defaults. Four names are not passed on, those a key script is
-told of its viewer (`FUX_WS`, `FUX_VIEW`, `FUX_ROW` and `FUX_COL`: below);
-and neither `COLUMNS` nor `LINES`, which the holder reads for itself: the
+the signals 1 to 31 at their defaults. Nothing in it names the pane: fux sets no variable
+named for itself, and takes none away (one the starter had is passed on as any other is,
+so a starter that wants its program to know its pane says so in a variable of its own:
+`P=$(fux dir)/main/build; PANE=$P fux start build -- make`; a program that was not told asks `keys/.here`).
+Two names are not passed on, `COLUMNS` and `LINES`, which the holder reads for itself: the
 pane's first size is 80x24, or the `COLUMNS` and the `LINES` the starter set (each 1 to
 500; one that is set and is not such a number fails the start, which says so).
 
@@ -494,7 +503,7 @@ changes nothing and leaves a line in `log`.
 ### Keys are scripts
 
 The keys directory is the one named to `fux view` after the workspace
-(`fux view main ~/my-keys`), else `$FUX_KEYS`, else `$XDG_CONFIG_HOME/fux/keys`, else
+(`fux view main ~/my-keys`), else `$XDG_CONFIG_HOME/fux/keys`, else
 `~/.config/fux/keys`; the viewer
 writes the default scripts there if it does not exist (and only then: after
 an upgrade, remove the folder, or copy `keys/` from the source over it, to
@@ -803,8 +812,14 @@ its directory, an editor without its open files, both with the environment
 of the script and not the one they had. It needs perl (for the lock, and to
 read the zero bytes: not every `xargs -0` keeps an empty argument).
 For that to be of use after a reboot, the session directory must outlast
-one. The default is usually not such a one on Linux ("Linux and macOS", below: it is one where `XDG_RUNTIME_DIR` is not set, `~/.cache/fux`); set `FUX_DIR` to a directory on disk, in your shell's
-profile so that every `fux` agrees: `export FUX_DIR=~/.local/state/fux`.
+one. The default is usually not such a one on Linux ("Linux and macOS", below: it is one where `XDG_RUNTIME_DIR` is not set, `~/.cache/fux`); keep the session in a directory on disk and name everything in it by its path:
+`fux view ~/.local/state/fux/main`, `fux start ~/.local/state/fux/main/build -- make`,
+`sh ~/.config/fux/keys/.restore ~/.local/state/fux` (an alias or a small script of your own, so
+that you type the path once). **Nothing warns you where you leave the path out.** A name, or
+no argument at all, means the default session: `fux start build` typed in a pane of your session
+starts a pane in the default one, `fux layout main …` edits the default one's `main`,
+`.restore` with no argument looks through the default one, which a reboot emptied, and
+`.here` with no argument says that it is in no pane.
 On disk a busy pane costs writes (see "Bounds"). Then run the script at
 login, before the first `fux view`. (`keys/.empty` is no place for it: that script runs only in a
 workspace with no pane folders, and the panes to bring back are folders.)
@@ -883,8 +898,8 @@ Differences are left as they are:
 - The default session directory is usually in memory on Linux
   (`$XDG_RUNTIME_DIR/fux`) and on disk on macOS, which sets no such
   variable (`~/.cache/fux`): a flood there replaces small files on your
-  disk as often as Bounds says. Point `FUX_DIR` at a RAM disk if that
-  matters.
+  disk as often as Bounds says. Keep the session on a RAM disk if that
+  matters: set `XDG_RUNTIME_DIR` to a directory there (the session is `fux` in it), or name a session there by its path.
 - One write of up to 4096 bytes to a FIFO arrives whole on Linux; 512 on macOS.
 - macOS ships no `flock(1)`; `fux wait` takes the same lock, and waits for it.
 - macOS file names ignore case by default, hence `S-h` for H. A pane named `LAYOUT` there is the workspace's `layout`: don't.
