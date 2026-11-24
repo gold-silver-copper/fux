@@ -3096,6 +3096,140 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - **Size.** 11 lines in `fux-vt/src/lib.rs` (a field, where it starts,
     where a reset keeps it, where it grows, and what tells it; 3 of them
     comments) and 1 in `src/holder.rs`.
+- **D126. `changes`: the holder says what its rounds changed** (the owner,
+  2026-11-24, after an audit of koh's carrier: "the holder knew every one of
+  those facts as it wrote, and threw them away"; five models each built it
+  alone, five read all five blind, and this is the one four of them put
+  first, with what the review took from the other four).
+  - **What was missing.** A program that keeps a copy of a pane's folder
+    elsewhere (koh) had to work out what a round changed: walk the folder,
+    compare stamps, hash the bytes before an addition to prove them, search
+    for a file that was given another name. Each inference was wrong once
+    in use (a mirror wrong after a resize cut `history` and output grew it
+    again, among others). The holder did all of it itself, a system call at
+    a time.
+  - **The file.** `changes`, text, written in each round, last before
+    `generation` is even. A first line N, then a line a change with its
+    round's number first: `put NAME`, `append NAME AT LEN`, `move FROM TO`,
+    `folder NAME`, `link NAME TO`, `fifo NAME`, `gone NAME`. One file and not
+    one a round: a reader is behind by any number of rounds, and one file
+    read under one even `generation` is whole.
+  - **Folded by the holder, as it writes.** A later change of a name takes
+    away what was said of it before: a file replaced again is one `put`, a
+    link turned again one `link`, what is gone one `gone` with all that was
+    said under it. So the file does not grow with the rounds (some tens of
+    lines, under a kilobyte or two), and a reader a thousand rounds behind
+    is told as much as one a round behind. A tail of whole rounds (three of
+    the five) has a reader fall off it in seconds of output and take the
+    folder whole: in the review one such reader took 7.7 MB where the
+    folded file's took 193 KB. Nothing goes that was
+    said before the name was last in a `move`: that is of the file under the
+    other name. So each time `history` is put aside a few lines stay (about
+    eight, for the two files), and one for each picture that was.
+  - **`append NAME AT LEN`, and a cut is one with AT = LEN.** One verb for a
+    file added to in place, where the spike had `add NAME` and `cut NAME
+    LENGTH`: the first AT bytes are as they were, the file is LEN long. The
+    holder says a cut and what it then adds apart, as it does them: a cut
+    has AT the same as LEN. Of a file's `append`s the fold keeps the last
+    and each cut to less than the file is long now: a cut to more is
+    undone by the lower one after it, and what was added before is told by
+    the last LEN. A reader takes the least AT of the lines after its round,
+    and its own length if that is less. The spike merged all cuts into one
+    line of the least length under the latest number: a reader that had
+    9,109 bytes was sent the file again from byte 634, where an older and
+    deeper cut had been. One line with the least AT of all would do worse
+    (every round of a flood would send again all that was added since the
+    cut); a line for each `append` would not fold. The cuts that stay are
+    few: each is below the next.
+  - **Said after it was done, and kept when the round is out.** A change is
+    noted when its system call has returned well, never before: a picture
+    whose file could not be written is not said to be there and then gone.
+    What the holder keeps of the file is changed after `generation` is
+    even: a round that fails has said nothing, its changes wait with those
+    of the next and are said under the number of the round that ends well.
+  - **One way out: the first line.** N says from which round on the file
+    tells; a reader that has an earlier round reads the folder whole. Two
+    things raise it. Past 1,024 lines the oldest rounds go, each whole, and
+    N is the last that went. And when the holder cannot say what a round
+    did (a history file whose write failed half-way has some of the bytes,
+    or none), N is that round and no line is before it: nothing is reasoned
+    out after a failure. More waiting to be said than the file has lines
+    for (rounds that fail for hours) is that too.
+  - **`log` is in a round.** A line is written while `generation` is odd,
+    and said as an `append` with its lengths: outside a round the line
+    begins one, which what had it written ends (a line on `ctl`, the
+    program's output: nothing else logs outside a round, but a round that
+    could not begin, whose line is said when one can). Fewer lines than
+    keeping the log in memory to write it in the round, and no line is lost
+    with a holder that dies. Its length is counted exactly now (the count
+    was set to 64 KiB when the last line was written).
+  - **The FIFOs.** `fifo in` and `fifo ctl` are in the first round, so a
+    reader with nothing that takes every line from round 0 has the whole
+    folder (`status`, `command` and the empty `log` are said too: a reader
+    that carries none of them passes their lines over). The program's last
+    round removes the FIFOs and says so; they went just after it before.
+  - **Not in it: what another wrote.** A `cwd` a shell writes itself, a
+    script's files. The spike looked at `cwd` every two seconds; what a
+    user writes into a pane's folder is his own, no guard is kept against
+    it, and the README's row says that it is not told. The `cwd` of OSC 7
+    is the holder's.
+  - **Strict to the byte.** `fux::pane::Changes::parse` takes only what a
+    holder writes: the seven verbs, names by fux's own rule (`a/b` for a
+    file in a screen's folder; no dot first, nothing that leaves the
+    folder), AT no more than LEN, numbers even, in order and above N, at
+    most 1,024 lines, and the text written again from what was read is the
+    text. Anything else is no `changes`, and the reader reads the folder
+    whole: a carrier need not guard what it reads a second time.
+  - **`fux::pane`**, a module of its own: `Change`, `Changes` (`parse`, its
+    `Display`, `fold`, and `after`: the lines a reader of a given round
+    lacks, or none if it is not told), `CHANGES_MAX`. The fold is a pure
+    function of the list and the change. The rest of the pane's format is
+    to be told from this module later (an audit asked for it; not here).
+  - **`fux::FORMAT` stays 1.** A file was added, and every file there was
+    means what it meant. Three things happen at another moment: a line of
+    `log` is written under an odd number, `generation` is odd from such a
+    line to the round after it, and the FIFOs go inside the last round. A
+    reader of the older folder misreads none of them, and one that finds
+    no `changes` reads the folder whole.
+  - **The holder's own.** Like `generation`, the file says neither of the
+    two and a copy need not have it: it is about this folder's rounds, and
+    a mirror's rounds are its own. Carrying it cost the candidates that did
+    about 100 bytes a round for a file no viewer reads.
+  - **What a reader does** is in the README's row and in `fux::pane`; the
+    tests' two readers do exactly that.
+  - **Tests.** The fold: every verb after every verb, with a move of that
+    name and of another between; the cuts that stay; a folder's `gone`;
+    the bound. A folder changed at random for two thousand rounds, said as
+    the holder says it, and a reader from the round before and three
+    earlier ones each time: it has the folder, or is told that it is not
+    told. The parser, on 26 texts that are no `changes`. With the real
+    holder: a reader that replays `changes` from every earlier look (the
+    empty folder of round 0 among them) has the folder of every later one,
+    byte for byte, through a shell, what a program says once, a line in the
+    log, a flood that puts `history` aside twice, the alternate screen,
+    eight resizes that cut `history` before output grows it again with
+    other bytes, a picture, and the end; and it reads under 64 KiB a look
+    once the megabytes of history are there. And a round that fails says
+    nothing and loses nothing; a history file that could not be written is
+    a `changes` that begins anew.
+  - **Size.** `src/pane.rs` 167 lines (114 without its comments), 82 more
+    in `src/holder.rs` (120 added, 38 taken out), 1 in `src/lib.rs`.
+  - **Speed** (`tools/perf.py`, three runs of each build, one after the
+    other in turn, on a machine at rest): the flood 1.51, 1.57 and 1.49 s
+    before and 1.50, 1.50 and 1.51 s after; a key until its echo, typed
+    slowly, 3.02, 1.93 and 3.02 ms before and 2.99, 2.99 and 2.98 ms after;
+    all cells repainted 701, 698 and 701 frames a second before and 696,
+    696 and 696 after (the runs' own ranges overlap: 697 to 704 and 694 to
+    701), the holder meanwhile 53.4, 57.4 and 52.7% of a core before and
+    52.1, 58.3 and 51.9% after. What a round's saying costs by itself, the
+    list copied, folded and written as text: 3 to 6 microseconds with the
+    36 lines of a flood, 81 with all 1,024 (a text of 24 KB).
+  - **Left.** A pane that has put `history` aside over a hundred times
+    (half a gigabyte of output) has the 1,024 lines from then on: the
+    oldest rounds go, nobody near the present is told less, and each round
+    writes 24 KB. A rule that lets go what was said of a file before it was
+    put aside the time before would keep the file at some tens of lines for
+    good; it is a second rule about moves, and was not asked for.
 
 ## The old fux3's bugs: which classes are gone
 

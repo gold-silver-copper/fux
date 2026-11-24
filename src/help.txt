@@ -121,6 +121,11 @@ lines   (in a screen's folder) two lines: how many lines are before the screen's
         continues history's last line). `{ read -r top; read -r wraps; } < main/lines`
 generation   a number: odd while the holder is writing the pane's files, even when they
         agree (below)
+changes what the holder's rounds of writing changed, a line a change with its round's number
+        first: `put NAME` (a file, all of it new), `append NAME AT LEN` (its first AT bytes
+        are as they were, it is LEN long: added to, or with AT = LEN cut back), `move FROM
+        TO`, `folder NAME`, `link NAME TO`, `fifo NAME`, `gone NAME`. The first line is the
+        round it tells from. For who has the folder of an earlier round (below)
 title   the window title the program set (absent until it does)
 cwd     the program's directory, if it announces it (absent else): a shell must, at each
         prompt, a % in the path as %25. For bash: PROMPT_COMMAND='printf "\033]7;file://%s\007" "${PWD//%/%25}"'
@@ -149,9 +154,18 @@ times it was the same even number; else read again, with a limit:
 each time: one that writes a file writes it anew, `> file` inside it and not after `together`.
 It keeps what it knows in `d`, `g` and `tries`: the command must leave those names alone, and
 not call `together` itself. DIR must name the same pane throughout. The number speaks for what
-the holder alone writes: not for `cwd` (the program's to write too), `log`, the FIFOs or
-files of your own. A pane whose holder was killed
-while it wrote stays odd: the limit runs out, and you take the files as they are.)
+the holder writes: not for a `cwd` the program wrote itself, nor for files of your own. A pane
+whose holder was killed while it wrote stays odd: the limit runs out, and you take the files as
+they are.)
+What changed since a round you have (a copy of the folder, or only its number) is in `changes`:
+no folder is compared. `since N DIR` prints what the rounds after round N did, and fails if the
+file no longer tells from there (its first line is a later round: read the folder whole):
+    since() { awk -v n="$1" 'NR == 1 && $1 > n { exit 1 } NR > 1 && $1 > n' "$2/changes"; }
+    together "$P" true; n=$g; printf 'echo $((7*7))\r' > "$P/in"; seen '^49$' "$P/shown/screen"
+    together "$P" since "$n" "$P"                # e.g. `52 put main/screen`: the files to read again
+(A file under `put` is new, all of it. One under `append` has only the bytes after AT to read,
+or after as many as you have of it, if that is fewer: `history`, which is megabytes. The lines
+are few however many rounds there were: of a name only what a reader can still need is kept.)
 The text a pane keeps, oldest first, wrapped rows joined into lines:
     whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(sed -n 2p "$1/main/lines")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/main/screen"; }
     whole "$P" | tail -n 5

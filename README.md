@@ -118,6 +118,7 @@ name as an empty pane for one frame.
 | `screen` (in a screen's folder) | that screen as plain text: one line per row, and nothing else |
 | `screen.styled` (in a screen's folder) | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them. The cell a wide character left empty at a row's end, having no room there, is no text; where it has a colour it is told all the same, as U+200B and a blank at the row's end, so that the row is coloured to its last cell |
 | `generation` | one number, for a reader of more than one file (below): odd while the holder is writing the pane's files, even when they agree. It grows by one each time, from 0, and is replaced in one step. It is the last file written in each round: to follow a pane, watch it |
+| `changes` | what the rounds of writing changed, for a reader that has the folder as an earlier round left it (a program that keeps a copy of it elsewhere) and wants what differs without comparing the two. Text, a line a change. The first line is a round's number N; the lines after it say what every round after N did, each with its round's number first (the even `generation` it ended at), in the order it was done: `NUMBER put NAME` (a file made or replaced: all of it is new), `NUMBER append NAME AT LEN` (a file added to at its end, or cut back, or both: its first AT bytes are as they were and it is LEN bytes long; with AT the same as LEN it was cut back to there and nothing added), `NUMBER move FROM TO` (a file given another name, `history` to `history.1`; what had that name is gone), `NUMBER folder NAME`, `NUMBER link NAME TO`, `NUMBER fifo NAME` (each made), `NUMBER gone NAME` (a folder with all that was in it). A name is as it is in the folder (`main/screen`). The holder keeps of the lines only what a reader can still need, whichever round it has: a file replaced again is one `put`, under the later number; of a file's `append`s the last, and before it each cut to less than the file is long now; a link turned again is one `link`; what is gone is one `gone`, and what was said of it goes. Nothing goes that was said before the name was last in a `move`: it is of the file that has the other name now. So the file is some tens of lines however many rounds there were (a few more each time `history` is put aside, one for each picture that was), and 1,024 at most: past that the oldest rounds go, each whole, and N is the last that went. A reader that has the folder of the even round G, with G no less than N, takes the lines with a number above G in their order (`awk -v g=42 'NR > 1 && $1 > g' changes`). `put`: none of the bytes it has under that name are the file's. `append`: those before AT are, or all it has if that is fewer. `move`: its own file takes the other name. The rest it makes or removes. Then each file a `put` or an `append` named, under the name it has by then, lacks the bytes after those it kept: it reads them from the file, which is LEN long if an `append` was the last word on it, and reads no other file. A reader of a round before N reads the folder whole, as does one that finds no `changes` or one that is not as this row says (a pane kept by a fux from before there was this file has none). When the holder cannot say what a round did (a history file whose write failed half-way: `log` says so), N is that round's number and the file has no line before it. Read it as files that agree (below): it is of the round `generation` ends, and is written last before that. It is the holder's own, as `generation` is: it says neither of the two, and a copy of the folder need not have it. And it says what the holder did, not what anyone else wrote into the folder (a `cwd` a shell wrote itself, a script's files): that is theirs |
 | `size` | `COLS ROWS` (`read cols rows < size`) |
 | `cursor` | `ROW COL shown\|hidden SHAPE`: the cursor of the screen shown (a terminal has one), row and column from 0, and the shape's number as a program sets it (0 to 6); then, if the program gave the cursor a colour (OSC 12), a fifth word, `#` and six hex digits |
 | `modes` | one line of words, empty when none: how input is to be sent to the program. `appcursor`, `keypad`, `paste`, `focus` (it asked to be told when its pane gains and loses the keys), `mouse9`, `mouse1000`, `mouse1002` or `mouse1003` (the mouse reports the program asked for), `mousesgr` (their newer form), `keysN` (the keyboard flags in force for it, below) |
@@ -151,15 +152,15 @@ program's next output, a line on `ctl` or the program's end brings; a clipboard,
 notice or a picture that a failed round did not write is lost, as history is; `log`
 says so for each round that failed.
 
-**The format's number** is 1 (`fux::FORMAT`, for a program that carries a pane's folder elsewhere and compares the fux at each end): it is raised when a reader of a folder written by the fux before would misread one written by this one (a file's meaning or shape changed, a file a reader needs is gone), and not when a file is added. No file in a pane says it: a pane kept by a holder of an older build has that build's files.
+**The format's number** is 1 (`fux::FORMAT`, for a program that carries a pane's folder elsewhere and compares the fux at each end): it is raised when a reader of a folder written by the fux before would misread one written by this one (a file's meaning or shape changed, a file a reader needs is gone), and not when a file is added (`marks.dropped` and `changes` were: every file there was before means what it meant). No file in a pane says it: a pane kept by a holder of an older build has that build's files.
 
 **Files that agree.** One file read by itself needs nothing more: it is
 whole, and of one moment. Two files read one after the other may be of two
 rounds of writing: a `main/lines` one scroll behind its `main/screen`, a
 `cursor` of the frame before. `generation` is for that. The holder makes it
 odd before it changes anything in a round (history it adds to between two
-rounds too), and even, the next number, after everything else, when the
-round ended well. So read it, read your files, read it again, and keep what
+rounds too, and a line of `log` outside one), and even, the next number, after
+everything else, when the round ended well. So read it, read your files, read it again, and keep what
 you read only if it was the same even number both times:
 
 ```sh
@@ -174,9 +175,9 @@ Resolve `shown` inside the read (`cat "$P/shown/screen"`), not before it, and
 have the path name the same pane throughout (`together` keeps what it knows
 in `d`, `g` and `tries`, which its command must leave alone, as it must not
 call `together` itself; and it runs the command anew each time: a command
-that writes a file writes it anew). The number speaks for what the holder alone writes: not for `cwd`,
-which is the program's to write too,
-nor for `log`, the FIFOs or a script's own files. What is lost for good
+that writes a file writes it anew). The number speaks for what the holder writes, its `log` and the
+FIFOs among that (they are made before the first round ends and go in the last): not for a `cwd` the
+program wrote itself, nor for a script's own files. What is lost for good
 does not keep it odd: history a file could not take is a line in `log`, and
 the round ends. A round that cannot begin (the odd number cannot be written:
 `log` says why) changes no file, and the number stays the even one it was;
@@ -191,9 +192,9 @@ keeps what it read only if it is still that file afterwards, and does not
 read while the number is odd and the holder lives; so a folder you made by
 hand is drawn at once, and drawn anew when you write a `generation` into it.
 
-**Bounds.** Each round replaces `generation` twice (as it begins and as it ends) and, between the two, the files that changed: the shown screen's `screen` and `screen.styled` as a rule, `lines` when its numbers did (as when a line scrolls off), and, when lines wait for it, an append to `history`.
+**Bounds.** Each round replaces `generation` twice (as it begins and as it ends) and, between the two, the files that changed: the shown screen's `screen` and `screen.styled` as a rule, `lines` when its numbers did (as when a line scrolls off), and, when lines wait for it, an append to `history`; then `changes`, which says so.
 While a program keeps writing (never a millisecond without output) that is at most
-40 rounds a second: a flood (`yes`) costs 80 replacements of `generation` and 80 of screens a second. What a program
+40 rounds a second: a flood (`yes`) costs 80 replacements of `generation`, 80 of screens and 40 of `changes` a second. What a program
 wrote before it wrote nothing for a millisecond is shown at once, though never within 8 ms of
 the last round: a program that writes a little every few milliseconds costs at most 125 rounds
 a second. Nothing is synced to disk. The holder reads at most

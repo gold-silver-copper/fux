@@ -26,7 +26,8 @@ mkdir "$work/home"
 # What the page says its commands print, they print; and what it started, it removed.
 for said in '^alt$' '^main$' "the main screen's first row is line [0-9]* of the pane's text" '^exit code 3$' '^state exited 3$' '^agent-demo/ls/ exited 3 : sh -c ls /; exit 3$' '^<<t1:[1-9][0-9]*>>$' ' end 1$' '^/$' '^state killed 15$' '^state exited 2$' \
   'crash is dead, though its state says running' '^the write to the dead pane came back$' \
-  'something of pane stubborn still runs' '^nothing of it is left$' 'col(row(ls w1) w2)' '│' '^command sh -c pwd; exec sleep 600$'; do
+  'something of pane stubborn still runs' '^nothing of it is left$' 'col(row(ls w1) w2)' '│' '^command sh -c pwd; exec sleep 600$' \
+  '^[0-9]* put main/screen$'; do
   grep -q -- "$said" "$work/out" || { cat "$work/out" >&2; echo "help-agents: no '$said'" >&2; exit 1; }
 done
 if [ -n "$perl" ]; then

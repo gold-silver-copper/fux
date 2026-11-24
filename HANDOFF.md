@@ -2,7 +2,7 @@
 
 Written 2026-11-21, at `fux` 0.40.0 / `fux-vt` 0.18.0 / `fuxix` 0.11.0 (tag `v0.40.0`, all three on
 crates.io). Read this first, then `README.md` (the contract: commands, the pane folder's files, keys,
-bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D125, append-only:
+bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D126, append-only:
 a historical log, in which a later entry says so when it replaces an earlier one).
 
 ## What fux is
@@ -49,8 +49,10 @@ What the library exports, for a program that carries fux (koh; D124): `fux::comm
 line of fux's from its command's word on (`fux::main()` is that with the process's own arguments; the
 carrier's own first word `hold` goes to it too, as `start` runs the program it is in with that word);
 `fux::view(session, workspace, keys)`, the viewer; `fux::FORMAT`, the number of the pane folder's format
-(the README says when it is raised); `TERM_PROGRAM`; and how fux writes and reads a pane's files:
-`replace`, `staging`, `write_new`, `stamp` and `Stamp`, `lines`, `plain`.
+(the README says when it is raised); `TERM_PROGRAM`; how fux writes and reads a pane's files:
+`replace`, `staging`, `write_new`, `stamp` and `Stamp`, `lines`, `plain`; and `fux::pane`, what a pane's
+files say in a form of their own: so far `changes` (`Change`, `Changes` with `parse`, `fold` and `after`,
+`CHANGES_MAX`; D126). The rest of the pane's format is to be exported from that module.
 
 Rules the code follows (the first and the fourth are enforced by clippy; the others are design rules,
 kept by review and tests):
@@ -73,6 +75,7 @@ in, ctl                         FIFOs: typed bytes; commands (kill, resize, noti
 status, state, log              the holder and program: pids and command; running/exited/...; what went wrong
 command                         the program and its arguments as given, each ended by a zero byte
 generation                      odd while the holder writes a round, even when done
+changes                         what the rounds changed, a line a change, for a reader of an earlier round
 size, cursor, modes             the terminal: size; the cursor on the screen shown; input modes
 title, cwd, clipboard, notice   what the program said
 shown -> main | alt             the screen being drawn
@@ -95,7 +98,16 @@ read only when the same even number is there before and after, retrying a bounde
 recipe, `together`, is on `fux help agents`; a holder that died mid-round leaves it odd). Two such
 readings of `marks` and `marks.dropped` say exactly what was marked between them, by subtraction (D125:
 the file keeps a thousand marks and they move, so neither its count nor a place says it). Outside any
-round: `log`, `cwd` (a program may write it itself), the FIFOs, and files scripts make in the folder.
+round: a `cwd` a program wrote itself, and files scripts make in the folder. `log` is written in a round
+(a line outside one begins one), and the FIFOs are made before the first ends and go in the last.
+
+`changes` (D126) is what the holder did to the folder, said as it did it: a reader that has the folder of
+an earlier round takes the lines with a greater number and reads only the files they name, `history` from
+where it was added to. The holder folds the lines as it writes (`fux::pane::Changes::fold`, a pure
+function: of a name only what a reader can still need), notes a change after its system call went well,
+and changes what it keeps of the file only when the round is out. Its first line is the one way out: a
+reader of an earlier round than it names reads the folder whole, as does one of a pane whose holder died
+with `generation` odd. Nothing in fux reads the file: the viewer has no use for it.
 
 ## Standards
 
@@ -122,7 +134,7 @@ and wrote to the viewer's FIFO, has changes to make before it moves to this fux:
 ```sh
 cargo build --release
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked -- --test-threads 4   # 165 tests, and the carrier's program; the real-binary suite takes ~20 s
+cargo test --workspace --locked -- --test-threads 4   # 170 tests, and the carrier's program; the real-binary suite takes ~25 s
 tools/help-agents.sh                     # runs every example on the agents' page as one sh session
 ./example.sh                             # the README's example
 python3 tools/perf.py target/release/fux # speed: flood, key echo, CPU (with tmux, beside it)
@@ -230,6 +242,10 @@ about two minutes.
    - The tests' stand-in for the viewer (`Session::key`) differs from it in two things: it sets no `COLUMNS` and `LINES` (the viewer does), and it uses the first free number for a script's folder (the viewer uses none twice). A script tested only through it is not tested for either.
    - `tools/perf.py` was changed for D123 (`XDG_RUNTIME_DIR` where `FUX_DIR` was; its viewer writes the default keys into its scratch config directory) and has not been run since.
    - koh, when it moves to this fux: D123's list, with what its own fallback for the session must become.
+   Known since D126, and left (a line each):
+   - `changes` keeps about eight lines each time `history` is put aside (nothing goes that was said before a `move`) and one for each picture that was: after half a gigabyte of output it has its 1,024 lines, the oldest rounds go from then on, and each round writes 24 KB (81 microseconds; 3 to 6 with a few tens of lines). A rule that lets go what was said of a file before it was put aside the time before would end that.
+   - A reader of a pane whose holder died with `generation` odd reads the folder whole: `changes` there may be of the round that did not end.
+   - Nothing reads `changes` in fux itself, and koh's carrier is not yet built on it: the two tests' readers are the only ones.
 3. **Retire fux 1:** take the plain names (above), delete nothing of `old-main` (it is the record),
    release.
 4. **koh:** whether koh (a remote shell over QUIC, a separate project) can carry pane folders between

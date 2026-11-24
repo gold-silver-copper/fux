@@ -23,6 +23,8 @@ says the same in the same round, of the program). Whether a pane lives:
   files: no field mirrors another, and what is kept of a file is kept under
   that file's stamp and read again when the stamp changes.
 - **What is derived.** The viewer's picture, from the screens and the layout.
+  What `changes` says, from what the holder did to its files: whoever
+  compares the folder of one round with that of another finds the same.
   The layout's panes, from the folders (a folder it does not place gets a
   tab; a name with no folder is dropped). The menu, from the keys directory.
 - **What changes it, and who may.** A program writes to its terminal. Anyone
@@ -66,10 +68,12 @@ waiting thread reports the program's end. No signal is handled anywhere.
 Output goes through the emulator; when the program has gone quiet for a moment, and at a
 steady pace while it keeps writing (the README's "Bounds" has the numbers), a round is
 written: `generation` (odd), then each file that changed (a fact in a small file of its own, a
-screen's text, which is text and nothing else, in its folder), then `generation` (even). A
+screen's text, which is text and nothing else, in its folder), then `changes` (what this round
+and those before it changed, each change put there after its system call went well, and of a
+name only what a reader of an earlier round can still need), then `generation` (even). A
 program that takes the alternate screen has `alt/` filled before `shown` is turned to it, and
 one that leaves it has `shown` turned back before `alt/` is removed. When the program ends the holder writes `state` and its last screen
-(once: a failure is a line in `log`), removes its FIFOs and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
+(once: a failure is a line in `log`), its FIFOs gone in that round, and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
 is a hangup, and the rest is the kernel's and the program's business. If the
 folder is gone, the pane is gone: the holder leaves, which hangs up too.
 
