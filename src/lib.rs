@@ -7,6 +7,10 @@
 const FOLDER: &str = "fux";
 /// What `TERM_PROGRAM` says in a pane.
 pub const TERM_PROGRAM: &str = "fux";
+/// The number a carrier of pane folders compares: raised when a reader of a folder written by the fux before
+/// would misread one this fux writes (a file's meaning or shape changed, a file a reader needs gone), and not
+/// when a file is added.
+pub const FORMAT: u32 = 1;
 
 mod holder;
 mod keys;
@@ -289,9 +293,20 @@ fn run(args: &[OsString]) -> Result<(), String> {
     }
 }
 
+/// The whole of `fux` as a program.
 pub fn main() -> ExitCode {
+    command(std::env::args_os().skip(1))
+}
+
+/// One command line of fux's, for a program that has fux under a word of its own (`koh fux start PATH -- sh`):
+/// `args` are the words after that word, the command's own first (`start`), and no program's name before it.
+/// `start` runs this program (its own file, not a `fux` that is looked for) with the first word `hold` to hold
+/// the pane: a program that carries fux gives its word `hold` to fux too, the word and all that follows it.
+/// Called as a `main` is: before the process has a thread, and with nothing else for it to do (a command
+/// changes its working directory). The usage and what goes wrong say `fux`, whatever the program is called.
+pub fn command(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     sys::own_children();
-    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let args: Vec<OsString> = args.into_iter().collect();
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {

@@ -2960,6 +2960,61 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     none it is `~/.cache/fux` (koh has the temporary directory). Its call
     of the viewer (`fux::view(session, "connect", keys)`) is unchanged.
 
+- **D124. fux's command line for another program, and a format number**
+  (the owner, 2026-11-24, for koh's plan: its sessions are to be fux panes,
+  kept through fux as a library, with only the `koh` binary on a machine).
+  - **`fux::command(args)`.** `pub fn command(args: impl
+    IntoIterator<Item = OsString>) -> ExitCode`, and `fux::main()` is
+    `command(std::env::args_os().skip(1))`. Each part of that for a reason:
+    - *The words from the command's own on, and no program's name.* fux
+      never read its name: the holder is started by `current_exe()`, and the
+      usage has `fux` written in it. So `koh fux start PATH -- sh` is
+      `fux::command(std::env::args_os().skip(2))`.
+    - *`OsString`, not text.* A path and a program's arguments are any
+      bytes; `std::env::args()` panics on some of them.
+    - *An `ExitCode` given back.* Nothing in fux exits the process: the
+      carrier's `main` returns what it is given.
+    - *`hold` is the carrier's first word.* `start` runs the program it is
+      in as `hold CWD PROGRAM…`, as before, and looks for no `fux`. So
+      `koh hold …` is `fux::command(std::env::args_os().skip(1))`, the word
+      kept. fux is not told the carrier's word for it (it would start
+      `koh fux hold`), which would be an argument more for a word less: the
+      one word a carrier cannot have for itself is `hold`.
+    - *Called as a `main` is.* Before the process has a thread, and with
+      nothing else for it to do: a command sets what the process does with
+      the ends of its children and changes its working directory, and
+      `hold` is the process until its pane ends.
+    - *The usage and the errors say `fux`*, whatever the program is called
+      (`fux: usage:` and then `fux start [PANE] …`). Under a word `fux` the
+      lines read as they are typed after the carrier's name. And the name
+      is not only printed: `start` takes `fux: ` off the last line of a
+      holder's `log` to say why it did not come up, the help page is `fux`
+      throughout, and the keys' scripts run `fux`. A name given as an
+      argument was considered and dropped for that: four places to carry it
+      to, for a carrier that chose another word.
+  - **`fux::FORMAT`** is 1: the number a carrier of pane folders compares
+    between its two ends. Raised when a reader of a folder written by the
+    fux before would misread one written by this one: a file's meaning or
+    shape changed, a file a reader needs is gone. Not when a file is added.
+    It is no freeze (D120 withdrew D117's): the format is still what the
+    README of a release describes, and this is how a change of it is said.
+    No file in a pane has the number, so it speaks for a fux and not for a
+    folder: a pane kept by a holder of an older build has that build's
+    files (HANDOFF's open item, and not this change: a file for it would
+    change the pane's files and "no header and no version").
+  - **The test** (`tests/carrier.rs`) is a program that is not fux: a test
+    target with a `main` of its own (no harness), which under its word `fux`
+    starts a pane and is found, by `ps`, to be that pane's holder with the
+    word `hold`, the pane's lock held until it has gone. A test target and
+    not an example: `cargo test --test NAME` builds no example, and a test
+    that runs one would run the one built before. Its words are fux's only
+    where the test itself ran it (a variable of the test's own says so):
+    to `cargo test hold` they are a filter.
+  - **Not in it.** A key's script runs `fux` by name, with the directory of
+    the viewer's program first in its `PATH`: on a machine with a carrier
+    and no `fux`, keys that call it find none. That is the carrier's keys'
+    to settle. 16 lines more in `src/lib.rs`, 10 of them its three comments.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

@@ -2,7 +2,7 @@
 
 Written 2026-11-21, at `fux` 0.40.0 / `fux-vt` 0.18.0 / `fuxix` 0.11.0 (tag `v0.40.0`, all three on
 crates.io). Read this first, then `README.md` (the contract: commands, the pane folder's files, keys,
-bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D123, append-only:
+bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D124, append-only:
 a historical log, in which a later entry says so when it replaces an earlier one).
 
 ## What fux is
@@ -43,7 +43,14 @@ About 6,870 production lines (`./sizes.sh`).
 |---|---|---|
 | `fuxix` | the system calls std does not give: pty, poll, FIFO, new session, window size, raw mode | every `unsafe` in the project is here |
 | `fux-vt` | the terminal emulator: bytes in, a grid of cells out; widths and grapheme clusters (UAX #29, `tools/unicode.py` makes the tables); sixel scanning and cropping | `#![forbid(unsafe_code)]`; the `Term` has no public fields |
-| `fux` | `src/holder.rs` (one process per pane, writes the files), `src/view.rs` (the viewer), `src/layout.rs`, `src/keys.rs` (key names, the embedded default scripts), `src/main.rs` (the command line), `src/help-agents.txt` (`fux help agents`), `keys/` (the default key scripts) | `#![forbid(unsafe_code)]` |
+| `fux` | `src/holder.rs` (one process per pane, writes the files), `src/view.rs` (the viewer), `src/layout.rs`, `src/keys.rs` (key names, the embedded default scripts), `src/lib.rs` (the command line, which `src/main.rs` calls), `src/help-agents.txt` (`fux help agents`), `keys/` (the default key scripts) | `#![forbid(unsafe_code)]` |
+
+What the library exports, for a program that carries fux (koh; D124): `fux::command(args)`, one command
+line of fux's from its command's word on (`fux::main()` is that with the process's own arguments; the
+carrier's own first word `hold` goes to it too, as `start` runs the program it is in with that word);
+`fux::view(session, workspace, keys)`, the viewer; `fux::FORMAT`, the number of the pane folder's format
+(the README says when it is raised); `TERM_PROGRAM`; and how fux writes and reads a pane's files:
+`replace`, `staging`, `write_new`, `stamp` and `Stamp`, `lines`, `plain`.
 
 Rules the code follows (the first and the fourth are enforced by clippy; the others are design rules,
 kept by review and tests):

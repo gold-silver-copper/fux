@@ -21,6 +21,11 @@ lto = "thin"
 fux-vt = { path = "fux-vt", version = "0.20.0" }
 fuxix = { path = "fuxix", version = "0.12.0" }
 
+# A program that is not fux and carries it, as koh does: the `main` is the test's own.
+[[test]]
+name = "carrier"
+harness = false
+
 # The emulator and the system calls are crates beside this one. The referee's old emulator is no member.
 [workspace]
 members = ["fux-vt", "fuxix"]
