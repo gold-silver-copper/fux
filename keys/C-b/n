@@ -1,4 +1,4 @@
 #!/bin/sh
 # next tab
 # group: Tabs
-fux layout tab next
+fux layout ./workspace tab next

@@ -145,10 +145,15 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   the `FUX…` names only `FUX_PANE`, `FUX_DIR` and `FUX_KEYS`: the last two
   are this program's own and say where its session and keys are; everything
   else (a key script's, fux 1's) is taken out. Key scripts get their five.
+  Amended 2026-11-23 by D123: the name stands, the variables do not. fux
+  reads and sets none of them; a session is the default one or is named by
+  a path, and a key's script is told by a folder of files.
 - **D35. A command typed in a pane means "here"**: with `FUX_WS` unset, the
   workspace is the folder holding `$FUX_PANE`, and the session its parent
   unless `FUX_DIR` is set. `FUX_PANE` counts only as a whole path (fux 1's
   is `%N`).
+  Withdrawn 2026-11-23 by D123: there is no `FUX_PANE`, and a command typed
+  in a pane means what it means anywhere, `main` of the default session.
 - **D36. The layout marks the tab shown before with `-`** (panel: 6 of 8;
   the owner: "will i automatically be returned to the tab i was on
   previously? Because that is the proper UX"). One mark, like `$OLDPWD`. An
@@ -2764,6 +2769,196 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     their file gone and nothing put into the pane's folder, and that a
     hangup removes them. The close-key test finds the editor's pane by what
     it shows, not by a `text` in its folder.
+- **D123. No `FUX_*` variable: an argument is a directory, and a key's script
+  is told by a folder** (the owner, 2026-11-23: "information is a file, not an
+  environment variable"; "a directory as an argument is fine where a process
+  must be told where"; plan v3, reviewed once by three seats, built after
+  D120 to D122). fux read three variables (`FUX_DIR`, `FUX_WS`, `FUX_KEYS`),
+  gave a pane's program one (`FUX_PANE`, with `FUX_DIR` if it was set) and
+  took four away from it, gave a key's script seven, and `keys/.edit` read an
+  eighth (`FUX_EDIT`). All of that is gone: fux sets, reads and removes no
+  variable named for itself, and one a starter has is passed on as any other
+  is. The standard ones stay: `TERM`, `COLORTERM`, `TERM_PROGRAM` and its
+  version to a program; `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `HOME`, `SHELL`
+  and `PATH` read; `COLUMNS` and `LINES` for a new pane's first size and for
+  `layout focus`, and set for a key's script.
+  - **One rule for an argument.** One that begins with `/` or `.` is a
+    directory's path; any other is a name in the default session
+    (`$XDG_RUNTIME_DIR/fux`, else `~/.cache/fux`). No name begins with either
+    sign (D34's names), so the two forms cannot be mistaken and no flag is
+    needed. A path may be any directory, a session's or not: nothing is asked
+    of it. Considered and dropped: a `--session` flag (a second way to say
+    what a path says), and a variable kept "for the session only" (the
+    owner's ruling is that there is none).
+  - **`fux start [PANE]`.** The pane's name is what follows the last `/`,
+    and nothing there asks for the first free number: the trailing `/` is
+    looked at before anything is split (a review found that a path split by
+    its parts first reads `/s/w/.` as the pane `w`). What is before it is
+    the workspace: a path, or a name, or `main`. The workspace's folder is
+    made and then resolved, links followed and `..` read by the system and
+    not collapsed as text, before the pane's path is derived from it; a name
+    is resolved the same way, so there is one rule. So what `fux start`
+    prints is the folder's own path: a key's script names the workspace
+    through a link in a folder that goes when the script ends (below), and a
+    path printed through that link would be dead a moment later (three
+    reviewers found this in the plan).
+  - **`fux view [WORKSPACE [KEYS]]`.** The viewer of a workspace named by a
+    path is the viewer of the session that folder is in, its parent, and the
+    folder's own name must be a workspace's name: the viewer is told of other
+    workspaces by name (`workspace NAME`). A path that is no such name is
+    refused after its folder was made (it is made before it can be resolved):
+    an empty folder is left, and the error names it. A workspace named by
+    its name is the default session's, whatever the folder of that name is a
+    link to: only a path is resolved (a reviewer showed a name whose folder
+    was a link into another session making the viewer that session's, with
+    not a word). And with no terminal nothing is made: the terminal is asked
+    for before the path's folder is (two reviewers: `fux view ./a/w
+    </dev/null` failed and left `a/w`). KEYS, the keys
+    directory, is the second argument; with none it is
+    `$XDG_CONFIG_HOME/fux/keys`, else `~/.config/fux/keys`, as before.
+  - **`fux layout [WORKSPACE [EDIT…]]`.** The workspace comes before an
+    edit, always: a workspace may be called `pane` or `tab`, so an optional
+    one made `fux layout pane x` two commands. With nothing after `layout`
+    it is `main`'s that is printed. The grammar and every caller (33 calls
+    in the keys, the help page, the tests) changed in one commit, as a
+    review asked. `fux wait` is as it was: it takes a plain directory (a
+    reviewer showed that a name there would wait on another pane than the
+    same words did before). `fux dir` prints the default session's.
+  - **A command typed in a pane means what it means anywhere.** The binary
+    no longer knows which pane a command is typed in. D35 ("here") is
+    withdrawn: `fux start build` typed in a pane of another workspace, or of
+    another session, starts `main/build` of the default session, and
+    nothing says so. That is the cost of this decision, and it is silent in
+    three more places: `fux layout main …` typed in a pane of a session
+    elsewhere edits the default session's `main`, `keys/.restore` with no
+    argument looks through the default session, and `keys/.here` with no
+    argument answers "not in a pane" there. The README says each where a
+    session that outlasts a reboot is described, and leads with "nothing
+    warns you". A session elsewhere than the default is named by its paths,
+    every time.
+  - **A pane's program is told nothing about its pane.** It asks the files
+    (`keys/.here`, D120, which was built for this), or its starter tells it
+    in a variable of the starter's own. The holder finds its session as the
+    folder two above the one it stands in (`../../colours`, `../../keyboard`)
+    and no longer by a variable: so a pane started by a path in some other
+    directory reads files of those two names from the folder above that
+    directory, if there are any, and a pane moved to another session reads
+    that one's.
+  - **The viewer's folder.** `SESSION/.view.PID` was the viewer's FIFO and is
+    a folder, the owner's alone: `ctl` (the FIFO), `cwd` (where the viewer
+    was started, the path and a line end, so that a new shell with no pane
+    to follow still starts there and not at home; a reviewer's point), and a
+    folder for each
+    key's script that runs. A script's folder is its working directory, and
+    what it is told is in it: `pane`, `workspace`, `session`, `keys` and
+    `ctl` are links, each to a whole path, and `row` and `col` hold `COLS
+    ROWS`. The rule is that a folder is a link and a value is text: `pane/in`
+    works as it stands, `readlink pane` gives the path to hand on, and a
+    link that is out of date dangles where a text would be read and
+    believed. `pane` is not there when no pane has the keys.
+  - **Consistent for a script; removed on every way out.** A script's folder
+    is written whole before the script is started and never again. The next
+    key has a folder of its own, so a script that still runs keeps the focus
+    of its own key (one folder written anew at each key would hand a slow
+    split script the next key's pane). Folders are numbered as they are
+    made and a number is not used twice by one viewer: a path into a folder
+    that is gone names nothing, and never another script's facts. The folder
+    goes when the viewer finds the script ended, when the script could not
+    be started, and with the viewer's own folder when the viewer leaves,
+    whichever way it leaves short of being killed (the folder is a value
+    that removes itself when it is let go, so no way out can forget it). The
+    33rd script at once is refused before a folder is made. A killed viewer
+    leaves its folder; a viewer that is later given its number removes it,
+    as it removed the FIFO before.
+  - **What a script hands on is a whole path.** A pane a script starts, and
+    a job it leaves in the background, outlive its folder: they are given
+    `$(readlink …)`, never a path through the folder. The workspace picker's
+    pane is given the viewer's FIFO by its own path (a reviewer reproduced
+    the choice being lost through the script's link), the close key's
+    `fux wait` the pane's.
+  - **A pane that a key starts is started from elsewhere.** A pane's
+    program runs in the directory `fux start` was run in, and a key's script
+    runs in a folder that goes when it ends. Found by running the keys
+    through a viewer, after the tests had passed: the editor's pane, the
+    picker's and the search's stood in a folder that was gone, every shell
+    there complained of it, and the search could open nothing, as a
+    `fux start` from a folder that is gone is refused. So a default script
+    that starts a pane goes first to where the viewer was started
+    (`../cwd`; a new shell to the focused pane's `cwd` before that), once it
+    has read its links. The tests' stand-in for the viewer had kept the
+    folder; it removes it now when the script has ended, as the viewer
+    does. A script of one's own must do the same, and the README says so.
+  - **`COLUMNS` and `LINES` stay for a script, and there is no `size`
+    file** (the orchestrator's ruling on the plan's third question): they
+    are POSIX, were set already, and both readers default without them. The
+    two split sizes are files, as a script cannot work them out.
+  - **The scripts a pane runs are told by arguments**: `.shell SESSION
+    [COMMAND…]`, `.search WORKSPACE`, `.edit WORKSPACE FILE [LINE
+    [COMMAND…]]`, `.text PANE FILE …`. `.shell` no longer notes its folder
+    when it starts: it asks `.here` when its shell has ended, so a pane that
+    was renamed closes too, which it did not before. The cost: a default
+    shell pane now needs perl to close itself (`.here` tests the lock with
+    it); without perl the folder stays for the close key, and the pane's
+    `state` is how the shell ended. `FUX_EDIT` is an
+    executable `.editor` in the keys directory, run as `.editor FILE LINE`:
+    a file where a setting was a variable. `.restore` starts a pane by its
+    folder's path and exports nothing; a pane it starts again finds the keys
+    by the path in its own `command`.
+  - **Tests.** Every command a test runs is told a runtime directory, a
+    config directory and a home of the test's own, and a command that was
+    told none is told `/dev/null` for all three: no test can find the
+    session or the keys of whoever runs the tests (a reviewer's point: on
+    macOS, with no `XDG_RUNTIME_DIR`, a forgotten one would have reached
+    `~/.cache/fux`). The viewers of the tests run in a pane of another
+    session and name theirs by its path, so every default key is run where
+    its session is not the default one: a script that fell back to a name
+    would start its pane in the wrong session and fail its test. The only
+    `FUX_` left in the tree's code is the test that such names are passed
+    on untouched and read by nobody.
+  - **Size.** Non-test Rust grew by 35 lines (124 in, 89 out; 29 before
+    the review below, which the owner accepted, and 6 for its fixes), where
+    the plan had hoped for a small deletion. The variables' code went: the
+    `name!` macro, `here()`, the branches of `session()` and `workspace()`
+    that read a pane's own, what `launch`, the holder and the viewer set and
+    removed. The arguments that replace it are as long as it was (in
+    `src/lib.rs` 5 lines more, in the holder 8 fewer). The 38 lines more are
+    the viewer's: its folder and one for each script, their seven facts, and
+    their removal on every way out, where the plan had counted 20 in and 6
+    out and the review added `cwd` and the cleanup. The keys grew by 37
+    lines (what `.shell` asks of `.here`, the directory a pane is started
+    from, the arguments' comments). No extern was added to fuxix and none
+    left.
+  - **What the review of the whole found by running it** (three seats,
+    2026-11-23; fixed in the same pull request, each with a test that
+    failed first). The two of `fux view` above. And a path with a line end
+    in it, which a file read with `read` and a list of names on lines both
+    cut: the key scripts took the first line of `../cwd` and of a pane's
+    `cwd` for the directory, so every pane a key started stood in `$HOME`
+    for a viewer started in such a directory; and `keys/.here` took the
+    folders that name a process from `grep -l`, so in a session with such a
+    path it found no pane, and a shell's pane no longer closed when its
+    shell ended. The scripts read the file whole now, and in `.here` perl
+    reads each `status` and counts as well as tries the lock, with the
+    folders as its arguments (it needs no grep any more). What stays: sh
+    drops the line ends that end a `$( )`, and the keys read every path so,
+    so a folder whose own name ends in a line end is not for a session, for
+    the keys or to start a viewer in; the README says it. The owner's
+    rulings on the review's questions: the 29 lines stand, and neither cut
+    is taken (the split sizes as files; `wait` and `dir` as scripts); a
+    shell pane needing perl to close itself is accepted.
+  - **Replaces** D34's five names and D35; of D94, that `.restore` tells
+    the panes where the keys are.
+  - **koh** (0.18 as it stands uses fux 0.42 as a library, and must change
+    this before it moves to a fux with D123): it writes `quit` to
+    `SESSION/.view.PID`, which is now `SESSION/.view.PID/ctl`; its two keys
+    that type a byte use `"$FUX_PANE/in"`, which is `pane/in` in the folder
+    the script runs in; `koh mount` with no directory reads `FUX_DIR`, which
+    nothing else reads any more (the default session, or a path). Where it
+    drops that, its own fallback is to become fux's and not only lose a
+    line: an `XDG_RUNTIME_DIR` that is set and empty counts as not set (koh
+    joins `fux` to the empty one, a path under where it stands), and with
+    none it is `~/.cache/fux` (koh has the temporary directory). Its call
+    of the viewer (`fux::view(session, "connect", keys)`) is unchanged.
 
 ## The old fux3's bugs: which classes are gone
 

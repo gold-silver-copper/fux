@@ -147,10 +147,8 @@ class Played:
 
 def fux(case, binary):
     played = Played(case)
-    env = dict(os.environ, FUX_DIR=str(played.dir / "session"), FUX_KEYS=str(played.dir / "keys"))
-    env.update(COLUMNS=str(case[0]), LINES=str(case[1]))
-    for name in ("FUX_PANE", "FUX_WS", "FUX_VIEW"):
-        env.pop(name, None)
+    # (Its session is the default one of a runtime directory of its own: no viewer is started.)
+    env = dict(os.environ, XDG_RUNTIME_DIR=str(played.dir), COLUMNS=str(case[0]), LINES=str(case[1]))
     try:
         pane = pathlib.Path(run([binary, "start", "r/p", "--", *played.command], env=env, text=True).strip())
         cursor = played.run(lambda c, r: (pane / "ctl").write_text(f"resize {c} {r}\n"))

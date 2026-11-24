@@ -1,5 +1,6 @@
 #!/bin/sh
-# What a find key runs is `.pick --tab LIST [COMMAND…]`: that starts `.pick LIST COMMAND…` in a pane of its own.
+# What a find key runs is `.pick --tab LIST [COMMAND…]`, in the key's own folder: that starts
+# `.pick LIST COMMAND…` in a pane of its own, in the workspace shown.
 # LIST is a file of lines `KEY<tab>WORDS`. One is chosen, with fzf, sk or fzy if
 # one is installed and from a numbered list if none is, and COMMAND is run
 # with its KEY as the last argument. The file stays where its key made it, a dot-named file of
@@ -8,10 +9,14 @@ if [ "$1" = --tab ]; then
   # (With no COMMAND the pane chosen is shown, and the tab shown before the list's
   # own first, so that `fux layout tab -` goes back to that one.)
   [ -s "$2" ] || { rm -f "$2"; echo "nothing to choose"; exit 0; }
-  [ $# -gt 2 ] || set -- "$@" sh -c 'fux layout tab - 2>/dev/null; fux layout pane "$1"' sh
+  # (The pane is told the workspace by its whole path, and is started from where the viewer was
+  # started: it outlasts this script's folder, and its program runs where `fux start` does.)
+  k=$(dirname "$0") w=$(readlink workspace)
+  { d=$(cat ../cwd) && [ -n "$d" ] && cd "$d" || cd || cd /; } 2>/dev/null
+  [ $# -gt 2 ] || set -- "$@" sh -c 'fux layout "$0" tab - 2>/dev/null; fux layout "$0" pane "$1"' "$w"
   shift
-  p=$(fux start -- "$FUX_KEYS/.shell" "$FUX_KEYS/.pick" "$@") || { rm -f "$1"; exit; }
-  fux layout pane "${p##*/}" 2> /dev/null
+  p=$(fux start "$w/" -- "$k/.shell" "$(dirname "$w")" "$k/.pick" "$@") || { rm -f "$1"; exit; }
+  fux layout "$w" pane "${p##*/}" 2> /dev/null
   # Wait briefly until the finder (or numbered list) has drawn its first line, so early keys
   # buffered by the viewer do not arrive before a TUI finder sets raw mode (TCSAFLUSH).
   n=0

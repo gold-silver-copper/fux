@@ -1,19 +1,25 @@
 #!/bin/sh
-# What a pane started by the default keys runs: your shell (or the command
-# given), and when that has ended, the removal of the pane's own folder. That a
+# .shell SESSION [COMMAND…]: what a pane started by the default keys runs: your shell (or
+# COMMAND), and when that has ended, the removal of the pane's own folder. That a
 # pane closes when its shell exits is this script's doing, not fux's.
+# SESSION is the session's directory. Which folder is this pane's is asked when the shell has
+# ended, of `.here` beside this script (it needs perl): the pane as it is called by then, so one
+# that was given another name meanwhile closes too. Where `.here` finds none, the folder stays,
+# and the pane's `state` is how the shell ended.
 # This script killed outright never gets there: the folder stays for the close key.
-here=$(ls -di "$FUX_PANE")
+s=$1; [ $# -eq 0 ] || shift
 if [ $# -gt 0 ]; then "$@"; else "${SHELL:-sh}"; fi
+code=$?
 # (A program that could not be run at all has said why: that stays to be read.
 # One that is there to run has run, and 126 or 127 is its own: a shell's last command's, say.)
-case $? in 126 | 127) [ -x "$(command -v "${1:-${SHELL:-sh}}" 2> /dev/null)" ] || { echo "it could not be run: Enter closes this pane"; read -r _; } ;; esac
-# Only its own folder: if it was moved and another pane has its old name by
-# now, that one is not this script's to remove.
+case $code in 126 | 127) [ -x "$(command -v "${1:-${SHELL:-sh}}" 2> /dev/null)" ] || { echo "it could not be run: Enter closes this pane"; read -r _; } ;; esac
+here=$("$(dirname "$0")/.here" "$s" 2>/dev/null) && id=$(ls -di "$here" 2>/dev/null) || exit $code
+# Only its own folder: if it is moved now and another pane has its name by
+# the next look, that one is not this script's to remove.
 # (The holder may write a file into it in the moment it is emptied, and `rm`
 # then finds it "not empty": so once more, a few times, without a word.)
 n=0
-while [ "$(ls -di "$FUX_PANE" 2>/dev/null)" = "$here" ] && [ $n -lt 20 ]; do
-  rm -rf "$FUX_PANE" 2>/dev/null || sleep 0.05
+while [ "$(ls -di "$here" 2>/dev/null)" = "$id" ] && [ $n -lt 20 ]; do
+  rm -rf "$here" 2>/dev/null || sleep 0.05
   n=$((n + 1))
 done

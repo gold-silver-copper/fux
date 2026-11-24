@@ -4,6 +4,6 @@
 # A list of this workspace's tabs (a pane of each, then its panes) in a pane of
 # its own; the one chosen is shown. The list is the layout file: a line a tab,
 # and `focus=` names the pane of it that has the keys.
-list=$(mktemp "$FUX_DIR/.pick.XXXXXX") || exit
-[ -f "$FUX_DIR/$FUX_WS/layout" ] && awk '{ sub(/^[*-]? */, ""); pane = $NF; sub(/^focus=/, "", pane); if (pane != "") printf "%s\t%s\n", pane, $0 }' "$FUX_DIR/$FUX_WS/layout" > "$list"
-exec "$FUX_KEYS/.pick" --tab "$list"
+list=$(mktemp "$(readlink session)/.pick.XXXXXX") || exit
+[ -f workspace/layout ] && awk '{ sub(/^[*-]? */, ""); pane = $NF; sub(/^focus=/, "", pane); if (pane != "") printf "%s\t%s\n", pane, $0 }' workspace/layout > "$list"
+exec "$(readlink keys)/.pick" --tab "$list"

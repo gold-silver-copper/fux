@@ -1,4 +1,4 @@
 #!/bin/sh
 # one big pane, the rest beside it
 # group: Arrange
-fux layout arrange main
+fux layout ./workspace arrange main

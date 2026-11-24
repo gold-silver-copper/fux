@@ -1,4 +1,4 @@
 #!/bin/sh
 # focus left
 # group: Focus
-fux layout focus left
+fux layout ./workspace focus left

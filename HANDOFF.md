@@ -2,7 +2,7 @@
 
 Written 2026-11-21, at `fux` 0.40.0 / `fux-vt` 0.18.0 / `fuxix` 0.11.0 (tag `v0.40.0`, all three on
 crates.io). Read this first, then `README.md` (the contract: commands, the pane folder's files, keys,
-bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D115, append-only:
+bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D123, append-only:
 a historical log, in which a later entry says so when it replaces an earlier one).
 
 ## What fux is
@@ -96,17 +96,16 @@ and what is left out (among them OSC 8 link ids, clipboard reads, sixel aspect r
 `tools/referee` runs a corpus of byte streams through this emulator, the old fux-vt, tmux and xterm and
 compares text and cursor; CI fails on a disagreement that is not listed.
 
-## Names are temporary until fux 1 is retired
+## Names, and no variables
 
-So that the two never share a session: the environment variables are `FUXN_*` (to become `FUX_*`);
-the session is `$FUXN_DIR`, else (in a pane) that pane's session, else `$XDG_RUNTIME_DIR/fux-next`,
-else `~/.cache/fux-next`; the keys are `$FUXN_KEYS`, else `$XDG_CONFIG_HOME/fux-next/keys`, else
-`~/.config/fux-next/keys`; a pane's program sees `TERM_PROGRAM=fux-next`; XTVERSION says
-`fux-next VERSION`. When the owner retires fux 1, these become the
-plain names in one change, followed by a release. D41 says how: the names are at the top of
-`src/main.rs`, and a `sed` over the text that spells them out: `keys/`, the README, `src/help-agents.txt`,
-the tests, `example.sh`, `tools/help-agents.sh`, `tools/referee` and `tools/perf.py`.
-`cargo install fux` already installs this fux and replaces fux 1's binary.
+The default session is `$XDG_RUNTIME_DIR/fux`, else `~/.cache/fux`: a name is a name in it, wherever a
+command is typed. Anything else is named by a directory's path (an argument that begins with `/` or
+`.`). The keys are the directory named to `fux view WORKSPACE KEYS`, else `$XDG_CONFIG_HOME/fux/keys`,
+else `~/.config/fux/keys`. A pane's program sees `TERM_PROGRAM=fux`; XTVERSION says `fux VERSION`.
+fux sets, reads and removes no variable of its own (D123): what `FUX_DIR`, `FUX_WS` and `FUX_KEYS` said is an
+argument, what `FUX_PANE` said is `keys/.here`'s to find, and what a key's script was told in five more
+is a folder of files the viewer makes for it (`SESSION/.view.PID/N`). koh, which uses fux as a library
+and wrote to the viewer's FIFO, has changes to make before it moves to this fux: D123 lists them.
 
 ## Build, test, try
 
@@ -124,12 +123,12 @@ referee also needs xterm, Xvfb and tmux. Releases: `cargo publish` for `fuxix`, 
 (D115).
 
 Try it without touching a running session: run it by path, with a session folder and a keys folder
-of your own that do not exist yet (`FUXN_DIR=… FUXN_KEYS=… ./target/release/fux view`). A bare `fux`
+of your own that do not exist yet (`./target/release/fux view /a/new/session/main /a/new/keys`). A bare `fux`
 is whatever `PATH` finds first, which may be fux 1.
 
 Upgrading a running session: a holder keeps the code it was started with, so after a rebuild the panes
 it keeps still write the old files until they are closed and started again. The viewer writes the default
-key scripts only when the keys folder does not exist: remove it (or point `FUXN_KEYS` at a new one) to
+key scripts only when the keys folder does not exist: remove it (or name a new one to `fux view`) to
 get the new defaults.
 
 CI (Linux, macOS, and the referee) runs on pushes and pull requests to `master` and `next`; it takes
@@ -169,7 +168,7 @@ about two minutes.
 
 ## Decided by the owner (do not reopen without new evidence from use)
 
-- No copy mode: `C-b c` opens the pane's history and screen in an editor (`$FUXN_EDIT` if set, else
+- No copy mode: `C-b c` opens the pane's history and screen in an editor (as an executable `.editor` in the keys folder runs it, if there is one, else
   `$EDITOR`, else `$PAGER`, else `less`). No zoom. No observing viewer.
   Mouse is passed through to programs; no mouse resizing.
 - No command in the binary that a script recipe can do; recipes are plain sh (perl alternatives are
@@ -194,9 +193,9 @@ about two minutes.
 1. **Daily use.** The owner is to use this fux daily beside fux 1; what annoys or surprises in use
    decides the next changes better than another audit (the last line-by-line audits found almost
    nothing left to cut).
-2. **Small known items:** `tools/help-agents.sh` failed once in CI on Linux at the page's last command (`rm -r` of the demo workspace: `agent-demo/broad/main: Directory not empty`; PR #483, 1 of 11 runs there, 0 of 160 by hand on that branch and on master): the README's "one failed `rm -r` of a busy pane", after the page typed into that pane five commands before, and not explained further; `C-b c`'s menu caption still says "history in the editor" (it opens history
+2. **Small known items:** `rounds_of_writing_that_fail_do_not_leave_their_pictures_for_good` failed once in a suite at 4 threads while D123 was built (it waited to its deadline for six failed rounds in the pane's `log`), and not again: 0 of 6 alone, 0 of 24 eight at a time, and in no later suite; not explained; `tools/help-agents.sh` failed once in CI on Linux at the page's last command (`rm -r` of the demo workspace: `agent-demo/broad/main: Directory not empty`; PR #483, 1 of 11 runs there, 0 of 160 by hand on that branch and on master): the README's "one failed `rm -r` of a busy pane", after the page typed into that pane five commands before, and not explained further; `C-b c`'s menu caption still says "history in the editor" (it opens history
    and screen); `keys/.edit` passes no line number to an `$EDITOR` it does not know by name, such as a
-   wrapper script around a known editor (the file opens where that editor starts; `FUXN_EDIT` passes
+   wrapper script around a known editor (the file opens where that editor starts; an executable `.editor` in the keys folder is given
    the line); a pane kept by a holder from an older build writes the old file layout and nothing says so; in the pane picker the first Enter
    can be lost (seen by a blind tester; the record is in the owner's notes); `.restore` can restart a
    pane whose saved command was a viewer run by another program (`env X=1 fux view`); two role-named items in the code (`term.screen()`, `Holder.facts`); the word `shown` is both the link and a word of `cursor`.
@@ -209,6 +208,18 @@ about two minutes.
    - `a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines` failed for a reviewer alone, 6 of 10 on the base and 9 of 10 on the branch (`55977 lines, 0 put aside`, dash as `sh`); 0 of 20 alone and 0 of 48 sixteen at a time where the branch was built. It asserts that `history` was put aside once when the screen says `done`, which depends on how the output was cut into writes; not looked into further.
    - `a_menu_shades_its_group_headings` and `a_shell_that_ends_with_127_closes_its_pane_…` fail on master and on the branch alike when 24 of them run at once (about one run in six); the second also once in 34 runs of the suite at 16 threads on the branch (`the holder ended without a word`: its shell ends at once and `.shell` removes the pane's folder, sometimes before the holder's first screen, which fails the start the test asserts).
    - `a_picture_that_does_not_fit_its_tile_…` failed once in the same 34 runs of the suite at 16 threads on the branch, at its one read of the viewer's screen (it waits for the left pane's picture, not for the right pane's word); not seen again in 144 runs of it 24 at a time, nor on master.
+   Known since the review of PR #484, and left (a line each; what it found and had fixed is in D123):
+   - `keys/.edit` takes a link called `workspace` in its working directory for the sign that a key's script runs it: run by hand in a directory that has such a link, it looks for `../cwd` from there, finds none, and starts the editor's pane at home.
+   - A folder whose own name ends in a line end is not for the default keys (as a session, as the keys' directory, to start a viewer in): sh drops the line ends that end a `$( )`. One with a line end inside its name is served, and tested.
+   - `keys/.here` given the session by a path from where it stands that begins with `-`: found now that perl is given the folders after `--` (it was `grep` that took the path for an option); `keys/.shell` hands what `.here` printed to `ls` and `rm` as it is, and every script passes a whole path.
+   - A path given to `fux view` that is mistyped still makes every folder on the way to it where there is a terminal, as `fux start PATH/` does; a path that is no workspace's name leaves its empty folder, which the error names and no test asserts.
+   - The viewer's folder goes on every way out but a kill, and a panic is one more: the release build aborts on a panic (none was found that can be reached), and the folder stays as after a kill.
+   - Two calls of `fux::view` at once in one process (a library's user: koh makes one) would have the one folder `.view.PID`.
+   - `fux dir` passes over any further argument; `fux start --help -- true` starts a pane called `--help` (only `--` is read as a separator); `fux wait` takes a directory from where it stands as it is.
+   - A key script's "is still running: keys no longer wait for it" takes the place of a newer message in the viewer's corner when the script's two seconds are over (on master too); the test of the 33rd script sleeps 2.5 s for it.
+   - The tests' stand-in for the viewer (`Session::key`) differs from it in two things: it sets no `COLUMNS` and `LINES` (the viewer does), and it uses the first free number for a script's folder (the viewer uses none twice). A script tested only through it is not tested for either.
+   - `tools/perf.py` was changed for D123 (`XDG_RUNTIME_DIR` where `FUX_DIR` was; its viewer writes the default keys into its scratch config directory) and has not been run since.
+   - koh, when it moves to this fux: D123's list, with what its own fallback for the session must become.
 3. **Retire fux 1:** take the plain names (above), delete nothing of `old-main` (it is the record),
    release.
 4. **koh:** whether koh (a remote shell over QUIC, a separate project) can carry pane folders between

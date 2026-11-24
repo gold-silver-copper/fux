@@ -154,6 +154,15 @@ impl Folder {
     }
 }
 
+/// A folder of the viewer's, which goes with all that is in it when it is let go, however that
+/// comes about: its own in the session, and in that one a key script's.
+struct Own(PathBuf);
+impl Drop for Own {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Where the press of a key went, if its repeats or its release have somewhere to go: to a
 /// script the viewer ran for it, or to a pane (its directory, and which folder that was: the
 /// pane, whatever has the name by now).
@@ -233,9 +242,12 @@ struct View {
     /// When a key last went to a pane: its echo is looked for often for a moment after.
     keyed: Option<Instant>,
     pasting: Option<bool>,
-    /// The key scripts that still run, each with when it started while the keys wait for it (two seconds).
-    scripts: Vec<(Child, Option<Instant>)>,
-    ctl_path: PathBuf,
+    /// The key scripts that still run, each with its folder, and with when it started while the keys
+    /// wait for it (two seconds). And how many were given a folder: the next one's is that number.
+    scripts: Vec<(Child, Own, Option<Instant>)>,
+    ran: usize,
+    /// The viewer's folder in the session, `.view.PID`: its FIFO (`ctl`), where it was started (`cwd`).
+    own: Own,
     ctl_line: Vec<u8>,
 }
 
@@ -244,9 +256,12 @@ struct View {
 /// not to what another program may have made them before.)
 const LEAVING: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b]112\x1b\\\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t";
 
+/// What a viewer with no terminal says: here, and before a folder is made for a path it was given.
+pub const NO_TERMINAL: &str = "the viewer needs a terminal on its standard input";
+
 pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), String> {
     let tty = io::stdin().as_fd().try_clone_to_owned().map(File::from).map_err(|e| format!("standard input: {e}"))?;
-    let size = sys::winsize(&tty).map_err(|_| "the viewer needs a terminal on its standard input")?;
+    let size = sys::winsize(&tty).map_err(|_| NO_TERMINAL)?;
     // What is made is the owner's alone; what is there already is left as it is.
     let made = fs::DirBuilder::new().mode(0o700).recursive(true).create(session.join(&workspace));
     made.map_err(|e| format!("{}: {e}", session.display()))?;
@@ -260,9 +275,15 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
             made.map_err(|e| format!("{}: {e}", path.display()))?;
         }
     }
-    let ctl_path = session.join(format!(".view.{}", std::process::id()));
-    // (One of that name is a dead viewer's, whose number this process has now: it goes.)
-    let ctl = sys::fifo(&ctl_path).map_err(|e| format!("{}: {e}", ctl_path.display()))?;
+    let own = Own(session.join(format!(".view.{}", std::process::id())));
+    // (One of that name is a dead viewer's, whose number this process has now: it goes, a folder
+    // with all that is in it, or the FIFO an older fux had there.)
+    let _ = fs::remove_file(&own.0).or_else(|_| fs::remove_dir_all(&own.0));
+    let made = fs::DirBuilder::new().mode(0o700).create(&own.0).and_then(|()| sys::fifo(own.0.join("ctl")));
+    let ctl = made.map_err(|e| format!("{}: {e}", own.0.display()))?;
+    // (Where it was started: a new shell that has no pane to follow starts there.)
+    let cwd = std::env::current_dir().map(|cwd| [cwd.as_os_str().as_encoded_bytes(), b"\n"].concat());
+    let _ = cwd.and_then(|cwd| fs::write(own.0.join("cwd"), cwd));
     let restore = sys::raw_mode(tty.try_clone().map_err(|e| e.to_string())?, LEAVING);
     let restore = restore.map_err(|e| format!("cannot set the terminal: {e}"))?;
     let (out, queue) = mpsc::channel::<String>();
@@ -318,7 +339,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         keyed: None,
         pasting: None,
         scripts: Vec::new(),
-        ctl_path,
+        ran: 0,
+        own,
         ctl_line: Vec::new(),
     };
     // The alternate screen, pastes marked, and "what are you" (for sixel). On the way the
@@ -342,7 +364,6 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     drop(view.out);
     let result = result.and(writer.join().unwrap_or(Ok(())));
     drop(restore);
-    let _ = fs::remove_file(&view.ctl_path);
     result.map_err(|e| format!("the viewer stopped: {e}"))
 }
 
@@ -362,9 +383,10 @@ impl View {
             // in a shell does: they wait until it ends (and what it printed is
             // read, and what it changed is drawn). One that takes longer than
             // two seconds is left running and the keys go on.
-            self.scripts.retain_mut(|(script, _)| !matches!(script.try_wait(), Ok(Some(_))));
-            for (_, since) in
-                self.scripts.iter_mut().filter(|(_, since)| since.is_some_and(|at| at.elapsed() > SCRIPT_WAIT))
+            // (One that has ended is let go, and its folder with it.)
+            self.scripts.retain_mut(|(script, ..)| !matches!(script.try_wait(), Ok(Some(_))));
+            for (.., since) in
+                self.scripts.iter_mut().filter(|(.., since)| since.is_some_and(|at| at.elapsed() > SCRIPT_WAIT))
             {
                 self.message = "a key script is still running: keys no longer wait for it".into();
                 *since = None;
@@ -426,7 +448,7 @@ impl View {
 
     /// Whether the keys wait: for every script started that neither ended nor ran two seconds.
     fn waiting(&self) -> bool {
-        self.scripts.iter().any(|(_, since)| since.is_some())
+        self.scripts.iter().any(|(.., since)| since.is_some())
     }
 
     /// Another workspace is shown: what was read of the panes is forgotten, and with it what the
@@ -823,20 +845,21 @@ impl View {
             self.message = format!("{SCRIPTS_MAX} key scripts are still running: {} was not started", file.display());
             return;
         }
-        let pane = self.focus.as_ref().map(|focus| self.session.join(&self.workspace).join(focus));
+        let workspace = self.session.join(&self.workspace);
+        let pane = self.focus.as_ref().map(|focus| workspace.join(focus));
         let mut path =
             std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.as_os_str().to_owned())).unwrap_or_default();
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
         // A writer of the script's own, which waits when the FIFO is full (ours never waits).
-        let output = || OpenOptions::new().write(true).open(&self.ctl_path).map(Stdio::from);
+        let ctl = self.own.0.join("ctl");
+        let output = || OpenOptions::new().write(true).open(&ctl).map(Stdio::from);
         let (Ok(out), Ok(err)) = (output(), output()) else { return };
         let mut script = Command::new(file);
-        script.env(name!("DIR"), &self.session).env(name!("WS"), &self.workspace).env(name!("KEYS"), &self.keys);
-        script.env(name!("PANE"), pane.unwrap_or_default()).env(name!("VIEW"), &self.ctl_path).env("PATH", path);
+        script.env("PATH", path);
         // A pane a script starts begins at the size of the whole view, right for a new tab. The
         // size a tile would have if the focused pane were split is given too, side by side
-        // (ROW) and one above the other (COL): a script that splits passes it on to `fux start`,
+        // (`row`) and one above the other (`col`): a script that splits passes it on to `fux start`,
         // and its program is never drawn at one size and then at another.
         // (A terminal that says it has no columns or no rows has told no size, and a script is told
         // none: what it starts is as large as `fux start` makes a pane it is told no size for.)
@@ -847,7 +870,7 @@ impl View {
             usize::from(if size > 0 { size } else { or })
         });
         let area = Rect { x: 0, y: 0, w, h };
-        for (name, row) in [(name!("ROW"), true), (name!("COL"), false)] {
+        let split = [("row", true), ("col", false)].map(|(file, row)| {
             // A pane no folder can be named after is put, in a copy of the tab shown, beside the
             // pane the script is told of, as the split keys split.
             let tile = layout.tab().zip(self.focus.as_ref()).and_then(|(tab, focus)| {
@@ -856,10 +879,25 @@ impl View {
                 split.tiles(area).into_iter().find(|(pane, _)| pane == "\0").map(|(_, tile)| tile)
             });
             let tile = tile.unwrap_or(area);
-            script.env(name, format!("{}x{}", tile.w, tile.h));
-        }
-        match script.stdin(Stdio::null()).stdout(out).stderr(err).spawn() {
-            Ok(child) => self.scripts.push((child, Some(Instant::now()))),
+            (file, format!("{} {}\n", tile.w, tile.h))
+        });
+        // What a script is told is in a folder of its own, which is where it runs: a link to each
+        // folder it is about (the pane that has the keys, if one has; the workspace shown, its
+        // session, the keys) and to the viewer's FIFO, each by its whole path, and the two sizes, a
+        // file each. All of it is there before the script starts and none of it is written again:
+        // a script that still runs at the next key keeps what it was told at its own.
+        self.ran += 1;
+        let folder = Own(self.own.0.join(self.ran.to_string()));
+        let links = [("pane", pane.as_ref()), ("workspace", Some(&workspace)), ("session", Some(&self.session))];
+        let links = links.into_iter().chain([("keys", Some(&self.keys)), ("ctl", Some(&ctl))]);
+        let told = fs::DirBuilder::new().mode(0o700).create(&folder.0).and_then(|()| {
+            let mut links = links.filter_map(|(name, to)| Some((name, to?)));
+            links.try_for_each(|(name, to)| std::os::unix::fs::symlink(to, folder.0.join(name)))?;
+            split.iter().try_for_each(|(name, size)| fs::write(folder.0.join(name), size))
+        });
+        script.current_dir(&folder.0).stdin(Stdio::null()).stdout(out).stderr(err);
+        match told.and_then(|()| script.spawn()) {
+            Ok(child) => self.scripts.push((child, folder, Some(Instant::now()))),
             Err(e) => self.message = format!("{}: {e}", file.file_name().unwrap_or_default().to_string_lossy()),
         }
     }

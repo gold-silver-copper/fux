@@ -2,8 +2,8 @@
 # pane text in the editor
 # group: Panes
 # `.text` makes the file (the pane's text), `.edit` opens it, at its last line
-# (in an editor whose way to a line it knows, or that `FUX_EDIT` tells it).
-[ -n "$FUX_PANE" ] || exit 0
-f=$(mktemp "$FUX_DIR/.text.XXXXXX") || exit
-"$FUX_KEYS/.text" "$f" > /dev/null
-exec "$FUX_KEYS/.edit" "$f" "$(($(wc -l < "$f")))"
+# (in an editor whose way to a line it knows, or as `.editor` in the keys directory runs it).
+[ -L pane ] || exit 0
+k=$(readlink keys); f=$(mktemp "$(readlink session)/.text.XXXXXX") || exit
+"$k/.text" pane "$f" > /dev/null
+exec "$k/.edit" "$(readlink workspace)" "$f" "$(($(wc -l < "$f")))"

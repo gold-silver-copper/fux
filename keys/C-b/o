@@ -1,4 +1,4 @@
 #!/bin/sh
 # next pane
 # group: Focus
-fux layout focus next
+fux layout ./workspace focus next

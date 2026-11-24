@@ -1,29 +1,34 @@
 #!/bin/sh
-# What the search key runs in a pane of its own: asks for words, lists every line
-# of every other pane of the session that has them as they are (history and screen,
+# .search WORKSPACE: what the search key runs in a pane of its own (WORKSPACE is the workspace's
+# directory, by its whole path, and its session the folder that is in). It asks for words, lists
+# every line of every other pane of the session that has them as they are (history and screen,
 # wrapped lines whole, ASCII letters of either case), and opens the one chosen in the
-# editor: that pane's text, made anew, at that line's number. `.text` makes the text, `.pick` does the
-# choosing, `.edit` the opening.
+# editor, in a tab of WORKSPACE: that pane's text, made anew, at that line's number. `.text` makes
+# the text, `.pick` does the choosing, `.edit` the opening.
+k=$(dirname "$0")
 if [ "$1" = --open ]; then
-  # KEY is WORKSPACE/PANE:LINE.
-  f=$(mktemp "$FUX_DIR/.text.XXXXXX") || exit
-  FUX_PANE=$FUX_DIR/${2%:*} "$FUX_KEYS/.text" "$f" > /dev/null
-  exec "$FUX_KEYS/.edit" "$f" "${2##*:}"
+  # .search --open WORKSPACE KEY: KEY is WORKSPACE/PANE:LINE, as the list has it.
+  s=$(dirname "$2"); f=$(mktemp "$s/.text.XXXXXX") || exit
+  "$k/.text" "$s/${3%:*}" "$f" > /dev/null
+  exec "$k/.edit" "$2" "$f" "${3##*:}"
 fi
+s=$(dirname "$1")
 printf 'search every pane for: '
 IFS= read -r words
 [ -n "$words" ] || exit
 # (The list and each pane's text in turn are dot-named files of the session, removed when this ends,
 # also on a hangup; the list is `.pick`'s to remove once that has it.)
-list=$(mktemp "$FUX_DIR/.pick.XXXXXX") && text=$(mktemp "$FUX_DIR/.text.XXXXXX") || { rm -f "$list"; exit; }
+list=$(mktemp "$s/.pick.XXXXXX") && text=$(mktemp "$s/.text.XXXXXX") || { rm -f "$list"; exit; }
 gone() { trap '' HUP TERM; rm -f "$list" "$text"; }
 trap gone EXIT; trap 'gone; exit' HUP TERM
-for p in "$FUX_DIR"/*/*/; do
+# (Its own pane is not searched: `.here` says which that is, where it can.)
+here=$("$k/.here" "$s" 2>/dev/null)
+for p in "$s"/*/*/; do
   p=${p%/}
-  [ -f "$p/main/lines" ] && [ ! "$p" -ef "$FUX_PANE" ] || continue
-  FUX_PANE=$p "$FUX_KEYS/.text" "$text" > /dev/null
-  LC_ALL=C grep -n -i -F -e "$words" "$text" | LC_ALL=C sed "s|^[0-9]*|${p#"$FUX_DIR"/}:&	${p#"$FUX_DIR"/} &|"
+  [ -f "$p/main/lines" ] && [ ! "$p" -ef "$here" ] || continue
+  "$k/.text" "$p" "$text" > /dev/null
+  LC_ALL=C grep -n -i -F -e "$words" "$text" | LC_ALL=C sed "s|^[0-9]*|${p#"$s"/}:&	${p#"$s"/} &|"
 done > "$list"
 rm -f "$text"
 [ -s "$list" ] || { echo "no pane has that: Enter closes this"; read -r _; exit; }
-exec "$FUX_KEYS/.pick" "$list" "$FUX_KEYS/.search" --open
+exec "$k/.pick" "$list" "$k/.search" --open "$1"

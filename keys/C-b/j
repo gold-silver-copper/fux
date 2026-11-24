@@ -1,4 +1,4 @@
 #!/bin/sh
 # focus down
 # group: Focus
-fux layout focus down
+fux layout ./workspace focus down
