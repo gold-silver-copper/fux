@@ -1134,9 +1134,10 @@ fn a_pane_and_a_workspace_are_named_by_a_path_as_by_a_name() {
     });
     // It is the viewer of the session that workspace is in: its FIFO is there, and a workspace it is
     // told to show is one of that session.
+    // (A viewer that is up: `cwd` is the last it writes into its folder, after its FIFO is open.)
     let viewers = |session: &Path| {
-        let files = fs::read_dir(session).unwrap().flatten();
-        files.filter(|entry| entry.file_name().to_string_lossy().starts_with(".view.")).count()
+        let files = fs::read_dir(session).unwrap().flatten().map(|entry| entry.path());
+        files.filter(|path| path.to_string_lossy().contains("/.view.") && path.join("cwd").exists()).count()
     };
     until("the viewer's FIFO is in the workspace's session", || viewers(&other) == 1);
     send(&view_fifo(&other), "workspace v\n");
@@ -1185,7 +1186,9 @@ fn fux_has_no_variable_of_its_own_and_a_command_typed_in_a_pane_means_what_it_me
     let elsewhere = session.root().join("elsewhere");
     let mut start = session.fux();
     start.env("FUX_DIR", &elsewhere).env("FUX_WS", "w9").env("FUX_PANE", elsewhere.join("w9/p"));
-    start.env("FUX_KEYS", &elsewhere).env("FUX_SOCKET", "/another").env("COLUMNS", "90");
+    start.env("FUX_KEYS", elsewhere.join("keys")).env("FUX_SOCKET", "/another").env("COLUMNS", "90");
+    // (The four an older holder took away from a program, and the one an older `.edit` read.)
+    start.env("FUX_VIEW", "/a/viewer").env("FUX_ROW", "40x24").env("FUX_COL", "80x12").env("FUX_EDIT", "ed");
     let pane = session.started(start.args(["start", "w2/p", "--", "sh"]));
     assert_eq!(pane, session.0.join("w2/p"));
     // A command typed in a pane means what it means anywhere: a name is one of the default session,
@@ -1203,12 +1206,27 @@ fn fux_has_no_variable_of_its_own_and_a_command_typed_in_a_pane_means_what_it_me
     assert_eq!(read(&pane.join("dir")), format!("{}\n", session.0.display()));
     assert!(!elsewhere.exists(), "something was made where a variable said");
     let expected = format!(
-        "COLORTERM=truecolor\nFUX_DIR={0}\nFUX_KEYS={0}\nFUX_PANE={0}/w9/p\nFUX_SOCKET=/another\nFUX_WS=w9\nTERM=xterm-256color\nTERM_PROGRAM=fux\nTERM_PROGRAM_VERSION={1}\n",
+        "COLORTERM=truecolor\nFUX_COL=80x12\nFUX_DIR={0}\nFUX_EDIT=ed\nFUX_KEYS={0}/keys\nFUX_PANE={0}/w9/p\nFUX_ROW=40x24\nFUX_SOCKET=/another\nFUX_VIEW=/a/viewer\nFUX_WS=w9\nTERM=xterm-256color\nTERM_PROGRAM=fux\nTERM_PROGRAM_VERSION={1}\n",
         elsewhere.display(),
         env!("CARGO_PKG_VERSION")
     );
     assert_eq!(read(&pane.join("env")), expected);
     assert_eq!(fact(&pane, "size"), "90 24");
+    // The viewer reads none of them either. Told no workspace and no keys, it is the default session's,
+    // shows `main` and writes the keys into the config directory: not what the three variables name.
+    let mut start = session.fux();
+    start.env("FUX_DIR", &elsewhere).env("FUX_WS", "w9").env("FUX_KEYS", elsewhere.join("keys"));
+    let view = session.started(start.args(["start", "v/view", "--", me, "view"]));
+    // (Its folder is the last of what it makes as it starts, and `cwd` the last in that: the
+    // workspace's folder, the keys, its own with the FIFO.)
+    until("the viewer has its folder in the default session", || {
+        let files = fs::read_dir(&session.0).unwrap().flatten().map(|entry| entry.path());
+        files.into_iter().any(|path| path.to_string_lossy().contains("/.view.") && path.join("cwd").exists())
+    });
+    assert!(session.root().join("config/fux/keys/C-b/v").exists(), "the keys are not in the config directory");
+    assert!(!elsewhere.exists() && !session.0.join("w9").exists(), "the viewer went where a variable said");
+    send(&view_fifo(&session.0), "quit\n");
+    assert!(session.fux().arg("wait").arg(&view).ended().success());
     // A size that is set and is none is refused: the pane is not started at a size made up for it.
     let odd = session.fux().env("COLUMNS", "wide").args(["start", "w2/odd", "--", "sh"]).run();
     assert!(
