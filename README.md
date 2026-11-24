@@ -37,15 +37,31 @@ scripts" says where that is).
 | | |
 |---|---|
 | `fux dir` | prints the session directory |
-| `fux start [NAME] [-- PROGRAM…]` | starts a pane and prints its directory. NAME is `PANE`, `WORKSPACE/PANE`, or `WORKSPACE/` or nothing for the first free number, 1 to 9999 (no workspace named: below). No program: `$SHELL`, else `/bin/sh`. A pane is one run: a name that is there is refused, whether its pane runs, has ended or never came up, and nothing of it is touched (`rm -r` the folder to start the name anew; a number is the first that is not there). A start that fails leaves the folder, with a `log` that says why |
+| `fux start [PANE] [-- PROGRAM…]` | starts a pane and prints its directory, by the folder's own whole path. PANE is `NAME`, `WORKSPACE/NAME`, or `WORKSPACE/` or nothing for the first free number, 1 to 9999 (no workspace named: below); the workspace is a name or a directory's path (below). No program: `$SHELL`, else `/bin/sh`. A pane is one run: a name that is there is refused, whether its pane runs, has ended or never came up, and nothing of it is touched (`rm -r` the folder to start the name anew; a number is the first that is not there). A start that fails leaves the folder, with a `log` that says why |
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. A pane whose holder ended before its first screen was written has no `state`: `fux wait` says so and fails (`log` says why the holder ended). Wait with this, not by watching `state`, before you read a program's last screen |
-| `fux view [WORKSPACE]` | the viewer |
+| `fux view [WORKSPACE [KEYS]]` | the viewer of a workspace, with the key scripts of the directory KEYS ("Keys are scripts" says which it is if none is named) |
 | `fux layout [EDIT…]` | prints the workspace's layout as the folders make it (and writes it, if they changed it), or edits it (below) |
 | `fux --help` | prints the command summary and the complete one-page guide (for people, scripts and agents): how to start a pane, type, read, wait, get a command's exit code, tell a live pane from a dead one and clean up, in plain sh, with the hazards said. It is `src/help.txt`, in the binary; its indented lines are run, in order, as one sh session by `tools/help-agents.sh` (CI, both systems; the perl section where perl is) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot, and not `-` alone, `layout`, `colours` or `keyboard`
 (a workspace and a session have files of those names).
+
+**A name or a path.** A workspace is named by its name, which means the
+folder of that name in the session `fux dir` prints, or by a directory's
+path: an argument that begins with `/` or `.` is a path (no name begins with
+either), so `fux view /tmp/s/main`, `fux start /tmp/s/main/build -- make`,
+`fux start ./` (the first free number in the directory you are in). A
+pane's own name is what follows the last `/`, and nothing there asks for a
+number: `/tmp/s/main/build` is the pane `build` of the workspace `/tmp/s/main`,
+`/tmp/s/main/` a numbered pane of it, `.` and `/tmp/s/main/.` no pane at all. A
+path may be any directory, a session's or not: fux asks nothing of it but
+that it can be made, and `fux start ./build -- make` in a project's
+directory puts the pane's folder there. What `fux start` prints is the
+folder's own path, with links followed and `..` read as the system reads
+it, so it holds when the way that led there is gone. The viewer of a
+workspace named by a path is the viewer of the session that folder is in
+(its parent), and the folder's own name must be a workspace's name.
 
 With no workspace named, a command means the one in `FUX_WS` (a key script is
 told the workspace shown there); else, typed in a pane, "here": the workspace that pane
@@ -398,7 +414,7 @@ lives: `flock -n "$D/main/build" true` fails while it does (Linux), and
 
 ## The viewer
 
-`fux view [WORKSPACE]` shows every folder in the workspace whose name is a
+`fux view [WORKSPACE [KEYS]]` shows every folder in the workspace whose name is a
 pane's name (above) as a pane. It types into a pane's `in` and asks on its `ctl` only where a FIFO
 has that name: a link there is not followed and a file there is not written, and a pane with no
 FIFO under `in` is one nothing reads. The
@@ -477,7 +493,8 @@ changes nothing and leaves a line in `log`.
 
 ### Keys are scripts
 
-The keys directory is `$FUX_KEYS`, else `$XDG_CONFIG_HOME/fux/keys`, else
+The keys directory is the one named to `fux view` after the workspace
+(`fux view main ~/my-keys`), else `$FUX_KEYS`, else `$XDG_CONFIG_HOME/fux/keys`, else
 `~/.config/fux/keys`; the viewer
 writes the default scripts there if it does not exist (and only then: after
 an upgrade, remove the folder, or copy `keys/` from the source over it, to

@@ -16,7 +16,9 @@ START A PANE
     ls "$D" "$D/agent-demo"                   # workspaces; the panes of one
 NAME is WORKSPACE/PANE (or PANE alone: the workspace in $FUX_WS, else your own pane's, else
 main). Letters, digits, . _ - only, 64 at most, no dot first, and not -, layout,
-colours or keyboard. No program after -- means $SHELL, else /bin/sh. The program gets the
+colours or keyboard. (A workspace may be a directory's path instead, one that begins with / or
+. : `fux start /some/where/job` puts the pane in /some/where, a session or not, and
+`fux start ./job` in the directory you are in. What is printed is the folder's own path.) No program after -- means $SHELL, else /bin/sh. The program gets the
 starter's environment and working directory, and its first size from COLUMNS and LINES (else 80, 24):
     W=$(cd / && COLUMNS=120 LINES=40 fux start agent-demo/wide -- sh -c 'pwd; exec sleep 600')
 A pane is one run. A name that is there is refused ("the name is taken"), whether its pane

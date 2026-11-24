@@ -1041,6 +1041,79 @@ fn a_pane_is_one_run_and_a_name_that_is_there_is_refused_whatever_is_there() {
 }
 
 #[test]
+fn a_pane_and_a_workspace_are_named_by_a_path_as_by_a_name() {
+    // An argument that begins with `/` or `.` is a directory's path, and any other a name in the
+    // default session. A pane named by a path is the last part of it, in the workspace that the
+    // rest is, wherever that is: here in a folder that is no session of anyone's.
+    let session = Session::new("paths");
+    let other = session.root().join("elsewhere");
+    let start = |pane: &Path, from: &Path| {
+        fs::create_dir_all(from).unwrap();
+        let mut start = session.fux();
+        session.started(start.current_dir(from).arg("start").arg(pane).args(["--", "sleep", "600"]))
+    };
+    assert_eq!(start(&other.join("w/p"), session.root()), other.join("w/p"));
+    assert_eq!(fact(&other.join("w/p"), "state"), "running");
+    // What ends in `/` is the workspace, and the pane the first free number there. From where the
+    // starter stands, with a `.` first: `./` is that folder itself.
+    assert_eq!(start(&other.join("w/"), session.root()), other.join("w/1"));
+    assert_eq!(start(Path::new("./w/q"), &other), other.join("w/q"));
+    assert_eq!(start(Path::new("./"), &other.join("w")), other.join("w/2"));
+    assert_eq!(start(Path::new("../v/r"), &other.join("w")), other.join("v/r"));
+    // What is printed is the pane's folder by its own path, whatever led there: through a link to
+    // the workspace (a key script's folder has such links, and goes when its script ends), the pane
+    // is in the workspace and is said to be. And `..` is read as the system reads it, after the
+    // link: the folder beside the workspace, not the one beside the link.
+    let links = session.root().join("links");
+    fs::create_dir_all(&links).unwrap();
+    std::os::unix::fs::symlink(other.join("w"), links.join("workspace")).unwrap();
+    assert_eq!(start(Path::new("./workspace/"), &links), other.join("w/3"));
+    assert_eq!(start(&links.join("workspace/named"), session.root()), other.join("w/named"));
+    assert_eq!(start(Path::new("./workspace/../u/s"), &links), other.join("u/s"));
+    assert!(!links.join("u").exists() && !session.0.exists(), "a pane was started beside the link, or by a name");
+    // The trailing `/` is looked at before anything is split: `.`, `..` and a name with a dot
+    // first are no pane's name, with a path before them as without.
+    for odd in [".", "..", ".hidden", "./w/.", "./w/..", "./w/.hidden"] {
+        let out = session.fux().current_dir(&other).args(["start", odd, "--", "true"]).run();
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success() && said.contains("a name is letters"), "{odd}: {out:?}");
+    }
+    // A name is a name still: in `main` of the default session, or in the workspace named.
+    assert_eq!(start(Path::new("p"), &other), session.0.join("main/p"));
+    assert_eq!(start(Path::new("w/p"), &other), session.0.join("w/p"));
+    assert_eq!(start(Path::new("w/"), &other), session.0.join("w/1"));
+    for odd in ["a/b/c", "w//p", "w/.p"] {
+        assert!(!session.fux().args(["start", odd, "--", "true"]).run().status.success(), "{odd}");
+    }
+
+    // The viewer takes a workspace by its path too, and then the keys' directory: here in a pane, to
+    // show the workspace started above, with keys that are not there yet (it writes the defaults).
+    let keys = session.root().join("my keys");
+    let viewer = [env!("CARGO_BIN_EXE_fux"), "view", links.join("workspace").to_str().unwrap(), keys.to_str().unwrap()]
+        .map(String::from);
+    let mut start = session.fux();
+    start.env("COLUMNS", "60").env("LINES", "10").args(["start", "v/view", "--"]).args(&viewer);
+    let view = session.started(&mut start);
+    until("the viewer has written its keys and laid out the workspace", || {
+        keys.join("C-b/v").exists() && read(&other.join("w/layout")).contains("named")
+    });
+    // It is the viewer of the session that workspace is in: its FIFO is there, and a workspace it is
+    // told to show is one of that session.
+    until("the viewer's FIFO is in the workspace's session", || {
+        fs::read_dir(&other).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with(".view."))
+    });
+    send(&view_fifo(&other), "workspace v\n");
+    until("the other workspace of that session is shown", || read(&other.join("v/layout")).contains("* r focus=r"));
+    send(&view_fifo(&other), "quit\n");
+    assert!(session.fux().arg("wait").arg(&view).ended().success());
+    // A folder that is no workspace's name cannot be shown, and more than two arguments are refused.
+    for odd in [vec!["view", "/"], vec!["view", "./my keys"], vec!["view", "main", "keys", "more"]] {
+        let out = session.fux().current_dir(session.root()).args(&odd).run();
+        assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("view takes"), "{out:?}");
+    }
+}
+
+#[test]
 fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     let session = Session::new("names");
     let mut start = session.fux();
