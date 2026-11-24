@@ -1,4 +1,4 @@
 #!/bin/sh
 # turn this row into a column, or back
 # group: Arrange
-fux layout rotate
+fux layout ./workspace rotate

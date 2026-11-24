@@ -1,4 +1,4 @@
 #!/bin/sh
 # move to a new tab
 # group: Pane actions
-fux layout break
+fux layout ./workspace break

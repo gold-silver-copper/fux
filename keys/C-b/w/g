@@ -4,13 +4,13 @@
 # A list of the session's workspaces (name, and what is in each but its layout) in a pane of its
 # own; the viewer is told to show the one chosen.
 LC_ALL=C; export LC_ALL
-list=$(mktemp "$FUX_DIR/.pick.XXXXXX") || exit
-cd "$FUX_DIR" || { rm -f "$list"; exit; }
-for w in */; do
-  w=${w%/}
+list=$(mktemp "$(readlink session)/.pick.XXXXXX") || exit
+for w in session/*/; do
+  w=${w#session/} w=${w%/}
   case $w in ''|-|colours|keyboard|layout|.*|*[!A-Za-z0-9._-]*) continue ;; esac
-  [ ${#w} -le 64 ] && [ ! -L "$w" ] && [ -d "$w" ] || continue
-  printf '%s\t%s\n' "$w" "$(ls "$w" | grep -v -x -e layout | tr '\n' ' ')"
+  [ ${#w} -le 64 ] && [ ! -L "session/$w" ] && [ -d "session/$w" ] || continue
+  printf '%s\t%s\n' "$w" "$(ls "session/$w" | grep -v -x -e layout | tr '\n' ' ')"
 done > "$list"
-# (The pane has no word for the viewer: it is given the viewer's FIFO to write to, if that is still there.)
-exec "$FUX_KEYS/.pick" --tab "$list" sh -c '[ -p "$0" ] && echo "workspace $1" 1<>"$0"' "$FUX_VIEW"
+# (The pane has no word for the viewer: it is given the viewer's FIFO to write to, by the FIFO's own
+# path, as the pane outlasts this script and its folder; the FIFO may be gone by then.)
+exec "$(readlink keys)/.pick" --tab "$list" sh -c '[ -p "$0" ] && echo "workspace $1" 1<>"$0"' "$(readlink ctl)"

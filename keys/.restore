@@ -1,8 +1,8 @@
 #!/bin/sh
 # .restore [SESSION]: starts anew every pane of the session whose program is not running (after a
 # reboot, say). Run it by hand or from your login, by its path: sh ~/.config/fux/keys/.restore
-# (`fux` and perl on PATH; with no FUX_KEYS the panes are told this script's folder). SESSION is the
-# session's directory, the one `fux dir` prints if it is not given: one that outlasts a reboot.
+# (`fux` and perl on PATH). SESSION is the session's directory, the one `fux dir` prints if it is
+# not given: one that outlasts a reboot, which the default one seldom is, so name yours.
 # A pane is one run, and a name that is there is never started again. So a pane that is over is
 # moved out of its workspace, whole, and its name is started anew: the program and the arguments
 # its `command` file has, as they were given, in the directory its program last said it was in
@@ -27,7 +27,6 @@ D=$(CDPATH= cd -- "${1:-$(fux dir)}" && pwd) || exit
 [ "$2" = --alone ] || exec perl -e 'use Fcntl ":flock"; my ($d, $me) = @ARGV;
   open(D, "<", $d) && flock(D, LOCK_EX) or die "$d: $!\n";
   my $s = system("sh", $me, $d, "--alone"); exit($s >> 8 || ($s ? 1 : 0))' "$D" "$0"
-export FUX_DIR="$D" FUX_KEYS="${FUX_KEYS:-$(CDPATH= cd -- "$(dirname "$0")" && pwd)}"
 kept() { perl -e 'use Fcntl qw(:flock O_WRONLY O_NONBLOCK); open(D, "<", $ARGV[0]) or exit 0;
   flock(D, LOCK_SH|LOCK_NB) or exit 0; -p "$ARGV[0]/in" or exit 1;
   exit(sysopen(F, "$ARGV[0]/in", O_WRONLY|O_NONBLOCK) ? 0 : 1)' "$1"; }
@@ -50,7 +49,7 @@ for p in "$D"/*/*/; do
   dir=; IFS= read -r dir 2>/dev/null < "$old/pane/cwd"
   # (The arguments are read by perl: an empty one is one too, which not every `xargs -0` keeps.)
   if said=$(cd "${dir:-$HOME}" 2>/dev/null || cd; perl -e 'local $/ = "\0"; open(F, "<", shift) or die "$!\n";
-      chomp(my @given = <F>); exec(@ARGV, @given) or die "$ARGV[0]: $!\n"' "$old/pane/command" fux start "$name" -- 2>&1 > /dev/null)
+      chomp(my @given = <F>); exec(@ARGV, @given) or die "$ARGV[0]: $!\n"' "$old/pane/command" fux start "$p" -- 2>&1 > /dev/null)
   then echo "started $name again"
     if printed "$old/pane" > "$p/.before"; then rm -rf "$old"; else rm -f "$p/.before"; left=1; echo "$name: what it had printed is in $old/pane" >&2; fi
   else left=1; echo "$name: $said (the run before is in $old/pane)" >&2

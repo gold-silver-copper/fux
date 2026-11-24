@@ -1,10 +1,17 @@
 #!/bin/sh
-# .new-shell [row|col SIZE]: your shell in a new pane, in the focused pane's directory if its
-# program said one: in a tab of its own, or split from the pane the key was pressed on (also
-# when another has the keys by now), started at SIZE, which the viewer foretold (COLSxROWS).
-IFS= read -r d 2>/dev/null < "$FUX_PANE/cwd" && cd "$d" 2>/dev/null
-[ $# -lt 2 ] || export COLUMNS="${2%x*}" LINES="${2#*x}"
-p=$(fux start -- "$FUX_KEYS/.shell") || exit
+# .new-shell [row|col]: your shell in a new pane of the workspace shown: in a tab of its own, or
+# split from the pane the key was pressed on (also when another has the keys by now), started at
+# the size the viewer foretold for that split. Run by a key's script, in that script's folder: the
+# workspace, the pane and the size (`row`, `col`) are what the viewer put there.
+# The shell starts in the focused pane's directory if its program said one (`pane/cwd`), else
+# where the viewer was started (`../cwd`), else at home: never in this folder, which goes when
+# the key's script has ended. (The paths are read before that, as whole ones.)
+k=$(readlink keys) s=$(readlink session) w=$(readlink workspace) from=
+[ ! -L pane ] || from=$(basename "$(readlink pane)")
+[ $# -eq 0 ] || { read -r COLUMNS LINES < "$1" && export COLUMNS LINES; }
+at() { IFS= read -r d < "$1" && [ -n "$d" ] && cd "$d"; } 2>/dev/null
+at pane/cwd || at ../cwd || cd || cd /
+p=$(fux start "$w/" -- "$k/.shell" "$s") || exit
 # (A pane to split from that has gone meanwhile: the layout says so, and the new shell is shown in its own tab.)
-[ $# -eq 2 ] && [ -n "$FUX_PANE" ] && fux layout split "$1" "${p##*/}" beside "${FUX_PANE##*/}" ||
-  fux layout pane "${p##*/}"
+[ $# -eq 1 ] && [ -n "$from" ] && fux layout "$w" split "$1" "${p##*/}" beside "$from" ||
+  fux layout "$w" pane "${p##*/}"

@@ -1,4 +1,4 @@
 #!/bin/sh
 # split side by side
 # group: Panes
-exec "$FUX_KEYS/.new-shell" row "$FUX_ROW"
+exec "$(readlink keys)/.new-shell" row

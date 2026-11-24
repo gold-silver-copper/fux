@@ -1,4 +1,4 @@
 #!/bin/sh
 # all panes in a row
 # group: Arrange
-fux layout arrange row
+fux layout ./workspace arrange row

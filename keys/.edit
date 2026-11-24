@@ -1,10 +1,12 @@
 #!/bin/sh
-# .edit FILE [LINE]: opens FILE in a tab of its own, in the editor, at LINE; FILE
-# is removed when that ends. LINE is 1 if not given.
-# How the editor is run is `$FUX_EDIT` if that is set (a line of sh: the file is its
-# `$1`, the line its `$2`, which it may leave out), else `$EDITOR`, `$PAGER` or less,
-# with the line as the `case` below knows that editor to take it. The README has it in
-# full ("Keys are scripts").
+# .edit WORKSPACE FILE [LINE [COMMAND…]]: opens FILE in a tab of its own in WORKSPACE (the
+# workspace's directory, by its whole path), in the editor, at LINE; FILE is removed when that
+# ends. LINE is 1 if not given. With a COMMAND, that is run instead of an editor, with FILE as
+# its last argument.
+# How the editor is run: by `.editor` beside this script if you put one there (an executable of
+# your own, run as `.editor FILE LINE`), else `$EDITOR`, `$PAGER` or less, with the line as the
+# `case` below knows that editor to take it. The README has it in full ("Keys are scripts").
+k=$(dirname "$0")
 if [ "$1" = --in ]; then
   # In the tab's pane. The file stays where its key made it, a dot-named file of the
   # session (nothing of a script's is put into a pane's folder), and is removed when this
@@ -12,12 +14,12 @@ if [ "$1" = --in ]; then
   # editor, then this). Only this script killed outright leaves the file.
   # (The removal is not to be hung up itself, and is done by whichever comes first, this script's
   # end or the hangup: an editor ends when its terminal goes, and the hangup comes a moment after.)
-  f=$2 n=$3
+  f=$2 n=$3; shift 3
   gone() { trap '' HUP TERM; rm -f "$f"; }
   trap gone EXIT; trap 'gone; exit' HUP TERM
-  set -f; set -- ${EDITOR:-${PAGER:-less}}
-  if [ -n "$FUX_EDIT" ]; then sh -c "$FUX_EDIT" sh "$f" "$n"
-  else case ${1##*/} in
+  if [ $# -gt 0 ]; then "$@" "$f"
+  elif [ -x "$k/.editor" ]; then "$k/.editor" "$f" "$n"
+  else set -f; set -- ${EDITOR:-${PAGER:-less}}; case ${1##*/} in
     vi|vim|nvim|nano|emacs) "$@" "+$n" "$f" ;;
     less) "$@" "+${n}g" "$f" ;;
     hx|helix) "$@" "$f:$n" ;;
@@ -25,6 +27,7 @@ if [ "$1" = --in ]; then
   esac; fi || { echo "the editor ended with $?: Enter closes this"; read -r _; }
   exit 0
 fi
-p=$(fux start -- "$FUX_KEYS/.shell" "$FUX_KEYS/.edit" --in "$1" "${2:-1}") || { rm -f "$1"; exit; }
+w=$1 f=$2 n=${3:-1}; shift 2; [ $# -eq 0 ] || shift
+p=$(fux start "$w/" -- "$k/.shell" "$(dirname "$w")" "$k/.edit" --in "$f" "$n" "$@") || { rm -f "$f"; exit; }
 # (An editor that is done by now has taken its pane with it: then there is none to show.)
-fux layout pane "${p##*/}" 2> /dev/null || :
+fux layout "$w" pane "${p##*/}" 2> /dev/null || :

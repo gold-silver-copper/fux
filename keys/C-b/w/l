@@ -2,7 +2,8 @@
 # next workspace
 # group: Workspaces
 LC_ALL=C; export LC_ALL
-cd "$FUX_DIR" || exit
+now=$(basename "$(readlink workspace)")
+cd session || exit
 first= seen= next=
 for w in */; do
   w=${w%/}
@@ -10,7 +11,7 @@ for w in */; do
   [ ${#w} -le 64 ] && [ ! -L "$w" ] && [ -d "$w" ] || continue
   [ -n "$first" ] || first=$w
   if [ -n "$seen" ] && [ -z "$next" ]; then next=$w; fi
-  [ "$w" = "$FUX_WS" ] && seen=1
+  [ "$w" = "$now" ] && seen=1
 done
 target=${next:-$first}
-[ -n "$target" ] && [ "$target" != "$FUX_WS" ] && echo "workspace $target"
+[ -n "$target" ] && [ "$target" != "$now" ] && echo "workspace $target"

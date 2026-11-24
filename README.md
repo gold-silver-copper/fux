@@ -40,7 +40,7 @@ scripts" says where that is).
 | `fux start [PANE] [-- PROGRAM…]` | starts a pane and prints its directory, by the folder's own whole path. PANE is `NAME`, `WORKSPACE/NAME`, or `WORKSPACE/` or nothing for the first free number, 1 to 9999 (no workspace named: below); the workspace is a name or a directory's path (below). No program: `$SHELL`, else `/bin/sh`. A pane is one run: a name that is there is refused, whether its pane runs, has ended or never came up, and nothing of it is touched (`rm -r` the folder to start the name anew; a number is the first that is not there). A start that fails leaves the folder, with a `log` that says why |
 | `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. A pane whose holder ended before its first screen was written has no `state`: `fux wait` says so and fails (`log` says why the holder ended). Wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE [KEYS]]` | the viewer of a workspace, with the key scripts of the directory KEYS ("Keys are scripts" says which it is if none is named) |
-| `fux layout [EDIT…]` | prints the workspace's layout as the folders make it (and writes it, if they changed it), or edits it (below) |
+| `fux layout [WORKSPACE [EDIT…]]` | prints the workspace's layout as the folders make it (and writes it, if they changed it), or edits it (below). The workspace comes first, always, a name or a path: a workspace may be called `pane` or `tab`, as an edit is. With nothing after `layout` it is `main`'s that is printed |
 | `fux --help` | prints the command summary and the complete one-page guide (for people, scripts and agents): how to start a pane, type, read, wait, get a command's exit code, tell a live pane from a dead one and clean up, in plain sh, with the hazards said. It is `src/help.txt`, in the binary; its indented lines are run, in order, as one sh session by `tools/help-agents.sh` (CI, both systems; the perl section where perl is) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
@@ -63,7 +63,7 @@ it, so it holds when the way that led there is gone. The viewer of a
 workspace named by a path is the viewer of the session that folder is in
 (its parent), and the folder's own name must be a workspace's name.
 
-With no workspace named, a command means the one in `FUX_WS` (a key script is
+With no workspace named, `fux layout` means `main`. `fux start` and `fux view` mean the one in `FUX_WS` (a key script is
 told the workspace shown there); else, typed in a pane, "here": the workspace that pane
 is in (and that pane's session, unless `FUX_DIR` says otherwise); else `main`. So the
 example above, typed in a pane of another workspace, starts `build` there and not in `main`.
@@ -404,7 +404,7 @@ key is `M-S-3`); the keypad's keys are named as the keys they double (in the old
 keys that the old form cannot tell apart have two names in the new one:
 Ctrl-I is `C-i` and no longer `tab`, Ctrl-Backspace is `C-backspace` and no
 longer `C-h`. Who has the keys is read from `layout` when keys come, so a
-key typed right after `fux layout focus …` is the new pane's; until the
+key typed right after `fux layout main focus …` is the new pane's; until the
 viewer has drawn once more, it may reach that pane in the form the last one
 asked for.
 
@@ -434,8 +434,8 @@ not when a program merely ends); an edit that ends on another tab moves the mark
 is in the file, so two viewers agree. A folder the file does not place gets a
 tab of its own; a name with no folder is dropped. A part there is no room
 for (each needs a cell, and one for the line before the next) is hidden. The focused pane gets a cell even
-then. A workspace shows at most 1,000 panes. `fux layout EDIT` makes
-one edit:
+then. A workspace shows at most 1,000 panes. `fux layout WORKSPACE EDIT` makes
+one edit (`fux layout main split row logs beside sh`):
 
 `split row|col PANE [beside ANCHOR]` (put PANE beside or below ANCHOR, defaulting to the focused pane) ·
 `pane PANE` (give it the keys, and show its tab) · `focus left|right|up|down|next|prev` (a side is a side in the terminal whose size the edit is told in `COLUMNS` and `LINES`, as a key's script is; told none, in a very large one) · `tab next|prev|-` (`-`: the tab shown before) · `break`
@@ -511,13 +511,11 @@ names differ by more than case, for macOS; for a letter outside ASCII, a termina
 `home` `end` `pgup` `pgdn` `insert` `delete`, `f1`…`f12`, with `C-`, `M-`,
 `S-` before them when held (`C-left`, `S-f5`).
 
-A script gets `FUX_DIR` (the session), `FUX_WS` (the workspace shown),
-`FUX_PANE` (the focused pane's directory, empty with no pane), `FUX_KEYS`, `FUX_VIEW`,
-`COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has; `COLUMNS` is not set for a terminal that says it has no columns, nor `LINES` for one with no rows: `fux start` takes 80 or 24 for the one missing),
-`FUX_ROW` and `FUX_COL` (the size, as `COLSxROWS`, of the tile a split of the
-focused pane would make: `FUX_ROW` side by side, as `C-b v` splits, `FUX_COL`
-one above the other, as `C-b s` does; the split keys
-start their pane at that size, so its program is not drawn twice), and this
+A script is run in a folder of its own, where what it is told is to be read
+("The viewer's folder, and a script's", below: the pane that has the keys,
+the workspace, the session, the keys directory, the viewer's FIFO, and the
+size a split would have). It gets `COLUMNS` and `LINES` (the view's size, which a pane alone in a tab has; `COLUMNS` is not set for a terminal that says it has no columns, nor `LINES` for one with no rows: `fux start` takes 80 or 24 for the one missing;
+the split keys start their pane at the size in `row` or `col` instead, so its program is not drawn twice), and this
 `fux` first in `PATH`. Keys typed after it wait until it ends (two seconds
 at most), so `C-b t n` and then text types into the new shell; one that
 takes longer runs on while keys are taken again (the defaults put such work in the background).
@@ -526,7 +524,7 @@ What it prints goes to the viewer, a line at a time: `quit` leaves the
 viewer, `workspace NAME` shows another workspace (a name with no folder is shown too, and says that it has none), and anything else (an error
 from `sh`, say) is shown in the bottom right corner until the next key (its first 200 characters; a line over 4096 bytes is dropped whole, and the corner says so). A key with no file, pressed in an
 open menu, closes the menu and goes nowhere (in a menu that stays open, as resize and move do, the prefix opens its own menu again: `C-b r l l C-b v` resizes and then splits). Writing the same lines to the viewer's FIFO
-(`$FUX_VIEW`: `ctl` in the viewer's folder, below) does the same from anywhere.
+(`ctl` in the viewer's folder, below) does the same from anywhere.
 
 **The viewer's folder, and a script's.** A viewer keeps a folder of its own
 in the session, `.view.PID` (its process number; yours alone to read), for as
@@ -544,7 +542,9 @@ and what it is told is there to read:
 
 A folder is a link and a value is text. Each link holds the folder's whole
 path, so `pane/in` and `cat pane/cwd` work as they stand, and `readlink
-pane` gives the path to hand on. Hand that on, and not a path through the
+pane` gives the path to hand on (`fux layout ./workspace focus left` is a
+whole key; `fux start ./workspace/ -- top` starts a pane there, and prints
+the pane's own path, not one through the link). Hand that on, and not a path through the
 script's folder, to anything that outlives the script (a pane it starts, a
 job it leaves in the background): the folder is written whole before the
 script starts, never written again, and removed when the script has ended.
@@ -576,7 +576,9 @@ up the pane's program), `g` arrange (`r c g m`, `t` turn), `f` find
 with fzf, sk or fzy if one is installed and by number or name if none is (a number is a line of the list first, and a name only if the list has no such line)). Whether a pane
 closes when its shell exits is the script's choice too: the defaults start
 not your shell but `keys/.shell`, a few lines that run it and then remove
-the pane's own folder, however the shell ended. Only when `.shell` itself
+the pane's own folder, however the shell ended. Which folder that is, `.shell` asks
+`keys/.here` when the shell has ended (it is told the session, and `.here` needs perl: without it the folder stays), so a pane that was
+given another name meanwhile closes too. Only when `.shell` itself
 is gone first (killed, or hung up) is nobody left to remove the folder, and it stays until the
 close key or `rm -r` takes it: saying `killed` after `kill` in `ctl` or a
 `.shell` killed outright, and `lost` when the holder was killed. The `a k`
@@ -602,10 +604,10 @@ arguments, split at spaces), else `$PAGER`, else `less`, in a new tab. `vi`, `vi
 `nano`, `emacs`, `less`, `hx` and `helix` are opened at the file's end (and by the prompt
 keys at their line); any other editor
 gets the file alone, as not every editor reads `+LINE`. An editor behind a
-launcher of another name is one of those: say how yours is run in
-`FUX_EDIT` (it comes before `$EDITOR`), a line of sh that is run with the file as `$1` and the line as `$2`, set where
-the viewer is started (a viewer started in a pane has it too; `export FUX_EDIT='hx "$1:$2"'`, or your launcher in
-`hx`'s place; `keys/.edit` reads it and is yours to change). The file is a dot-named one in the session directory (`.text.XXXXXX`, yours alone to read; no script
+launcher of another name is one of those: say how yours is run in an executable
+`.editor` in the keys directory (it comes before `$EDITOR`), which is run with the file as `$1` and the line as `$2`
+(two lines, `#!/bin/sh` and `exec hx "$1:$2"`, or your launcher in
+`hx`'s place; `keys/.edit` runs it and is yours to change). The file is a dot-named one in the session directory (`.text.XXXXXX`, yours alone to read; no script
 puts a file of its own into a pane's folder) and is removed
 when the editor ends, also when its pane is closed under it: the hangup ends the pane's `.shell`, that ends the editor, and
 `.edit` then removes the file. Only an `.edit` killed outright (`kill -9`) leaves it, and so does one you start as a pane's own program
@@ -634,13 +636,13 @@ one line. Without perl, leave the line out: the edit is then a hand edit ("Don't
 #!/bin/sh
 # show this pane alone, in a tab of its own
 # The tab's line of the layout is kept in a file of the session; `C-b Z` puts it back.
-[ -n "$FUX_PANE" ] || exit 0
-alone=$FUX_DIR/.alone.$FUX_WS+${FUX_PANE##*/}
+[ -L pane ] || exit 0
+alone=$(readlink session)/.alone.$(basename "$(readlink workspace)")+$(basename "$(readlink pane)")
 [ -f "$alone" ] && { echo "already alone: C-b Z puts it back"; exit; }
-fux layout | grep '^\*' > "$alone.new" || exit
-fux layout break
+fux layout ./workspace | grep '^\*' > "$alone.new" || exit
+fux layout ./workspace break
 # A pane that was alone already has not moved: there is nothing to put back.
-if fux layout | grep '^\*' | cmp -s - "$alone.new"
+if fux layout ./workspace | grep '^\*' | cmp -s - "$alone.new"
 then rm -f "$alone.new"
 else mv "$alone.new" "$alone"
 fi
@@ -651,9 +653,10 @@ fi
 # put this pane back where `C-b z` took it from
 # The layout is text: the kept line replaces the line of the tab the pane left,
 # and the pane's own line goes.
-alone=$FUX_DIR/.alone.$FUX_WS+${FUX_PANE##*/}
+[ -L pane ] || exit 0
+ws=$(readlink workspace) me=$(basename "$(readlink pane)")
+alone=$(readlink session)/.alone.${ws##*/}+$me
 [ -f "$alone" ] || { echo "this pane was not taken out with C-b z"; exit; }
-ws=$FUX_DIR/$FUX_WS me=${FUX_PANE##*/}
 # Under the lock `fux layout` takes (flock on the workspace's folder), by way of perl (optional: see above).
 [ -n "$LOCKED" ] || LOCKED=1 exec perl -e 'use Fcntl ":flock"; open(D, "<", shift) && flock(D, LOCK_EX) or die; exit(system({ $ARGV[0] } @ARGV) >> 8)' "$ws" "$0"
 awk -v me="$me" '
@@ -757,9 +760,9 @@ directory the program last said it was in (`cwd`: a shell that announces
 it; else your home directory). What the old run had printed is then in the
 new pane's folder as `.before` (the `.before` it had itself, then its
 `history.1`, `history` and `main/screen`, one after another), and the old
-folder is removed. Run from a login with no `FUX_KEYS`, it tells the panes
-the folder it is in itself; `.restore SESSION` names another session than
-the one `fux dir` prints. One run at a time works in a session: it holds a
+folder is removed. `.restore SESSION` names another session than
+the one `fux dir` prints (the pane is started by its folder's path, so its
+session is the one it was in). One run at a time works in a session: it holds a
 lock on the session's folder from its first look to its last start, and a
 second run (two logins after a reboot) waits for the first and then finds
 its panes alive and leaves them.
@@ -817,10 +820,10 @@ fux adds nothing to stop these. What happens is what Unix does:
   (`C-b w g`) or a new tab (`C-b t n`) makes the folder again.
 - **Don't `mv` a live pane across filesystems** (that is a copy and an `rm`).
   Within one, the pane simply has the new name, in a tab of its own
-  (`keys/.rename` keeps its place: "Commands"); the program's `FUX_PANE`
-  still says the old one, so a default shell pane that was moved no longer
-  removes its folder when its shell ends (it removes a folder only if it is
-  still its own: it looks, and then removes by the name, so a pane moved to that name between the two is removed).
+  (`keys/.rename` keeps its place: "Commands"). A default shell pane that was
+  moved still removes its folder when its shell ends, if it is still a pane of
+  its session (`keys/.shell` asks then which folder is its own; it looks, and
+  then removes by the name, so a pane moved to that name between the two is removed).
 - **Don't kill the viewer** (a signal that ends it: it handles none; `C-b d`
   leaves it), **or type `reset` if you do.** Killed, it cannot put your
   terminal back as it found it (the main screen, the mouse, the keyboard
@@ -1004,7 +1007,7 @@ own character with its own address: where your terminal would join it to the
 one before it (two halves of a flag, each a link of its own), the viewer
 keeps them apart with U+200B, as `screen.styled` does.
 Opening a link is your terminal's doing. Without a viewer the `links` file
-is there to read: `cut -d' ' -f4- "$FUX_PANE/shown/links"` in a key script lists
+is there to read: `cut -d' ' -f4- pane/shown/links` in a key script lists
 the addresses on the focused pane.
 
 

@@ -2,5 +2,6 @@
 # search every pane's text
 # group: Find
 # `.search` does it, in a pane of its own.
-p=$(fux start -- "$FUX_KEYS/.shell" "$FUX_KEYS/.search") || exit
-fux layout pane "${p##*/}" 2> /dev/null
+k=$(readlink keys) w=$(readlink workspace)
+p=$(fux start "$w/" -- "$k/.shell" "$(readlink session)" "$k/.search" "$w") || exit
+fux layout "$w" pane "${p##*/}" 2> /dev/null

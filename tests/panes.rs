@@ -218,6 +218,28 @@ impl Session {
         command.env_remove("COLUMNS").env_remove("LINES");
         command
     }
+    /// A key's script (its path in the keys' directory), to be run as a viewer runs it: in a folder of
+    /// its own in the folder of a viewer of this session that is not there (`.view.0`), which tells it
+    /// of the workspace, of the pane that has the keys if one is given, of the session, the keys and
+    /// the viewer's FIFO, and of two sizes; with this `fux` first in `PATH`, and no size of a terminal.
+    fn key(&self, keys: &Path, script: &str, workspace: &str, pane: Option<&Path>) -> Command {
+        let own = self.0.join(".view.0");
+        let folder = (1..).map(|n| own.join(n.to_string())).find(|folder| !folder.exists()).unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(own.join("cwd"), format!("{}\n", self.root().join("home").display())).unwrap();
+        let links = [("workspace", self.0.join(workspace)), ("session", self.0.clone()), ("keys", keys.to_path_buf())];
+        let links = links.into_iter().chain([("ctl", own.join("ctl"))]).chain(pane.map(|pane| ("pane", pane.into())));
+        for (name, to) in links {
+            std::os::unix::fs::symlink(to, folder.join(name)).unwrap();
+        }
+        fs::write(folder.join("row"), "40 24\n").unwrap();
+        fs::write(folder.join("col"), "80 12\n").unwrap();
+        let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+        let mut command = self.command(keys.join(script));
+        command.current_dir(&folder).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+        command.env_remove("COLUMNS").env_remove("LINES");
+        command
+    }
     /// Ends the session now, as it is ended when it is let go: what could not be done is given back.
     fn end(&self) -> Vec<String> {
         let started = sessions()
@@ -817,17 +839,11 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     Command::new("chmod").arg("+x").arg(session.0.join("ed")).ended();
     let out = session.0.join("out");
     // The search, in a pane as the key starts it: the words, then the first line of the list.
+    // (It is told the workspace its editor is to open in, and the editor is run as `.editor` says.)
+    editor(&keys, &format!("exec {} \"+$2\" \"$1\"", session.0.join("ed").display()));
     let mut search = session.fux();
-    search
-        .env("PATH", &path)
-        .env("FUX_DIR", &session.0)
-        .env("FUX_KEYS", &keys)
-        .env("OUT", &out)
-        .env("SHELL", "/bin/sh");
-    search
-        .env("FUX_EDIT", format!("{} \"+$2\" \"$1\"", session.0.join("ed").display()))
-        .env("PATH", format!("{}:{path}", session.0.join("none").display()));
-    let found = search.args(["start", "w/find", "--"]).arg(keys.join(".search")).run();
+    search.env("OUT", &out).env("SHELL", "/bin/sh").env("PATH", format!("{}:{path}", session.0.join("none").display()));
+    let found = search.args(["start", "w/find", "--"]).arg(keys.join(".search")).arg(session.0.join("w")).run();
     let find = PathBuf::from(String::from_utf8(found.stdout).unwrap().trim());
     until("it asks", || read(&find.join("shown/screen")).contains("search every pane for:"));
     send(&find.join("in"), "NEEDLE\r");
@@ -861,7 +877,7 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     fs::create_dir_all(&home).unwrap();
     let restore = || {
         let mut restore = session.command("sh");
-        restore.arg(keys.join(".restore")).env("PATH", &path).env("FUX_DIR", named).env("HOME", &home);
+        restore.arg(keys.join(".restore")).arg(named).env("PATH", &path).env("HOME", &home);
         restore.current_dir(session.0.parent().unwrap()).run()
     };
     let restored = restore();
@@ -907,7 +923,7 @@ fn each_screen_has_a_folder_of_its_own_and_shown_leads_to_the_one_that_is_drawn(
     // The pane's text, as the keys make it, is the shell's while the program is open.
     let text = session.0.join("text");
     let mut script = session.command(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.text"));
-    assert!(script.arg(&text).env("FUX_PANE", &pane).ended().success());
+    assert!(script.arg(&pane).arg(&text).ended().success());
     assert!(read(&text).starts_with("green and a line of forty characters or so\n") && !read(&text).contains("full"));
     assert_eq!(folder("main"), ["lines", "links", "pictures", "screen", "screen.styled"]);
     assert!(!pane.join("screen").exists() && !pane.join("lines").exists() && !pane.join("screen.main").exists());
@@ -942,6 +958,13 @@ fn lay(session: &Path, text: &str) {
 }
 
 /// Waits for something to become true, until the test's deadline.
+/// How a test has its editor run: `.editor` in a keys' directory of its own, a line of sh that is
+/// given the file as `$1` and the line as `$2`.
+fn editor(keys: &Path, line: &str) {
+    fs::write(keys.join(".editor"), format!("#!/bin/sh\n{line}\n")).unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(keys.join(".editor")).ended().success());
+}
+
 fn until(what: &str, ready: impl FnMut() -> bool) {
     until_or(what, String::new, ready);
 }
@@ -995,12 +1018,12 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     assert!(!pane.join("in").exists() && !pane.join("ctl").exists(), "the FIFOs go with the holder");
     assert!(!session.fux().args(["start", "layout"]).run().status.success(), "the layout file's name is taken");
     // A workspace's name that is none is refused: it is not taken to mean `main`.
-    let odd = session.fux().env("FUX_WS", "main/").arg("layout").run();
+    let odd = session.fux().args(["layout", "main/"]).run();
     assert!(!odd.status.success() && String::from_utf8_lossy(&odd.stderr).contains("main/"), "{odd:?}");
     // Nor is one that is no text.
     let none = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"\xff");
-    let odd = session.fux().env("FUX_WS", none).arg("layout").run();
-    assert!(!odd.status.success() && String::from_utf8_lossy(&odd.stderr).contains("workspace"), "{odd:?}");
+    let odd = session.fux().arg("layout").arg(none).run();
+    assert!(!odd.status.success() && String::from_utf8_lossy(&odd.stderr).contains("not text"), "{odd:?}");
 }
 
 #[test]
@@ -1125,11 +1148,10 @@ fn a_pane_knows_where_it_is_and_gets_no_name_that_is_not_its_own() {
     let pane = session.0.join("w2/p");
     let me = env!("CARGO_BIN_EXE_fux");
     let typed = format!(
-        "env | grep -E '^(FUX_|TERM=|TERM_PROGRAM|COLUMNS)' | LC_ALL=C sort > \"$FUX_PANE/env\"; '{me}' layout > \"$FUX_PANE/here\"\n"
+        "env | grep -E '^(FUX_|TERM=|TERM_PROGRAM|COLUMNS)' | LC_ALL=C sort > \"$FUX_PANE/env\"; '{me}' layout w2 > \"$FUX_PANE/here\"\n"
     );
     send(&pane.join("in"), typed);
-    // A command typed in a pane means its own workspace, not `main`.
-    until("the layout of its own workspace is printed", || read(&pane.join("here")) == "* p focus=p\n");
+    until("the layout of its workspace is printed", || read(&pane.join("here")) == "* p focus=p\n");
     let expected = format!(
         "FUX_EDIT=ed \"$1\"\nFUX_PANE={}\nFUX_SOCKET=/another\nTERM=xterm-256color\nTERM_PROGRAM=fux\nTERM_PROGRAM_VERSION={}\n",
         pane.display(),
@@ -1371,7 +1393,7 @@ until [ -e "$s/.go" ]; do sleep 0.05; done
     assert_eq!(read(&inner.0.join(".told.1")), told(1, "a", "row 33 30\ncol 50 14"));
     // The next key has a folder of its own, with the focus as it is at that key; the script that
     // still runs keeps its own as it was. (The keys waited two seconds for the first.)
-    assert!(inner.fux().env("FUX_WS", "main").args(["layout", "pane", "b"]).ended().success());
+    assert!(inner.fux().args(["layout", "main", "pane", "b"]).ended().success());
     send(&view.join("in"), "\x02t");
     until("the second script has said what it was told", || inner.0.join(".told.2").exists());
     assert_eq!(read(&inner.0.join(".told.2")), told(2, "b", "row 32 30\ncol 49 14"));
@@ -1487,7 +1509,7 @@ fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
     assert!(fs::read_dir(inner.0.join("main")).unwrap().flatten().all(|entry| !entry.path().is_dir()));
     // A workspace the viewer is taken to runs the keys' own `.empty`, once: here one that only
     // notes that it ran.
-    fs::write(keys.join(".empty"), "#!/bin/sh\necho \"$FUX_WS\" >> \"$FUX_KEYS/ran\"\n").unwrap();
+    fs::write(keys.join(".empty"), "#!/bin/sh\nbasename \"$(readlink workspace)\" >> keys/ran\n").unwrap();
     fs::create_dir_all(inner.0.join("other")).unwrap();
     let ctl = view_fifo(&inner.0);
     send(&ctl, "workspace other\n");
@@ -1530,9 +1552,10 @@ fn the_viewer_shows_panes_as_the_layout_says_and_runs_a_key_script() {
     fs::create_dir_all(keys.join("C-b")).unwrap();
     // The split key starts its pane at the size the viewer says the new tile will have; the
     // program notes the size it found when it started, before the pane has a tile at all.
-    let script = "#!/bin/sh\n# split\n# group: Panes\np=$(COLUMNS=${FUX_ROW%x*} LINES=${FUX_ROW#*x} fux start \"$FUX_WS/two\" -- sh -c 'stty size > \"$FUX_PANE/first\"; exec sh') && until [ -s \"$p/first\" ]; do sleep 0.01; done && fux layout split row two\necho made $FUX_KEYS\n";
+    // (It names its pane through the link to the workspace, and is told the pane's own path.)
+    let script = "#!/bin/sh\n# split\n# group: Panes\nread -r COLUMNS LINES < row && export COLUMNS LINES\np=$(fux start ./workspace/two -- sh -c 'stty size > \"$0/first\"; exec sh' \"$(readlink workspace)/two\") && [ \"$p\" = \"$(readlink workspace)/two\" ] && until [ -s \"$p/first\" ]; do sleep 0.01; done && fux layout ./workspace split row two\necho made $(readlink keys)\n";
     fs::write(keys.join("C-b/v"), script).unwrap();
-    fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>\"$FUX_PANE/in\"\n").unwrap();
+    fs::write(keys.join("C-b/e"), "#!/bin/sh\nsleep 0.3\nprintf 'echo ' 1<>pane/in\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/v")).arg(keys.join("C-b/e")).ended();
     let one = inner.start("one", &["sh"]);
     // The terminal the viewer runs in says what its colours are: here the outer session's file does.
@@ -1688,7 +1711,7 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
     let (outer, inner) = (Session::new("kouter"), Session::new("kinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b")).unwrap();
-    fs::write(keys.join("C-b/o"), "#!/bin/sh\n# other\nfux layout focus next\n").unwrap();
+    fs::write(keys.join("C-b/o"), "#!/bin/sh\n# other\nfux layout ./workspace focus next\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/o")).ended();
     fs::create_dir_all(&outer.0).unwrap();
     fs::write(outer.0.join("keyboard"), "5\n").unwrap();
@@ -1701,7 +1724,7 @@ fn keys_reach_a_program_as_it_asked_for_them_and_the_viewer_still_finds_its_own(
     // The layout is changed as a person changes it, by `fux layout`, which takes the lock the viewer takes.
     let layout = |edits: &[&[&str]]| {
         for edit in edits {
-            let out = inner.fux().arg("layout").args(*edit).run();
+            let out = inner.fux().args(["layout", "main"]).args(*edit).run();
             assert!(out.status.success(), "layout {edit:?}: {}", String::from_utf8_lossy(&out.stderr));
         }
         read(&inner.0.join("main/layout"))
@@ -1926,12 +1949,8 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     };
     let key = |name: &str| {
         clear();
-        let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-        let mut script = session.command(keys.join("C-b").join(name));
-        script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("EDITOR", session.0.join("vim"));
-        script.env("OUT", &out).env("FUX_DIR", &session.0).env("FUX_KEYS", &keys).env("FUX_WS", "main");
-        script.env_remove("FUX_EDIT");
-        assert!(script.env("FUX_PANE", &pane).ended().success());
+        let mut script = session.key(&keys, &format!("C-b/{name}"), "main", Some(&pane));
+        assert!(script.env("EDITOR", session.0.join("vim")).env("OUT", &out).ended().success());
         until("the editor was given the file", || out.exists() && session.0.join("out.at").exists());
         (read(&out), read(&session.0.join("out.at")).trim().trim_start_matches('+').parse::<usize>().unwrap())
     };
@@ -1955,10 +1974,9 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     Command::new("chmod").arg("+x").arg(session.0.join("less")).ended();
     clear();
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-    let mut script = session.command(keys.join("C-b").join("M-c"));
+    let mut script = session.key(&keys, "C-b/M-c", "main", Some(&pane));
     script.env("PATH", format!("{}:{bin}:{}", session.0.display(), std::env::var("PATH").unwrap()));
-    script.env("OUT", &out).env("FUX_DIR", &session.0).env("FUX_KEYS", &keys).env("FUX_WS", "main");
-    assert!(script.env("FUX_PANE", &pane).ended().success());
+    assert!(script.env("OUT", &out).ended().success());
     until("less was given the file", || bare(&read(&out)) == text);
     assert!(read(&out).contains("\n\x1b[0;32ma-long-line-\x1b[mthat-wraps-in-twelve\n$ second\n"), "{:?}", read(&out));
     let asked = read(&session.0.join("out.at"));
@@ -1968,7 +1986,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     let blue = session.start("blue", &["sh", "-c", "printf 'x\\033[44m\\033[J%78s\u{754c}\\033[m' ''; sleep 600"]);
     until("the screen is blue", || read(&blue.join("shown/screen.styled")).matches("\x1b[0;44m").count() == 24);
     let mut text = session.command(keys.join(".text"));
-    assert!(text.arg(&out).arg("styled").env("FUX_PANE", &blue).run().status.success());
+    assert!(text.arg(&blue).arg(&out).arg("styled").run().status.success());
     assert!(
         read(&blue.join("shown/screen.styled")).starts_with(&format!("x\x1b[0;44m{}\u{200b} \x1b[m\n", " ".repeat(78)))
     );
@@ -1976,18 +1994,16 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     assert!(read(&out).starts_with(&joined) && read(&out).lines().count() == 1, "{:?}", read(&out));
     // A command that prints nothing has no output to open, and the key says so; one whose
     // output does not end its line has that output, every character of it whole, without the
-    // prompt that follows on the line. (And the editor is run as `FUX_EDIT` says.)
+    // prompt that follows on the line. (And the editor is run as `.editor` in the keys' directory says.)
     let quiet = "m() { printf '\\033]133;%s\\007' \"$1\"; }; \
         m A; printf '$ '; m B; echo printf; m C; printf 'e\\314\\201\\347\\225\\214'; m 'D;0'; \
         m A; printf '$ '; m B; until [ -e \"$PANE/go\" ]; do sleep 0.05; done; echo true; m C; m 'D;0'; m A; printf '$ '; m B; sleep 600";
     let pane = session.start("quiet", &["sh", "-c", quiet]);
     until("the first command is done", || read(&pane.join("marks")).lines().count() == 6);
     let run_in = |name: &str, pane: &Path, edit: String| {
-        let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-        let mut script = session.command(keys.join("C-b").join(name));
-        script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("FUX_EDIT", edit);
-        script.env("OUT", &out).env("FUX_DIR", &session.0).env("FUX_KEYS", &keys).env("FUX_WS", "main");
-        String::from_utf8(script.env("FUX_PANE", pane).run().stdout).unwrap()
+        editor(&keys, &edit);
+        let mut script = session.key(&keys, &format!("C-b/{name}"), "main", Some(pane));
+        String::from_utf8(script.env("OUT", &out).run().stdout).unwrap()
     };
     let run = |name: &str| run_in(name, &pane, format!("{} \"line-$2\" \"$1\"", session.0.join("vim").display()));
     clear();
@@ -2031,18 +2047,28 @@ fn a_shell_that_ends_with_127_closes_its_pane_and_a_command_that_cannot_be_run_s
     let wrapper = concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.shell");
     fs::write(session.0.join("sh127"), "#!/bin/sh\nexit 127\n").unwrap();
     assert!(Command::new("chmod").arg("+x").arg(session.0.join("sh127")).ended().success());
+    // (`.shell` is told the session, where it finds its pane's folder when the shell has ended.)
+    let here = session.0.to_str().unwrap();
     let mut start = session.fux();
-    start.env("SHELL", session.0.join("sh127")).args(["start", "ran", "--", wrapper]);
+    start.env("SHELL", session.0.join("sh127")).args(["start", "ran", "--", wrapper, here]);
     let ran = session.started(&mut start);
     let seen = || format!(": its screen is {:?}", read(&ran.join("shown/screen")).trim());
     until_or("the pane of a shell that ended with 127 is gone", seen, || !ran.exists());
     // A command that is not there could not be run: that is said, and stays until Enter.
-    let none = session.start("none", &[wrapper, "/no/such/program"]);
+    let none = session.start("none", &[wrapper, here, "/no/such/program"]);
     until("it says that it could not be run", || {
         read(&none.join("shown/screen")).contains("it could not be run: Enter")
     });
     send(&none.join("in"), "\r");
     until("Enter closed the pane", || !none.exists());
+    // A pane that was given another name while its shell ran closes all the same: which folder is
+    // its own is asked when the shell has ended, not noted when it began.
+    let moved = session.start("moved", &[wrapper, here, "sh", "-c", "echo r''eady; read x"]);
+    until("the shell runs", || read(&moved.join("shown/screen")).contains("ready"));
+    let renamed = session.0.join("main/renamed");
+    fs::rename(&moved, &renamed).unwrap();
+    send(&renamed.join("in"), "\r");
+    until("the pane that was renamed is gone", || !renamed.exists());
 }
 
 #[test]
@@ -2056,13 +2082,13 @@ fn the_workspace_chosen_is_told_to_the_viewer_that_is_there_and_no_file_is_made_
     assert!(
         Command::new("cp").arg("-R").arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys")).arg(&keys).ended().success()
     );
-    let view = session.0.join(".view.0");
+    // (The key's script is told the viewer's FIFO by a link in its folder, which is gone when the
+    // choice is made: the picker's pane was given the FIFO's own path.)
+    let view = session.0.join(".view.0/ctl");
+    fs::create_dir_all(view.parent().unwrap()).unwrap();
     let choose = || {
-        let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-        let mut script = session.command(keys.join("C-b/w/g"));
-        script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("FUX_VIEW", &view);
-        script.env("FUX_DIR", &session.0).env("FUX_KEYS", &keys).env("FUX_WS", "main").env_remove("FUX_PANE");
-        assert!(script.ended().success());
+        assert!(session.key(&keys, "C-b/w/g", "main", None).ended().success());
+        let _ = fs::remove_dir_all(session.0.join(".view.0/1"));
         let pane = session.0.join("main/1");
         until("the list is shown", || read(&pane.join("shown/screen")).contains("main"));
         // (A finder takes a moment to narrow its list to what was typed; with none it is the name.)
@@ -2102,11 +2128,12 @@ fn an_editor_that_ends_while_its_key_runs_has_taken_its_pane_and_the_key_says_no
     );
     let fux = env!("CARGO_BIN_EXE_fux");
     let scripts = [
-        ("ed", "#!/bin/sh\nuntil [ -e \"$FUX_DIR/go\" ]; do sleep 0.02; done\n".to_string()),
+        ("ed", format!("#!/bin/sh\nuntil [ -e \"{0}/go\" ]; do sleep 0.02; done\n", session.0.display())),
         (
             "fux",
             format!(
-                "#!/bin/sh\nif [ \"$1 $2\" = 'layout pane' ]; then : > \"$FUX_DIR/go\"; while [ -d \"$FUX_DIR/main/$3\" ]; do sleep 0.02; done; fi\nexec {fux} \"$@\"\n"
+                "#!/bin/sh\nif [ \"$1 $3\" = 'layout pane' ]; then : > \"{0}/go\"; while [ -d \"{0}/main/$4\" ]; do sleep 0.02; done; fi\nexec {fux} \"$@\"\n",
+                session.0.display()
             ),
         ),
     ];
@@ -2115,10 +2142,10 @@ fn an_editor_that_ends_while_its_key_runs_has_taken_its_pane_and_the_key_says_no
         assert!(Command::new("chmod").arg("+x").arg(bin.join(name)).ended().success());
     }
     fs::write(session.0.join("file"), "text\n").unwrap();
-    let mut script = session.command(keys.join(".edit"));
-    script.arg(session.0.join("file")).env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()));
-    script.env("FUX_EDIT", "ed \"$1\"").env("FUX_DIR", &session.0).env("FUX_KEYS", &keys).env("FUX_WS", "main");
-    let out = script.env_remove("FUX_PANE").run();
+    editor(&keys, "exec ed \"$1\"");
+    let mut script = session.key(&keys, ".edit", "main", None);
+    script.arg(session.0.join("main")).arg(session.0.join("file"));
+    let out = script.env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())).run();
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success() && said.is_empty(), "{:?}: {said}", out.status);
     assert!(!session.0.join("main/1").exists() && !session.0.join("file").exists());
@@ -2131,7 +2158,7 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
     let (outer, inner) = (Session::new("router"), Session::new("rinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b")).unwrap();
-    fs::write(keys.join("C-b/o"), "#!/bin/sh\n# other\nfux layout focus next\n").unwrap();
+    fs::write(keys.join("C-b/o"), "#!/bin/sh\n# other\nfux layout ./workspace focus next\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/o")).ended();
     fs::create_dir_all(&outer.0).unwrap();
     fs::write(outer.0.join("keyboard"), "31\n").unwrap();
@@ -2208,7 +2235,7 @@ fn a_held_key_does_again_what_its_press_did_and_there_only_and_a_program_started
         fs::create_dir_all(keys.join("C-b").join(menu)).unwrap();
         fs::write(keys.join("C-b").join(menu).join(".repeat"), "").unwrap();
         let script = keys.join("C-b").join(menu).join("h");
-        fs::write(&script, format!("#!/bin/sh\n# act\necho {menu} >> \"$FUX_KEYS/ran\"\n")).unwrap();
+        fs::write(&script, format!("#!/bin/sh\n# act\necho {menu} >> keys/ran\n")).unwrap();
         Command::new("chmod").arg("+x").arg(script).ended();
     }
     fs::create_dir_all(&outer.0).unwrap();
@@ -2217,7 +2244,7 @@ fn a_held_key_does_again_what_its_press_did_and_there_only_and_a_program_started
     fs::write(inner.0.join("keyboard"), "31\n").unwrap();
     let asking = ["sh", "-c", "stty raw -echo; printf '\\033[>11u\\033[?u'; exec cat -vt"];
     let (first, second) = (inner.start("first", &asking), inner.start("second", &asking));
-    let layout = |edit: &[&str]| assert!(inner.fux().arg("layout").args(edit).ended().success());
+    let layout = |edit: &[&str]| assert!(inner.fux().args(["layout", "main"]).args(edit).ended().success());
     layout(&["pane", "first"]);
     let viewer = [env!("CARGO_BIN_EXE_fux"), "view"];
     let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
@@ -2484,7 +2511,7 @@ fn a_click_whose_release_the_terminal_never_told_of_does_not_take_the_next_click
     let layout = || read(&inner.0.join("main/layout"));
     until_or("the click moved the focus", layout, || layout().contains("focus=b"));
     until("the viewer asks for the mouse no more", || !fact(&view, "modes").contains("mouse1000"));
-    assert!(inner.fux().env("FUX_WS", "main").args(["layout", "pane", "a"]).ended().success());
+    assert!(inner.fux().args(["layout", "main", "pane", "a"]).ended().success());
     until("the viewer asks for the mouse again", || fact(&view, "modes").contains("mouse1000"));
     send(&view.join("in"), "\x1b[<0;5;3M\x1b[<0;5;3m");
     let start = Instant::now();
@@ -2983,7 +3010,7 @@ fn a_key_held_while_its_pane_is_renamed_is_held_and_let_go_in_that_pane() {
     // (The layout is edited under its lock: the viewer writes it too when a pane comes.)
     inner.start("other", &["sleep", "600"]);
     for edit in [&["split", "row", "other", "beside", "renamed"][..], &["pane", "renamed"]] {
-        assert!(inner.fux().arg("layout").args(edit).ended().success());
+        assert!(inner.fux().args(["layout", "main"]).args(edit).ended().success());
     }
     until("both panes are drawn", || read(&view.join("shown/screen")).contains('│'));
     send(&view.join("in"), key(99, 1));
@@ -3028,10 +3055,10 @@ fn a_pane_whose_tab_is_shown_again_is_asked_its_size_once_more_and_no_more() {
     };
     let shows = |word: &str| read(&view.join("shown/screen")).starts_with(word);
     until("the pane is drawn and asked its size", || shows("AYE") && asked() == 1);
-    assert!(inner.fux().args(["layout", "tab", "next"]).ended().success());
+    assert!(inner.fux().args(["layout", "main", "tab", "next"]).ended().success());
     until("the other tab is shown", || shows("BEE"));
     assert_eq!(asked(), 1);
-    assert!(inner.fux().args(["layout", "tab", "prev"]).ended().success());
+    assert!(inner.fux().args(["layout", "main", "tab", "prev"]).ended().success());
     until("the pane is shown again, and asked again", || shows("AYE") && asked() == 2);
     std::thread::sleep(Duration::from_millis(400));
     assert_eq!(asked(), 2, "{}", all.borrow());
@@ -3138,7 +3165,7 @@ fn a_name_that_is_a_number_of_no_line_is_chosen_without_a_word_of_complaint() {
     fs::write(folder.0.join("typed"), "0\n").unwrap();
     let mut pick = folder.command("/bin/sh");
     pick.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.pick")).arg(&list).args(["echo", "chose"]);
-    pick.env("PATH", &bin).env("FUX_PANE", &pane);
+    pick.env("PATH", &bin);
     let out = pick.run_from(Some(fs::File::open(folder.0.join("typed")).unwrap()));
     let (said, wrong) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(said.ends_with("chose 0\n") && wrong.is_empty(), "{said:?} {wrong:?}");
@@ -3290,7 +3317,7 @@ fn a_key_script_is_told_the_terminals_size_before_the_first_frame_and_none_where
     let (outer, inner) = (Session::new("souter"), Session::new("sinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(&keys).unwrap();
-    fs::write(keys.join("x"), "#!/bin/sh\necho \"$COLUMNS $LINES\" > \"$FUX_DIR/told\"\n").unwrap();
+    fs::write(keys.join("x"), "#!/bin/sh\necho \"$COLUMNS $LINES\" > session/told\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("x")).ended();
     inner.start("one", &["sleep", "600"]);
     let views = |session: &Session, keys: &Path, first: &str| {
@@ -3325,12 +3352,8 @@ fn what_is_typed_right_after_the_new_workspace_key_goes_to_its_shell() {
     let view = outer.start("view", &[&command[..], &viewer[..]].concat());
     until("the first workspace has its shell", || fact(&inner.0.join("main/1"), "state") == "running");
     // (The script by itself, as the viewer runs it: `fux` is the one beside the viewer.)
-    let mut path = std::ffi::OsString::from(Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap());
-    path.push(":");
-    path.push(std::env::var_os("PATH").unwrap());
-    let mut script = inner.command(keys.join("C-b/w/n"));
-    script.env("FUX_DIR", &inner.0).env("FUX_KEYS", &keys).env("FUX_WS", "main").env("PATH", path);
-    let said = script.env("FUX_PANE", inner.0.join("main/1")).env("SHELL", "/bin/sh").run();
+    let mut script = inner.key(&keys, "C-b/w/n", "main", Some(&inner.0.join("main/1")));
+    let said = script.env("SHELL", "/bin/sh").run();
     let state = fact(&inner.0.join("w1/1"), "state");
     assert_eq!((String::from_utf8_lossy(&said.stdout).as_ref(), state.as_str()), ("workspace w1\n", "running"));
     // And the key with a letter after it in one write: the letter is typed to the new shell.
@@ -3365,38 +3388,38 @@ fn a_picture_below_a_shortened_alternate_screen_is_not_listed_until_its_row_is_b
 }
 
 #[test]
-fn a_restore_that_fails_leaves_the_run_before_whole_and_a_pane_started_again_is_told_the_keys() {
+fn a_restore_that_fails_leaves_the_run_before_whole_and_starts_the_others() {
     let session = Session::new("unrestored");
     let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
     // Two ended panes: one whose program is gone by the time it is started again, and one that
-    // prints where the keys are.
+    // prints a word.
     fs::create_dir_all(&session.0).unwrap();
     let counts = session.0.join("counts");
     fs::write(&counts, "#!/bin/sh\nseq 1 60\n").unwrap();
     assert!(Command::new("chmod").arg("+x").arg(&counts).ended().success());
     let lost = session.start("w/lost", &[counts.to_str().unwrap()]);
-    let told = session.start("w/told", &["printenv", "FUX_KEYS"]);
+    let told = session.start("w/told", &["echo", "told"]);
     for pane in [&lost, &told] {
         assert!(session.fux().arg("wait").arg(pane).ended().success());
     }
-    assert!(read(&lost.join("history")).contains("\n17\n") && read(&told.join("shown/screen")).trim().is_empty());
+    assert!(read(&lost.join("history")).contains("\n17\n") && read(&told.join("shown/screen")).trim() == "told");
     fs::remove_file(&counts).unwrap();
-    // (Run as a login runs it: by the script's path, with no FUX_KEYS.)
-    // (A CDPATH that leads to the script's folder makes `cd` print where it went: the keys are still one path.)
+    // (Run as a login runs it: by the script's path, with no session named: it is the default one.)
+    // (A CDPATH that leads to the script's folder makes `cd` print where it went: the session is still one path.)
     let restore = || {
         let mut restore = session.command("sh");
         restore.arg("keys/.restore").env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
         restore.current_dir(env!("CARGO_MANIFEST_DIR")).env("CDPATH", env!("CARGO_MANIFEST_DIR"));
-        restore.env("FUX_DIR", &session.0).env_remove("FUX_KEYS").env_remove("FUX_PANE").env_remove("FUX_WS").run()
+        restore.run()
     };
     let restored = restore();
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started w/told again\n");
     assert_eq!(restored.status.code(), Some(1), "a start failed: whoever ran it is told so");
     until_or(
-        "the pane started again says where the keys are",
+        "the pane started again has printed its word, after the one of the run before",
         || read(&told.join("shown/screen")),
-        || read(&told.join("shown/screen")).replace('\n', "") == keys.display().to_string(),
+        || read(&told.join("shown/screen")).trim() == "told" && read(&told.join(".before")).trim() == "told",
     );
     // The start that failed put nothing back: the run before is whole where the script says, and
     // the name has the failed start's folder, with its `log` and no `command` (nothing ran there).
@@ -3422,7 +3445,7 @@ fn a_restore_that_fails_leaves_the_run_before_whole_and_a_pane_started_again_is_
     assert!(session.fux().arg("wait").arg(&told).ended().success());
     let was = read(&told.join("status"));
     let mut bare = session.command("sh");
-    bare.arg(keys.join(".restore")).arg(&session.0).env("PATH", &tools).env_remove("FUX_KEYS").env_remove("FUX_DIR");
+    bare.arg(keys.join(".restore")).arg(&session.0).env("PATH", &tools);
     let none = bare.run();
     assert!(none.status.code() == Some(1) && String::from_utf8_lossy(&none.stderr).contains("fux"), "{none:?}");
     assert_eq!(read(&told.join("status")), was);
@@ -3473,7 +3496,7 @@ fn a_key_script_is_told_the_size_the_terminal_has_when_the_key_is_typed() {
     let (outer, inner) = (Session::new("szouter"), Session::new("szinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(&keys).unwrap();
-    let tells = "#!/bin/sh\necho \"$COLUMNS $LINES $FUX_ROW $FUX_COL\" > \"$FUX_DIR/told\"\n";
+    let tells = "#!/bin/sh\necho \"$COLUMNS $LINES, $(cat row), $(cat col)\" > session/told\n";
     fs::write(keys.join("x"), tells).unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("x")).ended();
     let pane = inner.start("one", &["sleep", "600"]);
@@ -3485,7 +3508,7 @@ fn a_key_script_is_told_the_size_the_terminal_has_when_the_key_is_typed() {
     send(&view.join("ctl"), "resize 83 27\n");
     send(&view.join("in"), "x");
     until("the key's script ran", || read(&inner.0.join("told")).ends_with('\n'));
-    assert_eq!(read(&inner.0.join("told")), "83 27 41x27 83x13\n");
+    assert_eq!(read(&inner.0.join("told")), "83 27, 41 27, 83 13\n");
 }
 
 #[test]
@@ -3521,7 +3544,7 @@ fn what_is_typed_after_a_key_that_shows_a_workspace_with_no_pane_goes_to_its_she
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b/w")).unwrap();
     fs::write(keys.join("C-b/w/l"), "#!/bin/sh\necho workspace other\nsleep 0.2\n").unwrap();
-    let empty = "#!/bin/sh\nsleep 1\np=$(fux start \"$FUX_WS/1\" -- cat) && fux layout pane 1\n";
+    let empty = "#!/bin/sh\nsleep 1\np=$(fux start ./workspace/1 -- cat) && fux layout ./workspace pane 1\n";
     fs::write(keys.join(".empty"), empty).unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/w/l")).arg(keys.join(".empty")).ended();
     inner.start("one", &["sh", "-c", "echo READY; exec cat"]);
@@ -3551,7 +3574,8 @@ fn what_is_typed_after_a_key_whose_script_makes_the_pane_waits_for_it_though_emp
     let (outer, inner) = (Session::new("wkouter"), Session::new("wkinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b/w")).unwrap();
-    let key = "#!/bin/sh\necho workspace other\nsleep 1\nexec fux start other/1 -- cat >/dev/null\n";
+    let key =
+        "#!/bin/sh\necho workspace other\nsleep 1\nexec fux start \"$(readlink session)/other/1\" -- cat >/dev/null\n";
     fs::write(keys.join("C-b/w/l"), key).unwrap();
     fs::write(keys.join(".empty"), "#!/bin/sh\nexit 0\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/w/l")).arg(keys.join(".empty")).ended();
@@ -3586,7 +3610,6 @@ fn a_restore_that_cannot_copy_what_a_pane_printed_keeps_the_run_before_whole() {
     }
     let mut restore = session.command("sh");
     restore.arg(keys.join(".restore")).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
-    restore.env("FUX_DIR", &session.0).env_remove("FUX_KEYS").env_remove("FUX_PANE").env_remove("FUX_WS");
     let restored = restore.run();
     let (said, wrong) = (String::from_utf8_lossy(&restored.stdout), String::from_utf8_lossy(&restored.stderr));
     assert_eq!(said, "started w/kept again\n", "{wrong}");
@@ -3606,7 +3629,7 @@ fn the_focus_goes_to_the_pane_that_is_beside_it_in_the_terminal_a_key_is_pressed
     ["a", "b", "c", "d"].iter().for_each(|pane| fs::create_dir_all(session.0.join("main").join(pane)).unwrap());
     lay(&session.0, "* row(col(a b:99) col(c d:9999)) focus=a\n");
     let mut edit = session.fux();
-    edit.env("FUX_WS", "main").env("COLUMNS", "80").env("LINES", "24").args(["layout", "focus", "right"]);
+    edit.env("COLUMNS", "80").env("LINES", "24").args(["layout", "main", "focus", "right"]);
     assert!(edit.ended().success());
     assert_eq!(read(&session.0.join("main/layout")), "* row(col(a b:99) col(c d:9999)) focus=c\n");
 }
@@ -3626,10 +3649,9 @@ fn a_new_workspace_key_that_another_got_ahead_of_takes_the_next_name() {
     fs::write(shim.join("mkdir"), ahead).unwrap();
     assert!(Command::new("chmod").arg("+x").arg(shim.join("mkdir")).ended().success());
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-    let mut script = session.command(keys.join("C-b/w/n"));
+    let mut script = session.key(&keys, "C-b/w/n", "main", None);
     script.env("PATH", format!("{}:{bin}:{}", shim.display(), std::env::var("PATH").unwrap()));
-    script.env("FUX_DIR", &session.0).env("FUX_KEYS", &keys).env("FUX_WS", "main").env("FUX_PANE", "");
-    let said = script.env("SHELL", "/bin/sh").env_remove("COLUMNS").env_remove("LINES").run();
+    let said = script.env("SHELL", "/bin/sh").run();
     let (out, wrong) = (String::from_utf8_lossy(&said.stdout), String::from_utf8_lossy(&said.stderr));
     assert_eq!(
         (out.as_ref(), fact(&session.0.join("w2/1"), "state").as_str()),
@@ -3652,12 +3674,12 @@ fn the_blank_lines_a_command_ended_with_are_in_its_output() {
         read(&pane.join("marks")).lines().count() == 2 && read(&pane.join("shown/screen")).starts_with('A')
     });
     let out = session.0.join("out");
-    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-    let mut script = session.command(Path::new(keys).join("C-b/S-c"));
-    script.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap())).env("OUT", &out);
-    script.env("FUX_EDIT", "cat \"$1\" > \"$OUT.new\" && mv \"$OUT.new\" \"$OUT\"");
-    script.env("FUX_DIR", &session.0).env("FUX_KEYS", keys).env("FUX_WS", "main").env("FUX_PANE", &pane);
-    let said = script.env_remove("COLUMNS").env_remove("LINES").run();
+    // (An editor of the test's own, which `.edit` gives the file and no line: it is none it knows.)
+    let ed = session.0.join("ed");
+    fs::write(&ed, "#!/bin/sh\ncat \"$1\" > \"$OUT.new\" && mv \"$OUT.new\" \"$OUT\"\n").unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(&ed).ended().success());
+    let mut script = session.key(Path::new(keys), "C-b/S-c", "main", Some(&pane));
+    let said = script.env("OUT", &out).env("EDITOR", &ed).run();
     assert_eq!(String::from_utf8_lossy(&said.stdout), "", "marks: {:?}", read(&pane.join("marks")));
     until("the editor was given the output", || out.exists());
     assert_eq!(read(&out), "A\n\n\n");
@@ -3707,11 +3729,12 @@ fn a_text_and_a_list_stay_in_the_session_and_go_when_their_script_ends_or_is_hun
     };
     let (text, list, typed) =
         (file(".text.case", "a transcript\n"), file(".pick.case", "a\tpane a\n"), file("typed", "a\n"));
-    for (name, args) in
-        [(".edit", vec!["--in", text.to_str().unwrap(), "1"]), (".pick", vec![list.to_str().unwrap(), "echo", "chose"])]
-    {
+    for (name, args) in [
+        (".edit", vec!["--in", text.to_str().unwrap(), "1", "cat"]),
+        (".pick", vec![list.to_str().unwrap(), "echo", "chose"]),
+    ] {
         let mut helper = session.command("sh");
-        helper.arg(script(name)).args(args).env("FUX_EDIT", "cat \"$1\"").env("FUX_PANE", session.0.join("pane"));
+        helper.arg(script(name)).args(args);
         let out = helper.run_from(Some(fs::File::open(&typed).unwrap()));
         let said = String::from_utf8_lossy(&out.stdout).into_owned();
         assert!(said.ends_with(if name == ".edit" { "a transcript\n" } else { "chose a\n" }), "{name}: {out:?}");
@@ -3722,9 +3745,10 @@ fn a_text_and_a_list_stay_in_the_session_and_go_when_their_script_ends_or_is_hun
     // hangup ends first: that is what hangs up the rest): here the holder is killed outright, under
     // an editor that never ends by itself and under the list's question.
     let (text, list) = (file(".text.hup", "a transcript\n"), file(".pick.hup", "a\tpane a\n"));
+    let (here, edit) = (session.0.to_str().unwrap(), ["sh", "-c", "echo ed''iting; exec sleep 600", "sh"]);
     let mut edits = session.fux();
-    edits.env("FUX_EDIT", "echo ed''iting; exec sleep 600").args(["start", "w/edits", "--", "sh", &script(".shell")]);
-    let edits = session.started(edits.args(["sh", &script(".edit"), "--in", text.to_str().unwrap(), "1"]));
+    edits.args(["start", "w/edits", "--", "sh", &script(".shell"), here]);
+    let edits = session.started(edits.args(["sh", &script(".edit"), "--in", text.to_str().unwrap(), "1"]).args(edit));
     // (No finder on the list's PATH: it asks, and waits for a line.)
     let bin = session.0.join("bin");
     fs::create_dir_all(&bin).unwrap();
@@ -3732,7 +3756,8 @@ fn a_text_and_a_list_stay_in_the_session_and_go_when_their_script_ends_or_is_hun
     assert!(Command::new("sh").arg("-c").arg(links).arg(&bin).ended().success());
     let mut picks = session.fux();
     picks.args(["start", "w/picks", "--", "env"]).arg(format!("PATH={}", bin.display()));
-    let picks = session.started(picks.args(["sh", &script(".shell"), "sh", &script(".pick")]).arg(&list).arg("echo"));
+    let picks =
+        session.started(picks.args(["sh", &script(".shell"), here, "sh", &script(".pick")]).arg(&list).arg("echo"));
     until("the editor and the list are open", || {
         read(&edits.join("shown/screen")).contains("editing") && read(&picks.join("shown/screen")).contains("which (")
     });
@@ -3750,14 +3775,8 @@ fn a_text_and_a_list_stay_in_the_session_and_go_when_their_script_ends_or_is_hun
     fs::write(slow.join("main/lines"), "0\n\n").unwrap();
     assert!(Command::new("mkfifo").arg(slow.join("history")).ended().success());
     let mut search = session.fux();
-    search.env("FUX_DIR", &session.0).env("FUX_KEYS", script("")).args([
-        "start",
-        "w/search",
-        "--",
-        "sh",
-        &script(".shell"),
-    ]);
-    let search = session.started(search.args(["sh", &script(".search")]));
+    search.args(["start", "w/search", "--", "sh", &script(".shell"), here]);
+    let search = session.started(search.args(["sh", &script(".search")]).arg(session.0.join("w")));
     until("it asks", || read(&search.join("shown/screen")).contains("search every pane for:"));
     send(&search.join("in"), "x\n");
     let scratch = || {
@@ -3822,7 +3841,7 @@ fn a_mark_in_a_line_that_never_ends_is_found_in_the_text_after_history_was_put_a
     // The pane's text as the keys make it, and the marks' places in it.
     let text = session.0.join("text");
     let mut script = session.command(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.text"));
-    let add = script.arg(&text).env("FUX_PANE", &pane).run().stdout;
+    let add = script.arg(&pane).arg(&text).run().stdout;
     let add: i64 = String::from_utf8(add).unwrap().trim().parse().unwrap();
     let marks = read(&pane.join("marks"));
     let place = |kind: &str| {
@@ -3945,12 +3964,7 @@ fn workspace_prev_next_wrap_skip_invalid_names_and_new_workspace_is_0700() {
         fs::create_dir_all(session.0.join(name)).unwrap();
     }
     let run = |script: &str, ws: &str| {
-        let out = session
-            .command(keys.join(script))
-            .env("FUX_DIR", &session.0)
-            .env("FUX_WS", ws)
-            .env("LC_ALL", "en_US.UTF-8")
-            .run();
+        let out = session.key(&keys, script, ws, None).env("LC_ALL", "en_US.UTF-8").run();
         String::from_utf8(out.stdout).unwrap()
     };
     // Wrapping and skipping invalid directory names (`bad space`, `colours`), in byte order (`Alpha` < `beta`).
@@ -3959,17 +3973,7 @@ fn workspace_prev_next_wrap_skip_invalid_names_and_new_workspace_is_0700() {
     assert_eq!(run("C-b/w/h", "Alpha"), "workspace beta\n");
     assert_eq!(run("C-b/w/h", "beta"), "workspace Alpha\n");
     // New workspace folder has mode 0700 like `fux start` creates.
-    let mut path = std::ffi::OsString::from(Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap());
-    path.push(":");
-    path.push(std::env::var_os("PATH").unwrap());
-    let out = session
-        .command(keys.join("C-b/w/n"))
-        .env("FUX_DIR", &session.0)
-        .env("FUX_KEYS", &keys)
-        .env("FUX_WS", "Alpha")
-        .env("PATH", path)
-        .env("SHELL", "/bin/sh")
-        .run();
+    let out = session.key(&keys, "C-b/w/n", "Alpha", None).env("SHELL", "/bin/sh").run();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let mode = fs::metadata(session.0.join("w1")).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o700, "w1 mode was {mode:o}");
@@ -3985,7 +3989,7 @@ fn two_restores_of_a_session_at_once_run_one_after_the_other() {
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
     let restore = || {
         let mut restore = session.command("sh");
-        restore.arg(keys.join(".restore")).arg(&session.0).env_remove("FUX_KEYS").env_remove("FUX_DIR");
+        restore.arg(keys.join(".restore")).arg(&session.0);
         restore.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
         restore
     };
@@ -4056,7 +4060,7 @@ fn restore_skips_viewer_and_helper_panes() {
     let restore = || {
         let mut restore = session.command("sh");
         restore.arg(keys.join(".restore")).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
-        restore.env("FUX_DIR", &session.0).env_remove("FUX_KEYS").run()
+        restore.run()
     };
     let out = restore();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "", "should skip viewer, helper and mirrored panes: {out:?}");
@@ -4144,8 +4148,8 @@ fn picker_waits_for_finder_ready_so_first_enter_is_not_lost_and_checks_exit_stat
         &fzf,
         format!(
             r#"#!/bin/sh
-cat > "$FUX_PANE/items"
-python3 - "$FUX_PANE/items" "{}" <<'PY'
+cat > "{0}"
+python3 - "{0}" "{1}" <<'PY'
 import sys, time, termios, tty
 time.sleep(0.08)
 f = open("/dev/tty", "rb+", buffering=0)
@@ -4164,6 +4168,7 @@ else:
     sys.exit(1)
 PY
 "#,
+            inner.0.join(".items").display(),
             picked.display()
         ),
     )
@@ -4203,7 +4208,6 @@ PY
         &[
             "env",
             &format!("PATH={path}"),
-            &format!("FUX_KEYS={}", keys.display()),
             keys.join(".pick").to_str().unwrap(),
             list.to_str().unwrap(),
             "sh",

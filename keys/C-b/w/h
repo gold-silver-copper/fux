@@ -2,14 +2,15 @@
 # previous workspace
 # group: Workspaces
 LC_ALL=C; export LC_ALL
-cd "$FUX_DIR" || exit
+now=$(basename "$(readlink workspace)")
+cd session || exit
 prev= found=
 for w in */; do
   w=${w%/}
   case $w in ''|-|colours|keyboard|layout|.*|*[!A-Za-z0-9._-]*) continue ;; esac
   [ ${#w} -le 64 ] && [ ! -L "$w" ] && [ -d "$w" ] || continue
-  [ "$w" = "$FUX_WS" ] && found=$prev
+  [ "$w" = "$now" ] && found=$prev
   prev=$w
 done
 target=${found:-$prev}
-[ -n "$target" ] && [ "$target" != "$FUX_WS" ] && echo "workspace $target"
+[ -n "$target" ] && [ "$target" != "$now" ] && echo "workspace $target"

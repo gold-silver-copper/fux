@@ -1,4 +1,4 @@
 #!/bin/sh
 # taller
 # group: Resize
-fux layout size col +5
+fux layout ./workspace size col +5

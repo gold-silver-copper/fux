@@ -1,4 +1,4 @@
 #!/bin/sh
 # all panes in a column
 # group: Arrange
-fux layout arrange col
+fux layout ./workspace arrange col

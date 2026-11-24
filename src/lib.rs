@@ -40,7 +40,7 @@ fux dir                         print the session directory
 fux start [PANE] [-- PROGRAM…]  start a pane; PANE is NAME, WORKSPACE/NAME or WORKSPACE/, and not one that is there
 fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and the state it left
 fux view [WORKSPACE [KEYS]]     show a workspace's panes in tiles and tabs (default: $FUX_WS; else in a pane its own; else main)
-fux layout [EDIT…]              print the layout of the workspace (the same default), or edit it
+fux layout [WORKSPACE [EDIT…]]  print the layout of a workspace (default: main), or edit it
 fux --help                      this summary and the complete guide (for people, scripts and agents)
 A WORKSPACE that begins with / or . is a directory's path (so is a PANE: its workspace's, then its name);
 any other is a name in the session. KEYS is the directory of the key scripts.";
@@ -308,9 +308,10 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         Some("layout") => {
             let words = rest.iter().map(|w| w.to_str()).collect::<Option<Vec<_>>>().ok_or("layout edit is not text")?;
-            let named = meant();
-            let layout = layout::command(&workspace(&named, &format!("{named}: not a workspace's name"))?, &words)?;
-            if words.is_empty() { say(layout.print().trim_end().as_bytes()) } else { Ok(()) }
+            // (The workspace comes before an edit, always: a workspace may be called `pane` or `tab`.)
+            let (named, edit) = words.split_first().map_or(("main", &[][..]), |(named, edit)| (*named, edit));
+            let layout = layout::command(&workspace(named, &format!("{named}: not a workspace's name"))?, edit)?;
+            if edit.is_empty() { say(layout.print().trim_end().as_bytes()) } else { Ok(()) }
         }
         Some("hold") => holder::hold(rest),
         Some("help" | "--help" | "-h") if rest.is_empty() => say(format!("{USAGE}\n\n{}", HELP.trim_end()).as_bytes()),

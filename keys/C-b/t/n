@@ -1,4 +1,4 @@
 #!/bin/sh
 # new tab
 # group: Tabs
-exec "$FUX_KEYS/.new-shell"
+exec "$(readlink keys)/.new-shell"
