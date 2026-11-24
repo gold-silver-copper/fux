@@ -2515,7 +2515,22 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     of the test, sixteen at a time; none of 320 since). Not
     covered: a pane renamed while a key is down in it that does not have
     the keys any more by the viewer's next look (the name it went to is not
-    searched for); its release is dropped, as before.
+    searched for); its release is dropped, as before. (That last was so
+    until the second review of PR #483, and is covered since: next part.)
+  - **A release is sent to the folder, under the name it has now** (after
+    the second review of PR #483, which held the viewer between its look at
+    the layout and a release, and renamed the pane in between: the key was
+    kept under the old name, as the part above has it, then taken for
+    released, and the release went to the old name, which no folder had; the
+    program never got it). Where the name a key went to has not the key's
+    folder any more, the viewer looks through the panes of that workspace
+    for the folder (by device and inode) and writes there. So no name that
+    is out of date costs a release: not the one a look at the layout a
+    moment old gave, and not that of a pane moved by hand that has lost
+    the keys (its key is let go in it, under its new name). The look
+    through the workspace is made only then. A folder that left its
+    workspace, or has a name with a dot first, is no pane, and its release
+    is dropped.
   - **What was read of a folder is that folder's alone** (after the review
     of PR #483: a folder put under a tile's name in place of another was
     asked its size and then drawn as the old one, for as long as neither had

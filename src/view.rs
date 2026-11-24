@@ -726,14 +726,20 @@ impl View {
     }
 
     /// A key's repeat or release goes to the pane that got its press, after what was typed before
-    /// it, if the folder under that pane's name is still the one that got it (a pane is one run: its
-    /// folder is its program) and it still asks to be told of keys let go. Both are looked at when
-    /// it matters. (Between that look and the write, a pane moved away and another put under its name
-    /// would get it: as with every write by a name.)
+    /// it: to the folder that got it (a pane is one run: its folder is its program), if it still
+    /// asks to be told of keys let go. Under the name the key went to, or, where that name has not
+    /// this folder any more, under the name it has now among the panes of its workspace (it was
+    /// renamed since the viewer last looked: the name is out of date, the key is not). Both are
+    /// looked at when it matters. (Between that look and the write, a pane moved away and another
+    /// put under its name would get it: as with every write by a name.)
     fn pass(&mut self, directory: &Path, folder: &Folder, raw: &[u8]) {
-        if folder.is(directory) && releases(directory) {
+        let panes = || fs::read_dir(directory.parent()?).ok();
+        let named = |entry: fs::DirEntry| entry.file_name().to_str().is_some_and(is_name).then(|| entry.path());
+        let renamed = || panes()?.flatten().filter_map(named).find(|pane| folder.is(pane));
+        let now = if folder.is(directory) { Some(directory.to_path_buf()) } else { renamed() };
+        if let Some(pane) = now.filter(|pane| releases(pane)) {
             self.send();
-            let _ = send_to(&directory.join("in"), raw);
+            let _ = send_to(&pane.join("in"), raw);
         }
     }
 

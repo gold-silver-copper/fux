@@ -2769,6 +2769,25 @@ fn a_key_held_while_its_pane_is_renamed_is_held_and_let_go_in_that_pane() {
     let shown = || read(&renamed.join("shown/screen")).replace('\n', "");
     until("the next key has come and gone", || shown().ends_with("^[[98;1:1u^[[98;1:3u"));
     assert_eq!(shown(), "^[[97;1:1u^[[97;1:2u^[[97;1:3u^[[98;1:1u^[[98;1:3u");
+    // A key's release is not lost on a name its pane had: it goes to the folder, under whatever name
+    // that has by then. Here a key goes down, and the pane is moved by hand (`mv`: the layout knows
+    // nothing of it, the pane leaves its tab, and the other pane has the keys). The key is let go
+    // in the program it went down in, which the viewer has to find under its new name.
+    // (The layout is edited under its lock: the viewer writes it too when a pane comes.)
+    inner.start("other", &["sleep", "600"]);
+    for edit in [&["split", "row", "other", "beside", "renamed"][..], &["pane", "renamed"]] {
+        assert!(inner.fux().arg("layout").args(edit).ended().success());
+    }
+    until("both panes are drawn", || read(&view.join("shown/screen")).contains('│'));
+    send(&view.join("in"), key(99, 1));
+    until("the key is down in the pane", || shown().ends_with("^[[99;1:1u"));
+    let moved = inner.0.join("main/moved");
+    fs::rename(&renamed, &moved).unwrap();
+    until_or(
+        "the key is let go in the pane that was moved",
+        || read(&moved.join("shown/screen")),
+        || read(&moved.join("shown/screen")).replace('\n', "").ends_with("^[[99;1:1u^[[99;1:3u"),
+    );
 }
 
 #[test]
