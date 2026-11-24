@@ -761,6 +761,160 @@ On disk a busy pane costs writes (see "Bounds"). Then run the script at
 login, before the first `fux view`. (`keys/.empty` is no place for it: that script runs only in a
 workspace with no pane folders, and the panes to bring back are folders.)
 
+### Keeping the session in memory and snapshotting to disk (Linux)
+
+If you want the live session to stay in memory (`$XDG_RUNTIME_DIR/fux`) so
+screen redraws never touch disk, copy only what `keys/.restore` reads into a
+private directory on disk every few seconds (`colours`, `keyboard`, each
+workspace's `layout`, and each pane's `command`, `status`, `cwd`, `.before`,
+`history`, `history.1` and `main/screen`; no FIFOs, no dot-named helpers and
+none of the files rewritten on every frame).
+
+Store each boot's copy under `/proc/sys/kernel/random/boot_id` so a fresh
+boot with an empty session cannot overwrite the snapshot from before a crash:
+
+```sh
+#!/bin/sh
+# fux-snapshot: copy what keys/.restore reads from a tmpfs session to disk.
+src=$(fux dir) || exit 0
+[ -d "$src" ] && find "$src" -mindepth 3 -maxdepth 3 -name command -print -quit | grep -q . || exit 0
+
+snap=${FUX_SNAPSHOT_DIR:-"$HOME/.local/state/fux-snapshot"}
+boot=$(cat /proc/sys/kernel/random/boot_id)
+mkdir -p "$snap/boots/$boot" && chmod 700 "$snap" "$snap/boots" "$snap/boots/$boot"
+
+if [ -L "$snap/current" ] && [ "$(readlink "$snap/current")" != "boots/$boot" ]; then
+  prev=$(readlink "$snap/current")
+  if [ -d "$snap/$prev" ] && find "$snap/$prev" -mindepth 3 -maxdepth 3 -name command -print -quit | grep -q .; then
+    ln -sfn "$prev" "$snap/previous"
+  fi
+fi
+
+rsync -a --delete --no-specials --no-devices --prune-empty-dirs \
+  --exclude='/.*' \
+  --include='/colours' \
+  --include='/keyboard' \
+  --include='/*/' \
+  --include='/*/layout' \
+  --include='/*/*/' \
+  --include='/*/*/command' \
+  --include='/*/*/status' \
+  --include='/*/*/cwd' \
+  --include='/*/*/.before' \
+  --include='/*/*/history' \
+  --include='/*/*/history.1' \
+  --include='/*/*/main/' \
+  --include='/*/*/main/screen' \
+  --exclude='*' \
+  "$src/" "$snap/boots/$boot/"
+ln -sfn "boots/$boot" "$snap/current"
+
+# Keep the last five boots (never pruning current or previous).
+cur=$(readlink "$snap/current" 2>/dev/null)
+prev=$(readlink "$snap/previous" 2>/dev/null)
+ls -1dt "$snap"/boots/* 2>/dev/null | tail -n +6 | while IFS= read -r d; do
+  rel="boots/${d##*/}"
+  [ "$rel" = "$cur" ] || [ "$rel" = "$prev" ] || rm -rf "$d"
+done
+```
+
+Run it in a quiet systemd user service (`~/.config/systemd/user/fux-snapshot.service`)
+instead of a 10-second timer so it does not fill the journal, with a final
+snapshot on clean logout:
+
+```ini
+[Unit]
+Description=Snapshot fux tmpfs session to disk
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/bin/sh -c 'while sleep 10; do "$HOME/.local/bin/fux-snapshot"; done'
+ExecStopPost=/bin/sh -c '"$HOME/.local/bin/fux-snapshot" || true'
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+After a reboot or crash, copy the last boot's snapshot back into the empty
+session directory (or pass only the workspaces you want, such as `$from/main`)
+before the first `fux view`, then run `keys/.restore`:
+
+```sh
+snap=${FUX_SNAPSHOT_DIR:-"$HOME/.local/state/fux-snapshot"}
+boot=$(cat /proc/sys/kernel/random/boot_id)
+cur=$(readlink "$snap/current" 2>/dev/null)
+if [ -n "$cur" ] && [ "$cur" != "boots/$boot" ]; then from="$snap/$cur"; else from="$snap/previous"; fi
+D=$(fux dir) && mkdir -p "$D" && chmod 700 "$D"
+rsync -a --ignore-existing "$from/" "$D/"
+sh ~/.config/fux/keys/.restore "$D"
+```
+
+What this leaves aside: up to one interval (10 seconds) of output and any
+pane started inside it can be lost on a hard crash; transient workspaces
+alive at the last tick come back too unless you copy only the workspaces you
+want; and `keys/.restore` starts programs fresh rather than restoring live
+process state.
+
+### Capping a pane's memory (Linux, systemd)
+
+A pane's holder and program inherit the cgroup of whatever ran `fux start`
+(often your terminal or Wayland compositor). If a program in one pane runs
+out of memory, the kernel OOM killer or `systemd-oomd` can take down sibling
+panes—or, under a compositor service with `OOMPolicy=stop`, the whole
+graphical session.
+
+fux itself knows nothing of cgroups. On Linux with a systemd user session,
+create a capped slice (`~/.config/systemd/user/fux-panes.slice`):
+
+```ini
+[Unit]
+Description=Capped slice for fux panes
+
+[Slice]
+MemoryHigh=48G
+MemoryMax=54G
+ManagedOOMSwap=kill
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=60%
+ManagedOOMMemoryPressureDurationSec=5s
+```
+
+Then wrap any pane's command with `systemd-run --user --scope` so it runs in
+its own foreground scope on the same PTY:
+
+```sh
+fux start work/job -- systemd-run --user --quiet --scope \
+  --slice=fux-panes.slice -p OOMPolicy=continue -p MemoryMax=16G -p MemorySwapMax=4G \
+  -- my-command
+```
+
+To isolate every interactive tab automatically (and anything started from
+it, which inherits that tab's scope), wrap the command line in
+`~/.config/fux/keys/.shell`—leaving `.shell` itself outside the cap so it
+still removes the pane's folder when the command exits:
+
+```sh
+if command -v systemd-run >/dev/null 2>&1; then
+  if [ $# -gt 0 ]; then
+    systemd-run --user --quiet --scope --slice=fux-panes.slice \
+      -p OOMPolicy=continue -p MemoryMax=24G -p MemorySwapMax=4G -- "$@"
+  else
+    systemd-run --user --quiet --scope --slice=fux-panes.slice \
+      -p OOMPolicy=continue -p MemoryMax=24G -p MemorySwapMax=4G -- "${SHELL:-sh}"
+  fi
+else
+  if [ $# -gt 0 ]; then "$@"; else "${SHELL:-sh}"; fi
+fi
+```
+
+With `OOMPolicy=continue`, a kernel OOM kill inside the scope kills only the
+runaway process (exit 137) and leaves the shell, the pane, and every other
+pane untouched. `systemd-oomd` still kills a whole scope on sustained
+pressure, which is why each pane gets its own scope. Because `command`
+records the wrapped argv, `keys/.restore` keeps the cap when restarting a
+pane.
+
 ## Don't
 
 fux adds nothing to stop these. What happens is what Unix does:
