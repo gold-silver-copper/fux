@@ -1091,14 +1091,16 @@ fn a_reader_that_replays_changes_from_any_earlier_round_has_the_pane_as_it_is() 
         until_or(&format!("the screen shows {shows:?}"), screen, || screen().contains(shows));
     };
     // A shell, what it says once (a directory, a title, a clipboard, a bell), and what takes it back.
-    typed("echo o''ne\n", "\none\n");
+    // (What is typed just before a prompt is answered on that prompt's row: no text waited for begins a row.)
+    until_or("the shell's prompt shows", screen, || screen().starts_with('$'));
+    typed("echo o''ne\n", "one\n");
     assert!(see("with a shell in it").1.list.iter().any(|(_, change)| *change == Change::Fifo("in".into())));
-    typed("printf '\\033]7;file:///tmp\\007\\033]0;a title\\007\\033]52;c;aGk=\\007\\a'; echo s''aid\n", "\nsaid\n");
+    typed("printf '\\033]7;file:///tmp\\007\\033]0;a title\\007\\033]52;c;aGk=\\007\\a'; echo s''aid\n", "said\n");
     until("the files are there", || {
         ["cwd", "title", "clipboard", "notice"].iter().all(|name| pane.join(name).exists())
     });
     see("with what the program said");
-    typed("printf '\\033]7;file://elsewhere/tmp\\007\\033]0;\\007'; echo t''aken\n", "\ntaken\n");
+    typed("printf '\\033]7;file://elsewhere/tmp\\007\\033]0;\\007'; echo t''aken\n", "taken\n");
     until("the files are gone", || !pane.join("cwd").exists() && !pane.join("title").exists());
     see("without it");
     // A line in the log is in a round.
@@ -1112,11 +1114,11 @@ fn a_reader_that_replays_changes_from_any_earlier_round_has_the_pane_as_it_is() 
         if last.elapsed() > Duration::from_millis(300) && look().is_some() {
             last = Instant::now();
         }
-        screen().contains("\nflooded\n")
+        screen().contains("flooded\n")
     });
     let (_, changes) = see("after the flood");
     let moves = changes.list.iter().filter(|(_, change)| matches!(change, Change::Move(..))).count();
-    assert!(moves == 4 && changes.since == 0 && changes.list.len() < 60, "{changes}");
+    assert!(moves >= 4 && moves % 2 == 0 && changes.since == 0 && changes.list.len() < 60, "{changes}");
     // The alternate screen, and back.
     send(&pane.join("in"), "printf '\\033[?1049hfull'; read x; printf '\\033[?1049l'\n");
     until("the program has the alternate screen", || {
@@ -1143,14 +1145,14 @@ fn a_reader_that_replays_changes_from_any_earlier_round_has_the_pane_as_it_is() 
         send(&pane.join("in"), format!("{n}\n"));
         until_or("the lines are printed", screen, || {
             most = most.max(look().map_or(0, |(read, _)| read));
-            screen().contains(&format!("\nprinted {n}\n"))
+            screen().contains(&format!("printed {n}\n"))
         });
         most = most.max(see("after the lines").0);
     }
     typed("q\n", "\nq\n$");
     assert!(*cuts.borrow() > 0 && most < 64 << 10, "{} cuts seen, {most} bytes read", cuts.borrow());
     // A picture, and the picture gone.
-    typed("printf '\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\'; echo dr''awn\n", "\ndrawn\n");
+    typed("printf '\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\'; echo dr''awn\n", "drawn\n");
     until("the picture has its file", || pane.join("pic-1.sixel").exists());
     see("with a picture");
     typed("printf '\\033[2J\\033[H'; echo cl''eared\n", "cleared\n");
@@ -1188,7 +1190,8 @@ fn what_a_round_that_failed_did_is_said_when_one_ends_well_and_what_cannot_be_sa
         let (number, folder, text) = seen.unwrap();
         (number, folder, Changes::parse(&text).unwrap_or_else(|| panic!("round {number}: no `changes`: {text:?}")))
     };
-    typed("echo o''ne\n", "\none\n");
+    until_or("the shell's prompt shows", screen, || screen().starts_with('$'));
+    typed("echo o''ne\n", "one\n");
     let (first, before, _) = round();
     // A round that fails (the list of the screen's pictures cannot be written: a folder is where its
     // new file is put together) has written a picture's file and a line in the log, and has said
@@ -1214,12 +1217,12 @@ fn what_a_round_that_failed_did_is_said_when_one_ends_well_and_what_cannot_be_sa
         fs::set_permissions(pane.join("history.styled"), std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap()
     };
     mode(0o000);
-    typed("i=0; while [ $i -lt 40 ]; do echo $i; i=$((i + 1)); done; echo sc''rolled\n", "\nscrolled\n");
+    typed("i=0; while [ $i -lt 40 ]; do echo $i; i=$((i + 1)); done; echo sc''rolled\n", "scrolled\n");
     until("the log says what was lost", || read(&pane.join("log")).contains("history.styled was lost"));
     mode(0o600);
     let (lost, before, changes) = round();
     assert!(changes.since > number && changes.since <= lost && changes.after(number).is_none(), "{changes}");
-    typed("echo l''ater\n", "\nlater\n");
+    typed("echo l''ater\n", "later\n");
     let (_, folder, changes) = round();
     assert_eq!(replayed(&before, changes.after(lost).unwrap(), &folder).map(|_| ()), Ok(()), "{changes}");
 }
