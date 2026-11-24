@@ -12,6 +12,9 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(target_os = "linux")]
 mod os {
     use std::ffi::{c_int, c_ulong};
@@ -200,6 +203,14 @@ pub fn open(path: impl AsRef<Path>, write: bool) -> io::Result<File> {
 /// there holds no caller: it is opened without waiting, and then found to be none.
 pub fn open_regular(path: impl AsRef<Path>) -> io::Result<File> {
     let file = OpenOptions::new().read(true).custom_flags(os::O_NONBLOCK | os::O_NOFOLLOW).open(path)?;
+    if file.metadata()?.is_file() { Ok(file) } else { Err(io::ErrorKind::InvalidInput.into()) }
+}
+
+/// Opens, to write, the file a name is the name of, as `open_regular` opens it to read: not what a
+/// link of that name leads to, and nothing that is no file (a FIFO there is not waited at, and not
+/// written into). The file is not made, and it is as long as it was: where is written is the caller's.
+pub fn open_regular_write(path: impl AsRef<Path>) -> io::Result<File> {
+    let file = OpenOptions::new().write(true).custom_flags(os::O_NONBLOCK | os::O_NOFOLLOW).open(path)?;
     if file.metadata()?.is_file() { Ok(file) } else { Err(io::ErrorKind::InvalidInput.into()) }
 }
 
