@@ -473,6 +473,89 @@ fn a_shells_marks_are_line_numbers_of_the_pane_that_scrolling_and_resizing_leave
     assert_eq!(term.marks_text().lines().count(), 1000);
 }
 
+/// What a reader of a pane's folder has of its marks at one look: the number in `marks.dropped`, and the lines of `marks`.
+type Reading = (u64, Vec<String>);
+
+fn reading(term: &Term) -> Reading {
+    (term.marks_dropped(), term.marks_text().lines().map(String::from).collect())
+}
+
+/// What a reader subtracts, of two readings: the codes of the `end`s marked between them, oldest first
+/// (line n of `marks`, from 1, is mark number dropped + n: the `end`s numbered above the last `end`
+/// read before), and how many marks came and went between the two, in neither.
+fn since(was: &Reading, now: &Reading) -> (Vec<String>, u64) {
+    let ends = |(dropped, lines): &Reading| {
+        let numbered = (dropped + 1..).zip(lines.clone());
+        numbered.filter_map(|(n, line)| Some((n, line.split_once(" end ")?.1.to_string()))).collect::<Vec<_>>()
+    };
+    let last = ends(was).last().map_or(was.0, |end| end.0);
+    let codes = ends(now).into_iter().filter(|end| end.0 > last).map(|end| end.1).collect();
+    (codes, now.0.saturating_sub(was.0 + was.1.len() as u64))
+}
+
+#[test]
+fn two_readings_of_the_marks_say_what_was_marked_between_them_whatever_moved_or_went() {
+    let codes = |commands: std::ops::Range<usize>| commands.map(|n| (n % 256).to_string()).collect::<Vec<_>>();
+    let mark = |kind: &str| format!("\x1b]133;{kind}\x07");
+    // A shell that makes all four marks: its prompt, and a command typed there that prints a line
+    // and ends with a code, the next prompt after it (on a screen it has `clear`ed, or not).
+    let prompt = format!("{}$ {}", mark("A"), mark("B"));
+    let run = |code: usize, clear: &str| {
+        format!("run\r\n{}x\r\n{}{clear}{prompt}", mark("C"), mark(&format!("D;{}", code % 256)))
+    };
+    let clear = "\x1b[H\x1b[2J";
+    assert_eq!(reading(&term(80, 24, "")), (0, vec![]));
+
+    // The shell clears at each prompt, 255 times in a pane of 80 by 24: the file is full, and every
+    // mark in it is on the screen, at one place.
+    let mut pane = term(80, 24, &prompt);
+    pane.feed(codes(0..255).iter().map(|_| run(0, clear)).collect::<String>().as_bytes());
+    let was = reading(&pane);
+    assert_eq!((was.0, was.1.len(), was.1.iter().filter(|line| line.starts_with("0 0 ")).count()), (22, 1000, 999));
+    // A line is inserted at the top: every mark has another place, and none was made.
+    pane.feed(b"\x1b7\x1b[1;1H\x1b[L\x1b8\x1b[B");
+    assert!(reading(&pane).1.iter().all(|line| line.starts_with("1 ")) && since(&was, &reading(&pane)).0.is_empty());
+    // A command scrolls the screen down and runs on: its output is marked, nothing has ended.
+    pane.feed(format!("run\r\n{}\x1b[1T", mark("C")).as_bytes());
+    assert_eq!(since(&was, &reading(&pane)), (vec![], 0));
+    // It ends with 5; 17 more are run. Each end is there once, in its order, for who read before
+    // them all and for who read before the last.
+    pane.feed(format!("x\r\n{}{clear}{prompt}{}", mark("D;5"), run(4, clear)).as_bytes());
+    assert_eq!(since(&was, &reading(&pane)), (vec!["5".to_string(), "4".to_string()], 0));
+    pane.feed((6..21).map(|code| run(code, clear)).collect::<String>().as_bytes());
+    let asked = reading(&pane);
+    pane.feed(run(21, clear).as_bytes());
+    let all = [vec!["5".to_string(), "4".to_string()], codes(6..22)].concat();
+    assert_eq!((since(&was, &reading(&pane)), since(&asked, &reading(&pane))), ((all, 0), (codes(21..22), 0)));
+
+    // Three hundred commands between two readings, more than the file keeps: the first fifty's
+    // marks came and went, which the reader knows, and how many they were; the rest are all there.
+    let mut pane = term(80, 24, &format!("{prompt}{}", run(7, "")));
+    let was = reading(&pane);
+    assert_eq!((was.0, was.1.len()), (0, 6));
+    pane.feed((0..300).map(|code| run(code, "")).collect::<String>().as_bytes());
+    assert_eq!((reading(&pane).0, since(&was, &reading(&pane))), (206, (codes(50..300), 200)));
+    // Across many thousands, by a reader that looks every seventh command: the seven, each time.
+    let mut was = reading(&pane);
+    for look in 0..429 {
+        let seven = look * 7..look * 7 + 7;
+        pane.feed(seven.clone().map(|code| run(code, "")).collect::<String>().as_bytes());
+        let now = reading(&pane);
+        assert_eq!((since(&was, &now), now.1.len(), now.0 - was.0), ((codes(seven), 0), 1000, 28));
+        was = now;
+    }
+    // A clear, a reset and a prompt drawn again in its place put marks elsewhere, and number none anew.
+    pane.feed(format!("{clear}\x1bc{prompt}").as_bytes());
+    assert_eq!((reading(&pane).0, reading(&pane).1.len(), since(&was, &reading(&pane))), (was.0, 1000, (vec![], 0)));
+    // (A prompt drawn again takes back the `prompt` and the `command` that end the file, and what
+    // is marked next has their numbers: an `end` is counted from the last `end`, not from the last mark.)
+    pane.feed(format!("\r{}{}", mark("A"), mark("D;9")).as_bytes());
+    assert_eq!(
+        (reading(&pane).0, reading(&pane).1.len(), since(&was, &reading(&pane))),
+        (was.0, 1000, (codes(9..10), 0))
+    );
+}
+
 #[test]
 fn a_link_is_on_its_cells_through_scrolling_erasing_and_wrapping_and_ends_at_history() {
     let link = |address: &str, text: &str| format!("\x1b]8;id=1;{address}\x1b\\{text}\x1b]8;;\x07");

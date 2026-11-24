@@ -526,6 +526,8 @@ pub struct Term {
     link: u16,
     /// The marks a shell put at its prompts (OSC 133): where, kind, exit code. The last thousand.
     marks: Vec<(At, MarkKind, Option<u8>)>,
+    /// How many marks were before those: the oldest, dropped as more than a thousand came.
+    dropped: u64,
     /// Where history ends.
     tail: Tail,
     /// The most pending history bytes buffered in `Out` (0 disables string history buffering).
@@ -619,6 +621,7 @@ impl Term {
             last: '\0',
             cluster: None,
             marks: Vec::new(),
+            dropped: 0,
             links: Vec::new(),
             link: 0,
             tail: Tail::default(),
@@ -905,6 +908,12 @@ impl Term {
             }
         }
         out
+    }
+
+    /// How many marks were dropped from the front of `marks`, which are the last thousand: the
+    /// n-th of them (from 1) is mark number this + n for as long as it is kept. It never goes back.
+    pub fn marks_dropped(&self) -> u64 {
+        self.dropped
     }
 
     /// What is done to the main screen's rows is done to the marks on them: `to` says where a
@@ -1653,6 +1662,7 @@ impl Term {
                     history_max: self.history_max,
                     version: self.version,
                     marks: std::mem::take(&mut self.marks),
+                    dropped: self.dropped,
                     ..Term::new(self.screen.cols, self.screen.rows)
                 };
                 self.move_marks(|_, _| (0, 0));
@@ -1880,6 +1890,7 @@ impl Term {
                 self.marks.push((here, kind, code));
                 let extra = self.marks.len().saturating_sub(1000);
                 self.marks.drain(..extra);
+                self.dropped += extra as u64;
             }
             // (Of kitty's form only plain words to show: no questions, no parts, nothing encoded.)
             "99" => {
