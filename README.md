@@ -301,7 +301,7 @@ that asks from a shell's prompt finds it on the command line.
 What colours has the terminal? Programs ask (vim, Neovim and others, to
 choose a light or a dark theme), and a pane has no terminal of its own to
 know. The answer is one file, `colours` in the session directory
-(`$(fux dir)/colours`), plain lines that you may write yourself:
+(`$(fux dir)/colours` in the default one), plain lines that you may write yourself:
 
 ```
 foreground #d0d0d0
@@ -319,7 +319,10 @@ is. Two viewers on terminals of different colours do not agree: the one that
 wrote last is believed. A pane's holder answers a program's question (OSC
 10, 11, 12, and 4 with `?`) from that file, with or without a viewer, and says
 nothing about a colour the file has no line for: a program is never told a
-colour that someone made up.
+colour that someone made up. (To a holder the session is the folder two above
+its pane's own: a pane started by a path that is in no session reads a
+`colours`, and a `keyboard`, from whatever folder that is, if it has one, and a
+pane moved to another session reads that one's.)
 
 A colour a program sets is its pane's, and no other's. It sets one with OSC
 4 (a palette number, any number of pairs in one string), 10 (the
@@ -858,6 +861,9 @@ fux adds nothing to stop these. What happens is what Unix does:
   Ctrl-C reaches your shell as an escape sequence; and the cursor keeps the
   colour a pane gave it. Its folder `.view.PID` stays in the session directory
   (`rm -r` it; a viewer that is given the same number later removes it). The panes do not care.
+  Closing the terminal's window is such a kill (the hangup ends the viewer): it
+  leaves a `.view.PID` each time, which stay in a session that outlasts a
+  reboot. Leave with `C-b d` first.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
   kernel hangs up its program. `state` stays as it was (`running`, as a rule) and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain

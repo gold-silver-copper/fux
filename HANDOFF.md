@@ -102,7 +102,7 @@ The default session is `$XDG_RUNTIME_DIR/fux`, else `~/.cache/fux`: a name is a 
 command is typed. Anything else is named by a directory's path (an argument that begins with `/` or
 `.`). The keys are the directory named to `fux view WORKSPACE KEYS`, else `$XDG_CONFIG_HOME/fux/keys`,
 else `~/.config/fux/keys`. A pane's program sees `TERM_PROGRAM=fux`; XTVERSION says `fux VERSION`.
-fux reads and sets no variable of its own (D123): what `FUX_DIR`, `FUX_WS` and `FUX_KEYS` said is an
+fux sets, reads and removes no variable of its own (D123): what `FUX_DIR`, `FUX_WS` and `FUX_KEYS` said is an
 argument, what `FUX_PANE` said is `keys/.here`'s to find, and what a key's script was told in five more
 is a folder of files the viewer makes for it (`SESSION/.view.PID/N`). koh, which uses fux as a library
 and wrote to the viewer's FIFO, has changes to make before it moves to this fux: D123 lists them.
@@ -208,6 +208,18 @@ about two minutes.
    - `a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines` failed for a reviewer alone, 6 of 10 on the base and 9 of 10 on the branch (`55977 lines, 0 put aside`, dash as `sh`); 0 of 20 alone and 0 of 48 sixteen at a time where the branch was built. It asserts that `history` was put aside once when the screen says `done`, which depends on how the output was cut into writes; not looked into further.
    - `a_menu_shades_its_group_headings` and `a_shell_that_ends_with_127_closes_its_pane_…` fail on master and on the branch alike when 24 of them run at once (about one run in six); the second also once in 34 runs of the suite at 16 threads on the branch (`the holder ended without a word`: its shell ends at once and `.shell` removes the pane's folder, sometimes before the holder's first screen, which fails the start the test asserts).
    - `a_picture_that_does_not_fit_its_tile_…` failed once in the same 34 runs of the suite at 16 threads on the branch, at its one read of the viewer's screen (it waits for the left pane's picture, not for the right pane's word); not seen again in 144 runs of it 24 at a time, nor on master.
+   Known since the review of PR #484, and left (a line each; what it found and had fixed is in D123):
+   - `keys/.edit` takes a link called `workspace` in its working directory for the sign that a key's script runs it: run by hand in a directory that has such a link, it looks for `../cwd` from there, finds none, and starts the editor's pane at home.
+   - A folder whose own name ends in a line end is not for the default keys (as a session, as the keys' directory, to start a viewer in): sh drops the line ends that end a `$( )`. One with a line end inside its name is served, and tested.
+   - `keys/.here` given the session by a path from where it stands that begins with `-`: found now that perl is given the folders after `--` (it was `grep` that took the path for an option); `keys/.shell` hands what `.here` printed to `ls` and `rm` as it is, and every script passes a whole path.
+   - A path given to `fux view` that is mistyped still makes every folder on the way to it where there is a terminal, as `fux start PATH/` does; a path that is no workspace's name leaves its empty folder, which the error names and no test asserts.
+   - The viewer's folder goes on every way out but a kill, and a panic is one more: the release build aborts on a panic (none was found that can be reached), and the folder stays as after a kill.
+   - Two calls of `fux::view` at once in one process (a library's user: koh makes one) would have the one folder `.view.PID`.
+   - `fux dir` passes over any further argument; `fux start --help -- true` starts a pane called `--help` (only `--` is read as a separator); `fux wait` takes a directory from where it stands as it is.
+   - A key script's "is still running: keys no longer wait for it" takes the place of a newer message in the viewer's corner when the script's two seconds are over (on master too); the test of the 33rd script sleeps 2.5 s for it.
+   - The tests' stand-in for the viewer (`Session::key`) differs from it in two things: it sets no `COLUMNS` and `LINES` (the viewer does), and it uses the first free number for a script's folder (the viewer uses none twice). A script tested only through it is not tested for either.
+   - `tools/perf.py` was changed for D123 (`XDG_RUNTIME_DIR` where `FUX_DIR` was; its viewer writes the default keys into its scratch config directory) and has not been run since.
+   - koh, when it moves to this fux: D123's list, with what its own fallback for the session must become.
 3. **Retire fux 1:** take the plain names (above), delete nothing of `old-main` (it is the record),
    release.
 4. **koh:** whether koh (a remote shell over QUIC, a separate project) can carry pane folders between

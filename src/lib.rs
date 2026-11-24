@@ -262,9 +262,8 @@ fn run(args: &[OsString]) -> Result<(), String> {
             let wrong = "view takes a workspace, by its name or its directory, and then perhaps the keys' directory";
             let ([] | [_] | [_, _]) = rest else { return Err(wrong.into()) };
             let named = rest.first().map_or(Some("main"), |name| name.to_str()).ok_or(wrong)?;
-            // (The viewer is its session's: the folder the workspace is in, and the workspace's name there.
-            // A name's is the default session, whatever its folder there is a link to: only a path is resolved,
-            // and its folder made for that. Not where there is no terminal to show it on: nothing is made then.)
+            // (The viewer is its session's: for a name the default one, whatever the name's folder is a link to;
+            // for a path the folder its workspace is in, made and resolved for that, but not without a terminal.)
             let workspace = workspace(named, wrong)?;
             std::io::stdin().is_terminal().then_some(()).ok_or(view::NO_TERMINAL)?;
             let workspace = if named.starts_with(['/', '.']) { made(&workspace)? } else { workspace };

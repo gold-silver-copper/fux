@@ -2807,7 +2807,13 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     folder's own name must be a workspace's name: the viewer is told of other
     workspaces by name (`workspace NAME`). A path that is no such name is
     refused after its folder was made (it is made before it can be resolved):
-    an empty folder is left, and the error names it. KEYS, the keys
+    an empty folder is left, and the error names it. A workspace named by
+    its name is the default session's, whatever the folder of that name is a
+    link to: only a path is resolved (a reviewer showed a name whose folder
+    was a link into another session making the viewer that session's, with
+    not a word). And with no terminal nothing is made: the terminal is asked
+    for before the path's folder is (two reviewers: `fux view ./a/w
+    </dev/null` failed and left `a/w`). KEYS, the keys
     directory, is the second argument; with none it is
     `$XDG_CONFIG_HOME/fux/keys`, else `~/.config/fux/keys`, as before.
   - **`fux layout [WORKSPACE [EDIT…]]`.** The workspace comes before an
@@ -2839,9 +2845,10 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     directory, if there are any, and a pane moved to another session reads
     that one's.
   - **The viewer's folder.** `SESSION/.view.PID` was the viewer's FIFO and is
-    a folder, the owner's alone: `ctl` (the FIFO), `cwd` (one line: where the
-    viewer was started, so that a new shell with no pane to follow still
-    starts there and not at home; a reviewer's point), and a folder for each
+    a folder, the owner's alone: `ctl` (the FIFO), `cwd` (where the viewer
+    was started, the path and a line end, so that a new shell with no pane
+    to follow still starts there and not at home; a reviewer's point), and a
+    folder for each
     key's script that runs. A script's folder is its working directory, and
     what it is told is in it: `pane`, `workspace`, `session`, `keys` and
     `ctl` are links, each to a whole path, and `row` and `col` hold `COLS
@@ -2908,18 +2915,37 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     would start its pane in the wrong session and fail its test. The only
     `FUX_` left in the tree's code is the test that such names are passed
     on untouched and read by nobody.
-  - **Size.** Non-test Rust grew by 29 lines (116 in, 87 out), where the
-    plan had hoped for a small deletion. The variables' code went: the
+  - **Size.** Non-test Rust grew by 35 lines (124 in, 89 out; 29 before
+    the review below, which the owner accepted, and 6 for its fixes), where
+    the plan had hoped for a small deletion. The variables' code went: the
     `name!` macro, `here()`, the branches of `session()` and `workspace()`
     that read a pane's own, what `launch`, the holder and the viewer set and
     removed. The arguments that replace it are as long as it was (in
-    `src/lib.rs` 2 lines more, in the holder 8 fewer). The 35 lines more are
+    `src/lib.rs` 5 lines more, in the holder 8 fewer). The 38 lines more are
     the viewer's: its folder and one for each script, their seven facts, and
     their removal on every way out, where the plan had counted 20 in and 6
-    out and the review added `cwd` and the cleanup. The keys grew by 35
+    out and the review added `cwd` and the cleanup. The keys grew by 37
     lines (what `.shell` asks of `.here`, the directory a pane is started
     from, the arguments' comments). No extern was added to fuxix and none
     left.
+  - **What the review of the whole found by running it** (three seats,
+    2026-11-23; fixed in the same pull request, each with a test that
+    failed first). The two of `fux view` above. And a path with a line end
+    in it, which a file read with `read` and a list of names on lines both
+    cut: the key scripts took the first line of `../cwd` and of a pane's
+    `cwd` for the directory, so every pane a key started stood in `$HOME`
+    for a viewer started in such a directory; and `keys/.here` took the
+    folders that name a process from `grep -l`, so in a session with such a
+    path it found no pane, and a shell's pane no longer closed when its
+    shell ended. The scripts read the file whole now, and in `.here` perl
+    reads each `status` and counts as well as tries the lock, with the
+    folders as its arguments (it needs no grep any more). What stays: sh
+    drops the line ends that end a `$( )`, and the keys read every path so,
+    so a folder whose own name ends in a line end is not for a session, for
+    the keys or to start a viewer in; the README says it. The owner's
+    rulings on the review's questions: the 29 lines stand, and neither cut
+    is taken (the split sizes as files; `wait` and `dir` as scripts); a
+    shell pane needing perl to close itself is accepted.
   - **Replaces** D34's five names and D35; of D94, that `.restore` tells
     the panes where the keys are.
   - **koh** (0.18 as it stands uses fux 0.42 as a library, and must change
@@ -2927,7 +2953,11 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     `SESSION/.view.PID`, which is now `SESSION/.view.PID/ctl`; its two keys
     that type a byte use `"$FUX_PANE/in"`, which is `pane/in` in the folder
     the script runs in; `koh mount` with no directory reads `FUX_DIR`, which
-    nothing else reads any more (the default session, or a path). Its call
+    nothing else reads any more (the default session, or a path). Where it
+    drops that, its own fallback is to become fux's and not only lose a
+    line: an `XDG_RUNTIME_DIR` that is set and empty counts as not set (koh
+    joins `fux` to the empty one, a path under where it stands), and with
+    none it is `~/.cache/fux` (koh has the temporary directory). Its call
     of the viewer (`fux::view(session, "connect", keys)`) is unchanged.
 
 ## The old fux3's bugs: which classes are gone
