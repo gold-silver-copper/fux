@@ -558,9 +558,9 @@ fn the_tests_stop_also_when_what_ends_their_sessions_does_not_return() {
 
 #[test]
 fn the_tests_stop_with_no_command_of_another_test_left_running() {
-    // Beside the test that is held, another whose `fux start` waits (its pane's `log` is a FIFO
-    // nobody reads) and whose own deadline is far off when the watcher stops the tests: that start
-    // is stopped with them. It is no pane's yet, so no session's end would have found it.
+    // Beside the test that is held, another whose `fux start` waits (to say where its pane is, to a
+    // FIFO that is full) and whose own deadline is far off when the watcher stops the tests: that
+    // start is stopped with them. It is no pane of the session's own, so no session's end would have found it.
     let set = [("FUX_TEST_LIMIT", "2"), ("FUX_TEST_HELD", "1")];
     let out = tests(&["a_test_that_opens_a_fifo_nobody_writes", "a_test_whose_start_waits"], &set);
     let said = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -580,9 +580,14 @@ fn a_test_whose_start_waits() {
     std::thread::sleep(Duration::from_millis(750));
     let session = Session::new("waits");
     eprintln!("its session: {}", session.0.display());
-    fs::create_dir_all(session.0.join("main/p")).unwrap();
-    assert!(Command::new("mkfifo").arg(session.0.join("main/p/log")).ended().success());
-    let start = session.fux().args(["start", "p", "--", "sleep", "600"]).stdout(Stdio::null()).begin();
+    // (Its answer goes to a FIFO that is full and that nobody empties: the start waits to say it.)
+    fs::create_dir_all(&session.0).unwrap();
+    let full = session.0.join("full");
+    assert!(Command::new("mkfifo").arg(&full).ended().success());
+    let (_reader, mut filler) = (fuxix::open(&full, false).unwrap(), fuxix::open(&full, true).unwrap());
+    while filler.write(&[0; 4096]).is_ok() {}
+    let answer = fs::OpenOptions::new().write(true).open(&full).unwrap();
+    let start = session.fux().args(["start", "p", "--", "sleep", "600"]).stdout(answer).begin();
     eprintln!("its start: {}", locked(&start.child).id());
     start.end();
 }
@@ -742,35 +747,24 @@ fn a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines(
 }
 
 #[test]
-fn a_pane_moved_while_it_is_started_is_held_where_it_went_and_its_name_is_anothers_to_start() {
-    // A start has locked the pane's folder and handed the lock to its holder, which waits before its
-    // first screen (its `history` is a FIFO nobody reads yet: that the holder is there, its `status`
-    // says, and nobody asks the lock). The folder is moved, and a second start takes the name. The
-    // first holder keeps the folder that was locked for it, under its new name, and the second the
-    // new one: never two in one.
-    // (What this does not cover: a start that would open the pane by its name once more between
-    // taking the lock and starting its holder. The folder is moved here after the holder has it. To
-    // move it between the two, the test must know that the start has the lock; only asking the lock
-    // says so, and asking it can make that very start fail. The test that did was made again in a
-    // loop until it did not.)
+fn a_pane_that_is_moved_is_held_where_it_went_and_its_name_is_anothers_to_start() {
+    // A holder keeps the folder it was started in, whatever that is called by now (it works in it,
+    // and never by its name). Moved, the pane lives on under its new name, and the old name is free
+    // for another: each holder has its own folder, never two in one.
+    // (What this does not cover: a folder moved between a start's taking its lock and the holder's
+    // first screen. A pane is one run, so nothing can be put into a pane's folder before its holder
+    // to make that holder wait there, as this test did while a start took a folder that was there.)
     let session = Session::new("twostarts");
     let (pane, old) = (session.0.join("main/p"), session.0.join("main/old"));
-    fs::create_dir_all(&pane).unwrap();
-    assert!(Command::new("mkfifo").arg(pane.join("history")).ended().success());
-    let first = session.fux().args(["start", "p", "--", "sleep", "600"]).stdout(Stdio::null()).begin();
-    until("the first holder has the pane and waits", || read(&pane.join("status")).contains("command sleep 600"));
-    assert!(first.over().is_none(), "the start did not wait for its holder's first screen");
+    assert_eq!(session.start("p", &["sh", "-c", "read x; echo mo''ved; exec sleep 600"]), pane);
     let held = read(&pane.join("status"));
     fs::rename(&pane, &old).unwrap();
     assert_eq!(session.start("p", &["sleep", "600"]), pane);
     let second = read(&pane.join("status"));
-    // (Read from now on, without waiting: the first holder goes on to its first screen.)
-    let history = fuxix::open(old.join("history"), false).unwrap();
-    assert!(first.end().success());
-    until("the first holder has its screen where its folder went", || fact(&old, "state") == "running");
+    send(&old.join("in"), "\n");
+    until("the first holder writes where its folder went", || read(&old.join("shown/screen")).contains("moved"));
     assert_eq!((read(&old.join("status")), read(&pane.join("status"))), (held.clone(), second.clone()));
-    assert_ne!(held, second);
-    drop(history);
+    assert!(held != second && !read(&pane.join("shown/screen")).contains("moved"));
 }
 
 #[test]
@@ -786,8 +780,8 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     // Two panes with text: one whose line has scrolled into history, one still running. And an
     // editor for the test, which notes the line it is to open at and the line it finds there.
     let old = session.start("w/old", &["sh", "-c", "echo 'a needle in old'; seq 1 60; exec sleep 600"]);
-    // (The other's arguments have no blank in them, and what a shell would expand.)
-    let other = session.start("v/other", &["printf", "%s\\n", "*", "the-needle;$HOME"]);
+    // (The other's arguments: what a shell would expand, one with a blank in it, and one that is empty.)
+    let other = session.start("v/other", &["printf", "<%s>\\n", "*", "the-needle;$HOME", "two  words", ""]);
     until("both have printed", || {
         read(&old.join("history")).contains("needle") && read(&other.join("shown/screen")).contains("$HOME")
     });
@@ -814,32 +808,44 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
             .is_some_and(|code| code != 0)
     }) {
         until("the lines found are listed", || read(&find.join("shown/screen")).contains("w/old 1:a needle in old"));
-        assert!(read(&find.join("shown/screen")).contains("v/other 2:the-needle;$HOME"));
+        assert!(read(&find.join("shown/screen")).contains("v/other 2:<the-needle;$HOME>"));
         send(&find.join("in"), "1\r");
-        until("the editor was opened at the line", || read(&out) == "the-needle;$HOME\n");
+        until("the editor was opened at the line", || read(&out) == "<the-needle;$HOME>\n");
     }
     let _ = fs::remove_dir_all(&find);
-    // A pane whose program has ended is started again by `.restore`, from the command line in
-    // its `status` (no other file says what it ran): the words of it as they are, none of them
-    // expanded, and what it had printed kept beside it. The one that runs is left alone.
+    // A pane whose program has ended is started anew by `.restore`, from its `command` file: the
+    // program and its arguments as they were given, each ended by a zero byte, none of them split,
+    // expanded or lost. The folder of the run that is over goes, and what that run had printed is the
+    // new pane's `.before`. The pane that runs is left alone.
     assert!(session.fux().arg("wait").arg(&other).ended().success());
     let (was, runs) = (read(&other.join("status")), read(&old.join("status")));
-    assert!(was.ends_with("\ncommand printf %s\\n * the-needle;$HOME\n"), "{was}");
-    assert!(!other.join("argv").exists(), "a pane has no argv file: its command is in status");
+    assert!(was.ends_with("\ncommand printf <%s>\\n * the-needle;$HOME two  words \n"), "{was}");
+    assert_eq!(fs::read(other.join("command")).unwrap(), b"printf\0<%s>\\n\0*\0the-needle;$HOME\0two  words\0\0");
+    let printed = "<*>\n<the-needle;$HOME>\n<two  words>\n<>\n";
     // (The session is named from where the script is run, as a login may name it: it is the same
     // session after the script has gone to the pane's directory, here the home it is given.)
     let (home, named) = (session.0.join("home"), session.0.file_name().unwrap());
     fs::create_dir_all(&home).unwrap();
-    let mut restore = Command::new("sh");
-    restore.arg(keys.join(".restore")).env("PATH", &path).env("FUX_DIR", named).env("HOME", &home);
-    let restored = restore.current_dir(session.0.parent().unwrap()).run();
-    assert_eq!(String::from_utf8_lossy(&restored.stdout), "started v/other again\n");
+    let restore = || {
+        let mut restore = Command::new("sh");
+        restore.arg(keys.join(".restore")).env("PATH", &path).env("FUX_DIR", named).env("HOME", &home);
+        restore.current_dir(session.0.parent().unwrap()).run()
+    };
+    let restored = restore();
+    assert_eq!(String::from_utf8_lossy(&restored.stdout), "started v/other again\n", "{restored:?}");
     assert!(!home.join(named).exists(), "the pane was started in a session of that name under its own directory");
     until("it has run again", || {
-        read(&other.join("status")) != was && read(&other.join("shown/screen")).starts_with("*\nthe-needle;$HOME\n")
+        read(&other.join("status")) != was && read(&other.join("shown/screen")).starts_with(printed)
     });
-    assert!(read(&other.join("before")).contains("the-needle;$HOME") && !other.join("argv").exists());
+    assert_eq!(read(&other.join(".before")).trim_end(), printed.trim_end());
     assert_eq!(read(&old.join("status")), runs);
+    // Restored a second time, the pane has what both runs printed: the `.before` it had, then its own.
+    assert!(session.fux().arg("wait").arg(&other).ended().success());
+    assert_eq!(String::from_utf8_lossy(&restore().stdout), "started v/other again\n");
+    assert_eq!(read(&other.join(".before")).matches("<two  words>").count(), 2);
+    // Nothing of the script's is left in the session (a name with a dot first is nobody's pane).
+    let left = fs::read_dir(&session.0).unwrap().flatten().map(|entry| entry.file_name().into_string().unwrap());
+    assert_eq!(left.filter(|name| name.starts_with(".restore")).collect::<Vec<_>>(), [""; 0]);
 }
 
 #[test]
@@ -950,20 +956,10 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     until("the refusal is logged", || read(&pane.join("log")).contains("fly: not a command"));
     send(&pane.join("ctl"), "kill \x1b]0;now\x07\n");
     until("a refused line is logged without its control codes", || read(&pane.join("log")).contains("kill ?]0;now?"));
-    // A pane whose program cannot start leaves its folder, with a log that says why; started
-    // again under that name, it runs.
-    assert!(!session.fux().args(["start", "none", "--", "/no/such/program"]).run().status.success());
-    assert!(read(&session.0.join("main/none/log")).contains("cannot start /no/such/program"));
-    assert_eq!(fact(&session.start("none", &["sleep", "600"]), "state"), "running");
-    // A second start of a live pane is refused; the first is not disturbed.
-    assert!(!session.fux().args(["start", "build", "--", "sh"]).run().status.success());
     send(&pane.join("in"), "exit 3\n");
     let waited = session.fux().arg("wait").arg(&pane).run();
     assert!(String::from_utf8_lossy(&waited.stdout).contains("state exited 3"));
     assert!(!pane.join("in").exists() && !pane.join("ctl").exists(), "the FIFOs go with the holder");
-    // A start in place that fails leaves what the last program left.
-    assert!(!session.fux().args(["start", "build", "--", "/no/such/program"]).run().status.success());
-    assert!(fact(&pane, "state") == "exited 3" && read(&pane.join("shown/screen")).contains("exit 3"));
     assert!(!session.fux().args(["start", "layout"]).run().status.success(), "the layout file's name is taken");
     // A workspace's name that is none is refused: it is not taken to mean `main`.
     let odd = session.fux().env("FUX_WS", "main/").arg("layout").run();
@@ -972,6 +968,43 @@ fn what_is_written_to_in_is_typed_and_what_the_program_shows_is_in_screen() {
     let none = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"\xff");
     let odd = session.fux().env("FUX_WS", none).arg("layout").run();
     assert!(!odd.status.success() && String::from_utf8_lossy(&odd.stderr).contains("workspace"), "{odd:?}");
+}
+
+#[test]
+fn a_pane_is_one_run_and_a_name_that_is_there_is_refused_whatever_is_there() {
+    let session = Session::new("onerun");
+    let refused = |name: &str| {
+        let out = session.fux().args(["start", name, "--", "sleep", "600"]).run();
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success() && out.stdout.is_empty() && said.contains("rm -r"), "{name}: {out:?}");
+    };
+    // A pane that runs is not started again; nor is it when its program has ended, and nothing of
+    // that run is touched: a pane is one run, and its folder is the record of it.
+    let pane = session.start("p", &["sh", "-c", "echo first; read x; exit 3"]);
+    refused("p");
+    send(&pane.join("in"), "\n");
+    assert!(String::from_utf8_lossy(&session.fux().arg("wait").arg(&pane).run().stdout).contains("state exited 3"));
+    let files = || ["status", "state", "generation", "main/screen", "log"].map(|name| stamp_of(&pane, name));
+    let was = files();
+    refused("p");
+    assert_eq!(files(), was);
+    assert!(fact(&pane, "state") == "exited 3" && read(&pane.join("main/screen")).starts_with("first\n"));
+    // A pane that never came up stays as it is too, with the `log` that says why.
+    assert!(!session.fux().args(["start", "none", "--", "/no/such/program"]).run().status.success());
+    refused("none");
+    assert!(read(&session.0.join("main/none/log")).contains("cannot start /no/such/program"));
+    // A folder nobody started is a name that is there (making the folder is the claim to a name),
+    // and a number that is there is not free.
+    for made in ["made", "1"] {
+        fs::create_dir(session.0.join("main").join(made)).unwrap();
+    }
+    refused("made");
+    assert!(fs::read_dir(session.0.join("main/made")).unwrap().next().is_none(), "nothing was put into it");
+    assert_eq!(session.start("", &["sleep", "600"]), session.0.join("main/2"));
+    // Removed, the name is free, and its pane is a new one.
+    fs::remove_dir_all(&pane).unwrap();
+    assert_eq!(session.start("p", &["sleep", "600"]), pane);
+    assert!(fact(&pane, "state") == "running" && fact(&pane, "generation") == "2");
 }
 
 #[test]
@@ -1656,10 +1689,11 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     // One file says how the screen's rows are lines of the pane's text: the number of the line
     // its first row is of (the wrapped one, 13 lines in), then the rows that go on from the row
     // above (the first, from history). No other file says either.
-    assert_eq!(
-        read(&pane.join("main/lines")),
-        "13\n0\n",
-        "the number of the first row's line, then the rows that go on"
+    // (Waited for: `marks` is written before it in a round, and was read a moment ago.)
+    until_or(
+        "`main/lines` has the number of the first row's line, then the rows that go on",
+        || read(&pane.join("main/lines")),
+        || read(&pane.join("main/lines")) == "13\n0\n",
     );
     assert!(!pane.join("top").exists() && !pane.join("wraps").exists());
     // An editor for the test: it is called `vim`, so it is given a line number; it notes that
@@ -1715,7 +1749,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     until("less was given the file", || bare(&read(&out)) == text);
     assert!(read(&out).contains("\n\x1b[0;32ma-long-line-\x1b[mthat-wraps-in-twelve\n$ second\n"), "{:?}", read(&out));
     let asked = read(&session.0.join("out.at"));
-    assert!(asked.starts_with("-+F -R +G /") && asked.ends_with("/text\n"), "{asked}");
+    assert!(asked.starts_with(&format!("-+F -R +G {}/.text.", session.0.display())), "{asked}");
     // The rows left out at the screen's end are those with no text: a colour alone is none.
     // And the cell a wide character left empty at a row's end is no text: the rows are joined without it.
     let blue = session.start("blue", &["sh", "-c", "printf 'x\\033[44m\\033[J%78s\u{754c}\\033[m' ''; sleep 600"]);
@@ -1753,13 +1787,17 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
         run("S-c"),
         "nothing of the last command's output is here (it printed none, or the screen was cleared)\n"
     );
-    // An editor still open when its pane is closed with the close key: the file it was given is
-    // in the pane's own folder, and goes with it.
-    assert_eq!(run_in("c", &pane, "tail -f \"$1\"".into()), "");
-    let editor =
-        || fs::read_dir(session.0.join("main")).unwrap().flatten().find(|pane| pane.path().join("text").exists());
+    // An editor still open when its pane is closed with the close key: the file it was given is a
+    // dot-named one of the session, not in its pane's folder, and is removed when the pane's end
+    // hangs the editor up.
+    assert_eq!(run_in("c", &pane, "echo ed''iting; tail -f \"$1\"".into()), "");
+    let editor = || {
+        let panes = fs::read_dir(session.0.join("main")).unwrap().flatten();
+        panes.map(|pane| pane.path()).find(|pane| read(&pane.join("shown/screen")).contains("editing"))
+    };
     until("the editor has its file", || editor().is_some());
-    let closing = editor().unwrap().path();
+    let closing = editor().unwrap();
+    assert!(!closing.join("text").exists(), "the text is in the editor's pane");
     assert_eq!(run_in("x/y", &closing, String::new()), "");
     until("the pane and its file are gone", || {
         !closing.exists()
@@ -2003,12 +2041,10 @@ fn a_held_key_does_again_what_its_press_did_and_there_only_and_a_program_started
     send(&view.join("in"), format!("\x1b[97;1:2u{}", tap("122;1")));
     until("the second pane has the keys", || shown(&second) == "^[[?11u^[[122;1:1u^[[122;1:3u");
     until("the key is let go in the first", || shown(&first) == "^[[?11u^[[97;1:1u^[[97;1:3u");
-    // The first pane's program ends and another is started under its name, in the tab that is
-    // not shown: what the terminal tells of the key after that is nothing to the new program.
-    send(&first.join("ctl"), "kill\n");
-    until("the program has ended", || fact(&first, "state") != "running");
-    // (And its holder gone: it has the pane's lock for a moment after it wrote how its program ended.)
-    assert!(inner.fux().arg("wait").arg(&first).run().status.success());
+    // The first pane is removed and another is started under its name, in a tab that is not
+    // shown: what the terminal tells of the key after that is nothing to the new pane's program.
+    // (Once more where its holder wrote a file as the folder was emptied.)
+    until("the first pane's folder is removed", || fs::remove_dir_all(&first).is_ok() || !first.exists());
     inner.start("first", &asking);
     until("the new program is told its flags", || {
         fact(&first, "state") == "running" && shown(&first).ends_with("^[[?11u")
@@ -2607,6 +2643,246 @@ fn the_viewer_writes_to_a_fifo_under_a_panes_name_and_to_nothing_a_link_there_le
 }
 
 #[test]
+fn the_viewer_knows_a_pane_by_its_folder_and_asks_no_status_who_its_program_is() {
+    // A pane's folder that no holder made, as the picture of a pane kept on another machine is: no
+    // `status`, and so no program's number; FIFOs under `in` and `ctl`, which the test reads; a
+    // `modes` that asks to be told of keys let go. The viewer asks it to take its tile's size, and
+    // a key's release follows its press there.
+    let (outer, inner) = (Session::new("idouter"), Session::new("idinner"));
+    let (keys, pane) = (inner.0.join(".keys"), inner.0.join("main/made"));
+    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(&outer.0).unwrap();
+    fs::write(outer.0.join("keyboard"), "31\n").unwrap();
+    // (Made beside the workspace's panes under a name that is no pane's, and then given the name.)
+    let make = |count: u8| {
+        let new = inner.0.join(format!("main/.made.{count}"));
+        fs::create_dir_all(new.join("main")).unwrap();
+        std::os::unix::fs::symlink("main", new.join("shown")).unwrap();
+        let screen = format!("made {count}\n");
+        for (name, text) in [("modes", "keys11\n"), ("state", "running\n"), ("main/screen.styled", screen.as_str())] {
+            fs::write(new.join(name), text).unwrap();
+        }
+        assert!(Command::new("mkfifo").arg(new.join("in")).arg(new.join("ctl")).ended().success());
+        let fifos = (fuxix::open(new.join("in"), false).unwrap(), fuxix::open(new.join("ctl"), false).unwrap());
+        let _ = fs::rename(&pane, inner.0.join(format!("main/.was.{count}")));
+        fs::rename(&new, &pane).unwrap();
+        (fifos.0, fifos.1, RefCell::new(String::new()))
+    };
+    // All that was written to a FIFO so far.
+    let got = |mut fifo: &fs::File, all: &RefCell<String>| {
+        let mut bytes = [0; 4096];
+        while let Ok(n @ 1..) = fifo.read(&mut bytes) {
+            all.borrow_mut().push_str(&String::from_utf8_lossy(&bytes[..n]));
+        }
+        all.borrow().clone()
+    };
+    let (typed, asked, all) = make(1);
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer asks its terminal for the keys the pane asks", || fact(&view, "modes").contains("keys11"));
+    until("the pane is asked to take its tile's size", || got(&asked, &all).starts_with("resize 80 24 10 20\n"));
+    until("its screen is drawn", || read(&view.join("shown/screen")).starts_with("made 1\n"));
+    let key = |letter: u8, kind: u8| format!("\x1b[{letter};1:{kind}u");
+    let all = RefCell::new(String::new());
+    send(&view.join("in"), key(97, 1) + &key(97, 3));
+    until("the key's release follows its press", || got(&typed, &all) == key(97, 1) + &key(97, 3));
+    // Another folder under the pane's name is another pane: it is asked its size as the first was
+    // (no number in a `status` tells the two apart: the folders do), and the release of a key that
+    // went down in the folder before is nothing to it.
+    send(&view.join("in"), key(98, 1));
+    until("the next key is down", || got(&typed, &all).ends_with(&key(98, 1)));
+    let (typed, asked, all) = make(2);
+    until("the new folder is asked its size", || got(&asked, &all).starts_with("resize 80 24 10 20\n"));
+    // And what is drawn is the new folder's own screen: what was read of the one before is not its
+    // (neither has a `generation` to say that its files are others).
+    until("the new folder's screen is drawn", || read(&view.join("shown/screen")).starts_with("made 2\n"));
+    let all = RefCell::new(String::new());
+    send(&view.join("in"), key(98, 3) + &key(99, 1) + &key(99, 3));
+    until("a key after it is the new pane's", || got(&typed, &all).ends_with(&key(99, 3)));
+    assert_eq!(got(&typed, &all), key(99, 1) + &key(99, 3));
+}
+
+#[test]
+fn a_viewer_that_may_open_few_files_still_types_into_its_panes() {
+    // Thirty panes side by side, and a viewer that may have 32 files open at a time (`ulimit -n`).
+    // It holds a pane's folder open to know it again, where it can: not where that would leave it
+    // none to open a pane's `in` with. What is typed reaches the pane, and a key's release too.
+    let (outer, inner) = (Session::new("fewouter"), Session::new("fewinner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(&outer.0).unwrap();
+    fs::write(outer.0.join("keyboard"), "31\n").unwrap();
+    fs::create_dir_all(&inner.0).unwrap();
+    fs::write(inner.0.join("keyboard"), "31\n").unwrap();
+    let first = inner.start("p1", &["sh", "-c", "stty raw -echo; printf '\\033[>11u'; exec cat -vt"]);
+    let names: Vec<String> = (1..=30).map(|n| format!("p{n}")).collect();
+    for name in &names[1..] {
+        inner.start(name, &["sleep", "600"]);
+    }
+    lay(&inner.0, &format!("* row({}) focus=p1\n", names.join(" ")));
+    let few = format!("ulimit -n 32 && exec '{}' view", env!("CARGO_BIN_EXE_fux"));
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let mut start = outer.fux();
+    start.env("COLUMNS", "160").args(["start", "view", "--"]).args(command).args(["sh", "-c", &few]);
+    let view = outer.started(&mut start);
+    let last = inner.0.join("main/p30");
+    until_or(
+        "every pane has its tile's size",
+        || read(&view.join("shown/screen")),
+        || {
+            fact(&last, "size").ends_with(" 24")
+                && fact(&last, "size") != "80 24"
+                && fact(&view, "modes").contains("keys11")
+        },
+    );
+    send(&view.join("in"), "\x1b[97;1:1u\x1b[97;1:3uZ");
+    until_or(
+        "the key, its release and a letter are typed into the first pane",
+        || format!("{}\n{}", read(&first.join("shown/screen")), read(&view.join("shown/screen"))),
+        || read(&first.join("shown/screen")).replace('\n', "").contains("^[[97;1:1u^[[97;1:3uZ"),
+    );
+    assert!(!read(&view.join("shown/screen")).contains("Too many open files"));
+}
+
+#[test]
+fn a_key_held_while_its_pane_is_renamed_is_held_and_let_go_in_that_pane() {
+    // The folder is the pane, whatever it is called: a key that went down in it is still down in
+    // it after `.rename`, and its repeat and its release go to the same program.
+    let (outer, inner) = (Session::new("heldouter"), Session::new("heldinner"));
+    let keys = inner.0.join(".keys");
+    for session in [&outer, &inner] {
+        fs::create_dir_all(&session.0).unwrap();
+        fs::write(session.0.join("keyboard"), "31\n").unwrap();
+    }
+    fs::create_dir_all(&keys).unwrap();
+    let pane = inner.start("a", &["sh", "-c", "stty raw -echo; printf '\\033[>11u'; exec cat -vt"]);
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    until("the viewer asked its terminal for the keys the pane asks", || fact(&view, "modes").contains("keys11"));
+    let key = |letter: u8, kind: u8| format!("\x1b[{letter};1:{kind}u");
+    send(&view.join("in"), key(97, 1));
+    until("the key is down in the pane", || read(&pane.join("shown/screen")).contains("^[[97;1:1u"));
+    let mut rename = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.rename"));
+    assert!(rename.arg(inner.0.join("main")).args(["a", "renamed"]).ended().success());
+    let renamed = inner.0.join("main/renamed");
+    send(&view.join("in"), key(97, 2) + &key(97, 3) + &key(98, 1) + &key(98, 3));
+    let shown = || read(&renamed.join("shown/screen")).replace('\n', "");
+    until("the next key has come and gone", || shown().ends_with("^[[98;1:1u^[[98;1:3u"));
+    assert_eq!(shown(), "^[[97;1:1u^[[97;1:2u^[[97;1:3u^[[98;1:1u^[[98;1:3u");
+    // A key's release is not lost on a name its pane had: it goes to the folder, under whatever name
+    // that has by then. Here a key goes down, and the pane is moved by hand (`mv`: the layout knows
+    // nothing of it, the pane leaves its tab, and the other pane has the keys). The key is let go
+    // in the program it went down in, which the viewer has to find under its new name.
+    // (The layout is edited under its lock: the viewer writes it too when a pane comes.)
+    inner.start("other", &["sleep", "600"]);
+    for edit in [&["split", "row", "other", "beside", "renamed"][..], &["pane", "renamed"]] {
+        assert!(inner.fux().arg("layout").args(edit).ended().success());
+    }
+    until("both panes are drawn", || read(&view.join("shown/screen")).contains('│'));
+    send(&view.join("in"), key(99, 1));
+    until("the key is down in the pane", || shown().ends_with("^[[99;1:1u"));
+    let moved = inner.0.join("main/moved");
+    fs::rename(&renamed, &moved).unwrap();
+    until_or(
+        "the key is let go in the pane that was moved",
+        || read(&moved.join("shown/screen")),
+        || read(&moved.join("shown/screen")).replace('\n', "").ends_with("^[[99;1:1u^[[99;1:3u"),
+    );
+}
+
+#[test]
+fn a_pane_whose_tab_is_shown_again_is_asked_its_size_once_more_and_no_more() {
+    // The viewer knows a pane's folder while the pane is a tile. A pane whose tab was not shown for
+    // a while may be another folder by then, for all the viewer knows: shown again, it is asked
+    // once to take its tile's size, and then no more.
+    let (outer, inner) = (Session::new("againouter"), Session::new("againinner"));
+    let (keys, made) = (inner.0.join(".keys"), inner.0.join("main/a"));
+    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(made.join("main")).unwrap();
+    std::os::unix::fs::symlink("main", made.join("shown")).unwrap();
+    for (name, text) in [("state", "running\n"), ("main/screen.styled", "AYE\n")] {
+        fs::write(made.join(name), text).unwrap();
+    }
+    assert!(Command::new("mkfifo").arg(made.join("in")).arg(made.join("ctl")).ended().success());
+    let (_typed, mut asks) =
+        (fuxix::open(made.join("in"), false).unwrap(), fuxix::open(made.join("ctl"), false).unwrap());
+    inner.start("b", &["sh", "-c", "echo BEE; exec sleep 600"]);
+    lay(&inner.0, "* a focus=a\n  b focus=b\n");
+    let command = ["env", &format!("FUX_DIR={}", inner.0.display()), &format!("FUX_KEYS={}", keys.display())];
+    let view = outer.start("view", &[&command[..], &[env!("CARGO_BIN_EXE_fux"), "view"]].concat());
+    // How often the pane was asked so far.
+    let all = RefCell::new(String::new());
+    let mut asked = || {
+        let mut bytes = [0; 4096];
+        while let Ok(n @ 1..) = asks.read(&mut bytes) {
+            all.borrow_mut().push_str(&String::from_utf8_lossy(&bytes[..n]));
+        }
+        all.borrow().matches("resize 80 24").count()
+    };
+    let shows = |word: &str| read(&view.join("shown/screen")).starts_with(word);
+    until("the pane is drawn and asked its size", || shows("AYE") && asked() == 1);
+    assert!(inner.fux().args(["layout", "tab", "next"]).ended().success());
+    until("the other tab is shown", || shows("BEE"));
+    assert_eq!(asked(), 1);
+    assert!(inner.fux().args(["layout", "tab", "prev"]).ended().success());
+    until("the pane is shown again, and asked again", || shows("AYE") && asked() == 2);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(asked(), 2, "{}", all.borrow());
+}
+
+#[test]
+fn rename_gives_a_pane_another_name_and_keeps_its_place_in_the_layout() {
+    use std::os::unix::fs::MetadataExt;
+    let session = Session::new("rename");
+    let main = session.0.join("main");
+    let rename = |old: &str, new: &str| {
+        Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.rename")).arg(&main).args([old, new]).run()
+    };
+    let layout = || String::from_utf8(session.fux().arg("layout").run().stdout).unwrap();
+    // Four panes in a split with shares: one named as the layout's own word, one a number.
+    let build = session.start("build", &["sleep", "600"]);
+    for name in ["log", "row", "2"] {
+        session.start(name, &["sleep", "600"]);
+    }
+    lay(&session.0, "* row(build:50 col(log row:2) 2:50) focus=build\n");
+    let (folder, status) = (fs::metadata(&build).unwrap().ino(), read(&build.join("status")));
+    // The folder is moved and the layout names it anew, in its place, with its share and the keys:
+    // the same folder, its program running on.
+    let renamed = rename("build", "tests");
+    assert!(renamed.status.success(), "{renamed:?}");
+    assert_eq!(layout(), "* row(tests:50 col(log row:2) 2:50) focus=tests\n");
+    assert!(!build.exists() && fs::metadata(main.join("tests")).unwrap().ino() == folder);
+    assert!(read(&main.join("tests/status")) == status && fact(&main.join("tests"), "state") == "running");
+    // A name is a name where a name stands: a share of the same digits is not one, nor is the
+    // layout's own word of the same letters.
+    assert!(rename("2", "50").status.success() && rename("50", "z").status.success());
+    assert_eq!(layout(), "* row(tests:50 col(log row:2) z:50) focus=tests\n");
+    assert!(rename("row", "r2").status.success());
+    assert_eq!(layout(), "* row(tests:50 col(log r2:2) z:50) focus=tests\n");
+    // Refused, and nothing changed: a name that is there, a pane that is not, and a name fux would
+    // not make (a dot first, a line's end in it, a name a workspace has a file of).
+    for (old, new) in [("log", "tests"), ("none", "x"), ("log", ".x"), ("log", "x\n"), ("log", "layout")] {
+        let refused = rename(old, new);
+        assert!(!refused.status.success() && !refused.stderr.is_empty(), "{old} {new:?}: {refused:?}");
+    }
+    assert_eq!(layout(), "* row(tests:50 col(log r2:2) z:50) focus=tests\n");
+    let mut names: Vec<_> = fs::read_dir(&main).unwrap().flatten().map(|entry| entry.file_name()).collect();
+    names.sort();
+    assert_eq!(names, ["layout", "log", "r2", "tests", "z"]);
+    // A layout that cannot be written once the folder is moved (a folder where it is put together):
+    // the script says so and puts nothing back. The pane has its new name, and a tab of its own
+    // when the layout is next settled.
+    fs::create_dir(main.join(".layout.new")).unwrap();
+    let unwritten = rename("log", "moved");
+    let said = String::from_utf8_lossy(&unwritten.stderr).into_owned();
+    assert!(unwritten.status.code() == Some(1) && said.contains("tab of its own"), "{unwritten:?}");
+    assert!(main.join("moved/status").exists() && !main.join("log").exists());
+    assert_eq!(read(&main.join("layout")), "* row(tests:50 col(log r2:2) z:50) focus=tests\n");
+    fs::remove_dir(main.join(".layout.new")).unwrap();
+    assert_eq!(layout(), "* row(tests:50 r2 z:50) focus=tests\n  moved focus=moved\n");
+}
+
+#[test]
 fn the_windows_focus_is_not_told_to_a_program_that_asks_no_more() {
     // A program that asked to be told of the focus (mode 1004) and was told it has the keys. It
     // stops asking while the viewer is stopped, and the terminal says in that time that its window
@@ -2648,7 +2924,7 @@ fn a_name_that_is_a_number_of_no_line_is_chosen_without_a_word_of_complaint() {
     let (bin, pane, list) = (folder.0.join("bin"), folder.0.join("pane"), folder.0.join("list"));
     fs::create_dir_all(&bin).unwrap();
     fs::create_dir_all(&pane).unwrap();
-    let links = "for tool in mv awk head; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
+    let links = "for tool in rm awk head; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
     assert!(Command::new("sh").arg("-c").arg(links).arg(&bin).ended().success());
     fs::write(&list, "one\tthe first\n0\tnought\n").unwrap();
     fs::write(folder.0.join("typed"), "0\n").unwrap();
@@ -2670,42 +2946,119 @@ fn a_shell_named_by_nothing_is_no_shell_named() {
 }
 
 #[test]
-fn a_pane_started_again_that_never_came_up_leaves_no_state_of_the_run_before() {
-    // A pane whose program ended with 37 is started again, and the new holder cannot write its
-    // first screen (`.marks.new` is a directory). Its `status` has the new program's number by
-    // then: the `state` beside it is not the old program's, so `fux wait` has no end to tell of.
-    let session = Session::new("wrongrun");
-    let pane = session.start("p", &["sh", "-c", "exit 37"]);
-    let wait = || session.fux().arg("wait").arg(&pane).run();
-    assert!(String::from_utf8_lossy(&wait().stdout).ends_with("state exited 37\n"));
-    fs::create_dir(pane.join(".marks.new")).unwrap();
-    let again = session.fux().args(["start", "p", "--", "sleep", "600"]).run();
-    assert!(String::from_utf8_lossy(&again.stderr).contains("cannot write the screen"), "{again:?}");
-    let (waited, state) = (wait(), read(&pane.join("state")));
-    assert!(!waited.status.success() && waited.stdout.is_empty() && state.is_empty(), "{waited:?} {state:?}");
+fn a_panes_status_names_its_holder_before_its_program_is_started() {
+    // Who keeps a pane is in its `status` before the program's first instruction: the holder, which is
+    // the program's parent. So a program that looks at once finds the pane it is in (`keys/.here`
+    // looks so); its own number follows when it runs.
+    let session = Session::new("statusfirst");
+    let looks =
+        "cat \"$FUX_PANE/status\" > \"$FUX_PANE/first\"; echo \"parent $PPID\" >> \"$FUX_PANE/first\"; exec sleep 600";
+    let pane = session.start("p", &["sh", "-c", looks]);
+    // (A line of its own: the `command` line it has copied by then says `parent` too.)
+    until("the program has looked", || read(&pane.join("first")).contains("\nparent "));
+    let (first, status) = (read(&pane.join("first")), read(&pane.join("status")));
+    let lines: Vec<&str> = status.lines().collect();
+    let holder = lines[0].strip_prefix("holder ").unwrap();
+    assert!(lines.len() == 3 && lines[1].starts_with("pid ") && lines[2].starts_with("command sh -c cat "), "{status}");
+    assert!(first.starts_with(&format!("holder {holder}\n")) && first.contains("\ncommand sh -c cat "), "{first}");
+    assert!(first.ends_with(&format!("\nparent {holder}\n")), "{first}");
+    // The order, without a race: a program that cannot be started was not tried before `status` said
+    // who tries and what. That `status` stays, with no `pid` (no program ever ran here), beside the
+    // `log` that says why; the FIFOs go, as nothing reads them.
+    let none = session.fux().args(["start", "none", "--", "/no/such/program"]).run();
+    assert!(String::from_utf8_lossy(&none.stderr).contains("cannot start /no/such/program"), "{none:?}");
+    let (none, left) = (session.0.join("main/none"), read(&session.0.join("main/none/status")));
+    let lines: Vec<&str> = left.lines().collect();
+    assert!(lines.len() == 2 && lines[0].starts_with("holder ") && lines[1] == "command /no/such/program", "{left:?}");
+    assert!(fs::symlink_metadata(none.join("in")).is_err() && fs::symlink_metadata(none.join("ctl")).is_err());
+    // It has no `state` either: `fux wait` has no end to tell of, says so and fails.
+    let waited = session.fux().arg("wait").arg(&none).run();
+    let said = String::from_utf8_lossy(&waited.stderr).into_owned();
+    assert!(waited.status.code() == Some(1) && waited.stdout.is_empty() && said.contains("/state: "), "{waited:?}");
+}
+
+#[test]
+fn a_command_that_cannot_be_written_down_does_not_cost_the_pane_its_holder() {
+    // The program is started, and then what it runs cannot be written: here a file may have 8 KiB
+    // (`ulimit -f`, with the signal for it blocked, so that the write fails and nothing is killed)
+    // and the arguments are 16. The holder goes on holding, and its `log` says what is missing: a
+    // holder that left then left a program running that nothing kept.
+    let session = Session::new("norecord");
+    let blocks = "sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGXFSZ)); exec @ARGV";
+    let mut start = Command::new("sh");
+    start.args(["-c", "ulimit -f 16 && exec perl -MPOSIX -e \"$0\" \"$@\"", blocks, env!("CARGO_BIN_EXE_fux")]);
+    start
+        .env("FUX_DIR", &session.0)
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_WS")
+        .env_remove("COLUMNS")
+        .env_remove("LINES");
+    let pane =
+        session.started(start.args(["start", "big", "--", "sh", "-c", "exec sleep 600", "sh", &"x".repeat(16 << 10)]));
+    let (status, log) = (read(&pane.join("status")), read(&pane.join("log")));
+    assert!(fact(&pane, "state") == "running" && status.lines().nth(1).is_some_and(|line| line.starts_with("pid ")));
+    assert!(log.contains("command") && log.contains("File too large"), "{log}");
+    assert!(!pane.join("command").exists() && pane.join("in").exists());
+}
+
+#[test]
+fn here_says_which_pane_a_program_is_in_and_believes_only_a_folder_a_holder_keeps() {
+    let session = Session::new("here");
+    let here = concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.here");
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let path = format!("{bin}:{}", std::env::var("PATH").unwrap());
+    let (dir, out) = (session.0.display(), session.0.join(".out"));
+    fs::create_dir_all(&out).unwrap();
+    let said = |name: &str| read(&out.join(name));
+    // In a pane's shell, in a shell that shell runs, and in a job of it in the background (the
+    // session named, as it may be): the pane's folder.
+    let pane = session.started(session.fux().env("PATH", &path).args(["start", "w/a", "--", "sh"]));
+    let asks = format!(
+        "'{here}' > '{0}/direct' 2>&1; sh -c '\"$0\" > \"$1/nested\" 2>&1' '{here}' '{0}'; '{here}' '{dir}' > '{0}/job' 2>&1 &\n",
+        out.display()
+    );
+    send(&pane.join("in"), asks);
+    until("the three have answered", || !said("job").is_empty() && !said("nested").is_empty());
+    let folder = format!("{}\n", pane.display());
+    assert_eq!((said("direct"), said("nested"), said("job")), (folder.clone(), folder.clone(), folder));
+    // Outside a pane it fails, and says so. A `status` is anyone's to write: a folder that names
+    // the asker (here its parent, this test) and that no holder keeps is not believed.
+    let outside = || Command::new(here).arg(&session.0).env("PATH", &path).run();
+    let none = outside();
+    assert!(none.status.code() == Some(1) && none.stdout.is_empty(), "{none:?}");
+    assert!(String::from_utf8_lossy(&none.stderr).contains("not in a pane of "), "{none:?}");
+    // With no session given it asks `fux dir`, and says so where there is no `fux` to ask.
+    let asks = Command::new(here).env("PATH", "/nowhere").env_remove("FUX_DIR").env_remove("FUX_PANE").run();
+    assert!(
+        asks.status.code() == Some(1) && String::from_utf8_lossy(&asks.stderr).starts_with("here: no session"),
+        "{asks:?}"
+    );
+    fs::create_dir_all(session.0.join("w/made")).unwrap();
+    fs::write(session.0.join("w/made/status"), format!("holder 1\npid {}\ncommand sh\n", std::process::id())).unwrap();
+    let made = outside();
+    assert!(made.status.code() == Some(1) && made.stdout.is_empty(), "{made:?}");
+    // Two folders that are kept and name one process are no answer: both are named, and it fails.
+    let other = session.start("w/b", &["sleep", "600"]);
+    fs::write(other.join("status"), read(&pane.join("status"))).unwrap();
+    send(&pane.join("in"), format!("'{here}' > '{0}/twice' 2>&1; echo $? > '{0}/code'\n", out.display()));
+    until("it has answered", || !said("code").is_empty());
+    let twice = said("twice");
+    assert!(said("code") == "1\n" && twice.contains("more than one pane names process"), "{twice}");
+    assert!(twice.contains(&format!("{}\n", pane.display())) && twice.contains(&format!("{}\n", other.display())));
 }
 
 #[test]
 fn a_program_that_writes_its_cwd_as_soon_as_it_runs_keeps_it() {
-    // The program writes where it is (`pwd > "$FUX_PANE/cwd"`, as the README says a shell may)
-    // before its holder has come up: here the holder waits meanwhile, before its first screen, at a
-    // `history` that is a FIFO nobody reads yet. What an earlier holder left went before the program started.
+    // The program writes where it is (`pwd > "$FUX_PANE/cwd"`, as the README says a shell may) as
+    // its first act, before its holder's first screen or after: the file is the program's to write
+    // too, and the holder removes none it did not write.
     let session = Session::new("owncwd");
-    let pane = session.0.join("main/p");
-    fs::create_dir_all(&pane).unwrap();
-    assert!(Command::new("mkfifo").arg(pane.join("history")).ended().success());
-    fs::write(pane.join("cwd"), "/left/by/an/earlier/holder\n").unwrap();
-    let says = "pwd > \"$FUX_PANE/cwd.mine\" && mv \"$FUX_PANE/cwd.mine\" \"$FUX_PANE/cwd\"; exec sleep 600";
-    let start = session.fux().args(["start", "p", "--", "sh", "-c", says]).stdout(Stdio::null()).begin();
+    let says =
+        "pwd > \"$FUX_PANE/cwd.mine\" && mv \"$FUX_PANE/cwd.mine\" \"$FUX_PANE/cwd\"; echo s''aid; exec sleep 600";
+    let pane = session.start("p", &["sh", "-c", says]);
     let here = format!("{}\n", std::env::current_dir().unwrap().display());
-    until("the program has said where it is", || read(&pane.join("cwd")) == here);
-    until("its holder has said what it runs", || read(&pane.join("status")).contains("command sh -c pwd"));
-    assert!(start.over().is_none(), "the holder was up before the test let it");
-    // (Read from now on, without waiting: the holder goes on to its first screen.)
-    let history = fuxix::open(pane.join("history"), false).unwrap();
-    assert!(start.end().success());
+    until("the program has said where it is", || read(&pane.join("shown/screen")).contains("said"));
     assert_eq!((fact(&pane, "state").as_str(), read(&pane.join("cwd"))), ("running", here));
-    drop(history);
 }
 
 #[test]
@@ -2806,35 +3159,78 @@ fn a_picture_below_a_shortened_alternate_screen_is_not_listed_until_its_row_is_b
 }
 
 #[test]
-fn a_restore_that_failed_keeps_the_text_and_a_pane_started_again_is_told_the_keys() {
+fn a_restore_that_fails_leaves_the_run_before_whole_and_a_pane_started_again_is_told_the_keys() {
     let session = Session::new("unrestored");
     let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-    // Two ended panes: one whose holder cannot write its first screen when it is started again (a
-    // directory where it puts `marks` together), and one that prints where the keys are.
-    let lost = session.start("w/lost", &["seq", "1", "60"]);
+    // Two ended panes: one whose program is gone by the time it is started again, and one that
+    // prints where the keys are.
+    fs::create_dir_all(&session.0).unwrap();
+    let counts = session.0.join("counts");
+    fs::write(&counts, "#!/bin/sh\nseq 1 60\n").unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(&counts).ended().success());
+    let lost = session.start("w/lost", &[counts.to_str().unwrap()]);
     let told = session.start("w/told", &["printenv", "FUX_KEYS"]);
     for pane in [&lost, &told] {
         assert!(session.fux().arg("wait").arg(pane).ended().success());
     }
     assert!(read(&lost.join("history")).contains("\n17\n") && read(&told.join("shown/screen")).trim().is_empty());
-    fs::create_dir(lost.join(".marks.new")).unwrap();
+    fs::remove_file(&counts).unwrap();
     // (Run as a login runs it: by the script's path, with no FUX_KEYS.)
     // (A CDPATH that leads to the script's folder makes `cd` print where it went: the keys are still one path.)
-    let mut restore = Command::new("sh");
-    restore.arg("keys/.restore").env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
-    restore.current_dir(env!("CARGO_MANIFEST_DIR")).env("CDPATH", env!("CARGO_MANIFEST_DIR"));
-    restore.env("FUX_DIR", &session.0).env_remove("FUX_KEYS").env_remove("FUX_PANE").env_remove("FUX_WS");
-    let restored = restore.run();
+    let restore = || {
+        let mut restore = Command::new("sh");
+        restore.arg("keys/.restore").env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+        restore.current_dir(env!("CARGO_MANIFEST_DIR")).env("CDPATH", env!("CARGO_MANIFEST_DIR"));
+        restore.env("FUX_DIR", &session.0).env_remove("FUX_KEYS").env_remove("FUX_PANE").env_remove("FUX_WS").run()
+    };
+    let restored = restore();
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started w/told again\n");
+    assert_eq!(restored.status.code(), Some(1), "a start failed: whoever ran it is told so");
     until_or(
         "the pane started again says where the keys are",
         || read(&told.join("shown/screen")),
         || read(&told.join("shown/screen")).replace('\n', "") == keys.display().to_string(),
     );
-    // The start that failed had begun the pane's files anew: what it had printed is in `before`.
-    assert!(!read(&lost.join("history")).contains("\n17\n"), "the start did not get as far as the test means");
-    assert!(read(&lost.join("before")).contains("\n17\n"), "before: {:?}", read(&lost.join("before")));
+    // The start that failed put nothing back: the run before is whole where the script says, and
+    // the name has the failed start's folder, with its `log` and no `command` (nothing ran there).
+    let said = String::from_utf8_lossy(&restored.stderr).into_owned();
+    let before = said.split("(the run before is in ").nth(1).and_then(|rest| rest.split(')').next()).map(PathBuf::from);
+    let before = before.unwrap_or_else(|| panic!("{said}"));
+    assert!(said.starts_with("w/lost: ") && said.contains("cannot start ") && before.starts_with(&session.0), "{said}");
+    assert!(read(&before.join("history")).contains("\n17\n") && read(&before.join("state")) == "exited 0\n");
+    assert!(read(&lost.join("log")).contains("cannot start ") && !lost.join("command").exists());
+    // So it is not tried again, and nothing more is moved (the other has ended once more by now).
+    assert!(session.fux().arg("wait").arg(&told).ended().success());
+    let again = restore();
+    assert_eq!(String::from_utf8_lossy(&again.stdout), "started w/told again\n");
+    assert!(again.stderr.is_empty() && read(&before.join("history")).contains("\n17\n"), "{again:?}");
+    assert!(again.status.success());
+    // With no `fux` to start anything with (a login whose PATH has none yet), nothing is moved: before,
+    // every pane that was over was moved aside, none was started, and the script ended well.
+    let tools = session.0.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let links =
+        "for tool in sh perl mktemp mv rm rmdir sed cat dirname; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
+    assert!(Command::new("sh").arg("-c").arg(links).arg(&tools).ended().success());
+    assert!(session.fux().arg("wait").arg(&told).ended().success());
+    let was = read(&told.join("status"));
+    let mut bare = Command::new("sh");
+    bare.arg(keys.join(".restore")).arg(&session.0).env("PATH", &tools).env_remove("FUX_KEYS").env_remove("FUX_DIR");
+    let none = bare.run();
+    assert!(none.status.code() == Some(1) && String::from_utf8_lossy(&none.stderr).contains("fux"), "{none:?}");
+    assert_eq!(read(&told.join("status")), was);
+    // Nor does it end well where it could move nothing: a session nothing can be made in (no place
+    // to put the run that is over). The pane is as it was, and whoever ran the script is told.
+    let mode = |mode: &str| assert!(Command::new("chmod").arg(mode).arg(&session.0).ended().success());
+    mode("555");
+    if fs::write(session.0.join("probe"), "").is_ok() {
+        return mode("755"); // (Whoever may write anywhere, root, has no session it cannot move a pane in.)
+    }
+    let unmoved = restore();
+    mode("755");
+    assert!(unmoved.status.code() == Some(1) && !unmoved.stderr.is_empty() && unmoved.stdout.is_empty(), "{unmoved:?}");
+    assert_eq!(read(&told.join("status")), was);
 }
 
 #[test]
@@ -2915,7 +3311,7 @@ fn what_is_typed_after_a_key_that_shows_a_workspace_with_no_pane_goes_to_its_she
     // The key's script names the workspace and is still running when `.empty` is started for it,
     // and has ended before `.empty` has made the pane: the letter typed after the key waits for
     // `.empty`, whose workspace it is typed in, and not only for the script that chose it.
-    let (outer, inner) = (Session::new("wlouter"), Session::new("wlinner"));
+    let (outer, inner) = (Session::new("wtouter"), Session::new("wtinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b/w")).unwrap();
     fs::write(keys.join("C-b/w/l"), "#!/bin/sh\necho workspace other\nsleep 0.2\n").unwrap();
@@ -2969,71 +3365,31 @@ fn what_is_typed_after_a_key_whose_script_makes_the_pane_waits_for_it_though_emp
 }
 
 #[test]
-fn a_restore_that_cannot_copy_what_a_pane_printed_does_not_start_it_again() {
-    // `.restore` starts a pane in place, which begins its files anew: what it had printed is copied
-    // first, and a pane whose text cannot be copied (a `screen` that cannot be read) is left as it is.
+fn a_restore_that_cannot_copy_what_a_pane_printed_keeps_the_run_before_whole() {
+    // `.restore` moves a pane that is over out of its workspace and starts its name anew; what the
+    // old run printed is copied after that. Where it cannot be (a `screen` that cannot be read), the
+    // old folder stays, whole, where the script says, and the new pane has no half of a copy.
     let session = Session::new("unreadable");
     let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
     let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
     let pane = session.start("w/kept", &["echo", "KEEP"]);
     assert!(session.fux().arg("wait").arg(&pane).ended().success());
-    let mode = |mode: &str| assert!(Command::new("chmod").arg(mode).arg(pane.join("shown/screen")).ended().success());
-    mode("000");
-    if fs::read(pane.join("shown/screen")).is_ok() {
+    assert!(Command::new("chmod").arg("000").arg(pane.join("main/screen")).ended().success());
+    if fs::read(pane.join("main/screen")).is_ok() {
         return; // (Whoever may read every file, root, has no file that cannot be copied.)
     }
     let mut restore = Command::new("sh");
     restore.arg(keys.join(".restore")).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
     restore.env("FUX_DIR", &session.0).env_remove("FUX_KEYS").env_remove("FUX_PANE").env_remove("FUX_WS");
     let restored = restore.run();
-    mode("600");
-    let (said, kept) = (String::from_utf8_lossy(&restored.stdout).into_owned(), read(&pane.join("shown/screen")));
-    let before = fs::read_to_string(pane.join("before")).ok();
-    assert!(said.is_empty() && kept.contains("KEEP") && before.is_none(), "{said:?} {kept:?} {before:?}");
-    assert!(String::from_utf8_lossy(&restored.stderr).contains("screen"), "cat says which file it could not read");
-}
-
-#[test]
-fn a_restore_leaves_what_a_pane_that_is_alive_has_kept_as_it_is() {
-    // A pane that runs, with a `before` of its own and a `log` of a later time than the copy's (a holder
-    // that logged a line since has one too): the start is refused, and `before` is as it was.
-    let session = Session::new("leftalone");
-    let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
-    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-    let pane = session.start("w/alive", &["sleep", "600"]);
-    fs::write(pane.join("before"), "saved from earlier\n").unwrap();
-    assert!(Command::new("touch").args(["-t", "203701010000"]).arg(pane.join("log")).ended().success());
-    let runs = read(&pane.join("status"));
-    let mut restore = Command::new("sh");
-    restore.arg(keys.join(".restore")).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
-    restore.env("FUX_DIR", &session.0).env_remove("FUX_KEYS").env_remove("FUX_PANE").env_remove("FUX_WS");
-    assert!(restore.run().stdout.is_empty());
-    assert_eq!(read(&pane.join("before")), "saved from earlier\n");
-    assert_eq!(read(&pane.join("status")), runs);
-    assert!(
-        session.fux().arg("start").arg("w/alive").run().status.code().is_some_and(|code| code != 0),
-        "it still runs"
-    );
-}
-
-#[test]
-fn a_restore_that_cannot_make_the_copy_of_what_a_pane_printed_does_not_start_it_again() {
-    // A directory of the copy's name (which ends with the number of the shell that runs the script):
-    // the copy cannot be opened for writing, so there is none, and the pane is left as it is.
-    let session = Session::new("nocopy");
-    let keys = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/keys"));
-    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-    let pane = session.start("w/kept", &["seq", "1", "60"]);
-    assert!(session.fux().arg("wait").arg(&pane).ended().success());
-    let was = read(&pane.join("history"));
-    let mut restore = Command::new("sh");
-    restore.args(["-c", r#"mkdir "$1/before.$$" && exec sh "$0""#]).arg(keys.join(".restore")).arg(&pane);
-    restore.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
-    restore.env("FUX_DIR", &session.0).env_remove("FUX_KEYS").env_remove("FUX_PANE").env_remove("FUX_WS");
-    let said = String::from_utf8_lossy(&restore.run().stdout).into_owned();
-    let kept = read(&pane.join("history"));
-    assert!(said.is_empty() && kept == was && kept.contains("\n17\n"), "{said:?} {kept:?}");
-    assert!(!pane.join("before").exists());
+    let (said, wrong) = (String::from_utf8_lossy(&restored.stdout), String::from_utf8_lossy(&restored.stderr));
+    assert_eq!(said, "started w/kept again\n", "{wrong}");
+    assert_eq!(restored.status.code(), Some(1), "a folder was left aside: whoever ran it is told so");
+    let before = wrong.lines().find_map(|line| line.strip_prefix("w/kept: what it had printed is in "));
+    let before = PathBuf::from(before.unwrap_or_else(|| panic!("{wrong}")));
+    assert!(wrong.contains("screen"), "cat says which file it could not read: {wrong}");
+    assert!(read(&before.join("status")).ends_with("command echo KEEP\n") && !pane.join(".before").exists());
+    until("the new pane has printed", || read(&pane.join("main/screen")).starts_with("KEEP\n"));
 }
 
 #[test]
@@ -3132,25 +3488,74 @@ fn a_notice_that_cannot_be_opened_is_old_when_it_can_be() {
 }
 
 #[test]
-fn a_text_or_a_list_that_cannot_be_moved_into_its_pane_is_removed() {
-    // The editor's text and the picker's list are moved into their pane's folder and go with it. A
-    // pane that is gone by then (closed under them) takes nothing: the file is removed, not left in the session.
-    let session = Session::new("unmoved");
-    fs::create_dir_all(&session.0).unwrap();
-    let (text, list, enter) = (session.0.join(".text.case"), session.0.join(".pick.case"), session.0.join("enter"));
-    fs::write(&text, "private transcript\n").unwrap();
-    fs::write(&list, "a\tpane a\n").unwrap();
-    fs::write(&enter, "\n").unwrap();
-    for (script, args) in
-        [(".edit", vec!["--in", text.to_str().unwrap(), "1"]), (".pick", vec![list.to_str().unwrap(), "echo"])]
+fn a_text_and_a_list_stay_in_the_session_and_go_when_their_script_ends_or_is_hung_up() {
+    // The editor's text and the picker's list are dot-named files of the session, where their key
+    // made them: no script writes a name into a pane's folder. Each is removed by the script that
+    // has it when that ends.
+    let session = Session::new("scratch");
+    fs::create_dir_all(session.0.join("pane")).unwrap();
+    let script = |name: &str| format!("{}/keys/{name}", env!("CARGO_MANIFEST_DIR"));
+    let file = |name: &str, text: &str| {
+        fs::write(session.0.join(name), text).unwrap();
+        session.0.join(name)
+    };
+    let (text, list, typed) =
+        (file(".text.case", "a transcript\n"), file(".pick.case", "a\tpane a\n"), file("typed", "a\n"));
+    for (name, args) in
+        [(".edit", vec!["--in", text.to_str().unwrap(), "1"]), (".pick", vec![list.to_str().unwrap(), "echo", "chose"])]
     {
         let mut helper = Command::new("sh");
-        helper.arg(format!("{}/keys/{script}", env!("CARGO_MANIFEST_DIR"))).args(args);
-        helper.env("FUX_PANE", session.0.join("gone"));
-        let out = helper.run_from(Some(fs::File::open(&enter).unwrap()));
-        assert!(String::from_utf8_lossy(&out.stderr).contains("gone"), "{script}: mv says why");
+        helper.arg(script(name)).args(args).env("FUX_EDIT", "cat \"$1\"").env("FUX_PANE", session.0.join("pane"));
+        let out = helper.run_from(Some(fs::File::open(&typed).unwrap()));
+        let said = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(said.ends_with(if name == ".edit" { "a transcript\n" } else { "chose a\n" }), "{name}: {out:?}");
     }
     assert!(!text.exists() && !list.exists(), "left behind: text {} list {}", text.exists(), list.exists());
+    assert!(fs::read_dir(session.0.join("pane")).unwrap().next().is_none(), "something was put into the pane's folder");
+    // Also when its pane is hung up under it, started as the keys start it (by `.shell`, which the
+    // hangup ends first: that is what hangs up the rest): here the holder is killed outright, under
+    // an editor that never ends by itself and under the list's question.
+    let (text, list) = (file(".text.hup", "a transcript\n"), file(".pick.hup", "a\tpane a\n"));
+    let mut edits = session.fux();
+    edits.env("FUX_EDIT", "echo ed''iting; exec sleep 600").args(["start", "w/edits", "--", "sh", &script(".shell")]);
+    let edits = session.started(edits.args(["sh", &script(".edit"), "--in", text.to_str().unwrap(), "1"]));
+    // (No finder on the list's PATH: it asks, and waits for a line.)
+    let bin = session.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let links = "for tool in sh ls rm awk; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
+    assert!(Command::new("sh").arg("-c").arg(links).arg(&bin).ended().success());
+    let mut picks = session.fux();
+    picks.args(["start", "w/picks", "--", "env"]).arg(format!("PATH={}", bin.display()));
+    let picks = session.started(picks.args(["sh", &script(".shell"), "sh", &script(".pick")]).arg(&list).arg("echo"));
+    until("the editor and the list are open", || {
+        read(&edits.join("shown/screen")).contains("editing") && read(&picks.join("shown/screen")).contains("which (")
+    });
+    assert!(text.exists() && list.exists());
+    for pane in [&edits, &picks] {
+        let holder = read(&pane.join("status")).lines().next().unwrap().trim_start_matches("holder ").to_string();
+        assert!(Command::new("kill").args(["-KILL", &holder]).ended().success());
+    }
+    until("the text and the list are gone", || !text.exists() && !list.exists());
+    // `.search` has two files of its own while it looks through the panes: the list it makes, and
+    // each pane's text in turn. Here it never gets past one pane (a folder whose `history` is a FIFO
+    // nobody writes), and is hung up there: both files go.
+    let slow = session.0.join("w/slow");
+    fs::create_dir_all(slow.join("main")).unwrap();
+    fs::write(slow.join("main/lines"), "0\n\n").unwrap();
+    assert!(Command::new("mkfifo").arg(slow.join("history")).ended().success());
+    let mut search = session.fux();
+    search.env("FUX_KEYS", script("")).args(["start", "w/search", "--", "sh", &script(".shell")]);
+    let search = session.started(search.args(["sh", &script(".search")]));
+    until("it asks", || read(&search.join("shown/screen")).contains("search every pane for:"));
+    send(&search.join("in"), "x\n");
+    let scratch = || {
+        let files = fs::read_dir(&session.0).unwrap().flatten().map(|file| file.file_name().into_string().unwrap());
+        files.filter(|name| name.starts_with(".pick.") || name.starts_with(".text.")).count()
+    };
+    until("it has its list and a pane's text", || scratch() == 2);
+    let holder = read(&search.join("status")).lines().next().unwrap().trim_start_matches("holder ").to_string();
+    assert!(Command::new("kill").args(["-KILL", &holder]).ended().success());
+    until("the list and the text are gone", || scratch() == 0);
 }
 
 #[test]
@@ -3356,6 +3761,56 @@ fn workspace_prev_next_wrap_skip_invalid_names_and_new_workspace_is_0700() {
 }
 
 #[test]
+fn two_restores_of_a_session_at_once_run_one_after_the_other() {
+    // `.restore` looks whether a pane is over and then moves its folder away. Two runs at once did
+    // both to one pane: the second moved away the folder the first had just started anew, alive.
+    // A run has the session's folder locked from its first look to its last start, and another waits.
+    let session = Session::new("tworestores");
+    let keys = Path::new(env!("CARGO_MANIFEST_DIR")).join("keys");
+    let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
+    let restore = || {
+        let mut restore = Command::new("sh");
+        restore.arg(keys.join(".restore")).arg(&session.0).env_remove("FUX_KEYS").env_remove("FUX_DIR");
+        restore.env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+        restore
+    };
+    let panes: Vec<PathBuf> = (1..=12).map(|n| session.start(&format!("c/{n}"), &["sleep", "600"])).collect();
+    let holders = || panes.iter().map(|pane| fact(pane, "status").lines().next().unwrap()[7..].to_string()).collect();
+    let alive = |pid: &String| Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).ended().success();
+    let kill = |holders: &Vec<String>| {
+        assert!(Command::new("kill").arg("-KILL").args(holders).ended().success());
+        until("the holders are gone", || !holders.iter().any(alive));
+    };
+    let first: Vec<String> = holders();
+    kill(&first);
+    // While the session's folder is locked by another (here by the test, as a run locks it), a run
+    // waits: it has moved nothing and started nothing.
+    let lock = fs::File::open(&session.0).unwrap();
+    lock.lock().unwrap();
+    let waits = restore().stdout(Stdio::null()).begin();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(waits.over().is_none() && holders() == first, "a run did not wait for the session's lock");
+    drop(lock);
+    assert!(waits.end().success());
+    let second: Vec<String> = holders();
+    assert!(second.iter().all(alive) && second.iter().all(|holder| !first.contains(holder)), "{second:?}");
+    // Two runs at once: every pane is started once, by one of them, and nothing is left aside.
+    kill(&second);
+    let (one, other) = std::thread::scope(|runs| {
+        let (one, other) = (runs.spawn(|| restore().run()), runs.spawn(|| restore().run()));
+        (one.join().unwrap(), other.join().unwrap())
+    });
+    let said = format!("{}{}", String::from_utf8_lossy(&one.stdout), String::from_utf8_lossy(&other.stdout));
+    let wrong = format!("{}{}", String::from_utf8_lossy(&one.stderr), String::from_utf8_lossy(&other.stderr));
+    assert!(one.status.success() && other.status.success() && wrong.is_empty(), "{wrong}");
+    assert_eq!(said.lines().filter(|line| line.starts_with("started c/")).count(), 12, "{said}");
+    let third: Vec<String> = holders();
+    assert!(third.iter().all(alive) && third.iter().all(|holder| !second.contains(holder)), "{third:?}");
+    let left = fs::read_dir(&session.0).unwrap().flatten().map(|entry| entry.file_name().into_string().unwrap());
+    assert_eq!(left.filter(|name| name.starts_with('.')).collect::<Vec<_>>(), [""; 0]);
+}
+
+#[test]
 fn restore_skips_viewer_and_helper_panes() {
     let session = Session::new("restoreskip");
     let keys = Path::new(env!("CARGO_MANIFEST_DIR")).join("keys");
@@ -3363,22 +3818,53 @@ fn restore_skips_viewer_and_helper_panes() {
     for (name, cmd) in [
         ("v1", format!("{} view w", env!("CARGO_BIN_EXE_fux"))),
         ("v2", "fux view w".to_string()),
+        ("v3", "fux-next view w".to_string()),
+        ("h1", "/opt/fux-next hold /tmp sh".to_string()),
         ("ed", format!("{}/.shell {}/.edit --in /tmp/x 1", keys.display(), keys.display())),
         ("pk", format!("{}/.shell {}/.pick /tmp/x", keys.display(), keys.display())),
+        ("mirror", "sleep 600".to_string()),
+        ("old", "sleep 600".to_string()),
     ] {
         let dir = session.0.join("w").join(name);
         fs::create_dir_all(dir.join("main")).unwrap();
         fs::write(dir.join("status"), format!("holder 99999\npid 99998\ncommand {cmd}\n")).unwrap();
+        fs::write(dir.join("command"), cmd.replace(' ', "\0") + "\0").unwrap();
         fs::write(dir.join("state"), "exited 0\n").unwrap();
         fs::write(dir.join("main/screen"), "\n").unwrap();
     }
-    let out = Command::new("sh")
-        .arg(keys.join(".restore"))
-        .env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()))
-        .env("FUX_DIR", &session.0)
-        .env_remove("FUX_KEYS")
-        .run();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "should skip viewer and helper panes");
+    // Nor one whose `in` somebody reads, though no holder keeps its folder: the picture of a pane
+    // that is kept elsewhere. And none that has no `command`: nothing says what to start.
+    let reads = session.0.join("w/mirror/in");
+    assert!(Command::new("mkfifo").arg(&reads).ended().success());
+    let reader = fuxix::open(&reads, false).unwrap();
+    fs::remove_file(session.0.join("w/old/command")).unwrap();
+    let restore = || {
+        let mut restore = Command::new("sh");
+        restore.arg(keys.join(".restore")).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
+        restore.env("FUX_DIR", &session.0).env_remove("FUX_KEYS").run()
+    };
+    let out = restore();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "should skip viewer, helper and mirrored panes: {out:?}");
+    assert!(out.status.success() && out.stderr.is_empty(), "a viewer under another name was not passed over: {out:?}");
+    // (The same folder with nobody reading its `in` is a pane that is over, and is started.)
+    drop(reader);
+    assert_eq!(String::from_utf8_lossy(&restore().stdout), "started w/mirror again\n");
+    // Whose pane it is, is its program's first argument as it was given, whole: a line's end in an
+    // argument is a character of it. A program whose first argument only begins with the line `view`
+    // is started anew, and a viewer whose own name has a line's end in it is passed over.
+    let odd = session.0.join("fux\nnext");
+    fs::write(&odd, "#!/bin/sh\nexit 0\n").unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(&odd).ended().success());
+    let panes = [
+        session.start("x/odd", &[odd.to_str().unwrap(), "view"]),
+        session.start("x/prints", &["printf", "view\nno-viewer"]),
+    ];
+    for pane in &panes {
+        assert!(session.fux().arg("wait").arg(pane).ended().success());
+    }
+    let out = restore();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "started x/prints again\n", "{out:?}");
+    assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
 }
 
 #[test]

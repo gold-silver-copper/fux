@@ -6,12 +6,15 @@
 # with the line as the `case` below knows that editor to take it. The README has it in
 # full ("Keys are scripts").
 if [ "$1" = --in ]; then
-  # In the tab's pane. The file is in the pane's own folder from here on, so it
-  # goes with the pane however that is closed (`.shell` removes the folder when
-  # the editor ends; the close key removes it under a running one).
-  # (One that cannot be moved there has gone, or the pane is going: mv has said why, and Enter closes the pane.)
-  mv "$2" "$FUX_PANE/text" || { rm -f "$2"; read -r _; exit; }
-  f=$FUX_PANE/text n=$3
+  # In the tab's pane. The file stays where its key made it, a dot-named file of the
+  # session (nothing of a script's is put into a pane's folder), and is removed when this
+  # ends: when the editor does, and when the pane is closed under it (the hangup ends the
+  # editor, then this). Only this script killed outright leaves the file.
+  # (The removal is not to be hung up itself, and is done by whichever comes first, this script's
+  # end or the hangup: an editor ends when its terminal goes, and the hangup comes a moment after.)
+  f=$2 n=$3
+  gone() { trap '' HUP TERM; rm -f "$f"; }
+  trap gone EXIT; trap 'gone; exit' HUP TERM
   set -f; set -- ${EDITOR:-${PAGER:-less}}
   if [ -n "$FUX_EDIT" ]; then sh -c "$FUX_EDIT" sh "$f" "$n"
   else case ${1##*/} in

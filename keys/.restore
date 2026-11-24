@@ -1,28 +1,61 @@
 #!/bin/sh
-# Starts again every pane of the session whose program is not running (after a reboot, say): every one
-# with a command in `status`. Run it by hand or from your login, by its path: sh "$FUX_KEYS/.restore"
-# (`fux` on PATH; FUX_DIR set if you set it for the viewer; with no FUX_KEYS the panes are told this
-# script's folder). The session directory must be one that outlasts a reboot.
-# Each pane is started under its name, with the words of its command line (`status`: those between the
-# line's blanks, nothing expanded, no shell) and in the directory its program last said it was in (`cwd`,
-# if it said). What it had printed is kept beside it in `before` if a holder was started (a start in place
-# begins the pane's files anew, also one that then fails; a start that was refused, as that of a pane that
-# is alive, made no new `log` and changed nothing; one whose text cannot be copied is not started). Which panes that starts wrongly, and how a session
-# outlasts a reboot: the README, "Search every pane, and after a reboot".
-D=$(fux dir) && export FUX_DIR="$D" FUX_KEYS="${FUX_KEYS:-$(CDPATH= cd "$(dirname "$0")" && pwd)}" || exit
+# .restore [SESSION]: starts anew every pane of the session whose program is not running (after a
+# reboot, say). Run it by hand or from your login, by its path: sh ~/.config/fux/keys/.restore
+# (`fux` and perl on PATH; with no FUX_KEYS the panes are told this script's folder). SESSION is the
+# session's directory, the one `fux dir` prints if it is not given: one that outlasts a reboot.
+# A pane is one run, and a name that is there is never started again. So a pane that is over is
+# moved out of its workspace, whole, and its name is started anew: the program and the arguments
+# its `command` file has, as they were given, in the directory its program last said it was in
+# (`cwd`; else your home). What the old run had printed is then the new pane's `.before` (with the
+# `.before` it had itself first), and the old folder goes.
+# Which panes: one that has a `command` (its program was started once), that no holder keeps (the
+# lock on its folder is free) and whose `in` nobody reads (one that is read is the picture of a
+# pane kept elsewhere, not this machine's to start). Not a viewer's own pane, nor a helper's (below).
+# What that costs: there is no way back. For a moment the name has no folder: a viewer that looks
+# just then takes the pane out of its tab, and the new one gets a tab of its own (a viewer looks
+# every few milliseconds: it may catch every pane, or none); after a reboot none is looking, and
+# the layout stays. If the start fails, nothing is put back: the old run stays where this says, a
+# dot-named folder of the session, and the name has the failed start's folder and its `log`. A run
+# cut short between the move and the start leaves such a folder too, and has not said so.
+# (Before anything is moved: with no `fux` to start a pane with, every pane would be moved and none started.)
+command -v fux > /dev/null && command -v perl > /dev/null || { echo ".restore: fux and perl must be on PATH" >&2; exit 1; }
+D=$(CDPATH= cd -- "${1:-$(fux dir)}" && pwd) || exit
+# One run at a time in a session: between the look at a pane and the move of its folder another run
+# may have started that name anew, and the move would then take a pane that is alive. So this
+# script runs itself again under a lock on the session's folder (perl's `flock`, held to the end; no
+# pane it starts has it). A run that finds another at work waits for it, and then finds the panes kept.
+[ "$2" = --alone ] || exec perl -e 'use Fcntl ":flock"; my ($d, $me) = @ARGV;
+  open(D, "<", $d) && flock(D, LOCK_EX) or die "$d: $!\n";
+  my $s = system("sh", $me, $d, "--alone"); exit($s >> 8 || ($s ? 1 : 0))' "$D" "$0"
+export FUX_DIR="$D" FUX_KEYS="${FUX_KEYS:-$(CDPATH= cd -- "$(dirname "$0")" && pwd)}"
+kept() { perl -e 'use Fcntl qw(:flock O_WRONLY O_NONBLOCK); open(D, "<", $ARGV[0]) or exit 0;
+  flock(D, LOCK_SH|LOCK_NB) or exit 0; -p "$ARGV[0]/in" or exit 1;
+  exit(sysopen(F, "$ARGV[0]/in", O_WRONLY|O_NONBLOCK) ? 0 : 1)' "$1"; }
+printed() { for f in .before history.1 history main/screen; do [ ! -e "$1/$f" ] || cat "$1/$f" || return; done; }
+left=0
 for p in "$D"/*/*/; do
-  p=${p%/}
-  command=$(sed -n 's/^command //p' "$p/status" 2>/dev/null)
-  [ -n "$command" ] || continue
-  case $command in
-    'fux view'|'fux view '*|*'/'fux' view'|*'/'fux' view '*|'fux hold'|'fux hold '*|*'/'fux' hold'|*'/'fux' hold '*) continue ;;
-    *'.edit --in '*|*'.pick '*|*'.search'|*'.search '*) continue ;;
-  esac
-  for f in history.1 history main/screen; do [ ! -e "$p/$f" ] || cat "$p/$f" || { rm -f "$p/before.$$"; continue 2; }; done > "$p/before.$$" || continue
-  dir=
-  IFS= read -r dir 2>/dev/null < "$p/cwd"
-  if said=$(cd "${dir:-$HOME}" 2>/dev/null || cd; set -f; set -- $command; fux start "${p#"$D"/}" -- "$@" 2>&1 > /dev/null)
-  then mv "$p/before.$$" "$p/before" && echo "started ${p#"$D"/} again"
-  else case $said in *'a holder already keeps this pane') false ;; esac && [ ! "$p/before.$$" -nt "$p/log" ] && mv "$p/before.$$" "$p/before" || rm -f "$p/before.$$"
+  p=${p%/} name=${p#"$D"/}
+  [ -s "$p/command" ] || continue
+  # (A viewer's own pane and a holder's: by its first argument as it was given, whole (the second of
+  # the fields that a zero byte ends in `command`), whatever the program is called. So
+  # any program whose first argument is the word `view` or `hold` is passed over too, and a viewer
+  # that another program was asked to run, `env X=1 fux view`, is started anew. The keys' helpers:
+  # by the line of `status`.)
+  perl -e 'local $/ = "\0"; open(F, "<", shift) or exit 1; chomp(my @given = <F>);
+    exit(($given[1] // "") =~ /\A(?:view|hold)\z/ ? 0 : 1)' "$p/command" && continue
+  case $(sed -n 's/^command //p' "$p/status" 2>/dev/null) in *'.edit --in '*|*'.pick '*|*'.search'|*'.search '*) continue ;; esac
+  kept "$p" && continue
+  # (A pane that cannot be moved aside is left as it is: `mktemp` or `mv` has said why, and the end says so too.)
+  old=$(mktemp -d "$D/.restore.XXXXXX") && mv "$p" "$old/pane" || { rmdir "$old" 2>/dev/null; left=1; continue; }
+  dir=; IFS= read -r dir 2>/dev/null < "$old/pane/cwd"
+  # (The arguments are read by perl: an empty one is one too, which not every `xargs -0` keeps.)
+  if said=$(cd "${dir:-$HOME}" 2>/dev/null || cd; perl -e 'local $/ = "\0"; open(F, "<", shift) or die "$!\n";
+      chomp(my @given = <F>); exec(@ARGV, @given) or die "$ARGV[0]: $!\n"' "$old/pane/command" fux start "$name" -- 2>&1 > /dev/null)
+  then echo "started $name again"
+    if printed "$old/pane" > "$p/.before"; then rm -rf "$old"; else rm -f "$p/.before"; left=1; echo "$name: what it had printed is in $old/pane" >&2; fi
+  else left=1; echo "$name: $said (the run before is in $old/pane)" >&2
   fi
 done
+# (It ends with 1 if a pane that is over was not started, or its run was left aside: a pane that could not
+# be moved, a start that failed, a text that could not be copied.)
+exit $left

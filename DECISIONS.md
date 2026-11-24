@@ -1376,6 +1376,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     not.
 - **D94. Search and restore are scripts** (message 23; the panel split
   between "now" and "recipe only", and no seat wanted a subcommand).
+  Amended 2026-11-23 by D121: a pane has a `command` file after all, and
+  `.restore` starts a name anew from it, exactly. What follows is the record.
   `C-b f s` (`keys/.search`) greps every pane's text and opens the line
   chosen with the helpers the other find keys use. `keys/.restore` starts
   every ended pane again; that a live one is left alone is `fux start`'s
@@ -1435,6 +1437,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   about foreground either? screen.main seems very useful tho"), then
   said "merge top and wraps".
   - No `argv`: see D94. Restore reads `status` and is honest, not exact.
+    (Taken back by D121: the file is `command`.)
   - `screen.main` and `screen.main.styled`: the main screen under a
     full-screen program, as the screens would have it, there only while
     `modes` says `alt` (written before it says so, removed before it
@@ -2246,6 +2249,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   graphics half one thing holds still: the note below on base64 read strictly,
   which is the clipboard's reading (OSC 52). The sentence that the pane-folder
   layout is frozen as v1 is the other half, and is not touched by D119.
+  Amended 2026-11-23 by D120: that other half is withdrawn too. The frozen v1
+  pane-folder format is withdrawn. The format is what the README of a release
+  describes; nothing is frozen again until koh has shipped on it.
   As it was written: `fux-vt` implements
   the Kitty graphics protocol (`ESC _ G ... ESC \`) with zero external dependencies
   (including bounded RFC 1950/1951 inflate and PNG decode/encode): query (`a=q`
@@ -2440,6 +2446,324 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     yanked or patched is the owner's to say.
   - **Sizes** (`./sizes.sh`, lines written by hand): fux-vt 5,390 to 3,103,
     fux 3,662 to 3,505; added, `base64.rs` (83, moved).
+
+- **D120. Who am I, and another name: scripts** (the owner, 2026-11-23, after
+  the review of a plan that had five new verbs: "nothing goes into the binary
+  that a shell or perl script can do"; no `fux here`, no `fux layout rename`,
+  no `fux held`, no `fux close`, no `fux start --again`, no signal sent by a
+  holder). What the binary does for the scripts, and no more:
+  - **`status` is written before the program is started.** A holder made its
+    FIFOs and wrote `status` after it had started its program, so a program
+    that looked at once found no `status` some of the time (ten of thirty
+    looks, in the review's run of the plan). Now the FIFOs are made and `status` says
+    `holder N` and `command …` first; then the program is started; then
+    `status` is written once more with `pid N` between the two. So a program
+    finds the pane it is in from its first instruction: the one whose
+    `status` names its parent. `fux wait` and the viewer already read a
+    `status` with no `pid` line. A program that cannot be started leaves that
+    first `status` (who tried, and what), an odd `generation` (the files were
+    being written and never agreed) and the `log` that says why; `in` and
+    `ctl` go, as they do when a holder ends, so that nothing takes the folder
+    for a pane that is read. Removing that `status` again was turned down: it
+    is true, and one more thing to do on the way out.
+  - **`keys/.here [SESSION]`** prints the folder of the pane it is run in. It
+    walks its ancestors (`ps -o ppid= -p N`, the same on Linux and macOS) and
+    takes the first that a `status` of the session names as `holder` or
+    `pid`, if that folder's lock is held (perl's `flock`, the line the help
+    page has): a `status` is anyone's to write, a lock is the kernel's word.
+    Two kept folders naming one process are refused, both named. The session
+    is `fux dir`'s or the argument. Turned down: the holder's working
+    directory (`/proc/N/cwd`, `lsof` on macOS), which needs no session and no
+    look at every `status`, for its two branches by system and because an
+    ancestor that has gone into another pane's folder would answer wrongly
+    without the same look at `status`. Not found, and said in the script: a
+    program whose ancestors have all gone, one in a container or behind ssh.
+    Its test: a pane's shell, a shell in it, a background job; outside a
+    pane; a folder nobody keeps that names the asker; two kept folders.
+  - **The viewer knows a pane by its folder**, not by the `pid` in its
+    `status`. It read that number for two things: to ask a pane its tile's
+    size again when the program under a name was another, and to send a key's
+    release only to the program that got its press. A pane with no `status`
+    (one that another program than a holder writes: a mirror) had number 0:
+    it got no release at all, and a new folder under its name was not asked
+    its size. Since D121 a folder is one run of one program, so the folder is
+    the identity. The viewer holds a tile's folder open and compares device
+    and inode with what the name has now (`stat`); another folder is asked
+    its size anew and drawn whatever its files say. A key that went down in a
+    pane holds that folder open until it is let go; its release is sent if
+    the name still has that folder and `modes` still asks for releases. Held
+    open, because a number alone is given to the next folder made once the
+    first is removed. No new system call in fuxix: the release is a `stat`
+    of the path and then `open_fifo` of `PATH/in`, and between the two a pane
+    moved away and another put under its name would get the release (two
+    system calls wide; every write by a name has that). Held only while a
+    tile: a pane whose tab is not shown is not held, so it is asked its size
+    once more when its tab is shown again (before: not until its program
+    changed). What the viewer read of it is kept meanwhile, as before.
+    `fn pid` and `fn program` are gone from the viewer; koh need not write
+    `pid 1` into a mirror's `status` any more.
+  - **A key that is down in a pane stays down in it through `.rename`**
+    (after the review of PR #483: the key's repeat and release were dropped,
+    though the folder, and so the program, was the same). When the viewer
+    looked which pane has the keys, it compared paths, took the new name
+    for another pane and let the key go in the old path, which no folder
+    had. It asks now whether the pane that has the keys is the key's folder:
+    if so the key stays down, under the name the folder has now. And a name
+    that has no folder at all lets nothing go: it was read a moment ago and
+    is out of date (a frame that read the layout just before the rename, and
+    got to its keys after it, let the key go on the old name: 2 of 192 runs
+    of the test, sixteen at a time; none of 320 since). Not
+    covered: a pane renamed while a key is down in it that does not have
+    the keys any more by the viewer's next look (the name it went to is not
+    searched for); its release is dropped, as before. (That last was so
+    until the second review of PR #483, and is covered since: next part.)
+  - **A release is sent to the folder, under the name it has now** (after
+    the second review of PR #483, which held the viewer between its look at
+    the layout and a release, and renamed the pane in between: the key was
+    kept under the old name, as the part above has it, then taken for
+    released, and the release went to the old name, which no folder had; the
+    program never got it). Where the name a key went to has not the key's
+    folder any more, the viewer looks through the panes of that workspace
+    for the folder (by device and inode) and writes there. So no name that
+    is out of date costs a release: not the one a look at the layout a
+    moment old gave, and not that of a pane moved by hand that has lost
+    the keys (its key is let go in it, under its new name). The look
+    through the workspace is made only then. A folder that left its
+    workspace, or has a name with a dot first, is no pane, and its release
+    is dropped.
+  - **What was read of a folder is that folder's alone** (after the review
+    of PR #483: a folder put under a tile's name in place of another was
+    asked its size and then drawn as the old one, for as long as neither had
+    a `generation`: the viewer reads a pane again when that file is another,
+    and "no file" was the same as "no file"). The viewer remembers which
+    folder it read. Another one under the name starts unread: its own files
+    are drawn, whatever they are. A pane that was no tile for a while keeps
+    what was read of it if its folder is the one that was read, as before.
+  - **One handle for a pane, and never the viewer's last** (after the review
+    of PR #483: with 30 panes side by side and 32 files to open, the viewer
+    held 30 folders, had none left to open a pane's `in` with, and typed
+    nothing; master used 9. And every key held in a pane had opened that
+    folder once more). A pane's folder is opened once, for its tile and for
+    the keys that are down in it. It is held only if eight more files can be
+    opened right after (what a frame, a key and a key's script open for a
+    moment: tried by opening them); else the pane is known by device and
+    inode alone, as it is when the folder cannot be opened at all. Known by
+    number alone, a folder removed and made anew under its name may get the
+    old number and be taken for the old one: it is then not asked its size
+    again, as before this branch a pane with no `pid` was not. A fixed count
+    of folders to hold was turned down: what is scarce is the viewer's own
+    limit, which only an open tells without a new call in fuxix.
+  - **`keys/.rename WORKSPACE OLD NEW`** (perl, for the lock) moves a pane's
+    folder and rewrites its name in `layout`, both under the workspace's
+    lock, so the pane keeps its place. NEW is claimed by `mkdir`, the claim
+    `fux start` makes, and `rename(2)` then replaces that empty folder with
+    OLD's in one step: of a rename and a start of one name, one wins and the
+    other is told. Three things the review of the plan's script changed.
+    A name is matched only where a name stands in a layout fux wrote: after
+    a line's start, a blank, `(` or `focus=`, and before a blank, `)`, `:`
+    or the end. The plan's pattern took the digits of a share for a name
+    (`b:50` and a pane `50` renamed to `z` gave `z:z`, a layout that is not
+    read any more); the test has that case, and fails with that pattern.
+    The name check ends at `\z`, not `$`, which lets a line's end through.
+    And there is no putting back: if the layout cannot be written once the
+    folder is moved (its new file is beside it: a full disk, hardly else),
+    the script says so and stops, and the pane is in a tab of its own under
+    its new name. A rename back could fail too, and bought little. It tests
+    for no link and writes the layout with a plain open (the owner: no
+    further anti-link mechanics). A layout written by hand as `row (a b)`,
+    which fux reads, is not matched: the script's comment says to settle
+    it with `fux layout` first.
+  - **The format moves** (a `status` of two lines for an instant, and what the
+    entries below add): D117's "frozen as v1" is withdrawn, there.
+
+- **D121. One pane, one run** (the owner, 2026-11-23: "`fux start` of a name
+  that is there is refused, never replaces"). A pane's folder is the record
+  of one run of one program, from its start to whatever is left of it.
+  - **What `fux start` does.** It claims a name by making its folder, as
+    before, and a name that is there is refused, whatever has it: a pane that
+    runs, one that has ended, one that never came up, a folder nobody
+    started. Nothing of what is there is touched (its `log` is not begun
+    anew). The error says to `rm -r` it. A number is the first that is not
+    there. Before, the name of a pane with no holder was started "again in
+    place": a second run in the first one's folder.
+  - **Why.** Two runs in one folder made every file a question: which run is
+    this `state`, this `cwd`, this screen of? The README's row for `fux wait`
+    needed three cases for it, the holder removed five kinds of file an
+    earlier holder may have left, and the viewer read a pid out of `status` to
+    tell one program from the next under a name (D120's last part ends that).
+    Refusing is one rule, and `rm -r` was already how a pane ends.
+  - **What left the holder:** the removal of an earlier holder's `cwd`,
+    `clipboard`, `notice`, `state` and `history.1`, and a `generation` that
+    went on from the earlier holder's. A holder is the first and the last in
+    its folder; `generation` counts from 0.
+  - **A pane's command is kept as it was given**: a file `command`, the
+    program and each argument ended by a zero byte, as `/proc/N/cmdline` has
+    them, written once when the program has been started. This takes back the
+    "no `argv`" of D94 and D96 (the owner then: "argv seems spurious"), for
+    one reason: `.restore` now removes the run that is over, so a pane started
+    wrongly from the flattened `command` line of `status` (an argument with a
+    blank in it, an empty one) would be started wrongly for good. The line in
+    `status` stays, for a person to read. Read back by perl, not by `xargs
+    -0`: that was tried when the file was first added (commit adbf7d04) and
+    macOS's drops an argument that is empty. Written after the program was
+    started, not with the first `status`: a folder whose program never ran
+    has none, and is not tried again by every `.restore`.
+  - **A `command` that cannot be written costs the record, not the pane**
+    (after the review of PR #483: with files held to 8 KiB and 16 KiB of
+    arguments, `status` fit and `command` did not; the holder left with the
+    error, and its program, which was running by then, was kept by nothing
+    where a hangup did not end it. Master started that pane). The bytes are
+    put together and the pipe for the program's end is made before the
+    program is started; once it runs, a `status` or a `command` that cannot
+    be written is a line in `log`, and the holder holds. Such a pane has no
+    `command`, and `.restore` passes it over. Still an end of the holder
+    after the program was started: a thread that cannot be made to wait for
+    it, as on master.
+  - **`keys/.restore [SESSION]`** starts anew every pane that has a `command`,
+    that no holder keeps (the lock, by the perl line of the help page) and
+    whose `in` nobody reads (a folder that is read with no holder is a
+    mirror's, not this machine's to start). It moves the old folder out of
+    its workspace into a dot-named folder of the session, starts the name
+    with the arguments of `command` in the directory `cwd` names, copies what
+    the old run printed into the new pane's `.before` (the old `.before`
+    first, so a second restore keeps the first run's text), and removes the
+    old folder. No way back, and the README says what that costs: a start
+    that fails is not undone, and beside a viewer a pane loses its place in
+    its tab if the viewer looks just then (the name has no folder for a few
+    milliseconds, and a viewer looks every 4 to 50: by hand, on the release
+    build, three panes of a split whose holders had been killed came back as
+    three tabs the first time and in their places the second). With no
+    viewer looking, as after a reboot, the layout stays (tried too). Not done, and
+    the owner's to say: holding the workspace's lock from the move to the
+    end of the start, as `.rename` holds it, would have a viewer wait in
+    place of taking the pane out; it would also have every viewer of that
+    workspace wait for as long as a start that hangs.
+    This departs from the plan's script in one thing, and says so: the plan
+    copied the text, removed the folder with `rm -rf` and then started. Here
+    the folder is moved aside first and removed last. A move is one step
+    where `rm -rf` can stop halfway; the `command` file is still there to
+    read when the start is made; and where the start fails or the text cannot
+    be copied, the old run is left whole where the script says, in place of
+    its text alone. The price is a dot-named folder left in the session in
+    those two cases, which the script names.
+  - **One `.restore` at a time in a session** (after the review of PR #483,
+    which ran two at once on 40 killed panes: names lost, and live holders
+    left under `.restore.*`, where nothing looks). Between a run's look at a
+    pane and its move of the folder, the other run had started that name
+    anew, and the move took a pane that was alive. In place, a second start
+    was refused by the first's lock: this was new with the move. The script
+    now runs itself again under an exclusive lock on the session's folder
+    (perl's `flock`), held to its end and not handed to the panes it
+    starts. A second run waits; it does not say "one is running" and leave.
+    Waiting gives the caller what it asked for (every pane that is over is
+    started, by one run or the other, and both exit 0), where leaving would
+    need a meaning for its exit status. The price: a run waits for as long as
+    a start of the other hangs. Turned down: taking each pane's own lock for
+    the look and the move, which serializes one pane and not the copy after
+    it, for the same number of lines.
+  - **A `.restore` that cannot start anything moves nothing, and a run that
+    left something aside says so by its status** (after the same review).
+    With no `fux` on `PATH` and the session named (a login whose `PATH` has
+    no `~/.cargo/bin` yet), every pane that was over was moved aside, none
+    was started, each workspace was left with no folder under any name, and
+    the script ended with 0: a viewer then takes every name out of the
+    layout. It looks for `fux` and perl before anything else now. And it ends
+    with 1 if a start failed or a text could not be copied (an old run was
+    left in a dot-named folder), or if a pane that is over could not be moved
+    aside at all (the second review: in a session nothing can be made in,
+    `mktemp` failed for every pane and the script ended with 0), 0 otherwise. Not covered, and said in the
+    README: a run cut short between the move and the start leaves the old
+    run in `.restore.XXXXXX/pane` without a word; `mv` puts it back.
+  - **Which panes `.restore` passes over as a viewer's** (after the same
+    review): it matched the display line of `status` against `fux view` and
+    `…/fux view`, so a viewer under another name (`fux-next view`, as on the
+    owner's machine) was started anew. It reads the second word of the
+    `command` file now, which is exact: `view` or `hold` as the program's
+    first argument, whatever the program is called. That passes over any
+    other program so started (`git hold`, were there one), and misses a
+    viewer that another program runs (`env X=1 fux view`). The keys'
+    helpers are still matched by the line of `status`. (The second field
+    that a zero byte ends, read by perl: it was first read as the second
+    line of the file with its zero bytes made line ends, which took a line's
+    end inside an argument for the end of one. The second review of PR #483
+    showed both ways that goes wrong; the test has them.)
+  - **Turned down, by the owner's rulings:** `fux start --again`, `fux held`,
+    `fux close` and a `close` word on `ctl` (with the verb gone the word has
+    no user; it is about fifteen lines in the holder if the owner wants it
+    back), and any signal sent by a holder. The close key stays the script it
+    was: its `mv` is one step, and it detaches a mirror too.
+  - **Tests.** New: a name that is there is refused whatever has it, and
+    nothing of it is touched. Changed, as each started a name again in place
+    or made a pane's folder before its start: the two tests of a restore that
+    fails or cannot copy (now: the old run is whole where the script says);
+    the search-and-restore test (arguments with a blank and an empty one come
+    back as they were; a second restore keeps both runs' text); the skips of
+    `.restore` (a mirror's folder, a folder with no `command`); a held key
+    and a pane started anew (its folder is removed first). Restaged, as
+    nothing can be put into a pane's folder before its holder any more: the
+    start that waits (it waits to say its answer to a FIFO that is full) and
+    the pane moved under its holder (moved after its start, not during it:
+    the comment says what that no longer covers). Gone: a restore beside a
+    pane that is alive (the first test has it), a copy that cannot be made
+    under the pane's own name (no copy is made there before the start), a
+    pane started again that never came up, and what an earlier holder's
+    `cwd` did to a program's own.
+  - **For whoever used the old way:** `fux start NAME` of a name that is there
+    fails now, also after `kill -9` of its holder: `rm -r` the folder first.
+    `.restore` keeps the old text as `.before`, not `before`, and removes the
+    old folder.
+
+- **D122. Scratch: no script writes a name into a pane's folder** (the owner's
+  rulings of 2026-11-23: "dot-named scratch"). A pane's folder is its
+  holder's, and the record of one run (D121); a mirror's is another
+  program's. The keys' own files were in it: `.edit --in` moved its text
+  there (`text`), `.pick` its list (`list`), and `.search` put each pane's
+  text there in turn.
+  - **Now** each stays where its key made it, a dot-named file of the session
+    (`.text.XXXXXX`, `.pick.XXXXXX`, by `mktemp`: the owner's alone to read),
+    and the script that has it removes it when it ends. One exception, by
+    D121: `.restore` writes `.before` into the pane it has just started.
+  - **On a hangup too, as the keys start them, and not otherwise.** Before,
+    the file went with the pane's folder however the pane was closed. Now a
+    script must remove it, also when its pane is closed under an open
+    editor: each sets a trap for the hangup. That works because the keys
+    start these scripts under `.shell`, the pane's own program: on Linux the
+    hangup of a pty is sent to the session's leader alone, and the rest of
+    its foreground group is hung up when the leader ends. `.shell` sets no
+    trap and ends at once; the editor (or the finder, or the question) is
+    hung up then, and the script's trap runs when that has ended. Tested so:
+    the close key under an open editor, and a holder killed outright under
+    `.edit` and under `.pick`. What is not covered, and said in the README:
+    a script killed outright (`kill -9`) leaves its dot-named file; and
+    so does one started as a pane's own program, with no `.shell` above
+    it, under an editor that does not end when its terminal goes (it is then
+    the leader, traps the hangup, and waits for a child nobody hung up; the
+    first form of the test did exactly that, with `sleep` for an editor).
+    Such a file harms nothing: no reader of a session takes a name with a
+    dot first for a pane or a fact.
+  - **The removal is the hangup's trap's as well as the script's end's**, and
+    ignores the hangup itself. Two things the test found, each in a share of
+    its runs. A question (`read`) or an editor ends by itself when its
+    terminal goes, an instant before the hangup comes: the `rm` of the
+    script's end was then hung up before it had removed anything. And in
+    bash (which is `sh` on the machine this was built on, and on macOS) a
+    hangup that comes while a script is ending runs the hangup's trap in
+    place of the one for its end, so a trap that only said `exit` left the
+    file (10 of 60 runs). So one function removes the file, with the hangup
+    ignored first, and both traps call it (80 of 80). Under dash (`sh` on
+    CI's Linux) this was run by CI only.
+  - **The README's zoom recipe** keeps a tab's line in the session too
+    (`.alone.WORKSPACE+PANE`: `+` is in no name, so two panes never share
+    one), where it kept it in the pane's folder. A pane closed while it is
+    alone leaves that file; before, it went with the folder. The recipe says
+    so.
+  - **`.search` on a hangup** has a test since the review of PR #483: hung
+    up while it reads a pane, its list and that pane's text both go.
+  - **Tests.** Replaced: "a text or a list that cannot be moved into its pane
+    is removed" (nothing is moved any more) by one test that both end with
+    their file gone and nothing put into the pane's folder, and that a
+    hangup removes them. The close-key test finds the editor's pane by what
+    it shows, not by a `text` in its folder.
 
 ## The old fux3's bugs: which classes are gone
 

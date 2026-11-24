@@ -64,6 +64,7 @@ kept by review and tests):
 ```
 in, ctl                         FIFOs: typed bytes; commands (kill, resize, notify)
 status, state, log              the holder and program: pids and command; running/exited/...; what went wrong
+command                         the program and its arguments as given, each ended by a zero byte
 generation                      odd while the holder writes a round, even when done
 size, cursor, modes             the terminal: size; the cursor on the screen shown; input modes
 title, cwd, clipboard, notice   what the program said
@@ -193,12 +194,21 @@ about two minutes.
 1. **Daily use.** The owner is to use this fux daily beside fux 1; what annoys or surprises in use
    decides the next changes better than another audit (the last line-by-line audits found almost
    nothing left to cut).
-2. **Small known items:** `C-b c`'s menu caption still says "history in the editor" (it opens history
+2. **Small known items:** `tools/help-agents.sh` failed once in CI on Linux at the page's last command (`rm -r` of the demo workspace: `agent-demo/broad/main: Directory not empty`; PR #483, 1 of 11 runs there, 0 of 160 by hand on that branch and on master): the README's "one failed `rm -r` of a busy pane", after the page typed into that pane five commands before, and not explained further; `C-b c`'s menu caption still says "history in the editor" (it opens history
    and screen); `keys/.edit` passes no line number to an `$EDITOR` it does not know by name, such as a
    wrapper script around a known editor (the file opens where that editor starts; `FUXN_EDIT` passes
    the line); a pane kept by a holder from an older build writes the old file layout and nothing says so; in the pane picker the first Enter
    can be lost (seen by a blind tester; the record is in the owner's notes); `.restore` can restart a
-   pane whose saved command was a viewer; two role-named items in the code (`term.screen()`, `Holder.facts`); the word `shown` is both the link and a word of `cursor`.
+   pane whose saved command was a viewer run by another program (`env X=1 fux view`); two role-named items in the code (`term.screen()`, `Holder.facts`); the word `shown` is both the link and a word of `cursor`.
+   Known since the two reviews of PR #483, and left (a line each):
+   - `keys/.restore`'s lock is its perl wrapper's: killing that one process by its number frees the lock while the run under it goes on (Ctrl-C and a hangup end both).
+   - `keys/.restore` runs itself again with a second word `--alone`, which skips the lock and is in no usage line.
+   - A key held before a `.rename` and another pressed after it are two open descriptors of the one folder in the viewer, until both are let go.
+   - A folder with no `generation` whose tab is not shown, removed, and another made under its name that gets the same inode (ext4 may give it): the viewer shows what it read of the first when the tab is shown again.
+   - A pane renamed and its old name taken by another folder, both inside one frame of a viewer, with a key down in it: the key is let go in the renamed pane at once (a release it did not have yet), not held (read from the code, not run).
+   - `a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines` failed for a reviewer alone, 6 of 10 on the base and 9 of 10 on the branch (`55977 lines, 0 put aside`, dash as `sh`); 0 of 20 alone and 0 of 48 sixteen at a time where the branch was built. It asserts that `history` was put aside once when the screen says `done`, which depends on how the output was cut into writes; not looked into further.
+   - `a_menu_shades_its_group_headings` and `a_shell_that_ends_with_127_closes_its_pane_…` fail on master and on the branch alike when 24 of them run at once (about one run in six); the second also once in 34 runs of the suite at 16 threads on the branch (`the holder ended without a word`: its shell ends at once and `.shell` removes the pane's folder, sometimes before the holder's first screen, which fails the start the test asserts).
+   - `a_picture_that_does_not_fit_its_tile_…` failed once in the same 34 runs of the suite at 16 threads on the branch, at its one read of the viewer's screen (it waits for the left pane's picture, not for the right pane's word); not seen again in 144 runs of it 24 at a time, nor on master.
 3. **Retire fux 1:** take the plain names (above), delete nothing of `old-main` (it is the record),
    release.
 4. **koh:** whether koh (a remote shell over QUIC, a separate project) can carry pane folders between

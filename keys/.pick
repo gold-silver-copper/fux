@@ -2,7 +2,8 @@
 # What a find key runs is `.pick --tab LIST [COMMAND…]`: that starts `.pick LIST COMMAND…` in a pane of its own.
 # LIST is a file of lines `KEY<tab>WORDS`. One is chosen, with fzf, sk or fzy if
 # one is installed and from a numbered list if none is, and COMMAND is run
-# with its KEY as the last argument. The file is moved into the pane's folder, and goes with it.
+# with its KEY as the last argument. The file stays where its key made it, a dot-named file of
+# the session, and is removed when this ends.
 if [ "$1" = --tab ]; then
   # (With no COMMAND the pane chosen is shown, and the tab shown before the list's
   # own first, so that `fux layout tab -` goes back to that one.)
@@ -22,9 +23,12 @@ if [ "$1" = --tab ]; then
   exit 0
 fi
 list=$1; shift
-# (The list is in this pane's own folder from here on, and goes with it; if it cannot be moved there, mv has said why, and Enter closes the pane.)
-mv "$list" "$FUX_PANE/list" || { rm -f "$list"; read -r _; exit; }
-list=$FUX_PANE/list
+# (Also when the pane is closed under it: the hangup ends the finder or the question, then this.
+# Only this script killed outright leaves the list. The removal is not to be hung up itself, and is
+# done by whichever comes first, this script's end or the hangup: the question ends when its
+# terminal goes, and the hangup comes a moment after.)
+gone() { trap '' HUP TERM; rm -f "$list"; }
+trap gone EXIT; trap 'gone; exit' HUP TERM
 if finder=$({ command -v fzf || command -v sk || command -v fzy; } 2>/dev/null); then
   line=$("$finder" < "$list") || exit 0
 else

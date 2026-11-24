@@ -1,0 +1,28 @@
+#!/bin/sh
+# .here [SESSION]: prints the folder of the pane this is run in; fails (1), saying why, in none.
+# SESSION is the session's directory: the one `fux dir` prints, if it is not given.
+# How: a pane's `status` names its holder and its program by number (`holder N`, `pid N`). This
+# script's ancestors are asked of `ps`, nearest first; the first of them that a `status` of the
+# session names is the pane's, if a holder keeps that folder (the kernel's lock on it is held:
+# a `status` alone is anyone's to write). Two kept folders that name one process are no answer.
+# Needs ps, grep and perl, and `fux` on PATH if no SESSION is given. Not found: a program whose
+# ancestors have all gone (a daemon), and one in a container or behind ssh. And between the answer
+# and its use the pane may have ended.
+s=${1:-$(fux dir 2>/dev/null)}
+[ -n "$s" ] || { echo "here: no session was given, and \`fux dir\` names none (is fux on PATH?)" >&2; exit 1; }
+[ -d "$s" ] || { echo "here: $s: no session there" >&2; exit 1; }
+locked() { perl -e 'use Fcntl ":flock"; open(D, "<", $ARGV[0]) or exit 1; exit(flock(D, LOCK_SH|LOCK_NB) ? 1 : 0)' "$1"; }
+p=$$ n=0
+while [ "${p:-0}" -gt 1 ] && [ $n -lt 64 ]; do
+  found=$(grep -l -x -e "pid $p" -e "holder $p" "$s"/*/*/status 2>/dev/null |
+    while IFS= read -r f; do locked "${f%/status}" && printf '%s\n' "${f%/status}"; done)
+  case $found in
+    '') ;;
+    *'
+'*) echo "here: more than one pane names process $p:" >&2; printf '%s\n' "$found" >&2; exit 1 ;;
+    *) printf '%s\n' "$found"; exit 0 ;;
+  esac
+  p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ') n=$((n + 1))
+done
+echo "here: not in a pane of $s" >&2
+exit 1
