@@ -1069,6 +1069,44 @@ fn a_pane_is_one_run_and_a_name_that_is_there_is_refused_whatever_is_there() {
 }
 
 #[test]
+fn a_panes_run_is_written_once_after_its_fifos_and_before_its_status() {
+    use std::os::unix::fs::MetadataExt;
+    let session = Session::new("runfile");
+    // 128 bits as 32 hex digits and a line end (`read -r run < run`), and every start draws its own.
+    let pane = session.start("p", &["sh", "-c", "echo first; read x"]);
+    let other = session.start("q", &["sleep", "600"]);
+    let run = read(&pane.join("run"));
+    let digits = run.strip_suffix('\n').unwrap_or_default();
+    assert!(digits.len() == 32 && digits.bytes().all(|digit| b"0123456789abcdef".contains(&digit)), "{run:?}");
+    assert_eq!(fux::run_of(&pane), u128::from_str_radix(digits, 16).ok());
+    assert!(fux::run_of(&other).is_some() && fux::run_of(&other) != fux::run_of(&pane));
+    // Written once: it is the file it was (one written again is another file) after a round of
+    // writing, and after the pane's end.
+    let file = fs::metadata(pane.join("run")).unwrap().ino();
+    send(&pane.join("ctl"), "resize 40 12\n");
+    until("a round was written", || fact(&pane, "size") == "40 12");
+    send(&pane.join("in"), "\n");
+    assert!(String::from_utf8_lossy(&session.fux().arg("wait").arg(&pane).run().stdout).contains("state exited 0"));
+    assert!(read(&pane.join("run")) == run && fs::metadata(pane.join("run")).unwrap().ino() == file);
+    // A holder as `fux start` starts it, in a folder where a folder that is not empty has a name
+    // the holder needs: it cannot make what is to have that name, and leaves. With no FIFOs it has
+    // written no `run` (a folder that has a `run` has had its FIFOs), and with no `run` no `status`.
+    let hold = |blocked: &str| {
+        let folder = session.0.join("main").join(format!("no-{blocked}"));
+        fs::create_dir_all(folder.join(blocked).join("full")).unwrap();
+        let mut hold = session.fux();
+        let out = hold.args(["hold", ".", "true"]).current_dir(&folder).run_from(fuxix::open(&folder, false).ok());
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success() && said.contains("cannot make the FIFOs, the run or the status"), "{out:?}");
+        folder
+    };
+    let folder = hold("ctl");
+    assert!(!folder.join("run").exists() && !folder.join("status").exists());
+    let folder = hold("run");
+    assert!(folder.join("run").is_dir() && !folder.join("status").exists());
+}
+
+#[test]
 fn a_pane_and_a_workspace_are_named_by_a_path_as_by_a_name() {
     // An argument that begins with `/` or `.` is a directory's path, and any other a name in the
     // default session. A pane named by a path is the last part of it, in the workspace that the
