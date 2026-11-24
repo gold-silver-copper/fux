@@ -3142,16 +3142,22 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     with no `generation` in either, drawn as the first. The README says so,
     and that a `run` written into such a folder ends it. No holder of this
     fux makes one: a name started anew has a `run`, whatever was there.
-  - **`keys/.shell`** tells its own folder by `run` (a `read` and a string
-    compare) where it compared `ls -di`. One thing is not as the plan had
-    it: an `rm -rf` that the holder wrote a file into leaves the folder
-    with that file and no `run`, as `rm` took it first, and the script's
-    second try would then find "not its own" and leave a dead pane (D86's
-    bug). So a folder with no `run` is taken for what its `rm` left, and
-    only another `run` under the name stops the script. `.here` still
-    finds its pane by process numbers (it asks which pane a process is in,
-    not whether a folder is the same one), and `.search` still passes over
-    its own pane by `-ef`, two names at one moment.
+  - **`keys/.shell` tells no folder again at all.** It compared `ls -di`
+    before each try of its `rm -rf`, so as not to remove another pane that
+    had its name by then. A compare of `run` in that place was the plan, and
+    is wrong there: an `rm -rf` that the holder wrote a file into leaves the
+    folder with that file and no `run`, as `rm` took it first, and the next
+    try would find "not its own" and leave a dead pane (D86's bug). The
+    script now moves its folder out of the workspace in one step, into a
+    dot-named folder of the session that is its own (as the close key does,
+    and `.restore`: D121), and removes that: after the one look that
+    `.here` is, no name is asked again. Killed between the move and the
+    removal it leaves `.closed.XXXXXX` in the session, as the close key
+    does. `.here` still finds its pane by process numbers (it asks which
+    pane a process is in, not whether a folder is the same one), and
+    `.search` still passes over its own pane by `-ef`, two names at one
+    moment. So no default script reads `run`: it is for a script that
+    comes back to a pane later (the help page has the line).
   - **Turned down, with what the spikes measured** (non-test Rust, in fux
     and koh together unless said):
     - *Folder handles in full* (`openat`, `renameat`, `unlinkat`, `mkdirat`,
@@ -3203,13 +3209,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     on average over eighteen floods each: what differs from flood to flood
     is how much of a core the holder gets, on either build.
   - **Size.** `src/view.rs` 20 lines in and 40 out, `src/holder.rs` 11 and
-    3, `src/lib.rs` 10: 41 in and 43 out in fux. `keys/.shell` 9 and 7.
+    3, `src/lib.rs` 10: 41 in and 43 out in fux. `keys/.shell` 8 and 5.
     `FORMAT` stays 1: a file was added.
-  - **Beside it, in fuxix: `open_regular_write`**, a file opened to write by
-    its own name, no link followed and nothing waited at, as `open_regular`
-    reads and `open_fifo` writes. Eight lines, no new `unsafe` and no new
-    declaration. It is what was kept of the handles: koh's mirror adds to a
-    file through an open that follows a link at the last name.
 
 ## The old fux3's bugs: which classes are gone
 

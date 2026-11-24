@@ -163,7 +163,7 @@ pub fn lines(kept: &mut Vec<u8>, read: &[u8], most: usize) -> Vec<Option<String>
 
 /// Which run a pane's folder is of: the number in its `run`, 128 random bits its holder wrote there once, as
 /// 32 hex digits. None if the name has anything but that file, to the byte (no file, a link, other digits,
-/// one more or fewer): a folder no holder of this fux made. (With `fux::pane`, this is that module's.)
+/// one more or fewer): a folder no holder of this fux made.
 pub fn run_of(dir: &Path) -> Option<u128> {
     let (text, read) = read(sys::open_regular(dir.join("run")), 34);
     let digits = text.strip_suffix(b"\n").filter(|digits| read.is_ok() && digits.len() == 32)?;

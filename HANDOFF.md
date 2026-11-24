@@ -124,7 +124,7 @@ and wrote to the viewer's FIFO, has changes to make before it moves to this fux:
 ```sh
 cargo build --release
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked -- --test-threads 4   # 169 tests, and the carrier's program; the real-binary suite takes ~20 s
+cargo test --workspace --locked -- --test-threads 4   # 168 tests, and the carrier's program; the real-binary suite takes ~20 s
 tools/help-agents.sh                     # runs every example on the agents' page as one sh session
 ./example.sh                             # the README's example
 python3 tools/perf.py target/release/fux # speed: flood, key echo, CPU (with tmux, beside it)
