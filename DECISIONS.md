@@ -3096,6 +3096,120 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - **Size.** 11 lines in `fux-vt/src/lib.rs` (a field, where it starts,
     where a reset keeps it, where it grows, and what tells it; 3 of them
     comments) and 1 in `src/holder.rs`.
+- **D127. `run`: a pane's run has a name of its own, and no folder is held
+  open** (the owner, 2026-11-24, on folder handles: "Not sure … maybe run a 5
+  model spike, and see whats best there"; five models spiked it, each alone,
+  and the five read the five answers blind. No folder handles: five of five.
+  The `run` file: three of five, the other two for changing nothing).
+  - **The question.** fux and koh find a pane's folder again by its path at
+    every step, and then ask whether it is still the same folder: by device
+    and inode (the viewer, `keys/.shell`), and koh by those two and the
+    holder's process number out of `status`. All three numbers are given
+    again: an inode to the next folder made once the first is removed (ext4
+    may give the very next one the same), a process number once the system
+    has counted round (macOS counts to 99,999). An audit asked for handles instead: a folder opened once, and
+    everything reached beneath it (`openat`, `renameat`, `unlinkat`).
+  - **What is done.** The holder writes `run` once at its start: 128 bits
+    from `/dev/urandom`, as 32 lowercase hex digits and a line end. Text,
+    as every fact of a pane is (`cat run`; `read -r run < run` in a script).
+    After the FIFOs and before `status`: written before the FIFOs there was
+    a moment in which a folder had a run and no FIFOs, and a reader that
+    took the run for "this pane is up" opened nothing. In no round of
+    writing (`generation` does not speak for it), and never again. A start
+    that cannot write it fails, as one that cannot make its FIFOs.
+    `fux::run_of(dir)` reads it to the byte: a file under that name and no
+    link, those 33 bytes, lowercase; anything else is no run (`1` and a line
+    end would be the run 1 to a reader that parses a number: two spellings
+    of one identity, and one of the two spikes had that).
+  - **The viewer** knows a folder by its `run` and its device and inode,
+    read at each look, and holds none open. `Folder` was an inode and an
+    open file shared through `Rc`, and before each was held eight files
+    were opened to see whether the viewer could still spare it (`SPARE`):
+    all three are gone, 20 lines for 40 in `src/view.rs`. The inode stays in
+    the comparison, with the run and not in its place: one rule for every
+    folder, and a pane copied whole (`cp -a`) beside itself is not the
+    pane. A key held across `keys/.rename` still reaches its pane: a rename
+    keeps both.
+  - **A folder with no `run`** (made by hand, written by another program,
+    kept by a holder from before this) is known by device and inode alone,
+    with none held open. Holding it was the second way, and was turned
+    down: it was right only while the folder was a tile, with files to
+    spare. A tab that is not shown was never held, which is where HANDOFF's
+    known item was (a folder removed there, another made under its name
+    with the same inode, and the first one's screen drawn when the tab is
+    shown again). So one such folder removed, and another with no `run`
+    given its inode, is taken for the first: not asked its size again, and
+    with no `generation` in either, drawn as the first. The README says so,
+    and that a `run` written into such a folder ends it. No holder of this
+    fux makes one: a name started anew has a `run`, whatever was there.
+  - **`keys/.shell`** tells its own folder by `run` (a `read` and a string
+    compare) where it compared `ls -di`. One thing is not as the plan had
+    it: an `rm -rf` that the holder wrote a file into leaves the folder
+    with that file and no `run`, as `rm` took it first, and the script's
+    second try would then find "not its own" and leave a dead pane (D86's
+    bug). So a folder with no `run` is taken for what its `rm` left, and
+    only another `run` under the name stops the script. `.here` still
+    finds its pane by process numbers (it asks which pane a process is in,
+    not whether a folder is the same one), and `.search` still passes over
+    its own pane by `-ef`, two names at one moment.
+  - **Turned down, with what the spikes measured** (non-test Rust, in fux
+    and koh together unless said):
+    - *Folder handles in full* (`openat`, `renameat`, `unlinkat`, `mkdirat`,
+      `mkfifoat`, `symlinkat`, `readlinkat`, `fdopendir` and what goes with
+      them): 135 lines in fuxix before one caller is moved, 16 more lines
+      of `unsafe` (16 to 32), 12 more declarations (11 to 23), eight
+      constants for each system (`O_DIRECTORY` differs by processor on
+      Linux, `AT_REMOVEDIR` by system), a `struct dirent` laid out for each,
+      and `mkfifoat` only since macOS 13. It would delete about ten lines of
+      checks in koh, and none of the mirror's: a round is refused whole
+      before it is applied, and readers follow `shown` by path.
+    - *A folder held open to read beneath it* (`openat` alone, or with
+      `readlinkat`): 177 lines more with 2 of `unsafe` and 1 declaration, or
+      236 more (409 in, 173 out) with 3 and 2. Neither deletes a lock (an
+      emptied folder that is held has no FIFOs: `remove_dir_all` unlinks
+      what is in it), nor the check of the name at each look (a client is to
+      hear that its session ended when its folder is moved: deleting it hung
+      a test). Two to four more open files for each stream: by a reviewer's
+      count, 64 sessions come to the 256 a process may open on macOS.
+    - *Nothing*: no line, and the three numbers stay what a run is known by.
+    - *The other form of `run`*: sixteen raw bytes (a script needs `od` to
+      compare them), with the held folder kept for a folder that has none
+      (both ways in the viewer: 43 lines more, where this is fewer).
+  - **Tests.** The known item, which fails on master: a folder with no
+    `generation` whose tab is not shown becomes another run's, and the
+    viewer draws the second when the tab is shown again; then a third while
+    it is shown. btrfs and APFS give no inode twice, so the test keeps the
+    folder and changes what is in it, which is the same to a viewer that
+    reads by the name. On ext4 (an image mounted with `fuse2fs`), by hand,
+    with holders and a viewer that may open 12 files: a pane removed and
+    its name started anew had the old inode (17), and was left at 80 by 24
+    in a tile of 120 by 40 by the viewer before this, and asked its size by
+    this one. And: `run` as the holder writes it (33 bytes, another for
+    each start, the same file after a round and after the pane's end; no
+    `run` where the FIFOs could not be made, no `status` where `run` could
+    not be written); what `run_of` refuses.
+  - **Speed** (`tools/perf.py`, the build before and this one in turn,
+    three runs each, one laptop that other work shared): the viewer reads a
+    file of 33 bytes for each tile at each look, where it compared two
+    numbers. Frames a second while all 200 by 60 cells are repainted: 711,
+    699, 702 before and 710, 700, 699 after; the viewer's processor meanwhile
+    7.6, 9.0, 9.1% and 7.3, 9.2, 9.2%; at rest 0.125% and 0.05 to 0.11%. A
+    key's echo was 1.6 or 3.0 ms in both, by the run and not by the build. A
+    flood of two million lines took 1.50 s in seven runs of seven before and
+    in four of seven after (1.58 to 1.74 s in three; of ten more of each, one
+    before and three after were over 1.55 s). Measured again flood by flood
+    with each side's processor time, the holder used 1.45 to 1.49 s and the
+    viewer 0.04 to 0.06 s in both builds, and the two took 1.96 and 1.94 s
+    on average over eighteen floods each: what differs from flood to flood
+    is how much of a core the holder gets, on either build.
+  - **Size.** `src/view.rs` 20 lines in and 40 out, `src/holder.rs` 11 and
+    3, `src/lib.rs` 10: 41 in and 43 out in fux. `keys/.shell` 9 and 7.
+    `FORMAT` stays 1: a file was added.
+  - **Beside it, in fuxix: `open_regular_write`**, a file opened to write by
+    its own name, no link followed and nothing waited at, as `open_regular`
+    reads and `open_fifo` writes. Eight lines, no new `unsafe` and no new
+    declaration. It is what was kept of the handles: koh's mirror adds to a
+    file through an open that follows a link at the last name.
 
 ## The old fux3's bugs: which classes are gone
 

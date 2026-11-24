@@ -2,7 +2,7 @@
 
 Written 2026-11-21, at `fux` 0.40.0 / `fux-vt` 0.18.0 / `fuxix` 0.11.0 (tag `v0.40.0`, all three on
 crates.io). Read this first, then `README.md` (the contract: commands, the pane folder's files, keys,
-bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D125, append-only:
+bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D127, append-only:
 a historical log, in which a later entry says so when it replaces an earlier one).
 
 ## What fux is
@@ -50,7 +50,8 @@ line of fux's from its command's word on (`fux::main()` is that with the process
 carrier's own first word `hold` goes to it too, as `start` runs the program it is in with that word);
 `fux::view(session, workspace, keys)`, the viewer; `fux::FORMAT`, the number of the pane folder's format
 (the README says when it is raised); `TERM_PROGRAM`; and how fux writes and reads a pane's files:
-`replace`, `staging`, `write_new`, `stamp` and `Stamp`, `lines`, `plain`.
+`replace`, `staging`, `write_new`, `stamp` and `Stamp`, `lines`, `plain`, `run_of` (which run a folder is
+of, D127).
 
 Rules the code follows (the first and the fourth are enforced by clippy; the others are design rules,
 kept by review and tests):
@@ -70,6 +71,7 @@ kept by review and tests):
 
 ```
 in, ctl                         FIFOs: typed bytes; commands (kill, resize, notify)
+run                             which run of a program the folder is: 32 hex digits, written once
 status, state, log              the holder and program: pids and command; running/exited/...; what went wrong
 command                         the program and its arguments as given, each ended by a zero byte
 generation                      odd while the holder writes a round, even when done
@@ -122,7 +124,7 @@ and wrote to the viewer's FIFO, has changes to make before it moves to this fux:
 ```sh
 cargo build --release
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked -- --test-threads 4   # 165 tests, and the carrier's program; the real-binary suite takes ~20 s
+cargo test --workspace --locked -- --test-threads 4   # 169 tests, and the carrier's program; the real-binary suite takes ~20 s
 tools/help-agents.sh                     # runs every example on the agents' page as one sh session
 ./example.sh                             # the README's example
 python3 tools/perf.py target/release/fux # speed: flood, key echo, CPU (with tmux, beside it)
@@ -212,8 +214,7 @@ about two minutes.
    Known since the two reviews of PR #483, and left (a line each):
    - `keys/.restore`'s lock is its perl wrapper's: killing that one process by its number frees the lock while the run under it goes on (Ctrl-C and a hangup end both).
    - `keys/.restore` runs itself again with a second word `--alone`, which skips the lock and is in no usage line.
-   - A key held before a `.rename` and another pressed after it are two open descriptors of the one folder in the viewer, until both are let go.
-   - A folder with no `generation` whose tab is not shown, removed, and another made under its name that gets the same inode (ext4 may give it): the viewer shows what it read of the first when the tab is shown again.
+   - (Closed by D127: the viewer holds no folder open, so a key held before a `.rename` and one pressed after it are no two descriptors; and a folder removed while its tab is not shown, with another made under its name that gets the same inode, is another pane by its `run`. Left of the second: two folders with neither a `run` nor a `generation`, which no holder makes. The README says what the viewer does with them.)
    - A pane renamed and its old name taken by another folder, both inside one frame of a viewer, with a key down in it: the key is let go in the renamed pane at once (a release it did not have yet), not held (read from the code, not run).
    - `a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines` failed for a reviewer alone, 6 of 10 on the base and 9 of 10 on the branch (`55977 lines, 0 put aside`, dash as `sh`); 0 of 20 alone and 0 of 48 sixteen at a time where the branch was built. It asserts that `history` was put aside once when the screen says `done`, which depends on how the output was cut into writes; not looked into further.
    - `a_menu_shades_its_group_headings` and `a_shell_that_ends_with_127_closes_its_pane_…` fail on master and on the branch alike when 24 of them run at once (about one run in six); the second also once in 34 runs of the suite at 16 threads on the branch (`the holder ended without a word`: its shell ends at once and `.shell` removes the pane's folder, sometimes before the holder's first screen, which fails the start the test asserts).

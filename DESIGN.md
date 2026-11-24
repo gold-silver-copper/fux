@@ -13,7 +13,8 @@ fux is a view over the filesystem and pane daemons. Everything else follows.
   always, `alt/` while a program has the alternate screen), the same names
   in each. Which of them is drawn: the link `shown` (that `alt/` is there
 says the same in the same round, of the program). Whether a pane lives:
-  the kernel's lock on its directory, held by its holder. Which panes exist:
+  the kernel's lock on its directory, held by its holder. Which run of a
+  program a folder is of: its `run`, written once. Which panes exist:
   the folders. Where they are drawn and which has the keys: the `layout`
   file. What a key does: the file of its name. Whether the pane's files
   agree: that `generation` is even. A name is a thing and never a role:

@@ -106,6 +106,8 @@ cursor  ROW COL shown|hidden SHAPE, from 0, of the screen that is drawn: `2 8 sh
         on every cell of the default background, `58:2::R:G:B` for an underline)
 modes   words, or an empty line: appcursor, keypad, paste, focus, mousesgr, mouseN, keysN
 state   running | hungup | exited CODE | killed SIGNAL (lost ERROR: the holder could not wait)
+run     32 hex digits: which run this folder is, written once. A name removed and started anew
+        has another: keep it (`read -r run < "$P/run"`) to know later that $P is still that pane
 status  three lines: holder N / pid N (the program's) / command ... (no pid line until the
         program runs: none at all if it could not be started)
 command the program and its arguments as given, each ended by a zero byte (absent until the
