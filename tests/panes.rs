@@ -3927,6 +3927,49 @@ fn two_files_of_a_pane_that_floods_are_read_as_of_one_moment() {
 }
 
 #[test]
+fn the_marks_and_how_many_were_dropped_are_of_one_round_so_a_reader_numbers_each_mark() {
+    // A program that marks as a shell does, four marks a command: command i (from 0) ends with the
+    // code i % 100, and its `end` is mark number 4i + 4. Three hundred in one write when it is told
+    // to go, and then without end.
+    let command =
+        r#"printf '\033]133;A\007$ \033]133;B\007run\n\033]133;C\007x\n\033]133;D;%s\007' $((i % 100)); i=$((i + 1))"#;
+    let shell = format!(
+        "i=0; read go; printf '%s' \"$(while [ $i -lt 300 ]; do {command}; done)\"; i=300; read go; while :; do {command}; done"
+    );
+    let session = Session::new("dropped");
+    let pane = session.start("marks", &["sh", "-c", &shell]);
+    // A reading: the two files, kept when `generation` is the same even number before and after.
+    // Line n of `marks` (from 1) is mark number `marks.dropped` + n, if the two are of one round.
+    let number = |name: &str| fact(&pane, name).parse::<u64>().ok();
+    let reading = || {
+        let (before, dropped, marks) = (number("generation"), number("marks.dropped"), read(&pane.join("marks")));
+        let ends = (dropped? + 1..).zip(marks.lines()).filter_map(|(n, line)| Some((n, line.split_once(" end ")?.1)));
+        let apart = ends.filter(|(n, code)| n % 4 != 0 || code.parse().ok() != Some((n / 4 - 1) % 100)).count();
+        let kept = before.is_some_and(|n| n % 2 == 0) && number("generation") == before;
+        kept.then_some((dropped?, marks.lines().count(), apart))
+    };
+    // No mark yet: none was dropped, and the file says so.
+    assert_eq!((fact(&pane, "marks.dropped").as_str(), read(&pane.join("marks")).as_str()), ("0", ""));
+    // Three hundred commands' marks since that reading: the file keeps the last thousand, and the
+    // number says that two hundred more came and went.
+    send(&pane.join("in"), "\r");
+    until_or("the 1,200 marks are counted", || format!("{:?}", reading()), || reading() == Some((200, 1000, 0)));
+    // Then marks without end: whenever the files are of one round, each `end` has its own number.
+    send(&pane.join("in"), "\r");
+    let (end, mut kept, mut apart, mut dropped) = (deadline(), 0, 0, 200);
+    while Instant::now() < end && apart == 0 && (kept < 100 || dropped < 10_000) {
+        if let Some((now, lines, wrong)) = reading() {
+            assert!(now >= dropped && lines == 1000, "{now} dropped after {dropped}, {lines} marks");
+            (kept, apart, dropped) = (kept + 1, wrong, now);
+        }
+    }
+    assert!(
+        kept >= 100 && apart == 0 && dropped >= 10_000,
+        "{kept} reads kept, {apart} marks apart, {dropped} dropped"
+    );
+}
+
+#[test]
 fn a_mark_in_a_line_that_never_ends_is_found_in_the_text_after_history_was_put_aside() {
     // One line of 1,200,000 characters in rows of one, each row with its looks (16 bytes of
     // `history.styled` for a character): that file is past twice its size twice, so the line's start
