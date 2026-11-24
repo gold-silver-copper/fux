@@ -2680,7 +2680,11 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     first argument, whatever the program is called. That passes over any
     other program so started (`git hold`, were there one), and misses a
     viewer that another program runs (`env X=1 fux view`). The keys'
-    helpers are still matched by the line of `status`.
+    helpers are still matched by the line of `status`. (The second field
+    that a zero byte ends, read by perl: it was first read as the second
+    line of the file with its zero bytes made line ends, which took a line's
+    end inside an argument for the end of one. The second review of PR #483
+    showed both ways that goes wrong; the test has them.)
   - **Turned down, by the owner's rulings:** `fux start --again`, `fux held`,
     `fux close` and a `close` word on `ctl` (with the verb gone the word has
     no user; it is about fifteen lines in the holder if the owner wants it

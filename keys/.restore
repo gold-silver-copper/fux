@@ -36,11 +36,13 @@ left=0
 for p in "$D"/*/*/; do
   p=${p%/} name=${p#"$D"/}
   [ -s "$p/command" ] || continue
-  # (A viewer's own pane and a holder's: by its first argument, whatever the program is called. So
+  # (A viewer's own pane and a holder's: by its first argument as it was given, whole (the second of
+  # the fields that a zero byte ends in `command`), whatever the program is called. So
   # any program whose first argument is the word `view` or `hold` is passed over too, and a viewer
   # that another program was asked to run, `env X=1 fux view`, is started anew. The keys' helpers:
   # by the line of `status`.)
-  case $(tr '\0' '\n' < "$p/command" | sed -n 2p) in view|hold) continue ;; esac
+  perl -e 'local $/ = "\0"; open(F, "<", shift) or exit 1; chomp(my @given = <F>);
+    exit(($given[1] // "") =~ /\A(?:view|hold)\z/ ? 0 : 1)' "$p/command" && continue
   case $(sed -n 's/^command //p' "$p/status" 2>/dev/null) in *'.edit --in '*|*'.pick '*|*'.search'|*'.search '*) continue ;; esac
   kept "$p" && continue
   old=$(mktemp -d "$D/.restore.XXXXXX") && mv "$p" "$old/pane" || { rmdir "$old" 2>/dev/null; continue; }

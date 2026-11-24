@@ -3838,6 +3838,22 @@ fn restore_skips_viewer_and_helper_panes() {
     // (The same folder with nobody reading its `in` is a pane that is over, and is started.)
     drop(reader);
     assert_eq!(String::from_utf8_lossy(&restore().stdout), "started w/mirror again\n");
+    // Whose pane it is, is its program's first argument as it was given, whole: a line's end in an
+    // argument is a character of it. A program whose first argument only begins with the line `view`
+    // is started anew, and a viewer whose own name has a line's end in it is passed over.
+    let odd = session.0.join("fux\nnext");
+    fs::write(&odd, "#!/bin/sh\nexit 0\n").unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(&odd).ended().success());
+    let panes = [
+        session.start("x/odd", &[odd.to_str().unwrap(), "view"]),
+        session.start("x/prints", &["printf", "view\nno-viewer"]),
+    ];
+    for pane in &panes {
+        assert!(session.fux().arg("wait").arg(pane).ended().success());
+    }
+    let out = restore();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "started x/prints again\n", "{out:?}");
+    assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
 }
 
 #[test]
