@@ -2,7 +2,7 @@
 
 Written 2026-11-21, at `fux` 0.40.0 / `fux-vt` 0.18.0 / `fuxix` 0.11.0 (tag `v0.40.0`, all three on
 crates.io). Read this first, then `README.md` (the contract: commands, the pane folder's files, keys,
-bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D124, append-only:
+bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D125, append-only:
 a historical log, in which a later entry says so when it replaces an earlier one).
 
 ## What fux is
@@ -80,6 +80,7 @@ main/ screen screen.styled lines links pictures    the main screen, always
 alt/  screen screen.styled lines links pictures    the alternate screen, while a program has it
 history, history.styled (.1)    the text that scrolled off the main screen
 marks                           OSC 133 prompt marks, in the text's numbering
+marks.dropped                   how many marks `marks` no longer has: its line n is mark number that + n
 pic-N.sixel                     a picture's bytes
 ```
 
@@ -91,7 +92,9 @@ facts the holder publishes are each replaced in one rename, so one of them read 
 whole. `history` (appended, and cut back when a resize takes lines back) and picture bytes are written
 in place, inside a round. `generation` brackets a round: a script that reads several files keeps the
 read only when the same even number is there before and after, retrying a bounded number of times (the
-recipe, `together`, is on `fux help agents`; a holder that died mid-round leaves it odd). Outside any
+recipe, `together`, is on `fux help agents`; a holder that died mid-round leaves it odd). Two such
+readings of `marks` and `marks.dropped` say exactly what was marked between them, by subtraction (D125:
+the file keeps a thousand marks and they move, so neither its count nor a place says it). Outside any
 round: `log`, `cwd` (a program may write it itself), the FIFOs, and files scripts make in the folder.
 
 ## Standards
@@ -119,7 +122,7 @@ and wrote to the viewer's FIFO, has changes to make before it moves to this fux:
 ```sh
 cargo build --release
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked -- --test-threads 4   # 170 tests; the real-binary suite takes ~20 s
+cargo test --workspace --locked -- --test-threads 4   # 165 tests, and the carrier's program; the real-binary suite takes ~20 s
 tools/help-agents.sh                     # runs every example on the agents' page as one sh session
 ./example.sh                             # the README's example
 python3 tools/perf.py target/release/fux # speed: flood, key echo, CPU (with tmux, beside it)
