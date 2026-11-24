@@ -553,7 +553,12 @@ A folder is a link and a value is text. Each link holds the folder's whole
 path, so `pane/in` and `cat pane/cwd` work as they stand, and `readlink
 pane` gives the path to hand on (`fux layout ./workspace focus left` is a
 whole key; `fux start ./workspace/ -- top` starts a pane there, and prints
-the pane's own path, not one through the link). Hand that on, and not a path through the
+the pane's own path, not one through the link). A pane's program runs in the
+directory `fux start` was run in, so a script that starts one goes elsewhere
+first (the defaults: `cd "$(cat ../cwd)"`, where the viewer was started, once
+they have read their links): left in the script's folder, the program would
+stand in a folder that is gone, and a `fux start` run from a folder that is
+gone is refused. Hand a whole path on, and not a path through the
 script's folder, to anything that outlives the script (a pane it starts, a
 job it leaves in the background): the folder is written whole before the
 script starts, never written again, and removed when the script has ended.

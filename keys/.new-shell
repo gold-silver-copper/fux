@@ -10,7 +10,7 @@ k=$(readlink keys) s=$(readlink session) w=$(readlink workspace) from=
 [ ! -L pane ] || from=$(basename "$(readlink pane)")
 [ $# -eq 0 ] || { read -r COLUMNS LINES < "$1" && export COLUMNS LINES; }
 at() { IFS= read -r d < "$1" && [ -n "$d" ] && cd "$d"; } 2>/dev/null
-at pane/cwd || at ../cwd || cd || cd /
+at pane/cwd || at ../cwd || cd 2>/dev/null || cd /
 p=$(fux start "$w/" -- "$k/.shell" "$s") || exit
 # (A pane to split from that has gone meanwhile: the layout says so, and the new shell is shown in its own tab.)
 [ $# -eq 1 ] && [ -n "$from" ] && fux layout "$w" split "$1" "${p##*/}" beside "$from" ||

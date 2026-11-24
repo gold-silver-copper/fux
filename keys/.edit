@@ -28,6 +28,9 @@ if [ "$1" = --in ]; then
   exit 0
 fi
 w=$1 f=$2 n=${3:-1}; shift 2; [ $# -eq 0 ] || shift
+# (Run by a key's script this is in that script's folder, which goes when the script has ended: the
+# pane is started from where the viewer was started, as its program runs where `fux start` does.)
+[ ! -L workspace ] || { IFS= read -r d < ../cwd && [ -n "$d" ] && cd "$d" || cd || cd /; } 2>/dev/null
 p=$(fux start "$w/" -- "$k/.shell" "$(dirname "$w")" "$k/.edit" --in "$f" "$n" "$@") || { rm -f "$f"; exit; }
 # (An editor that is done by now has taken its pane with it: then there is none to show.)
 fux layout "$w" pane "${p##*/}" 2> /dev/null || :

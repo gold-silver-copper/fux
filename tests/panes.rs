@@ -220,6 +220,8 @@ impl Session {
     /// its own in the folder of a viewer of this session that is not there (`.view.0`), which tells it
     /// of the workspace, of the pane that has the keys if one is given, of the session, the keys and
     /// the viewer's FIFO, and of two sizes; with this `fux` first in `PATH`, and no size of a terminal.
+    /// The folder goes when the script has ended, as a viewer removes it: what the script started
+    /// or left running has it no more.
     fn key(&self, keys: &Path, script: &str, workspace: &str, pane: Option<&Path>) -> Command {
         let own = self.0.join(".view.0");
         let folder = (1..).map(|n| own.join(n.to_string())).find(|folder| !folder.exists()).unwrap();
@@ -233,7 +235,10 @@ impl Session {
         fs::write(folder.join("row"), "40 24\n").unwrap();
         fs::write(folder.join("col"), "80 12\n").unwrap();
         let bin = Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display().to_string();
-        let mut command = self.command(keys.join(script));
+        let mut command = self.command("sh");
+        // (The folder is named to the shell that removes it: nothing is removed on a variable's word.)
+        let runs = "folder=$0 script=$1; shift; \"$script\" \"$@\"; code=$?; rm -rf \"$folder\"; exit $code";
+        command.args(["-c", runs]).arg(&folder).arg(keys.join(script));
         command.current_dir(&folder).env("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap()));
         command.env_remove("COLUMNS").env_remove("LINES");
         command
@@ -837,12 +842,14 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     Command::new("chmod").arg("+x").arg(session.0.join("ed")).ended();
     let out = session.0.join("out");
     // The search, in a pane as the key starts it: the words, then the first line of the list.
-    // (It is told the workspace its editor is to open in, and the editor is run as `.editor` says.)
+    // (By its key, as a viewer of the workspace `w` runs it; the editor is run as `.editor` says. The
+    // key's folder is gone when the search asks: its pane, and the editor's after it, are started from
+    // where the viewer was started, and a start from a folder that is gone would be refused.)
     editor(&keys, &format!("exec {} \"+$2\" \"$1\"", session.0.join("ed").display()));
-    let mut search = session.fux();
+    let mut search = session.key(&keys, "C-b/f/s", "w", None);
     search.env("OUT", &out).env("SHELL", "/bin/sh").env("PATH", format!("{}:{path}", session.0.join("none").display()));
-    let found = search.args(["start", "w/find", "--"]).arg(keys.join(".search")).arg(session.0.join("w")).run();
-    let find = PathBuf::from(String::from_utf8(found.stdout).unwrap().trim());
+    assert!(search.ended().success());
+    let find = session.0.join("w/1");
     until("it asks", || read(&find.join("shown/screen")).contains("search every pane for:"));
     send(&find.join("in"), "NEEDLE\r");
     // (With a finder installed the list is its own; without, the lines are numbered.)
@@ -1098,6 +1105,13 @@ fn a_pane_and_a_workspace_are_named_by_a_path_as_by_a_name() {
         let out = session.fux().current_dir(&other).args(["start", odd, "--", "true"]).run();
         let said = String::from_utf8_lossy(&out.stderr).into_owned();
         assert!(!out.status.success() && said.contains("a name is letters"), "{odd}: {out:?}");
+    }
+    // A path that is no text is refused, to start in and to view: it is not read as another path
+    // (with a sign in place of what is no text), and no folder is made for it.
+    let none = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"./\xff/p");
+    for verb in ["start", "view"] {
+        let out = session.fux().current_dir(&other).arg(verb).arg(none).run();
+        assert!(!out.status.success() && !other.join("\u{fffd}").exists(), "{verb}: {out:?}");
     }
     // A name is a name still: in `main` of the default session, or in the workspace named.
     assert_eq!(start(Path::new("p"), &other), session.0.join("main/p"));
@@ -1939,7 +1953,7 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
     let out = session.0.join("out");
     let fake = |words: &str| {
         format!(
-            "#!/bin/sh\nfor a; do f=$a; done\necho \"{words}\" > \"$OUT.at\"\ncp \"$f\" \"$OUT.new\" && mv \"$OUT.new\" \"$OUT\"\n"
+            "#!/bin/sh\nfor a; do f=$a; done\npwd -P > \"$OUT.in\"\necho \"{words}\" > \"$OUT.at\"\ncp \"$f\" \"$OUT.new\" && mv \"$OUT.new\" \"$OUT\"\n"
         )
     };
     fs::write(session.0.join("vim"), fake("$1")).unwrap();
@@ -1966,9 +1980,12 @@ fn the_marks_of_a_shell_reach_into_history_and_the_keys_open_an_output_and_a_pro
             && text.contains("\n112\na-long-line-that-wraps-in-twelve\n$ second\nalpha\n"),
         "{text}"
     );
-    // History in the editor opens at the text's end.
+    // History in the editor opens at the text's end. The editor's pane was started from where the
+    // viewer was started, not from the folder of the key's script, which is gone by now.
     let (text, line) = key("c");
     assert_eq!((text.lines().count(), text.lines().last()), (line, Some("$")));
+    assert_eq!(read(&session.0.join("out.in")), format!("{}\n", session.root().join("home").display()));
+    assert_eq!(fs::read_dir(session.0.join(".view.0")).unwrap().count(), 1, "a key's folder was left");
     // History in colour is the same text with its colours, in `less -R` at its end (a `less`
     // for the test: the same script).
     fs::write(session.0.join("less"), fake("$*")).unwrap();
@@ -4114,6 +4131,7 @@ fn picker_waits_for_finder_ready_so_first_enter_is_not_lost_and_checks_exit_stat
         format!(
             r#"#!/bin/sh
 cat > "{0}"
+pwd -P > "{0}.in"
 python3 - "{0}" "{1}" <<'PY'
 import sys, time, termios, tty
 time.sleep(0.08)
@@ -4158,6 +4176,10 @@ PY
             && screen().contains("PANE_ONE")
             && fs::read_dir(inner.0.join("main")).unwrap().filter_map(Result::ok).count() <= 2
     });
+    // (The list's pane was started from where the viewer was started, not from the folder of the key's
+    // script, which was gone before the finder had drawn.)
+    let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+    assert_eq!(read(&inner.0.join(".items.in")), format!("{}\n", here.display()));
     // Also verify a cancelled finder (non-zero exit with non-empty stdout) does not run the command.
     let marker = inner.0.join(".ran");
     let list = inner.0.join(".list");

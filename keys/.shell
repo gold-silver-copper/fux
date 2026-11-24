@@ -6,7 +6,7 @@
 # ended, of `.here` beside this script (it needs perl): the pane as it is called by then, so one
 # that was given another name meanwhile closes too. Where `.here` finds none, the folder stays.
 # This script killed outright never gets there: the folder stays for the close key.
-s=$1; shift
+s=$1; [ $# -eq 0 ] || shift
 if [ $# -gt 0 ]; then "$@"; else "${SHELL:-sh}"; fi
 # (A program that could not be run at all has said why: that stays to be read.
 # One that is there to run has run, and 126 or 127 is its own: a shell's last command's, say.)

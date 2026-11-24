@@ -166,7 +166,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     let mut sections = args.splitn(2, |arg| arg == "--");
     let name = match sections.next().unwrap_or_default() {
         [] => String::new(),
-        [name] => name.to_string_lossy().into_owned(),
+        [name] => name.to_str().ok_or("start takes a PANE that is text")?.to_string(),
         _ => return Err("start takes one PANE, then -- and the program".into()),
     };
     // The pane's name is what follows the last `/` (nothing: the first free number), and what is
@@ -261,9 +261,9 @@ fn run(args: &[OsString]) -> Result<(), String> {
         Some("view") => {
             let wrong = "view takes a workspace, by its name or its directory, and then perhaps the keys' directory";
             let ([] | [_] | [_, _]) = rest else { return Err(wrong.into()) };
-            let named = rest.first().map_or("main".into(), |name| name.to_string_lossy());
+            let named = rest.first().map_or(Some("main"), |name| name.to_str()).ok_or(wrong)?;
             // (The viewer is its session's: the folder the workspace is in, and the workspace's name there.)
-            let workspace = made(&workspace(&named, wrong)?)?;
+            let workspace = made(&workspace(named, wrong)?)?;
             let name = workspace.file_name().and_then(|name| name.to_str()).filter(|name| is_name(name));
             let config = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")));
             let keys = rest.get(1).map(PathBuf::from).or_else(|| config.map(|config| config.join(FOLDER).join("keys")));

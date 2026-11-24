@@ -4,5 +4,5 @@
 s=$(readlink session) k=$(readlink keys) n=1
 until said=$(umask 077 && mkdir "$s/w$n" 2>&1); do [ -e "$s/w$n" ] || { echo "$said" >&2; exit 1; }; n=$((n + 1)); done # (the folder made is the claim to the name)
 # (Its first shell is started, where the viewer was started, before the viewer is told of it: what is typed after the key is that shell's.)
-{ IFS= read -r d < ../cwd && [ -n "$d" ] && cd "$d"; } 2>/dev/null || cd || cd /
+{ IFS= read -r d < ../cwd && [ -n "$d" ] && cd "$d" || cd || cd /; } 2>/dev/null
 p=$(fux start "$s/w$n/" -- "$k/.shell" "$s") && fux layout "$s/w$n" pane "${p##*/}" && echo "workspace w$n"
