@@ -469,3 +469,30 @@ fn arrange_puts_a_tabs_panes_in_a_row_a_column_a_grid_or_one_beside_the_rest() {
         assert_eq!(arranged("* a focus=a\n", way), "* a focus=a\n");
     }
 }
+
+#[test]
+fn a_run_is_its_file_to_the_byte_or_none() {
+    let dir = std::env::temp_dir().join(format!("fux-run-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (run, digits) = (dir.join("run"), "0123456789abcdef0123456789abcdef");
+    assert_eq!(crate::run_of(&dir), None);
+    std::fs::write(&run, format!("{digits}\n")).unwrap();
+    assert_eq!(crate::run_of(&dir), Some(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef));
+    // The same number written another way is no run: one digit, no line end or two, a digit more
+    // or fewer, capitals, a sign or a blank where a digit is.
+    let (upper, fewer) = (digits.to_uppercase(), &digits[1..]);
+    let ends = ["1\n".into(), digits.into(), format!("{digits}\n\n"), format!("{digits}0\n"), format!("{fewer}\n")];
+    for other in ends.into_iter().chain([format!("{upper}\n"), format!("+{fewer}\n"), format!(" {fewer}\n")]) {
+        std::fs::write(&run, &other).unwrap();
+        assert_eq!(crate::run_of(&dir), None, "{other:?}");
+    }
+    // Nor is what a link of the name leads to, nor a FIFO there (which holds no reader).
+    std::fs::write(dir.join("other"), format!("{digits}\n")).unwrap();
+    std::fs::remove_file(&run).unwrap();
+    std::os::unix::fs::symlink("other", &run).unwrap();
+    assert_eq!(crate::run_of(&dir), None);
+    let _fifo = crate::sys::fifo(&run).unwrap();
+    assert_eq!(crate::run_of(&dir), None);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

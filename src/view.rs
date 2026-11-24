@@ -19,7 +19,6 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -105,9 +104,9 @@ struct Pane {
     /// The size the pane says it has (`size`), if it says one.
     size: (usize, usize),
     /// The pane's folder, while it is a tile: with another folder under its name it is another pane.
-    folder: Option<Rc<Folder>>,
+    folder: Option<Folder>,
     /// Which folder what is known here was read of: kept while the pane is no tile.
-    of: Option<(u64, u64)>,
+    of: Option<Folder>,
     state: String,
     /// The addresses of the links on the screen: a cell's `link` less one is its place here.
     addresses: Vec<String>,
@@ -121,36 +120,22 @@ struct Pane {
     cursor_colour: Option<[u8; 3]>,
 }
 
-/// Which folder a pane is: its device and its number. The folder is held open where that can be
-/// done, as the number alone is the next folder's once this one is removed: one handle for a
-/// pane, its tile's and its held keys' alike.
-struct Folder {
-    id: (u64, u64),
-    _held: Option<File>,
-}
-
-/// How many more files the viewer must be able to open once it holds a folder: what a frame, a
-/// key and a key's script open for a moment (a pane's `in` and `ctl` among them).
-const SPARE: usize = 8;
+/// Which folder a pane is: its `run`, and its device and its number. The number alone is the next
+/// folder's once this one is removed, and the run is not: a holder's pane is never taken for
+/// another. A folder with no `run` (made by hand, or kept by a holder from before there was one)
+/// is known by its number alone, and none is held open to keep that from the next.
+#[derive(Clone, Copy, PartialEq)]
+struct Folder(Option<u128>, (u64, u64));
 
 impl Folder {
-    /// The folder a name has now, if it has one: held open, unless that would leave the viewer
-    /// fewer than `SPARE` files to open (it is then known by its number alone, as it is when it
-    /// cannot be opened at all for that reason).
-    fn of(path: &Path) -> Option<Rc<Folder>> {
-        let id = |folder: fs::Metadata| (folder.dev(), folder.ino());
-        let held = sys::open(path, false).ok().and_then(|held| Some((id(held.metadata().ok()?), held)));
-        let spare = || (0..SPARE).map(|_| sys::open("/", false)).collect::<io::Result<Vec<_>>>().is_ok();
-        let (id, held) = match held {
-            Some((id, held)) => (id, spare().then_some(held)),
-            None => (id(fs::metadata(path).ok()?), None),
-        };
-        Some(Rc::new(Folder { id, _held: held }))
+    /// The folder a name has now, if it has one.
+    fn of(path: &Path) -> Option<Folder> {
+        fs::metadata(path).ok().map(|folder| Folder(crate::run_of(path), (folder.dev(), folder.ino())))
     }
 
     /// Whether the folder a name has now is this one.
     fn is(&self, path: &Path) -> bool {
-        fs::metadata(path).is_ok_and(|now| (now.dev(), now.ino()) == self.id)
+        Folder::of(path) == Some(*self)
     }
 }
 
@@ -169,7 +154,7 @@ impl Drop for Own {
 #[derive(Clone)]
 enum Went {
     Script(PathBuf),
-    Pane(PathBuf, Rc<Folder>),
+    Pane(PathBuf, Folder),
 }
 
 struct View {
@@ -719,13 +704,8 @@ impl View {
                 // (Its release is the pane's only if it can have one and the program there asks to be
                 // told of releases now: a key typed to one that does not is typed, and no more.)
                 let directory = self.session.join(&self.workspace).join(self.focus.as_deref().unwrap_or_default());
-                // (Which pane it is, is its tile's word, if it has a tile: one handle for both.)
-                let tile = self.focus.as_ref().and_then(|focus| self.panes.get(focus)?.folder.clone());
-                let folder = || tile.filter(|folder| folder.is(&directory)).or_else(|| Folder::of(&directory));
-                event
-                    .filter(|_| releases(&directory))
-                    .and_then(|_| folder())
-                    .map(|folder| Went::Pane(directory, folder))
+                let folder = event.filter(|_| releases(&directory)).and_then(|_| Folder::of(&directory));
+                folder.map(|folder| Went::Pane(directory, folder))
             }
             // A key that a menu which stays open does not have ends it; if it is the key that
             // led there (the prefix), its own menu is open again, as when it is pressed anew.
@@ -983,10 +963,10 @@ impl View {
                 // (Another folder under the name, or one that was no tile a moment ago: it is known from
                 // here on, has been asked nothing, and is drawn whatever its files say. Another folder
                 // than the one that was read is another pane: nothing that was read is its.)
-                if !pane.folder.as_ref().is_some_and(|folder| folder.is(&directory.join(name))) {
-                    let folder = Folder::of(&directory.join(name));
-                    let of = folder.as_ref().map(|folder| folder.id);
-                    *pane = Pane { folder, of, ..if of == pane.of { std::mem::take(pane) } else { unread() } };
+                let folder = Folder::of(&directory.join(name));
+                if pane.folder.is_none() || pane.folder != folder {
+                    let read = if folder == pane.of { std::mem::take(pane) } else { unread() };
+                    *pane = Pane { folder, of: folder, ..read };
                     pane.asked = None;
                     self.from = self.from.take().filter(|_| pane.folder.is_none());
                 }
@@ -1016,7 +996,7 @@ impl View {
         let line = Cell { ch: '\u{2}', ..Cell::blank(Style::default()) };
         let mut back = vec![if tiles.is_empty() { Cell::blank(Style::default()) } else { line }; w * h];
         self.panes.retain(|name, pane| {
-            // (A pane's folder is known, and held open, only while it is a tile.)
+            // (A pane's folder is known only while it is a tile.)
             pane.folder = pane.folder.take().filter(|_| tiles.iter().any(|(tile, _)| tile == name));
             layout.tabs.iter().any(|tab| tab.panes().contains(&name.as_str()))
         });

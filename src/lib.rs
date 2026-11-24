@@ -161,6 +161,16 @@ pub fn lines(kept: &mut Vec<u8>, read: &[u8], most: usize) -> Vec<Option<String>
     lines
 }
 
+/// Which run a pane's folder is of: the number in its `run`, 128 random bits its holder wrote there once, as
+/// 32 hex digits. None if the name has anything but that file, to the byte (no file, a link, other digits,
+/// one more or fewer): a folder no holder of this fux made.
+pub fn run_of(dir: &Path) -> Option<u128> {
+    let (text, read) = read(sys::open_regular(dir.join("run")), 34);
+    let digits = text.strip_suffix(b"\n").filter(|digits| read.is_ok() && digits.len() == 32)?;
+    let digits = digits.iter().all(|digit| matches!(digit, b'0'..=b'9' | b'a'..=b'f')).then_some(digits)?;
+    u128::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
+}
+
 /// The same as text, of a file opened without waiting (should the name be a FIFO's).
 fn text(path: &Path, most: u64) -> String {
     String::from_utf8_lossy(&read(sys::open(path, false), most).0).into_owned()

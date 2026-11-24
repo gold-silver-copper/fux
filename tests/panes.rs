@@ -1069,6 +1069,44 @@ fn a_pane_is_one_run_and_a_name_that_is_there_is_refused_whatever_is_there() {
 }
 
 #[test]
+fn a_panes_run_is_written_once_after_its_fifos_and_before_its_status() {
+    use std::os::unix::fs::MetadataExt;
+    let session = Session::new("runfile");
+    // 128 bits as 32 hex digits and a line end (`read -r run < run`), and every start draws its own.
+    let pane = session.start("p", &["sh", "-c", "echo first; read x"]);
+    let other = session.start("q", &["sleep", "600"]);
+    let run = read(&pane.join("run"));
+    let digits = run.strip_suffix('\n').unwrap_or_default();
+    assert!(digits.len() == 32 && digits.bytes().all(|digit| b"0123456789abcdef".contains(&digit)), "{run:?}");
+    assert_eq!(fux::run_of(&pane), u128::from_str_radix(digits, 16).ok());
+    assert!(fux::run_of(&other).is_some() && fux::run_of(&other) != fux::run_of(&pane));
+    // Written once: it is the file it was (one written again is another file) after a round of
+    // writing, and after the pane's end.
+    let file = fs::metadata(pane.join("run")).unwrap().ino();
+    send(&pane.join("ctl"), "resize 40 12\n");
+    until("a round was written", || fact(&pane, "size") == "40 12");
+    send(&pane.join("in"), "\n");
+    assert!(String::from_utf8_lossy(&session.fux().arg("wait").arg(&pane).run().stdout).contains("state exited 0"));
+    assert!(read(&pane.join("run")) == run && fs::metadata(pane.join("run")).unwrap().ino() == file);
+    // A holder as `fux start` starts it, in a folder where a folder that is not empty has a name
+    // the holder needs: it cannot make what is to have that name, and leaves. With no FIFOs it has
+    // written no `run` (a folder that has a `run` has had its FIFOs), and with no `run` no `status`.
+    let hold = |blocked: &str| {
+        let folder = session.0.join("main").join(format!("no-{blocked}"));
+        fs::create_dir_all(folder.join(blocked).join("full")).unwrap();
+        let mut hold = session.fux();
+        let out = hold.args(["hold", ".", "true"]).current_dir(&folder).run_from(fuxix::open(&folder, false).ok());
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success() && said.contains("cannot make the FIFOs, the run or the status"), "{out:?}");
+        folder
+    };
+    let folder = hold("ctl");
+    assert!(!folder.join("run").exists() && !folder.join("status").exists());
+    let folder = hold("run");
+    assert!(folder.join("run").is_dir() && !folder.join("status").exists());
+}
+
+#[test]
 fn a_pane_and_a_workspace_are_named_by_a_path_as_by_a_name() {
     // An argument that begins with `/` or `.` is a directory's path, and any other a name in the
     // default session. A pane named by a path is the last part of it, in the workspace that the
@@ -3174,6 +3212,43 @@ fn a_pane_whose_tab_is_shown_again_is_asked_its_size_once_more_and_no_more() {
     until("the pane is shown again, and asked again", || shows("AYE") && asked() == 2);
     std::thread::sleep(Duration::from_millis(400));
     assert_eq!(asked(), 2, "{}", all.borrow());
+}
+
+#[test]
+fn a_folder_given_the_number_of_the_one_before_it_is_another_pane_by_its_run() {
+    // A pane is removed and its name started anew, and the new folder is given the number the old
+    // one had (ext4 gives it; btrfs and APFS never do, so here the folder stays and what is in it
+    // becomes another run's: to a viewer, which reads by the name, that is the same). Neither run
+    // has a `generation` to say that its files are others. The `run` says it: the viewer draws
+    // the screen of the run that has the name now, not what it read of the one before.
+    let (outer, inner) = (Session::new("numberouter"), Session::new("numberinner"));
+    let (keys, made) = (inner.0.join(".keys"), inner.0.join("main/a"));
+    fs::create_dir_all(&keys).unwrap();
+    fs::create_dir_all(made.join("main")).unwrap();
+    std::os::unix::fs::symlink("main", made.join("shown")).unwrap();
+    fs::write(made.join("state"), "running\n").unwrap();
+    // (Each file whole at every moment, as a holder writes it.)
+    let run = |number: u8, screen: &str| {
+        for (name, text) in [("main/screen.styled", format!("{screen}\n")), ("run", format!("{number:032x}\n"))] {
+            fs::write(made.join(".new"), text).unwrap();
+            fs::rename(made.join(".new"), made.join(name)).unwrap();
+        }
+    };
+    run(1, "AYE");
+    inner.start("b", &["sh", "-c", "echo BEE; exec sleep 600"]);
+    lay(&inner.0, "* a focus=a\n  b focus=b\n");
+    let view = outer.start("view", &viewer(&inner, &keys));
+    let shows = |word: &str| read(&view.join("shown/screen")).starts_with(word);
+    until("the first run is drawn", || shows("AYE"));
+    // While its tab is not shown (the sequence HANDOFF had as known, and left)…
+    assert!(inner.fux().args(["layout", "main", "tab", "next"]).ended().success());
+    until("the other tab is shown", || shows("BEE"));
+    run(2, "SEE");
+    assert!(inner.fux().args(["layout", "main", "tab", "prev"]).ended().success());
+    until("the second run is drawn when its tab is shown again", || shows("SEE"));
+    // …and while the viewer shows it.
+    run(3, "DEE");
+    until("the third run is drawn in its tile", || shows("DEE"));
 }
 
 #[test]

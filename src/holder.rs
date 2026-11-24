@@ -129,8 +129,8 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
 }
 
 impl Holder {
-    /// Makes the FIFOs, says in `status` who holds the pane, starts the program and keeps the pane
-    /// until it ends.
+    /// Makes the FIFOs, says in `run` which run this is and in `status` who holds the pane, starts the
+    /// program and keeps the pane until it ends.
     fn start(&mut self, mut program: Command, command: &str) -> Result<(), String> {
         // Who holds the pane and what it runs are in `status` before the program is started: the
         // program, whose parent this is, finds from its first instruction which pane it is in. (After
@@ -140,9 +140,17 @@ impl Holder {
             let pid = pid.map_or(String::new(), |pid| format!("pid {pid}\n"));
             replace("status", format!("holder {}\n{pid}command {command}\n", std::process::id()).as_bytes())
         };
+        // Which run this is: 128 bits that no other run has, written once and in no round. After the
+        // FIFOs, so that a folder with a `run` has had them, and before all that says who runs here.
+        let run = || {
+            let mut bits = [0; 16];
+            sys::open("/dev/urandom", false)?.read_exact(&mut bits)?;
+            replace("run", format!("{:032x}\n", u128::from_ne_bytes(bits)).as_bytes())
+        };
         let fifos = sys::fifo("in").and_then(|input| Ok((input, sys::fifo("ctl")?)));
+        let fifos = fifos.and_then(|fifos| run().map(|()| fifos));
         let made = fifos.and_then(|fifos| self.turn(true).and_then(|()| status(None)).map(|()| fifos));
-        let (input, ctl) = made.map_err(|e| format!("cannot make the FIFOs or the status: {e}"))?;
+        let (input, ctl) = made.map_err(|e| format!("cannot make the FIFOs, the run or the status: {e}"))?;
         // What it runs, as it was given: the program and each of its arguments, each ended by a zero
         // byte (as `/proc/N/cmdline` has them). `status` has that for a person to read, joined by
         // blanks, which cannot be split again: this is what starts the same anew. Written when the
