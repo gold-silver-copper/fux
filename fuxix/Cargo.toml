@@ -1,6 +1,6 @@
 [package]
 name = "fuxix"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "The system calls std does not give: a pty, poll, a FIFO, a new session, window size, raw mode"
 license = "MIT"
