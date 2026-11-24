@@ -3215,10 +3215,21 @@ fn a_restore_that_fails_leaves_the_run_before_whole_and_a_pane_started_again_is_
     assert!(Command::new("sh").arg("-c").arg(links).arg(&tools).ended().success());
     assert!(session.fux().arg("wait").arg(&told).ended().success());
     let was = read(&told.join("status"));
-    let mut restore = Command::new("sh");
-    restore.arg(keys.join(".restore")).arg(&session.0).env("PATH", &tools).env_remove("FUX_KEYS").env_remove("FUX_DIR");
-    let none = restore.run();
+    let mut bare = Command::new("sh");
+    bare.arg(keys.join(".restore")).arg(&session.0).env("PATH", &tools).env_remove("FUX_KEYS").env_remove("FUX_DIR");
+    let none = bare.run();
     assert!(none.status.code() == Some(1) && String::from_utf8_lossy(&none.stderr).contains("fux"), "{none:?}");
+    assert_eq!(read(&told.join("status")), was);
+    // Nor does it end well where it could move nothing: a session nothing can be made in (no place
+    // to put the run that is over). The pane is as it was, and whoever ran the script is told.
+    let mode = |mode: &str| assert!(Command::new("chmod").arg(mode).arg(&session.0).ended().success());
+    mode("555");
+    if fs::write(session.0.join("probe"), "").is_ok() {
+        return mode("755"); // (Whoever may write anywhere, root, has no session it cannot move a pane in.)
+    }
+    let unmoved = restore();
+    mode("755");
+    assert!(unmoved.status.code() == Some(1) && !unmoved.stderr.is_empty() && unmoved.stdout.is_empty(), "{unmoved:?}");
     assert_eq!(read(&told.join("status")), was);
 }
 

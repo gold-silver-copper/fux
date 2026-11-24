@@ -2669,7 +2669,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     the script ended with 0: a viewer then takes every name out of the
     layout. It looks for `fux` and perl before anything else now. And it ends
     with 1 if a start failed or a text could not be copied (an old run was
-    left in a dot-named folder), 0 otherwise. Not covered, and said in the
+    left in a dot-named folder), or if a pane that is over could not be moved
+    aside at all (the second review: in a session nothing can be made in,
+    `mktemp` failed for every pane and the script ended with 0), 0 otherwise. Not covered, and said in the
     README: a run cut short between the move and the start leaves the old
     run in `.restore.XXXXXX/pane` without a word; `mv` puts it back.
   - **Which panes `.restore` passes over as a viewer's** (after the same

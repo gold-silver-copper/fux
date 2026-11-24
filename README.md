@@ -744,7 +744,8 @@ read and remove), and the name has the failed start's folder with its
 cannot be copied (a file of it that cannot be read: `cat` says which), the
 pane is started all the same and the old folder is kept in the same way.
 In both cases the script ends with status 1, so a login that runs it can
-tell; with no `fux` or no perl on `PATH` it says so, ends with 1 and has
+tell, as it does where a pane that is over could not be moved aside at all
+(a session nothing can be made in: the pane is left as it is); with no `fux` or no perl on `PATH` it says so, ends with 1 and has
 moved nothing. A run that is cut short between the move and the start
 (Ctrl-C, a login that is hung up) says nothing: that pane's old run is then
 in a `.restore.XXXXXX/pane` of the session, whole, and its name has no

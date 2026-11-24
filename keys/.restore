@@ -45,7 +45,8 @@ for p in "$D"/*/*/; do
     exit(($given[1] // "") =~ /\A(?:view|hold)\z/ ? 0 : 1)' "$p/command" && continue
   case $(sed -n 's/^command //p' "$p/status" 2>/dev/null) in *'.edit --in '*|*'.pick '*|*'.search'|*'.search '*) continue ;; esac
   kept "$p" && continue
-  old=$(mktemp -d "$D/.restore.XXXXXX") && mv "$p" "$old/pane" || { rmdir "$old" 2>/dev/null; continue; }
+  # (A pane that cannot be moved aside is left as it is: `mktemp` or `mv` has said why, and the end says so too.)
+  old=$(mktemp -d "$D/.restore.XXXXXX") && mv "$p" "$old/pane" || { rmdir "$old" 2>/dev/null; left=1; continue; }
   dir=; IFS= read -r dir 2>/dev/null < "$old/pane/cwd"
   # (The arguments are read by perl: an empty one is one too, which not every `xargs -0` keeps.)
   if said=$(cd "${dir:-$HOME}" 2>/dev/null || cd; perl -e 'local $/ = "\0"; open(F, "<", shift) or die "$!\n";
@@ -55,5 +56,6 @@ for p in "$D"/*/*/; do
   else left=1; echo "$name: $said (the run before is in $old/pane)" >&2
   fi
 done
-# (It ends with 1 if a run that is over was left aside: a start that failed, or a text that could not be copied.)
+# (It ends with 1 if a pane that is over was not started, or its run was left aside: a pane that could not
+# be moved, a start that failed, a text that could not be copied.)
 exit $left
