@@ -1,5 +1,5 @@
-//! Properties of the layout, of the key names beside the emulator they agree with, and of what
-//! the viewer draws of a picture.
+//! Properties of the layout, of the key names beside the emulator they agree with, of what
+//! the viewer draws of a picture, and of what `changes` says.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
@@ -467,5 +467,286 @@ fn arrange_puts_a_tabs_panes_in_a_row_a_column_a_grid_or_one_beside_the_rest() {
     assert_eq!(arranged("* col(a b) focus=b\n", "main"), "* row(a:2 b) focus=b\n");
     for way in ["row", "col", "grid", "main"] {
         assert_eq!(arranged("* a focus=a\n", way), "* a focus=a\n");
+    }
+}
+
+// `changes`: what the holder says its rounds changed (`src/pane.rs`).
+use crate::pane::{CHANGES_MAX, Change, Changes};
+use std::collections::BTreeMap;
+
+/// A folder as a reader of `changes` has it: what each name is, and a file's bytes.
+#[derive(Clone, Debug, PartialEq)]
+enum Thing {
+    File(Vec<u8>),
+    Folder,
+    Link(String),
+    Fifo,
+}
+type Folder = BTreeMap<String, Thing>;
+
+fn under(name: &str, folder: &str) -> bool {
+    name.strip_prefix(folder).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// What a reader does: `copy` is the folder as an earlier round left it, `lines` what `changes` says
+/// the rounds after that one did, `pane` the folder as it is. Each line in its order: a `put` leaves
+/// none of the copy's bytes, an `append` those before AT, a `move` gives the copy's file its other
+/// name, and the rest make and remove. Then each file a `put` or an `append` named, under the name it
+/// has by then, gets from the pane's file the bytes after those it kept: and no other file is read.
+fn replay(mut copy: Folder, lines: &[(u64, Change)], pane: &Folder) -> Folder {
+    // The files to read from, and how long the last `append` of each said it is.
+    let mut lacking: BTreeMap<String, Option<u64>> = BTreeMap::new();
+    for (_, change) in lines {
+        match change {
+            Change::Put(name) => {
+                copy.insert(name.clone(), Thing::File(Vec::new()));
+                lacking.insert(name.clone(), None);
+            }
+            Change::Append(name, at, len) => {
+                let Thing::File(bytes) = copy.entry(name.clone()).or_insert(Thing::File(Vec::new())) else {
+                    panic!("{name} is added to, and is no file in the copy")
+                };
+                bytes.truncate(*at as usize);
+                lacking.insert(name.clone(), Some(*len));
+            }
+            Change::Move(from, to) => {
+                let moved = copy.remove(from).unwrap_or_else(|| panic!("{from} is moved, and the copy has none"));
+                copy.insert(to.clone(), moved);
+                lacking.remove(to);
+                lacking.remove(from).into_iter().for_each(|len| _ = lacking.insert(to.clone(), len));
+            }
+            Change::Folder(name) => _ = copy.insert(name.clone(), Thing::Folder),
+            Change::Link(name, to) => _ = copy.insert(name.clone(), Thing::Link(to.clone())),
+            Change::Fifo(name) => _ = copy.insert(name.clone(), Thing::Fifo),
+            Change::Gone(name) => {
+                copy.retain(|other, _| !under(other, name));
+                lacking.retain(|other, _| !under(other, name));
+            }
+        }
+    }
+    for (name, len) in lacking {
+        let (Some(Thing::File(kept)), Some(Thing::File(file))) = (copy.get_mut(&name), pane.get(&name)) else {
+            panic!("{name} is to be read, and is no file at both ends")
+        };
+        assert!(len.is_none_or(|len| len == file.len() as u64), "{name} is {} long, not {len:?}", file.len());
+        kept.extend_from_slice(&file[kept.len()..]);
+    }
+    copy
+}
+
+#[test]
+fn a_later_change_takes_from_changes_what_it_makes_of_no_account_and_nothing_past_a_move() {
+    // One line of each kind for the name `a`, an `append` that adds and one that only cuts: every one
+    // after every other. `x`: the later one (the row) takes the earlier one (the column) away.
+    let a = || "a".to_string();
+    let kinds = [
+        Change::Put(a()),
+        Change::Append(a(), 4, 9),
+        Change::Append(a(), 6, 6),
+        Change::Move("b".into(), a()),
+        Change::Folder(a()),
+        Change::Link(a(), "main".into()),
+        Change::Fifo(a()),
+        Change::Gone(a()),
+    ];
+    let table = [
+        // put add cut move folder link fifo gone
+        "x x x . . . . .", // put: all of the file is new
+        ". x . . . . . .", // append that adds: the cut before it is to less than the file is long now
+        ". x x . . . . .", // append that cuts: to no more than the cut before it
+        ". . . . . . . .", // move
+        ". . . . . . . .", // folder
+        ". . . . . x . .", // link
+        ". . . . . . . .", // fifo
+        "x x x . x x x x", // gone: and never what was said before a move
+    ];
+    for (later, row) in kinds.iter().zip(table) {
+        for (earlier, goes) in kinds.iter().zip(row.split(' ')) {
+            let folded = |between: Option<&Change>| {
+                let mut changes = Changes::default();
+                changes.fold(2, earlier.clone());
+                between.into_iter().for_each(|change| changes.fold(4, change.clone()));
+                changes.fold(6, later.clone());
+                changes.list
+            };
+            let (first, last) = ((2, earlier.clone()), (6, later.clone()));
+            let expected = if goes == "x" { vec![last.clone()] } else { vec![first.clone(), last.clone()] };
+            assert_eq!(folded(None), expected, "{earlier} then {later}");
+            // A move of another name between the two changes nothing; one of this name, to it or
+            // from it, and neither goes: the earlier line is of the file that has the other name now.
+            let other = Change::Move("c".into(), "d".into());
+            assert_eq!(folded(Some(&other)).len(), expected.len() + 1, "{earlier} then {later}");
+            for moved in [Change::Move("c".into(), a()), Change::Move(a(), "c".into())] {
+                assert_eq!(folded(Some(&moved)), [first.clone(), (4, moved), last.clone()], "{earlier} then {later}");
+            }
+        }
+    }
+    // The cuts of a file that stay are each to less than the one after it, and what was added stays once.
+    let mut changes = Changes::default();
+    let appends = [(2, 3, 3), (2, 3, 10), (4, 10, 20), (6, 8, 8), (6, 8, 12), (8, 12, 30)];
+    appends.iter().for_each(|&(number, at, len)| changes.fold(number, Change::Append(a(), at, len)));
+    assert_eq!(changes.to_string(), "0\n2 append a 3 3\n6 append a 8 8\n8 append a 12 30\n");
+    // (A reader that has the folder of round 4 keeps 8 bytes; one of round 6 or later, all it has.)
+    assert_eq!(changes.after(4).map(<[_]>::len), Some(2));
+    changes.fold(10, Change::Append(a(), 2, 2));
+    assert_eq!(changes.to_string(), "0\n10 append a 2 2\n");
+    // What is gone takes what was in it, and no name that only begins as its name does.
+    let mut changes = Changes::default();
+    ["alt", "alt/screen", "alternate"].iter().for_each(|name| changes.fold(2, Change::Put(name.to_string())));
+    changes.fold(4, Change::Gone("alt".into()));
+    assert_eq!(changes.to_string(), "0\n2 put alternate\n4 gone alt\n");
+    // Past the bound the oldest rounds go, each whole, and the file says which was the last of them:
+    // a reader that has an earlier round is told nothing, any other all it was told before.
+    let mut changes = Changes::default();
+    (0..CHANGES_MAX + 3).for_each(|n| changes.fold(2 + 2 * (n as u64 / 2), Change::Gone(format!("pic-{n}.sixel"))));
+    assert_eq!(
+        (changes.since, changes.list.len(), changes.list.first().map(|line| line.0)),
+        (4, CHANGES_MAX - 1, Some(6))
+    );
+    assert_eq!((changes.after(2), changes.after(4).map(<[_]>::len)), (None, Some(CHANGES_MAX - 1)));
+    assert_eq!(Changes::parse(&changes.to_string()), Some(changes.clone()));
+    // (A round of more lines than the bound is one nobody is told: all of it goes.)
+    (0..=CHANGES_MAX).for_each(|n| changes.fold(4000, Change::Put(format!("p{n}"))));
+    assert_eq!((changes.since, changes.list.len()), (4000, 0));
+}
+
+#[test]
+fn a_reader_of_changes_from_any_earlier_round_has_the_folder_as_it_is() {
+    // A folder that a holder's changes are made to at random, each said as the holder says it, a few a
+    // round: files put, added to and cut, put aside under another name, folders with files in them
+    // made and gone, a link turned, pictures that come and go (their lines stay, so the bound is
+    // passed). After each round, a reader that has the folder as some earlier round left it replays
+    // what `changes` says since and has the folder as it is, or is told that it is not told.
+    let mut seed = 7u64;
+    let mut pick = |below: usize| {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 33) as usize % below
+    };
+    let (mut pane, mut changes, mut pictures) = (Folder::new(), Changes::default(), 0);
+    let mut rounds = vec![(0u64, pane.clone())];
+    let mut untold = 0;
+    for round in 1..2000u64 {
+        for _ in 0..pick(5) {
+            let name = ["history", "history.styled", "main/screen", "alt/screen", "cursor"][pick(5)].to_string();
+            let bytes: Vec<u8> = (0..pick(6)).map(|_| pick(256) as u8).collect();
+            let folder = name.split_once('/').map(|(folder, _)| folder.to_string());
+            let file = match pane.get(&name) {
+                Some(Thing::File(file)) => Some(file.len()),
+                _ => None,
+            };
+            let said = match (pick(10), file, folder) {
+                // A file's folder is made before the file; and goes with all that is in it.
+                (_, None, Some(folder)) if !pane.contains_key(&folder) => {
+                    pane.insert(folder.clone(), Thing::Folder);
+                    vec![Change::Folder(folder)]
+                }
+                (0, _, Some(folder)) => {
+                    pane.retain(|name, _| !under(name, &folder));
+                    vec![Change::Gone(folder)]
+                }
+                (1 | 2, Some(len), _) if !bytes.is_empty() => {
+                    pane.insert(name.clone(), Thing::File([&file_of(&pane, &name)[..], &bytes[..]].concat()));
+                    vec![Change::Append(name, len as u64, (len + bytes.len()) as u64)]
+                }
+                (3, Some(len @ 1..), _) => {
+                    let to = pick(len);
+                    pane.insert(name.clone(), Thing::File(file_of(&pane, &name)[..to].to_vec()));
+                    vec![Change::Append(name, to as u64, to as u64)]
+                }
+                (4, Some(_), None) => {
+                    let moved = pane.remove(&name).expect("the file");
+                    pane.insert(format!("{name}.1"), moved);
+                    pane.insert(name.clone(), Thing::File(bytes));
+                    vec![Change::Move(name.clone(), format!("{name}.1")), Change::Put(name)]
+                }
+                (5, Some(_), _) => {
+                    pane.remove(&name);
+                    vec![Change::Gone(name)]
+                }
+                (6, ..) => {
+                    let to = ["main", "alt"][pick(2)].to_string();
+                    pane.insert("shown".into(), Thing::Link(to.clone()));
+                    vec![Change::Link("shown".into(), to)]
+                }
+                (7, ..) if !pane.contains_key("in") => {
+                    pane.insert("in".into(), Thing::Fifo);
+                    vec![Change::Fifo("in".into())]
+                }
+                (8 | 9, ..) => {
+                    pictures += 1;
+                    let (old, new) = (format!("pic-{}.sixel", pictures - 1), format!("pic-{pictures}.sixel"));
+                    pane.insert(new.clone(), Thing::File(bytes));
+                    let gone = pane.remove(&old).map(|_| Change::Gone(old));
+                    std::iter::once(Change::Put(new)).chain(gone).collect()
+                }
+                _ => {
+                    pane.insert(name.clone(), Thing::File(bytes));
+                    vec![Change::Put(name)]
+                }
+            };
+            said.into_iter().for_each(|change| changes.fold(2 * round, change));
+        }
+        assert_eq!(Changes::parse(&changes.to_string()).as_ref(), Some(&changes));
+        // The round before, and three of any before that.
+        for at in [rounds.len() - 1, pick(rounds.len()), pick(rounds.len()), pick(rounds.len())] {
+            let (number, copy) = &rounds[at];
+            match changes.after(*number) {
+                Some(lines) => {
+                    assert_eq!(replay(copy.clone(), lines, &pane), pane, "from round {number} to {}", 2 * round)
+                }
+                None => untold += usize::from(*number < changes.since),
+            }
+        }
+        rounds.push((2 * round, pane.clone()));
+    }
+    // (The bound was passed, and readers behind it were told so.)
+    assert!(changes.since > 0 && untold > 100 && changes.list.len() == CHANGES_MAX, "{} {untold}", changes.since);
+}
+
+fn file_of(folder: &Folder, name: &str) -> Vec<u8> {
+    match folder.get(name) {
+        Some(Thing::File(bytes)) => bytes.clone(),
+        _ => Vec::new(),
+    }
+}
+
+#[test]
+fn a_changes_that_is_not_what_a_holder_writes_to_the_byte_is_none_to_a_reader() {
+    let text = "0\n2 fifo in\n2 put main/screen\n2 folder main\n2 link shown main\n4 append history 5 5\n\
+        4 append history 5 90\n4 move history history.1\n6 gone alt\n";
+    assert_eq!(Changes::parse(text).map(|changes| changes.to_string()).as_deref(), Some(text));
+    assert_eq!(Changes::parse("6\n"), Some(Changes { since: 6, list: Vec::new() }));
+    let long = |lines: usize| "0\n".to_string() + &"2 gone a\n".repeat(lines);
+    assert!(Changes::parse(&long(CHANGES_MAX)).is_some() && Changes::parse(&long(CHANGES_MAX + 1)).is_none());
+    let wrong = [
+        ("", "nothing"),
+        ("0", "a line that does not end"),
+        ("0\n2 put a", "a line that does not end"),
+        ("0\r\n", "another line end"),
+        ("00\n", "a number spelled another way"),
+        ("0\n+2 put a\n", "a number spelled another way"),
+        ("1\n", "an odd round"),
+        ("0\n3 put a\n", "an odd round"),
+        ("2\n2 put a\n", "a round that is not after the first line's"),
+        ("0\n4 put a\n2 put b\n", "rounds out of order"),
+        ("0\n2 take a\n", "no verb of the seven"),
+        ("0\n2 put\n", "no name"),
+        ("0\n2 put a b\n", "a word too many"),
+        ("0\n2  put a\n", "a blank too many"),
+        ("0\n2 put a\n\n", "an empty line"),
+        ("0\n2 put .a\n", "a name that begins with a dot"),
+        ("0\n2 put a/../b\n", "a name that leaves the folder"),
+        ("0\n2 put /a\n", "a path from the root"),
+        ("0\n2 put a/\n", "a name that ends in a /"),
+        ("0\n2 put caf\u{e9}\n", "a name of other letters"),
+        ("0\n2 move a a\n", "a move to the same name"),
+        ("0\n2 link shown main/screen\n", "a link that leads into a folder"),
+        ("0\n2 link shown ..\n", "a link that leads out"),
+        ("0\n2 append a 5 4\n", "more bytes kept than there are"),
+        ("0\n2 append a 5\n", "no length"),
+        ("0\n2 append a -1 4\n", "a number that is none"),
+    ];
+    for (text, why) in wrong {
+        assert_eq!(Changes::parse(text), None, "{why}: {text:?}");
     }
 }

@@ -15,6 +15,7 @@ pub const FORMAT: u32 = 1;
 mod holder;
 mod keys;
 mod layout;
+pub mod pane;
 #[cfg(test)]
 mod tests;
 mod view;
