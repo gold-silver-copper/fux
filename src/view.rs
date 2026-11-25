@@ -685,7 +685,7 @@ impl View {
 
     /// Looks at the `notice` of every pane of the workspace, four times a second: a new one
     /// is passed on to this terminal once (the bell as a bell, words as a notice), said in the
-    /// corner, and remembered until its pane has the keys in the tab shown.
+    /// corner (not by one pane's viewer), and remembered until its pane has the keys in the tab shown.
     fn notices(&mut self, layout: &Layout, directory: &Path) {
         // What the pane with the keys had to say has been seen.
         let key = |name: &str| directory.join(name).to_string_lossy().into_owned();
@@ -720,7 +720,10 @@ impl View {
                 // numbered commands some terminals read after `9;`.)
                 let rung = if words.is_empty() { "\x07".to_string() } else { format!("\x1b]9;{name}: {words}\x1b\\") };
                 self.write(rung);
-                self.message = if words.is_empty() { format!("{name}: bell") } else { format!("{name}: {words}") };
+                // (One pane's viewer says it nowhere: every row there is the program's.)
+                if self.only.is_none() {
+                    self.message = if words.is_empty() { format!("{name}: bell") } else { format!("{name}: {words}") };
+                }
             }
         }
     }
