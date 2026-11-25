@@ -2,7 +2,7 @@
 
 Written 2026-11-21, at `fux` 0.40.0 / `fux-vt` 0.18.0 / `fuxix` 0.11.0 (tag `v0.40.0`, all three on
 crates.io). Read this first, then `README.md` (the contract: commands, the pane folder's files, keys,
-bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D127, append-only:
+bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D129, append-only:
 a historical log, in which a later entry says so when it replaces an earlier one).
 
 ## What fux is

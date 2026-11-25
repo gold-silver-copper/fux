@@ -3294,6 +3294,17 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - **Size.** `src/view.rs` 130 lines in and 18 out, a third of them the
     words above `view_pane`; `src/lib.rs` 12 and 1 (`key`).
 
+- **D129. A pane's text is the screen it shows, where that is a program's
+  own** (the owner, 2026-11-25: in a pane where a full-screen program runs,
+  `C-b c` opened the shell's text from before the program, and nothing of
+  what was on the screen could be copied). `keys/.text` writes the alternate
+  screen, and no history, while `shown` leads to `alt`; so `c`, `M-c` and the
+  search have what is there to be read. It is one screen: such a program
+  keeps what it showed before to itself. The keys that go by the marks (`C`,
+  `p`) ask for them, and for those the text is the main screen's and its
+  history as before, whose lines the marks number. Only key scripts changed:
+  a keys directory that is there already keeps the scripts it has.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.
