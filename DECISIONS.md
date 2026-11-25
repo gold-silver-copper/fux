@@ -3212,34 +3212,71 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     3, `src/lib.rs` 10: 41 in and 43 out in fux. `keys/.shell` 8 and 5.
     `FORMAT` stays 1: a file was added.
 
-- **D128. A viewer of one pane that asks nothing, and a paste that is not
-  cut** (the owner, 2026-11-24: koh shows a session by passthrough, the
-  viewer on the server in a pty and its bytes sent; "what if we just assume
-  sixel and complex colors are always on, people who dont have those
+- **D128. `view_pane`: a viewer of one pane, for a terminal that is
+  elsewhere** (the owner, 2026-11-24: koh shows a session by passthrough,
+  the viewer on the server in a pty and its bytes sent; "what if we just
+  assume sixel and complex colors are always on, people who dont have those
   capabilities simply dont see them").
   - **The question.** koh ran fux's viewer in the client's process on a
     copy of the pane's folder. It now runs it on the server and sends what
-    it draws. Two things of the viewer were wrong for that. It asks its
+    it draws. Three things of the viewer were wrong for that. It asks its
     terminal what it is like (the keyboard's flags, 259 colours, what it
     is), and an answer that crosses a link may come after the viewer that
-    asked is gone: to the next viewer, or into the pane as typed text. And
-    it shows a workspace, by a `layout` that all its viewers share: a
-    session of koh's is one pane, and one client's tab must not be
-    another's.
-  - **What is done.** `fux::view_pane(pane, keys, keyboard)`, in the
-    library and not on the command line (a pty over ssh is a terminal:
-    `fux view` is right there, and nothing but a carrier needs this one).
-    One pane by its folder, laid out alone; no `layout` read or written.
-    Nothing asked: sixel is taken as there (a terminal that has none shows
-    nothing where the picture is; one that tells no pixel size gets the
-    corner's word for it, as before), the keyboard's flags are an
-    argument (told some, it sets the flags aside once, `CSI > u`, and from
-    then on sets what the pane's program asks), and the session's
-    `colours` and `keyboard` are not written: the carrier asked the
-    terminal itself, where it is, and writes them. No default keys are put
-    in `keys`: a client of koh's must not be handed fux's whole set (a
-    spike did, and its clients could switch to another workspace).
-  - **It leaves the terminal as it is.** Whoever has the terminal must be
+    asked is gone: to the next viewer, or into the pane as typed text. It
+    shows a workspace, by a `layout` that all its viewers share: a session
+    of koh's is one pane, and one client's tab must not be another's. And
+    it drops what a pane's `in` does not take at once: of a megabyte
+    pasted about a third arrives.
+  - **What is done.** `fux::view_pane(pane, keyboard)`, in the library and
+    not on the command line (a pty over ssh is a terminal: `fux view` is
+    right there, and nothing but a carrier needs this one). One pane by its
+    folder, laid out alone; no `layout` read or written. `fux view` is as
+    it was, to the byte it writes and in what it does with what is typed.
+  - **Nothing asked, nothing believed.** Sixel is taken as there (a
+    terminal that has none shows nothing where the picture is; one that
+    tells no pixel size gets the corner's word for it, as before), the
+    keyboard's flags are an argument (told some, it sets the flags aside
+    once, `CSI > u`, and from then on sets what the pane's program asks),
+    and the session's `colours` and `keyboard` are not written: the carrier
+    asked the terminal itself, where it is, and writes them. What a
+    terminal sends that looks like an answer (its kind, a mode, its
+    keyboard's flags, a colour) is typed to the pane as it came, as bytes
+    typed at any terminal are: dropping it would need a list of what is no
+    key, and the viewer that asked nothing has no use for one. So a late
+    answer to the carrier's own asking is a few bytes of text in the pane,
+    as with ssh; no mode is turned on for it and no flags are taken from
+    it.
+  - **No keys.** Its keys folder is one that is not there (in its own
+    folder), so every key is the pane's: no menu, no script, no default
+    keys. Its `ctl` takes `quit` and no other line: nothing changes what it
+    shows. The first version had the carrier's keys as scripts of the
+    viewer; a viewer that waits for its pane (below) cannot hear a key, and
+    a user must never be held in a session, so the carrier's keys are the
+    carrier's, read where they are typed. `fux::key` gives it the viewer's
+    own reading of a key (its name in the old form and in the kitty
+    protocol's, and whether it goes down).
+  - **What is typed is one stream, and it waits.** `view_pane` keeps what
+    the pane's `in` does not take, one piece of at most what one read of
+    its terminal brought, and reads the terminal no further until the FIFO
+    has taken it (it is waited for with the terminal and the rest, in the
+    one `poll`). Nothing is dropped, there is no time limit and no word in
+    the corner. A key's release and a focus report, which `fux view`
+    writes straight to the FIFO, go into that stream behind what waits: a
+    release never overtakes a paste and is never lost to a full FIFO. The
+    pressure goes back through the pty to whoever writes there: for koh,
+    to the link, the client and the user's terminal. A paste into a program
+    that reads nothing waits, as on any terminal; the viewer draws
+    meanwhile, and ends when it is told or its pane does.
+  - **Why not in `fux view` too.** The first version queued in every
+    viewer, with a two-second limit. Three reviewers broke it by running
+    it: a queue in a viewer of many panes does not know whose it is. One
+    pane's paste held every key of the viewer for 142 s; a pane removed
+    while its paste waited put 75,741 bytes of it into another pane; a
+    key's script ran before the paste ahead of it. With one pane none of
+    that can be asked. That a huge paste into a slow program is cut by
+    `fux view` is a limit of its own, as it was (a test now says so), for
+    a change of its own one day.
+  - **It writes nothing when it leaves.** Whoever has the terminal must be
     able to put it back without the viewer (the link may be gone), so that
     one always does, and a viewer that did too would take back the
     keyboard's flags and the title twice. `LEAVING` is exported for it: one
@@ -3248,26 +3285,13 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     holder is gone, the files are final, and the frame drawn then is the
     last: the viewer ends once that is written. (`fux view` stays, with
     ` exited 0 ` in the corner: its workspace has other panes.)
-  - **A paste is not cut.** The viewer wrote what was typed to `in`
-    without waiting and dropped what the FIFO did not take: a megabyte
-    pasted lost what the pane had no room for at once (352,164 of 1,048,576
-    bytes arrive in the test that now holds it, into a program that begins
-    to read 300 ms later), with or without koh. It keeps
-    the rest now and writes it as the FIFO takes it, the keys waiting
-    behind it as behind a script, and reads its terminal no further
-    meanwhile (64 KiB): so a writer to the terminal waits, as with ssh.
-    Not for good: two seconds with no byte taken, as for a script, and what
-    waits is dropped and said; what is typed there next is dropped at once
-    while the program still takes none (2 s for each 80 KiB was 26 s of
-    dead keys for a megabyte). A program that reads slowly is waited for;
-    one that reads nothing is not, and a viewer with other panes is never
-    held by one of them.
   - **Not done.** A frame is still "written" when the pty has it, not when
     a link has: behind a slow link old frames wait in the pty (koh's
     report has the measurement). The viewer would have to be told by its
     carrier when a frame is taken; that is a word on `ctl` and a rule
     about the link's window, and is left until someone needs it.
-  - **Size.** `src/view.rs` 104 lines in and 19 out, `src/lib.rs` 1 changed.
+  - **Size.** `src/view.rs` 130 lines in and 18 out, a third of them the
+    words above `view_pane`; `src/lib.rs` 12 and 1 (`key`).
 
 ## The old fux3's bugs: which classes are gone
 

@@ -37,7 +37,7 @@ unaffected. `tools/referee` builds the old emulator from a commit on `old-main`,
 ## The code
 
 Three crates, no dependencies beyond them (CI checks that `Cargo.lock` names exactly these three).
-About 7,250 production lines (`./sizes.sh`).
+About 7,280 production lines (`./sizes.sh`).
 
 | Crate | What | Notes |
 |---|---|---|
@@ -48,9 +48,10 @@ About 7,250 production lines (`./sizes.sh`).
 What the library exports, for a program that carries fux (koh; D124): `fux::command(args)`, one command
 line of fux's from its command's word on (`fux::main()` is that with the process's own arguments; the
 carrier's own first word `hold` goes to it too, as `start` runs the program it is in with that word);
-`fux::view(session, workspace, keys)`, the viewer, and `fux::view_pane(pane, keys, keyboard)`, the viewer
-of one pane for a terminal that is elsewhere, which asks nothing and puts nothing back (D128; `fux::LEAVING`
-is what puts a terminal back); `fux::FORMAT`, the number of the pane folder's format
+`fux::view(session, workspace, keys)`, the viewer, and `fux::view_pane(pane, keyboard)`, the viewer
+of one pane for a terminal that is elsewhere: it asks nothing, has no keys, drops nothing that is typed and
+puts nothing back (D128; `fux::LEAVING` is what puts a terminal back, and `fux::key` names a key as the
+viewer would, for the carrier's own); `fux::FORMAT`, the number of the pane folder's format
 (the README says when it is raised); `TERM_PROGRAM`; and how fux writes and reads a pane's files:
 `replace`, `staging`, `write_new`, `stamp` and `Stamp`, `lines`, `plain`, `run_of` (which run a folder is
 of, D127).

@@ -201,10 +201,7 @@ a second. Nothing is synced to disk. The holder reads at most
 512 KiB of output between two rounds (while a program is in the middle of drawing, below, in
 any 25 ms), and past that the program waits, as on any slow terminal. The holder keeps at most 64 KiB of typed bytes for a program that is not
 reading; past that it stops reading `in`, and once the FIFO's own buffer
-(the kernel's) is full, writers to `in` wait. The viewer does not wait there: what `in` does not take of what was typed
-(a paste larger than the two have room for) it keeps and types as the program reads, and the keys typed after it wait behind it. A program that has
-read none of it for two seconds is waited for no longer: what waits is dropped, the corner says so (`sh reads nothing: 65536 typed bytes were dropped`), the keys go on, and what is
-typed there next is dropped at once for as long as it still takes none. A screen is at most 500 by 500
+(the kernel's) is full, writers to `in` wait. A screen is at most 500 by 500
 cells. A program that says it is in the middle of drawing (mode 2026) is not
 written out until it says it is done, or what is not yet written (output, or a line on `ctl`) has waited half a second (history may be added to meanwhile): so one that draws frame after frame without a pause is shown about twice a second, in the middle of a frame if that is where the half second ends. A screen keeps at most 8 pictures of at most 4 MiB of data and 500 cells each way; a ninth drops the
 oldest, with a line in `log`. At most 4 MiB of history and one row wait to be written,
@@ -514,14 +511,26 @@ it goes to history: its program draws it again. A size that is refused
 changes nothing and leaves a line in `log`.
 
 A program that carries fux and shows a pane on a terminal that is somewhere else (koh, at the far end of a
-link) has a viewer for that, `fux::view_pane(pane, keys, keyboard)`: of one pane by its folder, which
-fills the terminal, with no `layout` read or written. It asks the terminal nothing, so that no answer
-comes late (to the next viewer, or as typed text): pictures are drawn as on a terminal that draws sixel,
-`keyboard` is the flags the terminal takes (0 if it does not know the protocol), and `colours` and
-`keyboard` in the session are for whoever knows them to write. Its keys are the scripts in `keys` and no
-others: no default is put there. It ends when the pane's holder has ended, once the last screen is drawn,
-and leaves the terminal as it is: whoever has the terminal puts it back (`fux::LEAVING` is what the
-viewer writes when it leaves), which that one must be able to do without the viewer anyway.
+link) has a viewer for that, `fux::view_pane(pane, keyboard)`: of one pane by its folder, which fills the
+terminal, with no `layout` read or written. It is not `fux view` with fewer panes:
+
+- **It asks the terminal nothing**, so that no answer comes late (to the next viewer, or as typed text):
+  pictures are drawn as on a terminal that draws sixel, `keyboard` is the flags the terminal takes (0 if it
+  does not know the protocol), and `colours` and `keyboard` in the session are for whoever knows them to
+  write. What a terminal sends that looks like an answer was typed there, as on any terminal: it goes to the
+  pane as it came, and the viewer believes none of it.
+- **It has no keys**: every key is the pane's, there is no menu and no script, and its `ctl` takes `quit`
+  and nothing else. (Its carrier has its own keys, on the terminal where they are typed: `fux::key` names
+  the key at the start of what a terminal sent, as the viewer would.)
+- **All that is typed is one stream, and none of it is dropped.** What the pane's `in` does not take is
+  kept, and until it is taken the terminal is read no further: a paste into a program that reads slowly is
+  slow, and one into a program that reads nothing waits, with whoever writes to that terminal, as on any
+  terminal. A key's release and a focus report are in that stream, in their places. Drawing goes on
+  meanwhile. (`fux view` waits for no pane, having several: there what a pane does not take at once is
+  dropped, and the corner says so.)
+- **It ends when the pane's holder has ended**, once the last screen is drawn, and writes nothing when it
+  leaves: whoever has the terminal puts it back (`fux::LEAVING` is what `fux view` writes when it leaves),
+  which that one must be able to do without the viewer anyway.
 
 ### Keys are scripts
 
