@@ -3678,19 +3678,25 @@ fn a_paste_ends_marked_as_it_began_whatever_the_program_asks_by_then() {
 
 #[test]
 fn a_paste_larger_than_a_pane_takes_at_once_is_typed_whole() {
-    // A megabyte is pasted into a program that reads it more slowly than the viewer has it: the
-    // pane's FIFO and its holder have room for a fraction of it at a time. All of it is typed, in
-    // its order and once: what the FIFO does not take waits in the viewer for it.
+    // A megabyte is pasted into a program that does not read yet, and begins to a moment later:
+    // the pane's FIFO and its holder have room for a fraction of it. All of it is typed, in its
+    // order and once: what the FIFO does not take waits in the viewer for it.
     let (outer, inner) = (Session::new("p3outer"), Session::new("p3inner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(&keys).unwrap();
-    let reads = "stty raw -echo; while :; do dd bs=4096 count=8 2>/dev/null; sleep 0.02; done > \"$PANE/got\"";
+    let reads = "stty raw -echo; until [ -e \"$PANE/go\" ]; do sleep 0.05; done; exec cat > \"$PANE/got\"";
     let pane = inner.start("a", &["sh", "-c", reads]);
     let view = outer.start("view", &viewer(&inner, &keys));
     until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
     until("the terminal has said what it is like", || inner.0.join("keyboard").exists());
     let pasted: String = (0..1 << 17).map(|n| format!("{n:07}\n")).collect();
+    let go = pane.join("go");
+    let goes = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        fs::write(go, "").unwrap();
+    });
     send(&view.join("in"), format!("\x1b[200~{pasted}\x1b[201~"));
+    goes.join().unwrap();
     let got = || fs::read(pane.join("got")).unwrap_or_default();
     until_or(
         "all of it arrives",

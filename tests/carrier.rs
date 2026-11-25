@@ -100,9 +100,12 @@ fn shows(me: &Path, root: &Path) -> Result<(), String> {
     let size = fuxix::Winsize { cols: 40, rows: 10, xpixel: 400, ypixel: 200 };
     let (mut master, slave) = fuxix::pty(size).map_err(|e| format!("no pty: {e}"))?;
     let end = |slave: &std::fs::File| slave.try_clone().map(Stdio::from).map_err(|e| e.to_string());
-    let mut viewer = carried(me, root, &["show", &pane.to_string_lossy(), &keys.to_string_lossy()]);
-    viewer.stdin(end(&slave)?).stdout(end(&slave)?).stderr(Stdio::from(slave));
-    let mut viewer = viewer.spawn().map_err(|e| format!("the viewer was not started: {e}"))?;
+    // (The pty's other end is the viewer's alone once it runs: when the viewer ends, the pty does.)
+    let mut viewer = {
+        let mut viewer = carried(me, root, &["show", &pane.to_string_lossy(), &keys.to_string_lossy()]);
+        viewer.stdin(end(&slave)?).stdout(end(&slave)?).stderr(Stdio::from(slave));
+        viewer.spawn().map_err(|e| format!("the viewer was not started: {e}"))?
+    };
     // What it writes to its terminal, until `ready`: all of it, as bytes.
     let mut drawn = Vec::new();
     let mut draws = |ready: &mut dyn FnMut(&str) -> bool| {
@@ -142,6 +145,10 @@ fn shows(me: &Path, root: &Path) -> Result<(), String> {
     let mut ctl = fuxix::open(pane.join("ctl"), true).map_err(|e| format!("ctl: {e}"))?;
     ctl.write_all(b"kill\n").map_err(|e| format!("ctl: {e}"))?;
     let last = draws(&mut |_| false);
+    let by = Instant::now() + Duration::from_secs(5);
+    while matches!(viewer.try_wait(), Ok(None)) && Instant::now() < by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let ended = viewer.try_wait().ok().flatten();
     let _ = viewer.kill().and_then(|()| viewer.wait());
     check(ended.is_some_and(|ended| ended.success()), format!("the viewer did not end with its pane: {ended:?}"))?;
