@@ -3677,6 +3677,37 @@ fn a_paste_ends_marked_as_it_began_whatever_the_program_asks_by_then() {
 }
 
 #[test]
+fn a_paste_larger_than_a_pane_takes_at_once_is_cut_and_said_and_holds_no_key() {
+    // A viewer of a workspace waits for no pane: a megabyte pasted into a program that does not read
+    // yet is typed as far as the pane's FIFO and its holder have room, the rest is dropped, and the
+    // corner says so. A key typed after it is held by none of that: its script runs at once.
+    let (outer, inner) = (Session::new("p3outer"), Session::new("p3inner"));
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&keys).unwrap();
+    fs::write(keys.join("C-t"), "#!/bin/sh\necho ran > session/ran\n").unwrap();
+    Command::new("chmod").arg("+x").arg(keys.join("C-t")).ended();
+    let reads = "stty raw -echo; until [ -e \"$PANE/go\" ]; do sleep 0.05; done; exec cat > \"$PANE/got\"";
+    let pane = inner.start("a", &["sh", "-c", reads]);
+    let view = outer.start("view", &viewer(&inner, &keys));
+    until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
+    until("the terminal has said what it is like", || inner.0.join("keyboard").exists());
+    let pasted: String = (0..1 << 17).map(|n| format!("{n:07}\n")).collect();
+    send(&view.join("in"), format!("\x1b[200~{pasted}\x1b[201~"));
+    until("the corner says what was not typed", || read(&view.join("shown/screen")).contains("typed"));
+    let began = Instant::now();
+    send(&view.join("in"), "\x14");
+    until("the key's script ran", || inner.0.join("ran").exists());
+    assert!(began.elapsed() < Duration::from_secs(2), "the key was held for {:?}", began.elapsed());
+    // What the program then reads is the start of what was pasted, and not all of it.
+    fs::write(pane.join("go"), "").unwrap();
+    let got = || fs::read(pane.join("got")).unwrap_or_default();
+    until("the program has read what was typed", || !got().is_empty());
+    std::thread::sleep(Duration::from_millis(500));
+    let got = got();
+    assert!(got.len() < pasted.len() && pasted.as_bytes().starts_with(&got[..64 << 10]), "{} bytes", got.len());
+}
+
+#[test]
 fn a_key_script_is_told_the_size_the_terminal_has_when_the_key_is_typed() {
     // The terminal is made larger and a key typed at once, before the viewer has looked at its size
     // again (the holder reads `ctl` before `in`): the key's script is told the size the terminal has now.

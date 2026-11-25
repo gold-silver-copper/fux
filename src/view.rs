@@ -160,6 +160,10 @@ enum Went {
 struct View {
     session: PathBuf,
     workspace: String,
+    /// The one pane shown, where no workspace's `layout` is (`view_pane`); and whether its holder is
+    /// gone, so that the frame drawn of it then is the last.
+    only: Option<String>,
+    over: bool,
     keys: PathBuf,
     tty: File,
     /// What goes to the terminal is written by a thread of its own, so that a terminal that
@@ -224,6 +228,9 @@ struct View {
     title: Option<String>,
     carry: Vec<u8>,
     typed: Vec<u8>,
+    /// In a viewer of one pane: what was typed and the pane's `in` has not taken yet. While any of
+    /// it waits the terminal is read no further, so whoever types there waits too.
+    unsent: Vec<u8>,
     /// When a key last went to a pane: its echo is looked for often for a moment after.
     keyed: Option<Instant>,
     pasting: Option<bool>,
@@ -238,19 +245,50 @@ struct View {
 
 /// What puts the terminal back when the viewer leaves, however it leaves short of being killed;
 /// its mode is put back after it. (The cursor's shape and colour are put to the terminal's own,
-/// not to what another program may have made them before.)
-const LEAVING: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b]112\x1b\\\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t";
+/// not to what another program may have made them before.) A viewer of one pane (`view_pane`)
+/// does not write it: whoever has its terminal does, as often as it likes.
+pub const LEAVING: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?1004l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[0 q\x1b]112\x1b\\\x1b[m\x1b[?25h\x1b[?7h\x1b[<u\x1b[?1049l\x1b[23;2t";
 
 /// What a viewer with no terminal says: here, and before a folder is made for a path it was given.
 pub const NO_TERMINAL: &str = "the viewer needs a terminal on its standard input";
 
 pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), String> {
+    show(session, workspace, keys, None)
+}
+
+/// The viewer for a terminal that is somewhere else (koh's, at the far end of a link), of one pane
+/// by its folder, `SESSION/WORKSPACE/PANE`: the pane fills the terminal, and no `layout` is read or
+/// written. It has no keys of its own: every key is the pane's, and what its `ctl` takes is `quit`.
+///
+/// It asks the terminal nothing, so no answer can come late, to another viewer or as typed text:
+/// pictures are drawn as on a terminal that draws sixel, `keyboard` is the kitty keyboard flags
+/// the terminal takes (0: it does not know the protocol), and `colours` and `keyboard` in the
+/// session are whoever knows them's to write. What a terminal sends that looks like an answer
+/// was typed there, as on any terminal, and goes to the pane as it came.
+///
+/// All that is typed is one stream in its order, a key's release and a focus report in their
+/// places in it: what the pane's `in` does not take is kept (at most what was read of the terminal
+/// by then, 64 KiB and one read of 16, and the viewer's own releases and focus reports), and the
+/// terminal is read no further until it has. Nothing is dropped; a paste into a program that reads slowly is slow, and one
+/// into a program that reads nothing waits, with whoever writes to the terminal, as on any
+/// terminal. Drawing goes on meanwhile.
+///
+/// It ends when the pane's holder has, once the last screen is drawn, and writes nothing when it
+/// leaves: whoever has the terminal puts it back (`LEAVING`), and must be able to without it.
+pub fn view_pane(pane: PathBuf, keyboard: u8) -> Result<(), String> {
+    let name = |folder: &Path| folder.file_name()?.to_str().filter(|name| is_name(name)).map(String::from);
+    let named = || Some((pane.parent()?.parent()?.to_path_buf(), name(pane.parent()?)?, name(&pane)?));
+    let (session, workspace, only) = named().ok_or("view_pane takes a pane's folder, SESSION/WORKSPACE/PANE")?;
+    show(session, workspace, PathBuf::new(), Some((only, keyboard)))
+}
+
+fn show(session: PathBuf, workspace: String, keys: PathBuf, only: Option<(String, u8)>) -> Result<(), String> {
     let tty = io::stdin().as_fd().try_clone_to_owned().map(File::from).map_err(|e| format!("standard input: {e}"))?;
     let size = sys::winsize(&tty).map_err(|_| NO_TERMINAL)?;
     // What is made is the owner's alone; what is there already is left as it is.
     let made = fs::DirBuilder::new().mode(0o700).recursive(true).create(session.join(&workspace));
     made.map_err(|e| format!("{}: {e}", session.display()))?;
-    if !keys.exists() {
+    if !keys.exists() && only.is_none() {
         for (name, script) in keys::DEFAULT {
             let path = keys.join(name);
             let made = path.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::write(&path, script));
@@ -269,7 +307,9 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // (Where it was started: a new shell that has no pane to follow starts there.)
     let cwd = std::env::current_dir().map(|cwd| [cwd.as_os_str().as_encoded_bytes(), b"\n"].concat());
     let _ = cwd.and_then(|cwd| fs::write(own.0.join("cwd"), cwd));
-    let restore = sys::raw_mode(tty.try_clone().map_err(|e| e.to_string())?, LEAVING);
+    // (One pane's viewer has no keys: the folder it looks for them in is one that is not there.)
+    let (keys, leaving) = if only.is_some() { (own.0.join("keys"), &[][..]) } else { (keys, LEAVING) };
+    let restore = sys::raw_mode(tty.try_clone().map_err(|e| e.to_string())?, leaving);
     let restore = restore.map_err(|e| format!("cannot set the terminal: {e}"))?;
     let (out, queue) = mpsc::channel::<String>();
     // (The writer says so on a pipe when it has written, or cannot: the loop waits on that as on
@@ -288,6 +328,8 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     let mut view = View {
         session,
         workspace,
+        only: only.as_ref().map(|(name, _)| name.clone()),
+        over: false,
         keys,
         tty,
         out,
@@ -321,6 +363,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         copied: None,
         carry: Vec::new(),
         typed: Vec::new(),
+        unsent: Vec::new(),
         keyed: None,
         pasting: None,
         scripts: Vec::new(),
@@ -334,9 +377,20 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
     // The terminal is asked once what its colours are (the two it draws with, its cursor's and its palette),
     // and last of all what it is: its answer to that ends the wait for the others.
     // (First a link is closed: whatever ran before may have left one open, and no cell here is part of it.)
-    const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[2J\x1b[?2004h\x1b[?7l\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
-    let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
-    view.write(START.to_string() + &asked + "\x1b[c");
+    const START: &str = "\x1b]8;;\x1b\\\x1b[22;2t\x1b[?1049h\x1b[2J\x1b[?2004h\x1b[?7l";
+    const ASKS: &str = "\x1b[>31u\x1b[?u\x1b[=0u\x1b[?2027$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
+    match only {
+        // (A viewer of one pane was told, and asks nothing: the flags are set aside for it to set
+        // if the terminal takes any, and a terminal is taken to draw pictures.)
+        Some((_, keyboard)) => {
+            (view.colours, view.sixel, view.keyboard) = (None, true, keyboard & KEYS);
+            view.write(START.to_string() + if view.keyboard != 0 { "\x1b[>u" } else { "" });
+        }
+        None => {
+            let asked: String = (0..=255).map(|n| format!("\x1b]4;{n};?\x1b\\")).collect();
+            view.write(START.to_string() + ASKS + &asked + "\x1b[c");
+        }
+    }
     let result = view.run(&ctl, &wrote);
     // The keys leave with the viewer: a key that is down in a pane is let go there.
     view.leave(None);
@@ -379,13 +433,20 @@ impl View {
             let n = (&*ctl).read(&mut buffer).unwrap_or(0);
             for line in crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), LINE_MAX) {
                 match line.as_deref().map(str::trim) {
-                    None => self.message = format!("a line over {LINE_MAX} bytes from a key script was dropped"),
                     Some("quit") => return Ok(()),
+                    // (One pane's viewer takes that word and no other: nothing changes what it shows.)
+                    _ if self.only.is_some() => {}
+                    None => self.message = format!("a line over {LINE_MAX} bytes from a key script was dropped"),
                     Some(line) => self.command(line),
                 }
             }
+            self.resend();
             if self.frame()? || n > 0 {
                 active = Instant::now();
+            }
+            // A viewer of one pane ends with it, once the pane's last screen is written.
+            if self.over && self.unwritten == 0 {
+                return Ok(());
             }
             // Files are looked at often just after something happened and seldom at rest.
             let timeout = match active.elapsed().as_millis() {
@@ -399,10 +460,14 @@ impl View {
             // (The start of an escape sequence is looked at again when its wait is over.)
             let rest = ESCAPE_WAIT.saturating_sub(heard.elapsed());
             let timeout = if self.carry.is_empty() || rest.is_zero() { timeout } else { rest.as_millis() as i32 + 1 };
-            // Typed bytes are not read while 64 KiB of them wait for a script.
-            let typing = if self.carry.len() < TYPED_MAX { sys::POLLIN } else { 0 };
-            let wanted = [(self.tty.as_fd(), typing), (ctl.as_fd(), sys::POLLIN), (wrote.as_fd(), sys::POLLIN)];
-            let [typed, _, written] = sys::wait(wanted.map(|(file, events)| (Some(file), events)), timeout)?;
+            // Typed bytes are not read while 64 KiB of them wait for a script; nor, by one pane's
+            // viewer, while that pane has not taken what was typed: its FIFO is waited for with the rest.
+            let taking = (!self.unsent.is_empty()).then(|| sys::open_fifo(self.pane_in())).and_then(Result::ok);
+            let reads = self.carry.len() < TYPED_MAX && self.unsent.is_empty();
+            let typing = if reads { sys::POLLIN } else { 0 };
+            let wanted = [(Some(self.tty.as_fd()), typing), (Some(ctl.as_fd()), sys::POLLIN)];
+            let more = [(Some(wrote.as_fd()), sys::POLLIN), (taking.as_ref().map(|fifo| fifo.as_fd()), sys::POLLOUT)];
+            let [typed, _, written, _] = sys::wait([wanted[0], wanted[1], more[0], more[1]], timeout)?;
             if typed != 0 {
                 let n = (&self.tty).read(&mut buffer)?;
                 if n == 0 {
@@ -424,7 +489,7 @@ impl View {
                 self.told();
             }
             // (Keys wait for the first look at a workspace: one with no pane gets its shell there, and they are its.)
-            if !self.waiting() && !self.carry.is_empty() && self.looked.is_some() {
+            if !self.waiting() && self.unsent.is_empty() && !self.carry.is_empty() && self.looked.is_some() {
                 // When the terminal sent nothing more for a moment, a lone ESC is the Escape key.
                 self.keys(heard.elapsed() >= ESCAPE_WAIT);
             }
@@ -434,6 +499,14 @@ impl View {
     /// Whether the keys wait: for every script started that neither ended nor ran two seconds.
     fn waiting(&self) -> bool {
         self.scripts.iter().any(|(.., since)| since.is_some())
+    }
+
+    /// The layout that is shown: the workspace's, as its file and its folders say; or one pane alone.
+    fn layout(&self, directory: &Path) -> (String, Layout, Option<String>) {
+        let Some(only) = &self.only else { return Layout::load(directory) };
+        let mut layout = Layout::default();
+        layout.settle(vec![only.clone()]);
+        (layout.print(), layout, None)
     }
 
     /// Another workspace is shown: what was read of the panes is forgotten, and with it what the
@@ -466,7 +539,7 @@ impl View {
         let bytes = std::mem::take(&mut self.carry);
         // The keys are for the pane the layout says has them now, which a command may have
         // changed since it was last drawn.
-        let layout = Layout::load(&self.session.join(&self.workspace)).1;
+        let layout = self.layout(&self.session.join(&self.workspace)).1;
         self.focus = layout.tab().map(|tab| tab.focus.clone());
         // (And a key still down in the pane that had them is let go there, before what comes
         // of it now is looked at.)
@@ -511,6 +584,11 @@ impl View {
                     }
                 }
                 ("mouse", report) => self.mouse(report),
+                // (One pane's viewer asked its terminal nothing: what looks like an answer is a key as
+                // any other, the pane's.)
+                ("terminal" | "answer" | "keyboard" | "mode", _) if self.only.is_some() => {
+                    self.key(&name, raw, event, &layout)
+                }
                 ("terminal", told) => {
                     self.sixel = told.split([':', '?', ';']).any(|n| n == "4");
                     // It was asked last: the colours the terminal told of before it are all it
@@ -527,7 +605,7 @@ impl View {
                     self.window = way == "I";
                     if let Some(pane) = self.told_focus.clone().filter(|pane| asks(pane).focus) {
                         self.send();
-                        let _ = send_to(&pane.join("in"), raw);
+                        self.put(&pane, raw);
                     }
                 }
                 // The terminal's answer about joining characters into clusters (mode 2027): set (1,
@@ -599,7 +677,7 @@ impl View {
             // other is told when the window has them again.)
             let told = self.told_focus.take().filter(|pane| self.window && asks(pane).focus);
             for (pane, report) in [(told, "\x1b[O"), (now.clone().filter(|_| self.window), "\x1b[I")] {
-                let _ = pane.map(|pane| send_to(&pane.join("in"), report.as_bytes()));
+                pane.into_iter().for_each(|pane| self.put(&pane, report.as_bytes()));
             }
             self.told_focus = now;
         }
@@ -741,7 +819,7 @@ impl View {
         let now = if folder.is(directory) { Some(directory.to_path_buf()) } else { renamed() };
         if let Some(pane) = now.filter(|pane| releases(pane)) {
             self.send();
-            let _ = send_to(&pane.join("in"), raw);
+            self.put(&pane, raw);
         }
     }
 
@@ -888,6 +966,11 @@ impl View {
         let Some(name) = self.focus.as_ref().filter(|_| !typed.is_empty()) else { return };
         // Resolve the name again: a live pane can have moved since the last frame.
         let path = self.session.join(&self.workspace).join(name).join("in");
+        // (One pane's viewer keeps what the FIFO does not take, and drops nothing.)
+        if self.only.is_some() {
+            self.unsent.extend(typed);
+            return self.resend();
+        }
         match send_to(&path, &typed) {
             Ok(n) if n == typed.len() => {}
             Ok(n) => self.message = format!("{name}: only {n} of {} typed bytes were queued", typed.len()),
@@ -900,6 +983,35 @@ impl View {
                 self.message = format!("{name}: its `in` is no FIFO: what you typed was dropped");
             }
             Err(e) => self.message = format!("{name}: {e}: what you typed was dropped"),
+        }
+    }
+
+    /// Types bytes of the viewer's own into a pane, a key's release or a focus report: without
+    /// waiting; or, by one pane's viewer, after all that was typed before them.
+    fn put(&mut self, pane: &Path, bytes: &[u8]) {
+        if self.only.is_some() {
+            self.unsent.extend_from_slice(bytes);
+            return self.resend();
+        }
+        let _ = send_to(&pane.join("in"), bytes);
+    }
+
+    /// The one pane's `in`, where there is one pane.
+    fn pane_in(&self) -> PathBuf {
+        self.session.join(&self.workspace).join(self.only.as_deref().unwrap_or_default()).join("in")
+    }
+
+    /// Writes what the one pane's `in` has not taken yet, as far as it takes it now. (A FIFO
+    /// that nothing reads is an ended pane's: what waited for it is nobody's.)
+    fn resend(&mut self) {
+        if self.unsent.is_empty() {
+            return;
+        }
+        match send_to(&self.pane_in(), &self.unsent).map_err(|e| e.kind()) {
+            Ok(taken) => drop(self.unsent.drain(..taken)),
+            // (Not taken now: full, or the write was interrupted by a signal of its carrier's.)
+            Err(io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
+            Err(_) => self.unsent.clear(),
         }
     }
 
@@ -927,7 +1039,7 @@ impl View {
             out.push_str("\x1b[m\x1b[2J");
         }
         let directory = self.session.join(&self.workspace);
-        let (text, mut layout, mut wrong) = Layout::load(&directory);
+        let (text, mut layout, mut wrong) = self.layout(&directory);
         let mut printed = layout.print();
         // The file says what is shown: when panes came or went, it is written
         // again, so that an edit is always an edit of what is on the screen.
@@ -974,6 +1086,8 @@ impl View {
                 (pane.seen.filter(|_| pane.looked.1 && held).unwrap_or(pane.looked.0), held)
             })
             .collect();
+        // (One pane alone, whose holder is gone: what is drawn of it now is its last screen.)
+        self.over = self.only.is_some() && panes.iter().all(|(_, held)| !held);
         let clipboard = self.focus.as_ref().and_then(|name| fs::metadata(directory.join(name).join("clipboard")).ok());
         let clipboard = clipboard.map(stamp);
         let terminal = (self.sixel, self.joins.is_some(), self.keyboard, self.window, cell_size);
