@@ -224,6 +224,9 @@ struct View {
     title: Option<String>,
     carry: Vec<u8>,
     typed: Vec<u8>,
+    /// What was typed for a pane whose `in` has not taken it yet: the FIFO, the bytes, and since when
+    /// it has taken none. The keys wait behind it. (With no bytes: it took none of the last, which were dropped.)
+    unsent: Option<(PathBuf, Vec<u8>, Instant)>,
     /// When a key last went to a pane: its echo is looked for often for a moment after.
     keyed: Option<Instant>,
     pasting: Option<bool>,
@@ -321,6 +324,7 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
         copied: None,
         carry: Vec::new(),
         typed: Vec::new(),
+        unsent: None,
         keyed: None,
         pasting: None,
         scripts: Vec::new(),
@@ -384,6 +388,7 @@ impl View {
                     Some(line) => self.command(line),
                 }
             }
+            self.resend();
             if self.frame()? || n > 0 {
                 active = Instant::now();
             }
@@ -431,9 +436,11 @@ impl View {
         }
     }
 
-    /// Whether the keys wait: for every script started that neither ended nor ran two seconds.
+    /// Whether the keys wait: for every script started that neither ended nor ran two seconds, and
+    /// for a pane to take what was typed there before them.
     fn waiting(&self) -> bool {
-        self.scripts.iter().any(|(.., since)| since.is_some())
+        let unsent = self.unsent.as_ref().is_some_and(|(_, typed, _)| !typed.is_empty());
+        unsent || self.scripts.iter().any(|(.., since)| since.is_some())
     }
 
     /// Another workspace is shown: what was read of the panes is forgotten, and with it what the
@@ -882,25 +889,50 @@ impl View {
         }
     }
 
-    /// Writes what was typed to the focused pane's `in`, without waiting.
+    /// Writes what was typed to the focused pane's `in`, without waiting: what the FIFO does not
+    /// take now is kept for it (`resend`).
     fn send(&mut self) {
         let typed = std::mem::take(&mut self.typed);
         let Some(name) = self.focus.as_ref().filter(|_| !typed.is_empty()) else { return };
         // Resolve the name again: a live pane can have moved since the last frame.
         let path = self.session.join(&self.workspace).join(name).join("in");
-        match send_to(&path, &typed) {
-            Ok(n) if n == typed.len() => {}
-            Ok(n) => self.message = format!("{name}: only {n} of {} typed bytes were queued", typed.len()),
+        let kept = self.unsent.take().filter(|(to, ..)| *to == path);
+        let (path, mut unsent, since) = kept.unwrap_or((path, Vec::new(), Instant::now()));
+        unsent.extend(typed);
+        self.unsent = Some((path, unsent, since));
+        self.resend();
+    }
+
+    /// Writes what a pane's `in` has not taken yet, as far as it takes it now: a paste larger than
+    /// the FIFO and its holder have room for is typed whole, as fast as the program reads. A program
+    /// that has read none of it for two seconds is waited for no longer: what waits is dropped, and
+    /// said, the keys go on, and what is typed there next is dropped at once if it still takes none.
+    fn resend(&mut self) {
+        let Some((path, mut typed, since)) = self.unsent.take_if(|(_, typed, _)| !typed.is_empty()) else { return };
+        let name = path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy().into_owned();
+        let taken =
+            send_to(&path, &typed).or_else(|e| if e.kind() == io::ErrorKind::WouldBlock { Ok(0) } else { Err(e) });
+        self.message = match taken {
+            Ok(n) if n == typed.len() => return,
+            Ok(n) if n > 0 || since.elapsed() < SCRIPT_WAIT => {
+                typed.drain(..n);
+                return self.unsent = Some((path, typed, if n > 0 { Instant::now() } else { since }));
+            }
+            Ok(_) => {
+                let dropped = typed.len();
+                self.unsent = Some((path, Vec::new(), since));
+                format!("{name} reads nothing: {dropped} typed bytes were dropped")
+            }
             // A FIFO nobody reads, or none at all: the pane has ended.
             Err(e) if sys::no_reader(&e) || e.kind() == io::ErrorKind::NotFound => {
-                self.message = format!("{name} has ended: nothing reads what you type");
+                format!("{name} has ended: nothing reads what you type")
             }
             // (Something else than a FIFO has the name: `open_fifo` wrote nothing into it.)
             Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
-                self.message = format!("{name}: its `in` is no FIFO: what you typed was dropped");
+                format!("{name}: its `in` is no FIFO: what you typed was dropped")
             }
-            Err(e) => self.message = format!("{name}: {e}: what you typed was dropped"),
-        }
+            Err(e) => format!("{name}: {e}: what you typed was dropped"),
+        };
     }
 
     // ---- drawing ---------------------------------------------------------
