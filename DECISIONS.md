@@ -3256,9 +3256,10 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     own reading of a key (its name in the old form and in the kitty
     protocol's, and whether it goes down).
   - **What is typed is one stream, and it waits.** `view_pane` keeps what
-    the pane's `in` does not take, one piece of at most what one read of
-    its terminal brought, and reads the terminal no further until the FIFO
-    has taken it (it is waited for with the terminal and the rest, in the
+    the pane's `in` does not take, and reads the terminal no further until
+    the FIFO has taken it: one piece of at most what it had read by then
+    (64 KiB and one read of 16, as before a key's script), and the releases
+    and focus reports the viewer itself adds while it waits (it is waited for with the terminal and the rest, in the
     one `poll`). Nothing is dropped, there is no time limit and no word in
     the corner. A key's release and a focus report, which `fux view`
     writes straight to the FIFO, go into that stream behind what waits: a

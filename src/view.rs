@@ -267,8 +267,9 @@ pub fn view(session: PathBuf, workspace: String, keys: PathBuf) -> Result<(), St
 /// was typed there, as on any terminal, and goes to the pane as it came.
 ///
 /// All that is typed is one stream in its order, a key's release and a focus report in their
-/// places in it: what the pane's `in` does not take is kept, and the terminal is read no further
-/// until it has. Nothing is dropped; a paste into a program that reads slowly is slow, and one
+/// places in it: what the pane's `in` does not take is kept (at most what was read of the terminal
+/// by then, 64 KiB and one read of 16, and the viewer's own releases and focus reports), and the
+/// terminal is read no further until it has. Nothing is dropped; a paste into a program that reads slowly is slow, and one
 /// into a program that reads nothing waits, with whoever writes to the terminal, as on any
 /// terminal. Drawing goes on meanwhile.
 ///
@@ -1008,7 +1009,8 @@ impl View {
         }
         match send_to(&self.pane_in(), &self.unsent).map_err(|e| e.kind()) {
             Ok(taken) => drop(self.unsent.drain(..taken)),
-            Err(io::ErrorKind::WouldBlock) => {}
+            // (Not taken now: full, or the write was interrupted by a signal of its carrier's.)
+            Err(io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
             Err(_) => self.unsent.clear(),
         }
     }

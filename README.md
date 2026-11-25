@@ -523,7 +523,8 @@ terminal, with no `layout` read or written. It is not `fux view` with fewer pane
   and nothing else. (Its carrier has its own keys, on the terminal where they are typed: `fux::key` names
   the key at the start of what a terminal sent, as the viewer would.)
 - **All that is typed is one stream, and none of it is dropped.** What the pane's `in` does not take is
-  kept, and until it is taken the terminal is read no further: a paste into a program that reads slowly is
+  kept (at most the 64 KiB and one read of 16 that were read of the terminal by then, and the viewer's own
+  releases and focus reports), and until it is taken the terminal is read no further: a paste into a program that reads slowly is
   slow, and one into a program that reads nothing waits, with whoever writes to that terminal, as on any
   terminal. A key's release and a focus report are in that stream, in their places. Drawing goes on
   meanwhile. (`fux view` waits for no pane, having several: there what a pane does not take at once is
