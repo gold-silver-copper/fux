@@ -3250,8 +3250,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     ` exited 0 ` in the corner: its workspace has other panes.)
   - **A paste is not cut.** The viewer wrote what was typed to `in`
     without waiting and dropped what the FIFO did not take: a megabyte
-    pasted lost about half (434,064 of 1,048,576 bytes arrived, in the test
-    that now holds it), into any program, with or without koh. It keeps
+    pasted lost what the pane had no room for at once (352,164 of 1,048,576
+    bytes arrive in the test that now holds it, into a program that begins
+    to read 300 ms later), with or without koh. It keeps
     the rest now and writes it as the FIFO takes it, the keys waiting
     behind it as behind a script, and reads its terminal no further
     meanwhile (64 KiB): so a writer to the terminal waits, as with ssh.
