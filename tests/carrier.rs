@@ -47,11 +47,12 @@ fn test() -> ExitCode {
     let root = tmp.canonicalize().unwrap_or(tmp).join(format!("fux-carrier-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     type Test = fn(&Path, &Path) -> Result<(), String>;
-    let tests: [(&str, Test); 4] = [
+    let tests: [(&str, Test); 5] = [
         ("a_program_that_is_not_fux_starts_a_pane_and_is_its_holder", carries),
         ("a_viewer_of_one_pane_asks_its_terminal_nothing_believes_it_nothing_and_ends_with_the_pane", shows),
         ("a_megabyte_typed_at_a_viewer_of_one_pane_is_typed_whole_with_the_keys_around_it_in_their_order", types),
         ("a_viewer_of_one_pane_whose_program_reads_nothing_still_draws_and_ends_when_told", waits),
+        ("a_viewer_of_one_pane_passes_a_bell_and_a_notice_on_and_writes_neither_on_the_screen", rings),
     ];
     let mut failed = false;
     for (name, test) in tests {
@@ -290,6 +291,31 @@ fn types(me: &Path, root: &Path) -> Result<(), String> {
     let typed = arrived.replacen(focus, "", 1);
     let same = typed.bytes().zip(whole.bytes()).take_while(|(a, b)| a == b).count();
     check(typed == whole, format!("{} bytes arrived, the first {same} as they were typed", typed.len()))
+}
+
+/// A program rings the bell and then says some words (OSC 9) at a viewer of one pane: the terminal
+/// is rung and told the words, once each, and nothing is written over the program's screen, whose
+/// every row is the program's.
+fn rings(me: &Path, root: &Path) -> Result<(), String> {
+    let says = "printf ready; until [ -e \"$0\" ]; do sleep 0.05; done; printf '\\a'; until [ -e \"$0.words\" ]; do sleep 0.05; done; printf '\\033]9;said-aloud\\033\\\\'; exec sleep 30";
+    let go = root.join("go");
+    let pane = start(me, root, "rings", &says.replace("$0", &go.to_string_lossy()))?;
+    let mut shown = Shown::of(me, root, &pane)?;
+    shown.draws(|drawn| drawn.contains("ready"));
+    // (What is there at a viewer's first look is old, and is not rung: the bell comes after it.)
+    std::thread::sleep(Duration::from_millis(600));
+    std::fs::write(&go, "").map_err(|e| e.to_string())?;
+    let rung = shown.draws(|drawn| drawn.contains('\x07'));
+    check(rung.contains('\x07'), format!("the terminal was not rung: {rung:?}"))?;
+    std::fs::write(root.join("go.words"), "").map_err(|e| e.to_string())?;
+    let told = shown.draws(|drawn| drawn.contains("said-aloud\x1b\\"));
+    check(told.contains("\x1b]9;rings: said-aloud\x1b\\"), format!("the terminal was not told: {told:?}"))?;
+    // (A frame that had it in the corner would be drawn by now.)
+    std::thread::sleep(Duration::from_millis(300));
+    let all = shown.draws(|_| true);
+    let rings = all.matches('\x07').count();
+    check(rings == 1 && all.matches("said-aloud").count() == 1, format!("rung {rings} times: {all:?}"))?;
+    check(!all.contains("bell"), format!("the bell was written on the screen: {all:?}"))
 }
 
 /// A program that reads nothing, and more is typed at its viewer than its pane takes: the

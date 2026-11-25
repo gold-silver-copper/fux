@@ -522,6 +522,8 @@ terminal, with no `layout` read or written. It is not `fux view` with fewer pane
 - **It has no keys**: every key is the pane's, there is no menu and no script, and its `ctl` takes `quit`
   and nothing else. (Its carrier has its own keys, on the terminal where they are typed: `fux::key` names
   the key at the start of what a terminal sent, as the viewer would.)
+- **It writes nothing of its own on the screen**: every row is the pane's. A bell and a notice are passed on
+  to the terminal (as `fux view` passes them on) and are not said in the corner.
 - **All that is typed is one stream, and none of it is dropped.** What the pane's `in` does not take is
   kept (at most the 64 KiB and one read of 16 that were read of the terminal by then, and the viewer's own
   releases and focus reports), and until it is taken the terminal is read no further: a paste into a program that reads slowly is
