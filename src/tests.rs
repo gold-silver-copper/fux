@@ -335,6 +335,30 @@ fn when_the_tab_shown_goes_with_no_tab_shown_before_it_the_tab_now_in_its_place_
 }
 
 #[test]
+fn a_carrier_is_told_a_keys_name_and_whether_it_goes_down() {
+    // A key in the old form and in the kitty protocol's has one name, whatever locks are on. A key let
+    // go, and Ctrl or Shift by itself, are no key going down.
+    for (bytes, name, down) in [
+        (&b"\x1d"[..], "C-]", true),
+        (b"\x1b[93;5u", "C-]", true),
+        (b"\x1b[93;69u", "C-]", true),
+        (b"\x1b[93;5:2u", "C-]", true),
+        (b"\x1b[93;5:3u", "C-]", false),
+        (b".", "dot", true),
+        (b"\x1b[46u", "dot", true),
+        (b"\x1b[46;1:3u", "dot", false),
+        (b"\x1b[57442;5u", "", false),
+        (b"\x1b[200~", "paste-start", true),
+    ] {
+        assert_eq!(crate::key(bytes, false), Some((bytes.len(), name.to_string(), down)), "{bytes:?}");
+    }
+    // It is the first key of what was sent; half a key is none yet, and an Escape is one when no more comes.
+    assert_eq!(crate::key(b"\x1d.", false), Some((1, "C-]".into(), true)));
+    assert_eq!((crate::key(b"\x1b[93;", false), crate::key(b"\x1b", false)), (None, None));
+    assert_eq!(crate::key(b"\x1b", true), Some((1, "esc".into(), true)));
+}
+
+#[test]
 fn keys_have_the_names_of_their_files() {
     let name = |bytes: &[u8]| next(bytes, true, false);
     for (bytes, expected) in [

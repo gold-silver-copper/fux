@@ -161,6 +161,17 @@ pub fn lines(kept: &mut Vec<u8>, read: &[u8], most: usize) -> Vec<Option<String>
     lines
 }
 
+/// The key at the start of what a terminal sent, as the viewer reads one: how many bytes it is, its
+/// name (a key's file's: `C-]`, `dot`, `paste-start`; none for a sequence that is no key), and whether
+/// a key goes down with it. (In the kitty protocol's forms a terminal tells of a key let go too, and of
+/// Shift or Ctrl by itself: those are no key going down.) None while more bytes are needed to tell; with
+/// `whole`, no more are coming. For a program that has a key of its own on a terminal whose other keys
+/// are a pane's: koh, which leaves a session by one.
+pub fn key(bytes: &[u8], whole: bool) -> Option<(usize, String, bool)> {
+    let (length, name, event) = keys::next(bytes, whole, false)?;
+    Some((length, name, event.is_none_or(|(.., kind, alone)| kind != 3 && !alone)))
+}
+
 /// Which run a pane's folder is of: the number in its `run`, 128 random bits its holder wrote there once, as
 /// 32 hex digits. None if the name has anything but that file, to the byte (no file, a link, other digits,
 /// one more or fewer): a folder no holder of this fux made.
