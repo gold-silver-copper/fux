@@ -3212,6 +3212,62 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     3, `src/lib.rs` 10: 41 in and 43 out in fux. `keys/.shell` 8 and 5.
     `FORMAT` stays 1: a file was added.
 
+- **D128. A viewer of one pane that asks nothing, and a paste that is not
+  cut** (the owner, 2026-11-24: koh shows a session by passthrough, the
+  viewer on the server in a pty and its bytes sent; "what if we just assume
+  sixel and complex colors are always on, people who dont have those
+  capabilities simply dont see them").
+  - **The question.** koh ran fux's viewer in the client's process on a
+    copy of the pane's folder. It now runs it on the server and sends what
+    it draws. Two things of the viewer were wrong for that. It asks its
+    terminal what it is like (the keyboard's flags, 259 colours, what it
+    is), and an answer that crosses a link may come after the viewer that
+    asked is gone: to the next viewer, or into the pane as typed text. And
+    it shows a workspace, by a `layout` that all its viewers share: a
+    session of koh's is one pane, and one client's tab must not be
+    another's.
+  - **What is done.** `fux::view_pane(pane, keys, keyboard)`, in the
+    library and not on the command line (a pty over ssh is a terminal:
+    `fux view` is right there, and nothing but a carrier needs this one).
+    One pane by its folder, laid out alone; no `layout` read or written.
+    Nothing asked: sixel is taken as there (a terminal that has none shows
+    nothing where the picture is; one that tells no pixel size gets the
+    corner's word for it, as before), the keyboard's flags are an
+    argument (told some, it sets the flags aside once, `CSI > u`, and from
+    then on sets what the pane's program asks), and the session's
+    `colours` and `keyboard` are not written: the carrier asked the
+    terminal itself, where it is, and writes them. No default keys are put
+    in `keys`: a client of koh's must not be handed fux's whole set (a
+    spike did, and its clients could switch to another workspace).
+  - **It leaves the terminal as it is.** Whoever has the terminal must be
+    able to put it back without the viewer (the link may be gone), so that
+    one always does, and a viewer that did too would take back the
+    keyboard's flags and the title twice. `LEAVING` is exported for it: one
+    list of what a viewer turns on.
+  - **It ends with its pane.** When nothing reads the pane's `in` its
+    holder is gone, the files are final, and the frame drawn then is the
+    last: the viewer ends once that is written. (`fux view` stays, with
+    ` exited 0 ` in the corner: its workspace has other panes.)
+  - **A paste is not cut.** The viewer wrote what was typed to `in`
+    without waiting and dropped what the FIFO did not take: a megabyte
+    pasted lost about half (434,064 of 1,048,576 bytes arrived, in the test
+    that now holds it), into any program, with or without koh. It keeps
+    the rest now and writes it as the FIFO takes it, the keys waiting
+    behind it as behind a script, and reads its terminal no further
+    meanwhile (64 KiB): so a writer to the terminal waits, as with ssh.
+    Not for good: two seconds with no byte taken, as for a script, and what
+    waits is dropped and said; what is typed there next is dropped at once
+    while the program still takes none (2 s for each 80 KiB was 26 s of
+    dead keys for a megabyte). A program that reads slowly is waited for;
+    one that reads nothing is not, and a viewer with other panes is never
+    held by one of them.
+  - **Not done.** A frame is still "written" when the pty has it, not when
+    a link has: behind a slow link old frames wait in the pty (koh's
+    report has the measurement). The viewer would have to be told by its
+    carrier when a frame is taken; that is a word on `ctl` and a rule
+    about the link's window, and is left until someone needs it.
+  - **Size.** `src/view.rs` 104 lines in and 19 out, `src/lib.rs` 1 changed.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

@@ -77,7 +77,7 @@ folder is gone, the pane is gone: the holder leaves, which hangs up too.
 **Viewing.** The viewer has no channel to holders but each pane's `in` and `ctl`. It looks at files (often just after something happened, seldom at rest), reads a pane's
 facts and the `screen.styled` that `shown` leads to when the pane's `generation` is another file
 (it is written last), keeps what it read if it is still that file afterwards, and
-parses the screen with the same emulator that wrote it. It sends keys with a write to `in` that never waits, opening it by
+parses the screen with the same emulator that wrote it. It sends keys with a write to `in` that never waits (what the FIFO does not take it keeps, and writes when it does: two seconds with none taken, and it is dropped), opening it by
 its path each time, so that the pane typed into is the pane of that name
 now, and only if a FIFO has that name (no link there is followed, and no file written). There is no header and no version: what says that
 files are of one moment is `generation`, read before and after them (in a
