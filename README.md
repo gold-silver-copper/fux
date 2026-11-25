@@ -619,7 +619,7 @@ follows an output with no line break; it says so if the command printed
 nothing or its output was cleared away; of a long output that Ctrl-L or `clear` cut in two,
 the part that had scrolled into history is all there is, and it opens that) and `p` the editor at the last marked prompt but one, or at the only one
 (both for a shell that marks its prompts, and both also while the pane shows a
-program's own screen, as `c`, `M-c` and the search are: the text is the main screen's and its history, whichever screen is drawn. For bash from 4.4 on, `PS1='\[\e]133;A\a\]'$PS1'\[\e]133;B\a\]'; PS0='\e]133;C\a';
+program's own screen: for these two the text is the main screen's and its history, whichever screen is drawn. For `c`, `M-c` and the search the text of a pane that shows a program's own screen is that screen and no more, which is what is there to be read: a program that fills the screen keeps what it has shown before to itself. For bash from 4.4 on, `PS1='\[\e]133;A\a\]'$PS1'\[\e]133;B\a\]'; PS0='\e]133;C\a';
 PROMPT_COMMAND='printf "\e]133;D;%s\a" "$?"'`, the `printf` put first in a
 `PROMPT_COMMAND` you have already), `C-b` send C-b itself; `t` then `n` a new tab, `w`
 workspaces (`n` new, `g` choose a workspace, `h` `l`), `r` resize (`h j k l`, repeating), `m` move

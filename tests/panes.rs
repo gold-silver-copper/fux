@@ -925,11 +925,21 @@ fn each_screen_has_a_folder_of_its_own_and_shown_leads_to_the_one_that_is_drawn(
         names
     };
     assert_eq!(folder("alt"), folder("main"), "the same names in each screen's folder");
-    // The pane's text, as the keys make it, is the shell's while the program is open.
+    // The pane's text, as the keys make it, is the program's screen while the program is open, and no
+    // more (in colour too); for a key that goes by the marks it is the shell's, whose lines they number.
     let text = session.0.join("text");
-    let mut script = session.command(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.text"));
-    assert!(script.arg(&pane).arg(&text).ended().success());
-    assert!(read(&text).starts_with("green and a line of forty characters or so\n") && !read(&text).contains("full"));
+    let made = |words: &[&str]| {
+        let mut script = session.command(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.text"));
+        assert!(script.arg(&pane).arg(&text).args(words).ended().success());
+        read(&text)
+    };
+    assert_eq!(made(&[]).trim_end_matches('\n'), file("alt/screen").trim_end_matches('\n'));
+    assert!(bare(&made(&["styled"])).contains("\nfull") && !made(&["styled"]).contains("green"));
+    let marked = made(&["", &session.0.join("marks").to_string_lossy()]);
+    assert!(
+        marked.starts_with("green and a line of forty characters or so\n") && !marked.contains("full"),
+        "{marked:?}"
+    );
     assert_eq!(folder("main"), ["lines", "links", "pictures", "screen", "screen.styled"]);
     assert!(!pane.join("screen").exists() && !pane.join("lines").exists() && !pane.join("screen.main").exists());
     // What the program draws meanwhile is not the main screen's: its files are not written again.

@@ -1,19 +1,23 @@
 #!/bin/sh
 # .text PANE FILE [styled]: writes the whole text of the pane whose folder is PANE into FILE (older history, history, then
-# the main screen, whichever screen is shown), and prints the number to add to a line number of
+# the main screen), and prints the number to add to a line number of
 # `marks` to have that line's number in FILE (sed's kind, from 1). With `styled` it is the same lines
 # with their colours (`history.styled.1`, `history.styled`, `main/screen.styled`).
+# While the pane shows a program's own screen (the alternate one) the text is that screen and no more: what
+# is there to be read. (It is in no history; the shell's text is the pane's again when the program leaves.)
 # The screen is taken without the blank rows at its end (the rows that are blank in `main/screen`: one
 # that is only a colour is blank), and its rows that go on from the row above (the second line of
 # `main/lines` numbers them from 0) joined to it, as history has them (without the cell a wide character
 # left empty at a row's end, which `screen.styled` tells as U+200B and a blank where it has a colour).
 # The files are of one round of the holder's writing (`generation` the same even number before and after),
 # or read again, ten times: a pane that never stops printing, or whose holder was killed as it wrote, is taken as it is.
-# A fourth word names a file for the pane's `marks` of that same round (`.text PANE FILE '' MARKS`).
+# A fourth word names a file for the pane's `marks` of that same round (`.text PANE FILE '' MARKS`): the text
+# is then the main screen's and its history whichever screen is shown, as the marks number its lines.
 p=$1; shift
-umask 077; s=${2:+.$2} m=$p/main n=0
+umask 077; s=${2:+.$2} n=0
 generation() { cat "$p/generation" 2>/dev/null; }
 while g=$(generation); :; do
+m=$p/main; [ -n "$3" ] || [ "$(readlink "$p/shown" 2>/dev/null)" != alt ] || m=$p/alt
 { read -r top; read -r wraps; } 2>/dev/null < "$m/lines"; [ -z "$3" ] || cat "$p/marks" > "$3"
 screen=$(awk -v wraps="$wraps" -v gap="$(printf '\342\200\213 \033[m')" 'BEGIN { split(wraps, w, " "); for (i in w) joined[w[i] + 1] = 1 }
   NR == FNR && $0 != "" { last = NR } { row[FNR] = $0 }
@@ -22,9 +26,9 @@ screen=$(awk -v wraps="$wraps" -v gap="$(printf '\342\200\213 \033[m')" 'BEGIN {
       printf "%s%s", (i > 1 && !joined[i] ? "\n" : ""), r } }' "$m/screen" ${2:+"$m/screen$s"})
 # History's last line may be unfinished: the screen's first row goes on from it if
 # `lines` lists row 0, and is a line of its own if not.
-open=$(tail -c 1 "$p/history$s" 2>/dev/null)
+open=; [ "$m" != "$p/main" ] || open=$(tail -c 1 "$p/history$s" 2>/dev/null)
 case " $wraps " in *" 0 "*) open= ;; esac
-{ cat "$p/history$s.1" "$p/history$s" 2>/dev/null; [ -z "$open" ] || echo; } > "$1"
+{ [ "$m" != "$p/main" ] || cat "$p/history$s.1" "$p/history$s" 2>/dev/null; [ -z "$open" ] || echo; } > "$1"
 n=$((n + 1)); [ "$g" != "$(generation)" ] || [ $((${g:-0} % 2)) = 1 ] && [ $n -lt 10 ] || break; sleep 0.02
 done
 before=$(($(wc -l < "$1")))

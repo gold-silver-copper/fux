@@ -1,7 +1,7 @@
 #!/bin/sh
 # .search WORKSPACE: what the search key runs in a pane of its own (WORKSPACE is the workspace's
 # directory, by its whole path, and its session the folder that is in). It asks for words, lists
-# every line of every other pane of the session that has them as they are (history and screen,
+# every line of every other pane of the session that has them as they are (history and screen, or a program's own screen where one is shown,
 # wrapped lines whole, ASCII letters of either case), and opens the one chosen in the
 # editor, in a tab of WORKSPACE: that pane's text, made anew, at that line's number. `.text` makes
 # the text, `.pick` does the choosing, `.edit` the opening.
