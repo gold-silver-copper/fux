@@ -19,7 +19,7 @@ mod layout;
 mod tests;
 mod view;
 
-pub use view::view;
+pub use view::{LEAVING, view, view_pane};
 
 // The emulator and the system calls are crates of their own, under the names this one calls them by.
 use fux_vt::{self as term, sixel, width};

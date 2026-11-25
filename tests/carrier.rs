@@ -22,6 +22,11 @@ fn main() -> ExitCode {
     match words.first().and_then(|word| word.to_str()) {
         Some("fux") => fux::command(words.into_iter().skip(1)),
         Some("hold") => fux::command(words),
+        // (As koh has it for a terminal at the far end of a link: one pane, its keys, the keyboard's flags.)
+        Some("show") => match words.get(1..) {
+            Some([pane, keys]) if fux::view_pane(pane.into(), keys.into(), 5).is_ok() => ExitCode::SUCCESS,
+            _ => ExitCode::FAILURE,
+        },
         _ => ExitCode::from(2),
     }
 }
@@ -40,19 +45,27 @@ fn test() -> ExitCode {
     let tmp = std::env::temp_dir();
     let root = tmp.canonicalize().unwrap_or(tmp).join(format!("fux-carrier-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let wrong = carries(&me, &root).err();
-    // Whatever became of it, the pane goes: a holder that still lives finds its folder gone and
-    // hangs up (and may write a file while the folder is being removed: then once more).
-    let end = Instant::now() + Duration::from_secs(5);
-    while std::fs::remove_dir_all(&root).is_err() && root.exists() && Instant::now() < end {
-        std::thread::sleep(Duration::from_millis(50));
+    type Test = fn(&Path, &Path) -> Result<(), String>;
+    let tests: [(&str, Test); 2] = [
+        ("a_program_that_is_not_fux_starts_a_pane_and_is_its_holder", carries),
+        ("a_viewer_of_one_pane_asks_its_terminal_nothing_and_ends_with_the_pane", shows),
+    ];
+    let mut failed = false;
+    for (name, test) in tests {
+        let wrong = test(&me, &root).err();
+        // Whatever became of it, the pane goes: a holder that still lives finds its folder gone and
+        // hangs up (and may write a file while the folder is being removed: then once more).
+        let end = Instant::now() + Duration::from_secs(5);
+        while std::fs::remove_dir_all(&root).is_err() && root.exists() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        match &wrong {
+            None => println!("test {name} ... ok"),
+            Some(why) => eprintln!("test {name} ... FAILED\n{why}"),
+        }
+        failed |= wrong.is_some();
     }
-    let Some(why) = wrong else {
-        println!("test a_program_that_is_not_fux_starts_a_pane_and_is_its_holder ... ok");
-        return ExitCode::SUCCESS;
-    };
-    eprintln!("test a_program_that_is_not_fux_starts_a_pane_and_is_its_holder ... FAILED\n{why}");
-    ExitCode::FAILURE
+    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
 /// A file's text, read without waiting.
@@ -62,16 +75,85 @@ fn read(path: &Path) -> String {
     text
 }
 
+/// This program with some words, where nothing of whoever runs the tests is found.
+fn carried(me: &Path, root: &Path, words: &[&str]) -> Command {
+    let mut command = Command::new(me);
+    command.args(words).stdin(Stdio::null()).env_remove("COLUMNS").env_remove("LINES");
+    command.env("XDG_RUNTIME_DIR", root).env("XDG_CONFIG_HOME", root).env("HOME", root).env(CARRIED, "1");
+    command
+}
+
+fn check(right: bool, wrong: String) -> Result<(), String> {
+    if right { Ok(()) } else { Err(wrong) }
+}
+
+/// `fux::view_pane`, as koh runs it on a pty for a terminal at the far end of a link.
+fn shows(me: &Path, root: &Path) -> Result<(), String> {
+    let start = |name: &str, says: &str| {
+        let pane = root.join("work").join(name);
+        let out = carried(me, root, &["fux", "start", &pane.to_string_lossy(), "--", "sh", "-c", says]).output();
+        check(out.is_ok_and(|out| out.status.success()), format!("{name} was not started")).map(|()| pane)
+    };
+    // Two panes of one workspace, and the first is the one shown. No keys are there.
+    let (pane, _other) = (start("one", "printf shown; exec sleep 30")?, start("two", "printf another; exec sleep 30")?);
+    let keys = root.join("keys");
+    let size = fuxix::Winsize { cols: 40, rows: 10, xpixel: 400, ypixel: 200 };
+    let (mut master, slave) = fuxix::pty(size).map_err(|e| format!("no pty: {e}"))?;
+    let end = |slave: &std::fs::File| slave.try_clone().map(Stdio::from).map_err(|e| e.to_string());
+    let mut viewer = carried(me, root, &["show", &pane.to_string_lossy(), &keys.to_string_lossy()]);
+    viewer.stdin(end(&slave)?).stdout(end(&slave)?).stderr(Stdio::from(slave));
+    let mut viewer = viewer.spawn().map_err(|e| format!("the viewer was not started: {e}"))?;
+    // What it writes to its terminal, until `ready`: all of it, as bytes.
+    let mut drawn = Vec::new();
+    let mut draws = |ready: &mut dyn FnMut(&str) -> bool| {
+        let by = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < by {
+            let mut piece = [0; 4096];
+            match master.read(&mut piece) {
+                Ok(n @ 1..) => drawn.extend(piece.iter().take(n)),
+                // (No more comes of a pty whose other end is closed: the viewer has ended.)
+                Ok(_) => return String::from_utf8_lossy(&drawn).into_owned(),
+                Err(e) if e.kind() != std::io::ErrorKind::WouldBlock => {
+                    return String::from_utf8_lossy(&drawn).into_owned();
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+            if ready(&String::from_utf8_lossy(&drawn)) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&drawn).into_owned()
+    };
+    let first = draws(&mut |drawn| drawn.contains("shown"));
+    // It draws that pane on the alternate screen, and sets the keyboard's flags aside as one that
+    // was told the terminal takes some; it asks nothing: not what the terminal is, its colours, its
+    // keyboard or a mode. And of the workspace's other pane it draws nothing.
+    check(
+        first.contains("shown") && first.contains("\x1b[?1049h\x1b[2J") && first.contains("\x1b[>u"),
+        format!("{first:?}"),
+    )?;
+    let asked = ["\x1b[c", "\x1b[?u", ";?\x1b\\", "$p", "another"].into_iter().find(|asked| first.contains(asked));
+    check(asked.is_none(), format!("the viewer wrote {asked:?}: {first:?}"))?;
+    // Nothing was written of the terminal or of a layout, and no keys were put where there were none.
+    let made = ["work/layout", "colours", "keyboard", "keys"].into_iter().find(|name| root.join(name).exists());
+    check(made.is_none(), format!("the viewer made {made:?}"))?;
+    // The pane ends, and the viewer with it, by itself: with the last screen drawn, and the terminal
+    // left as it is (whoever has the terminal puts it back).
+    let mut ctl = fuxix::open(pane.join("ctl"), true).map_err(|e| format!("ctl: {e}"))?;
+    ctl.write_all(b"kill\n").map_err(|e| format!("ctl: {e}"))?;
+    let last = draws(&mut |_| false);
+    let ended = viewer.try_wait().ok().flatten();
+    let _ = viewer.kill().and_then(|()| viewer.wait());
+    check(ended.is_some_and(|ended| ended.success()), format!("the viewer did not end with its pane: {ended:?}"))?;
+    check(last.contains("killed 1") && !last.contains("\x1b[?1049l"), format!("the end: {last:?}"))
+}
+
 fn carries(me: &Path, root: &Path) -> Result<(), String> {
-    // This program under its word `fux`, where nothing of whoever runs the tests is found.
     let carried = |words: &[&str]| -> Result<Output, String> {
-        let mut command = Command::new(me);
-        command.arg("fux").args(words).stdin(Stdio::null()).env_remove("COLUMNS").env_remove("LINES");
-        command.env("XDG_RUNTIME_DIR", root).env("XDG_CONFIG_HOME", root).env("HOME", root).env(CARRIED, "1");
-        command.output().map_err(|e| format!("{command:?}: {e}"))
+        let mut command = carried(me, root, &["fux"]);
+        command.args(words).output().map_err(|e| format!("{command:?}: {e}"))
     };
     let said = |out: &Output| format!("{:?}", (out.status, String::from_utf8_lossy(&out.stderr)));
-    let check = |right: bool, wrong: String| if right { Ok(()) } else { Err(wrong) };
 
     // `start` under that word starts a pane: the folder it prints is the one named, by a path.
     let pane = root.join("work").join("pane");
