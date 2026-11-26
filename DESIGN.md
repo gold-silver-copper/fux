@@ -43,7 +43,7 @@ says the same in the same round, of the program). Whether a pane lives:
 Three crates in one workspace; the two beside the program name nothing of it, and only fuxix may write `unsafe`.
 
 - `fux-vt/` emulates the terminal (`lib.rs`, `width.rs`) and sizes and cuts sixel pictures (`sixel.rs`).
-- `fuxix/` owns the Unix FFI: the pty, `poll`, opens that do not wait, raw mode that is put back when dropped.
+- `fuxix/` owns the Unix FFI: the pty, `poll`, opens that do not wait, a signal, raw mode that is put back when dropped.
 - `src/` is fux, the program. `holder.rs` owns the pty, emulator and pane files. `layout.rs` places the panes.
 - `view.rs` draws them and `keys.rs` names keys for the scripts in `keys/`.
 - `main.rs` dispatches commands. Run `./sizes.sh` for the current line counts, crate by crate.
@@ -73,6 +73,12 @@ one that leaves it has `shown` turned back before `alt/` is removed. When the pr
 (once: a failure is a line in `log`), removes its FIFOs and leaves: `fux wait` returns after that. `kill` closes the pty's master: that
 is a hangup, and the rest is the kernel's and the program's business. If the
 folder is gone, the pane is gone: the holder leaves, which hangs up too.
+A program started with `--out` has no terminal: its output and errors are one
+file, `out`, whose bytes the holder never touches; the loop waits on `ctl` and
+the pipe alone, and writes `state` as a round. There `kill` is a signal the
+holder sends the program's group (a hangup, unless another is named), and the
+folder gone is that hangup too: only the parent, which has not yet waited for
+the program, signals it by its number.
 
 **Viewing.** The viewer has no channel to holders but each pane's `in` and `ctl`. It looks at files (often just after something happened, seldom at rest), reads a pane's
 facts and the `screen.styled` that `shown` leads to when the pane's `generation` is another file

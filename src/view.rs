@@ -1071,9 +1071,9 @@ impl View {
         let panes: Vec<(Stamp, bool)> = tiles
             .iter()
             .map(|(name, _)| {
-                // (Whether its holder lives is whether anything reads its `in`. While it is in the
-                // middle of writing, a pane is as it was last read.)
-                let held = sys::open_fifo(directory.join(name).join("in")).is_ok();
+                // (Whether its holder lives is whether anything reads its `ctl`, which a pane with no
+                // terminal has too. While it is in the middle of writing, a pane is as it was last read.)
+                let held = sys::open_fifo(directory.join(name).join("ctl")).is_ok();
                 let pane = self.panes.entry(name.clone()).or_insert_with(unread);
                 // (Another folder under the name, or one that was no tile a moment ago: it is known from
                 // here on, has been asked nothing, and is drawn whatever its files say. Another folder

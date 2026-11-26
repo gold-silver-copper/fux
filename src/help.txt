@@ -4,8 +4,8 @@ top to bottom: they are run as written by tools/help-agents.sh. Names here (agen
 examples: choose your own.
 
 WHAT THERE IS
-A pane is a directory. One small process (its holder) runs a program on a terminal of its
-own and keeps the directory's files up to date. A workspace is a directory of panes. The
+A pane is a directory. One small process (its holder) runs a program, as a rule on a terminal
+of its own, and keeps the directory's files up to date. A workspace is a directory of panes. The
 session directory holds the workspaces: $XDG_RUNTIME_DIR/fux, else ~/.cache/fux (the default
 session: `fux dir` prints it). fux reads no variable of its own and gives a pane's program none.
 A name always means one in the default session, wherever you type it; anything else is named
@@ -26,6 +26,13 @@ starter's environment and working directory, and its first size from COLUMNS and
     W=$(cd / && COLUMNS=120 LINES=40 fux start agent-demo/wide -- sh -c 'pwd; exec sleep 600')
 A pane is one run. A name that is there is refused ("the name is taken"), whether its pane
 runs or has ended, and nothing of it is touched: rm -r its directory to start the name anew.
+With --out the program has no terminal: its input is /dev/null, it leads a session of its own,
+and what it writes to its output and its errors goes as it is written, byte for byte, to one file
+of the pane, `out`. Such a pane has `out` and none of a terminal's files (in, main/, shown, size,
+cursor, modes, history, marks...): only `ctl` and the facts of its run (state, status, run, command,
+generation, log). Killed outright, its holder leaves the program running: no terminal hangs it up.
+    O=$(fux start --out agent-demo/out -- sh -c 'printf "a\377b"; echo e >&2; exit 3')
+    fux wait "$O" | tail -n 1; od -c "$O/out"           # state exited 3; a 377 b e \n, nothing more
 
 WAIT FOR WHAT YOU EXPECT
 `shown/screen` is what the pane shows now, as plain text (`shown` is a link to the folder of
@@ -137,6 +144,8 @@ links   (in a screen's folder) `LINE COL LEN ADDRESS` for each link (OSC 8) on t
         e.g. `24 0 4 https://x.y`: LINE counts as the first line of that folder's `lines`
         does (screen row = LINE - that number, if no row above wraps), COL is the first cell
         from 0, LEN the number of cells
+out     (a pane started with --out, and only such a pane: it is made before `run`) what its
+        program wrote to its output and errors, as it wrote it, without bound
 log     what the holder refused or lost. (Also: clipboard; and in a screen's folder `pictures`,
         a line `pic-N.sixel ROW COL COLS ROWS CELL-WIDTH CELL-HEIGHT` for each picture on that
         screen, the file being in the pane's folder.)
@@ -242,6 +251,10 @@ own number, and what it started is in it as a rule (a job-control shell's jobs a
     kill -0 -"$p" && echo "something of pane stubborn still runs"       # pgrep -g "$p" lists it
     kill -TERM -"$p"; sleep 0.3; kill -0 -"$p" 2>/dev/null || echo "nothing of it is left"
 Removing a pane's directory ends the pane too (its holder sees it within 2 seconds).
+In a pane with no terminal (--out) `ctl` has one command, kill [SIGNAL]: its holder, the program's
+parent, sends the program's process group the signal (1, the hangup, if none is named). No
+number read from a file is signalled, so none that is another process's by then:
+    K=$(fux start --out agent-demo/sleeper -- sleep 600); echo 'kill 15' > "$K/ctl"; fux wait "$K" | tail -n 1
 
 MANY PANES
     for i in 1 2 3; do fux start "agent-demo/w$i" -- sh -c "sleep 0.$i; echo done $i; exit $i" > /dev/null; done

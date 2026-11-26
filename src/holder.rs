@@ -70,6 +70,10 @@ struct Holder {
 /// ends. `fux start` locked the directory and handed the lock over as this
 /// process's standard input: it is held for exactly as long as the holder lives.
 pub fn hold(args: &[OsString]) -> Result<(), String> {
+    let (out, args) = match args {
+        [first, args @ ..] if first == "--out" => (true, args),
+        args => (false, args),
+    };
     let [cwd, program, program_args @ ..] = args else { return Err("hold is started by `fux start`".into()) };
     // Refuse bare invocations whose stdin is not the pane directory handed over by `fux start`.
     let lock = io::stdin().as_fd().try_clone_to_owned().map(File::from).and_then(|file| file.metadata());
@@ -86,31 +90,42 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
         let size = value.to_str().and_then(|n| n.parse().ok()).filter(|n| (1..=SIZE_MAX).contains(&usize::from(*n)));
         size.ok_or(format!("{name} is not a number from 1 to {SIZE_MAX}"))
     };
-    let (cols, rows) = (number("COLUMNS", 80)?, number("LINES", 24)?);
+    // (With no terminal they are the program's to read, and no size of the holder's.)
+    let (cols, rows) = if out { (80, 24) } else { (number("COLUMNS", 80)?, number("LINES", 24)?) };
     let size = Winsize { cols, rows, xpixel: cols * 10, ypixel: rows * 20 };
+    let mut child = Command::new(program);
+    child.args(program_args).current_dir(cwd);
     // The slave stays open until this function ends, so that output a program wrote just before it
     // ended is not thrown away (macOS drops it when the last slave closes).
-    let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
-    let child = {
+    let pty = if out {
+        // With no terminal, the program has nothing to read, and what it writes, to its output and
+        // its errors alike, is added to `out` as it is written (one file, opened once, to append).
+        // Made before `run`: what a folder that has a `run` has an `out` of, has had no terminal.
+        let file = OpenOptions::new().append(true).create_new(true).open("out");
+        let file = file.and_then(|file| Ok((file.try_clone()?, file))).map_err(|e| format!("cannot make out: {e}"))?;
+        child.stdin(Stdio::null()).stdout(file.0).stderr(file.1);
+        None
+    } else {
+        let (master, slave) = sys::pty(size).map_err(|e| format!("cannot open a pty: {e}"))?;
         let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| format!("cannot copy the pty: {e}"));
-        let mut child = Command::new(program);
         // The program is told what terminal it is in, and no size but the terminal's own. (Which
         // pane it is in, it finds in the files: `keys/.here`.)
-        child.args(program_args).current_dir(cwd).env("TERM", TERM).env_remove("COLUMNS").env_remove("LINES");
+        child.env("TERM", TERM).env_remove("COLUMNS").env_remove("LINES");
         child
             .env("COLORTERM", "truecolor")
             .env("TERM_PROGRAM", crate::TERM_PROGRAM)
             .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         child.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
-        sys::new_session(&mut child, true);
-        child
+        Some((master, slave))
     };
+    sys::new_session(&mut child, pty.is_some());
+    let (master, _slave) = pty.unzip();
     // The command as `status` shows it: without control characters, and its first 4,096 characters.
     let command = plain(&args.iter().skip(1).map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
     let command: String = command.chars().take(4096).collect();
     let mut holder = Holder {
         term: Term::new(usize::from(cols), usize::from(rows)),
-        pty: Some((master, Vec::new())),
+        pty: master.map(|master| (master, Vec::new())),
         written: HashMap::new(),
         generation: 0,
         noticed: 0,
@@ -147,7 +162,9 @@ impl Holder {
             sys::open("/dev/urandom", false)?.read_exact(&mut bits)?;
             replace("run", format!("{:032x}\n", u128::from_ne_bytes(bits)).as_bytes())
         };
-        let fifos = sys::fifo("in").and_then(|input| Ok((input, sys::fifo("ctl")?)));
+        // (With no terminal there is nothing to type to.)
+        let input = if self.pty.is_some() { sys::fifo("in").map(Some) } else { Ok(None) };
+        let fifos = input.and_then(|input| Ok((input, sys::fifo("ctl")?)));
         let fifos = fifos.and_then(|fifos| run().map(|()| fifos));
         let made = fifos.and_then(|fifos| self.turn(true).and_then(|()| status(None)).map(|()| fifos));
         let (input, ctl) = made.map_err(|e| format!("cannot make the FIFOs, the run or the status: {e}"))?;
@@ -162,9 +179,10 @@ impl Holder {
         let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
         let name = program.get_program().to_string_lossy().into_owned();
         let mut child = program.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
+        let pid = child.id();
         // From here the program runs, and is held whatever cannot be written of it: a holder that
         // left now would leave it running with nothing that keeps it.
-        if let Err(e) = status(Some(child.id())).and_then(|()| replace("command", &given)) {
+        if let Err(e) = status(Some(pid)).and_then(|()| replace("command", &given)) {
             self.log(&format!("the program runs, but its `status` or its `command` could not be written: {e}"));
         }
         let waiter = std::thread::Builder::new().spawn(move || {
@@ -178,7 +196,57 @@ impl Holder {
             let _ = end_writer.write_all(state.as_bytes());
         });
         waiter.map_err(|e| format!("cannot start a thread: {e}"))?;
-        self.run(&input, &ctl, &mut ended)
+        match &input {
+            Some(input) => self.run(input, &ctl, &mut ended),
+            None => self.keep(pid as i32, &ctl, &mut ended),
+        }
+    }
+
+    /// Keeps a pane whose program has no terminal until the program ends. There is no screen: a round
+    /// of writing is `state`. `ctl` takes one command, `kill`: a signal to the group the program leads
+    /// (whose number is its own), a hangup unless another is named. Only its parent signals it, and not
+    /// once its end is read: until then the number is what is left of the program's group, or nobody's
+    /// (a number is not another's before its parent has waited, and is given again after all others).
+    fn keep(&mut self, pid: i32, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
+        let state = |holder: &mut Self, state: &str| {
+            let round = holder.turn(true).and_then(|()| replace("state", format!("{state}\n").as_bytes()));
+            let round = round.and_then(|()| holder.turn(false));
+            round.unwrap_or_else(|e| holder.log(&format!("cannot write the state (the program {state}): {e}")));
+        };
+        state(self, "running");
+        let _ = crate::say(b"");
+        let mut buffer = [0; CTL_LINE_MAX];
+        loop {
+            let wanted = [(Some(ended.as_fd()), sys::POLLIN), (Some(ctl.as_fd()), sys::POLLIN)];
+            let [over, commanded] =
+                sys::wait(wanted, LOOK_EVERY.as_millis() as i32).map_err(|e| format!("cannot wait: {e}"))?;
+            if over != 0 {
+                let mut end = String::new();
+                let _ = ended.read_to_string(&mut end);
+                state(self, &end);
+                return Ok(());
+            }
+            // The directory is the pane: when it is gone, its program is hung up, as a terminal's is.
+            if fs::symlink_metadata("ctl").is_err() {
+                let _ = sys::signal_to(-pid, 1);
+                return Ok(());
+            }
+            let n = if commanded != 0 { (&*ctl).read(&mut buffer).unwrap_or(0) } else { 0 };
+            for line in crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), CTL_LINE_MAX) {
+                let words = line.as_ref().map(|line| line.split_whitespace().collect::<Vec<_>>());
+                let signal = match words.as_deref() {
+                    None => Err(format!("a line over {CTL_LINE_MAX} bytes was dropped")),
+                    Some(["kill"]) => Ok(1),
+                    Some(["kill", number]) => {
+                        number.parse().ok().filter(|n| *n > 0).ok_or("a signal is a number from 1".into())
+                    }
+                    Some(_) => Err("the program has no terminal: the one command is kill [SIGNAL]".into()),
+                };
+                if let Err(e) = signal.and_then(|signal| sys::signal_to(-pid, signal).map_err(|e| e.to_string())) {
+                    self.log(&format!("ctl: {}{e}", line.map_or(String::new(), |line| format!("{line}: "))));
+                }
+            }
+        }
     }
 
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {

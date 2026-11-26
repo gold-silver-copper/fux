@@ -885,8 +885,12 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
         restore.arg(keys.join(".restore")).arg(named).env("PATH", &path).env("HOME", &home);
         restore.current_dir(session.0.parent().unwrap()).run()
     };
+    // One whose program had no terminal is not: what it wrote is that run's record, and stays with it.
+    let job = start_out(&session, "v/job", "echo done");
+    assert!(session.fux().arg("wait").arg(&job).ended().success());
     let restored = restore();
     assert_eq!(String::from_utf8_lossy(&restored.stdout), "started v/other again\n", "{restored:?}");
+    assert_eq!(read(&job.join("out")), "done\n");
     assert!(!home.join(named).exists(), "the pane was started in a session of that name under its own directory");
     until("it has run again", || {
         read(&other.join("status")) != was && read(&other.join("shown/screen")).starts_with(printed)
@@ -4506,6 +4510,98 @@ fn a_kitty_graphics_command_leaves_a_pane_as_it_was_and_its_program_is_told_only
         ("word", "0 4 shown 0", "")
     );
     assert_eq!((files().filter(|name| name.starts_with("pic-")).count(), read(&pane.join("log")).as_str()), (0, ""));
+}
+
+/// Starts a pane whose program has no terminal (`fux start --out`), as `Session::start` starts one that has.
+fn start_out(session: &Session, name: &str, script: &str) -> PathBuf {
+    session.started(session.fux().args(["start", "--out", name, "--", "sh", "-c", script]))
+}
+
+/// The program's number in a pane's `status`.
+fn pid_of(pane: &Path) -> i32 {
+    read(&pane.join("status")).lines().find_map(|line| line.strip_prefix("pid ")?.parse().ok()).unwrap()
+}
+
+#[test]
+fn a_pane_started_with_out_has_no_terminal_and_out_has_what_its_program_wrote_byte_for_byte() {
+    let session = Session::new("out");
+    // Its output and its errors are one file, in the order they were written: bytes that are no
+    // text among them, and no line end the program did not write.
+    let job = start_out(&session, "job", "printf 'a\\377b'; echo e >&2; printf f; exit 3");
+    let waited = session.fux().arg("wait").arg(&job).run();
+    assert_eq!(String::from_utf8_lossy(&waited.stdout), format!("pid {}\nstate exited 3\n", pid_of(&job)));
+    assert_eq!(fs::read(job.join("out")).unwrap(), b"a\xffbe\nf");
+    // The folder has the facts of a run and `out`, and none of a terminal's: nothing to type to, no
+    // screen. Its FIFO `ctl` went with its holder; `generation` numbered the writings of `state`.
+    let mut names: Vec<String> =
+        fs::read_dir(&job).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, ["command", "generation", "log", "out", "run", "state", "status"]);
+    assert_eq!(fact(&job, "generation"), "4");
+    assert_eq!(read(&job.join("log")), "");
+    // None of its three streams is a terminal, and it has none it could open.
+    let alone =
+        "for n in 0 1 2; do test -t $n && echo terminal $n; done; (: < /dev/tty) 2> /dev/null && echo tty; exit 0";
+    // (Nor is the size it is given any terminal's: that is the program's to read.)
+    let alone = session
+        .started(session.fux().env("COLUMNS", "wide").args(["start", "--out", "alone", "--", "sh", "-c", alone]));
+    assert!(String::from_utf8_lossy(&session.fux().arg("wait").arg(&alone).run().stdout).ends_with("state exited 0\n"));
+    assert_eq!(read(&alone.join("out")), "");
+    // A program that cannot be started is a start that failed, as in any pane; a name is a number when none is given.
+    let none = session.fux().args(["start", "--out", "none", "--", "/no/such/program"]).run();
+    assert!(!none.status.success() && String::from_utf8_lossy(&none.stderr).contains("cannot start /no/such/program"));
+    assert_eq!(session.started(session.fux().args(["start", "--out", "--", "true"])), session.0.join("main/1"));
+}
+
+#[test]
+fn kill_on_the_ctl_of_a_pane_with_no_terminal_is_a_signal_to_its_program_and_its_group() {
+    let session = Session::new("outkill");
+    // `kill` alone is a hangup, as on a terminal. The holder holds the folder's lock until it is gone.
+    let plain = start_out(&session, "plain", "exec sleep 600");
+    let lock = fuxix::open(&plain, false).unwrap();
+    assert!(lock.try_lock_shared().is_err(), "the holder holds its folder");
+    send(&plain.join("ctl"), "kill\n");
+    assert!(String::from_utf8_lossy(&session.fux().arg("wait").arg(&plain).run().stdout).ends_with("state killed 1\n"));
+    assert!(lock.try_lock_shared().is_ok(), "its lock went with it");
+    // A program that ignores it is sent the signal asked for, and so is what it started. What a pane
+    // with no terminal cannot do is refused.
+    let stubborn = start_out(&session, "stubborn", "trap '' HUP; sleep 600 & echo ready; wait");
+    until("the program is ready", || read(&stubborn.join("out")) == "ready\n");
+    send(&stubborn.join("ctl"), "kill\nresize 80 24\nkill 0\n");
+    until("what cannot be done is logged", || read(&stubborn.join("log")).lines().count() == 2);
+    assert!(read(&stubborn.join("log")).starts_with("ctl: resize 80 24: ") && fact(&stubborn, "state") == "running");
+    send(&stubborn.join("ctl"), "kill 15\n");
+    let waited = session.fux().arg("wait").arg(&stubborn).run();
+    assert!(String::from_utf8_lossy(&waited.stdout).ends_with("state killed 15\n"), "{waited:?}");
+    let group = -pid_of(&stubborn);
+    until("nothing of its group is left", || fuxix::signal_to(group, 0).is_err());
+    // Its folder removed, the pane is over: its holder hangs up the program's group, and leaves.
+    let gone = start_out(&session, "gone", "exec sleep 600");
+    let group = -pid_of(&gone);
+    fs::remove_dir_all(&gone).unwrap();
+    until("the program is hung up", || fuxix::signal_to(group, 0).is_err());
+}
+
+#[test]
+fn a_viewer_draws_a_pane_with_no_terminal_as_an_empty_tile_and_not_as_lost() {
+    let session = Session::new("outview");
+    let job = start_out(&session, "w/job", "exec sleep 600");
+    session.start("w/t", &["sh", "-c", "echo ready; exec sleep 600"]);
+    assert!(session.fux().args(["layout", "w", "split", "row", "t", "beside", "job"]).ended().success());
+    let mut start = session.fux();
+    start.env("COLUMNS", "60").env("LINES", "10").args([
+        "start",
+        "v/view",
+        "--",
+        env!("CARGO_BIN_EXE_fux"),
+        "view",
+        "w",
+    ]);
+    let view = session.started(&mut start);
+    until("both tiles are drawn", || read(&view.join("shown/screen")).contains("ready"));
+    assert!(!read(&view.join("shown/screen")).contains("lost"), "{}", read(&view.join("shown/screen")));
+    send(&job.join("ctl"), "kill\n");
+    until("its end is drawn", || read(&view.join("shown/screen")).contains(" killed 1 "));
 }
 
 #[test]

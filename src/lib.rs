@@ -36,6 +36,7 @@ use std::process::{Command, ExitCode, Stdio};
 const USAGE: &str = "\
 fux dir                         print the default session's directory
 fux start [PANE] [-- PROGRAM…]  start a pane; PANE is NAME (in main), WORKSPACE/NAME or WORKSPACE/, and not one that is there
+fux start --out [PANE] [-- …]   the same with no terminal: the program's output and errors go to the pane's file `out`
 fux wait PANE-DIRECTORY         wait until the pane's holder is gone; print its program's pid and the state it left
 fux view [WORKSPACE [KEYS]]     show a workspace's panes in tiles and tabs (default: main), with the key scripts of KEYS
 fux layout [WORKSPACE [EDIT…]]  print the layout of a workspace (default: main), or edit it
@@ -189,7 +190,11 @@ fn text(path: &Path, most: u64) -> String {
 
 fn start(args: &[OsString]) -> Result<(), String> {
     let mut sections = args.splitn(2, |arg| arg == "--");
-    let name = match sections.next().unwrap_or_default() {
+    let (out, given) = match sections.next().unwrap_or_default() {
+        [first, given @ ..] if first == "--out" => (true, given),
+        given => (false, given),
+    };
+    let name = match given {
         [] => String::new(),
         [name] => name.to_str().ok_or("start takes a PANE that is text")?.to_string(),
         _ => return Err("start takes one PANE, then -- and the program".into()),
@@ -229,7 +234,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     // first, it is the one that is locked and the one the holder works in, even if it is renamed meanwhile.
     let lock = std::env::set_current_dir(&dir).and_then(|()| sys::open(".", false)).map_err(|e| fail(&dir, e))?;
     let started = match lock.try_lock() {
-        Ok(()) => launch(&cwd, lock, sections.next().unwrap_or_default()),
+        Ok(()) => launch(&cwd, lock, out, sections.next().unwrap_or_default()),
         // (Of a folder made a moment ago: whoever looked at it in that moment has its lock.)
         Err(_) => Err("its folder is locked by another".into()),
     };
@@ -237,12 +242,14 @@ fn start(args: &[OsString]) -> Result<(), String> {
     say(dir.as_os_str().as_bytes())
 }
 
-/// Starts the holder of a pane we hold the lock of and are in, and waits until it is up. `cwd` is where we were.
-fn launch(cwd: &Path, lock: File, program: &[OsString]) -> Result<(), String> {
+/// Starts the holder of a pane we hold the lock of and are in, and waits until it is up. `cwd` is where we were;
+/// `out`, that the program has no terminal.
+fn launch(cwd: &Path, lock: File, out: bool, program: &[OsString]) -> Result<(), String> {
     let log = File::create("log").map_err(|e| format!("cannot make the log: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let mut holder = Command::new(me);
-    holder.arg("hold").arg(cwd).args(program);
+    // (`--out` before the working directory, which is a whole path and so never that word.)
+    holder.arg("hold").args(out.then_some("--out")).arg(cwd).args(program);
     holder.args(program.is_empty().then(|| var("SHELL").unwrap_or_else(|| "/bin/sh".into())));
     holder.stdin(Stdio::from(lock)).stdout(Stdio::piped()).stderr(log);
     sys::new_session(&mut holder, false);
