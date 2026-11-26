@@ -4563,6 +4563,12 @@ fn kill_on_the_ctl_of_a_pane_with_no_terminal_is_a_signal_to_its_program_and_its
     send(&plain.join("ctl"), "kill\n");
     assert!(String::from_utf8_lossy(&session.fux().arg("wait").arg(&plain).run().stdout).ends_with("state killed 1\n"));
     assert!(lock.try_lock_shared().is_ok(), "its lock went with it");
+    // Its program ended, what it left in its group is hung up, as a terminal's is by the kernel.
+    let marker = session.0.join("left");
+    let leader = start_out(&session, "leader", &format!("(sleep 1; touch '{}') & exit 0", marker.display()));
+    assert!(session.fux().arg("wait").arg(&leader).ended().success());
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!marker.exists(), "what the program left running was not hung up");
     // A program that ignores it is sent the signal asked for, and so is what it started. What a pane
     // with no terminal cannot do is refused.
     let stubborn = start_out(&session, "stubborn", "trap '' HUP; sleep 600 & echo ready; wait");

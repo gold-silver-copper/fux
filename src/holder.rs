@@ -223,6 +223,8 @@ impl Holder {
             if over != 0 {
                 let mut end = String::new();
                 let _ = ended.read_to_string(&mut end);
+                // What it left in its group is hung up, as a terminal's is when its program ends.
+                let _ = sys::signal_to(-pid, 1);
                 state(self, &end);
                 return Ok(());
             }
