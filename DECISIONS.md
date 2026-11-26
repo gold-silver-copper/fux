@@ -3328,18 +3328,23 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     thing twice; that `main/` is missing would say it too late (a terminal's
     pane has none either until its first round is written).
   - **`ctl`, `kill [SIGNAL]`.** The lesson of daemontools' `supervise`:
-    only the parent signals its child, as a number is not another process's
-    before its parent has waited for it. So ending such a program is an
+    only the parent signals its child. So ending such a program is an
     order to its holder, which sends the signal (1, a hangup, as a terminal's
-    program gets, unless another is named) to the program's group, and to
-    nobody once it has read the program's end; never a signal to a number
-    read from a file. The holder already had a thread that waits for the
-    program; this loop waits on its pipe and on `ctl`. A removed folder is
-    the hangup too. Any other command is refused, with a line in `log`.
-  - **The viewer** tells a living holder by its `ctl` and not its `in`
-    (both are made and removed together; such a pane has only the one): it
-    draws the pane as an empty tile, with its end in the corner. `.restore`
-    passes such a pane over: its `out` is the record of that run.
+    program gets, unless another is named) to the program's group until it
+    has seen the program end; never a signal to a number read from a file.
+    The holder already had a thread that waits for the program, and it
+    reaps first: for an instant the number is nobody's (and a group's number
+    is not given out again while a member lives). This loop waits on that
+    thread's pipe and on `ctl`. A removed folder is the hangup too, and so is
+    the program's end, as a terminal's end hangs up its group: what should
+    outlive it uses `nohup` or `setsid`. Any other command is refused, with
+    a line in `log`.
+  - **The viewer** tells a living holder by a reader of `in`, as before, and
+    of `ctl` in a pane with `out`, which has only that FIFO; it draws such a
+    pane as an empty tile with its end in the corner, sends it no `resize`,
+    and says it has no terminal when it is typed at. `.restore` passes such a
+    pane over: its `out` is the record of that run (a keys directory written
+    before keeps its own `.restore`, which does not: see the README).
   - **fuxix**: `signal_to(pid, signal)` (kill(2), refusing 0 and -1, which
     are no one process or group) and `uid()` (the effective user's number).
 

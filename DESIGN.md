@@ -76,9 +76,10 @@ folder is gone, the pane is gone: the holder leaves, which hangs up too.
 A program started with `--out` has no terminal: its output and errors are one
 file, `out`, whose bytes the holder never touches; the loop waits on `ctl` and
 the pipe alone, and writes `state` as a round. There `kill` is a signal the
-holder sends the program's group (a hangup, unless another is named), and the
-folder gone is that hangup too: only the parent, which has not yet waited for
-the program, signals it by its number.
+holder sends the program's group (a hangup, unless another is named), until it
+has seen the program end; the folder gone is that hangup too, and so is the
+program's end. The waiting thread reaps first, so for an instant the number is
+nobody's (and a group's number is not given out again while a member lives).
 
 **Viewing.** The viewer has no channel to holders but each pane's `in` and `ctl`. It looks at files (often just after something happened, seldom at rest), reads a pane's
 facts and the `screen.styled` that `shown` leads to when the pane's `generation` is another file

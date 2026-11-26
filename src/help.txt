@@ -30,7 +30,10 @@ With --out the program has no terminal: its input is /dev/null, it leads a sessi
 and what it writes to its output and its errors goes as it is written, byte for byte, to one file
 of the pane, `out`. Such a pane has `out` and none of a terminal's files (in, main/, shown, size,
 cursor, modes, history, marks...): only `ctl` and the facts of its run (state, status, run, command,
-generation, log). Killed outright, its holder leaves the program running: no terminal hangs it up.
+generation, log). Its environment is passed on as it is, COLUMNS and LINES too. When its program
+ends, its holder hangs up what is left of its group, as a terminal's end does (what should outlive
+it is started with nohup or setsid, as under a terminal). Killed outright, its holder leaves the
+program running: no terminal hangs it up.
     O=$(fux start --out agent-demo/out -- sh -c 'printf "a\377b"; echo e >&2; exit 3')
     fux wait "$O" | tail -n 1; od -c "$O/out"           # state exited 3; a 377 b e \n, nothing more
 
@@ -120,9 +123,10 @@ status  three lines: holder N / pid N (the program's) / command ... (no pid line
 command the program and its arguments as given, each ended by a zero byte (absent until the
         program runs): tr '\0' '\n' < command
 main/, alt/, shown   a folder for each screen, the same five names in each (screen,
-        screen.styled, lines, links, pictures): main always, the screen a shell prints on; alt
-        while a full-screen program has the alternate screen (kept if the pane ends under it);
-        shown, a link to the one that is drawn. A name never changes which screen it means
+        screen.styled, lines, links, pictures), in a pane with a terminal: main always, the
+        screen a shell prints on; alt while a full-screen program has the alternate screen (kept
+        if the pane ends under it); shown, a link to the one that is drawn. A name never changes
+        which screen it means
 lines   (in a screen's folder) two lines: how many lines are before the screen's first row
         (in main: of all the lines the pane printed, so the number, from 0, of that row's line;
         in alt: 0, as that screen is in no text); then the screen rows (from 0) that continue
@@ -163,7 +167,8 @@ not call `together` itself. DIR must name the same pane throughout. The number s
 the holder alone writes: not for `cwd` (the program's to write too), `log`, the FIFOs or
 files of your own. A pane whose holder was killed
 while it wrote stays odd: the limit runs out, and you take the files as they are.)
-The text a pane keeps, oldest first, wrapped rows joined into lines:
+The text a pane with a terminal keeps, oldest first, wrapped rows joined into lines (of one
+started with --out it is `cat "$O/out"`):
     whole() { cat "$1/history.1" "$1/history" 2>/dev/null || :; awk -v w="$(sed -n 2p "$1/main/lines")" 'BEGIN { n = split(w, a, " "); for (i = 1; i <= n; i++) j[a[i] + 1] = 1 } { r[NR] = $0; if ($0 != "") last = NR } END { for (i = 1; i <= last; i++) printf "%s%s", (i > 1 && !j[i] ? "\n" : ""), r[i]; if (last) print "" }' "$1/main/screen"; }
     whole "$P" | tail -n 5
     f=$(mktemp); snap() { whole "$P" > "$f"; }; together "$P" snap && tail -n 1 "$f"; rm -f "$f"
@@ -180,7 +185,7 @@ line (fux wait itself exits 0). A holder whose program ended wrote the last scre
 that was killed did not, and `state running` is what you get. The pane stays.
     J=$(fux start agent-demo/ls -- sh -c 'ls /; exit 3')
     code=$(fux wait "$J" | sed -n 's/^state exited //p'); echo "exit code $code"
-    whole "$J"                                # all it printed
+    whole "$J"                                # all it printed (cat "$J/out", started with --out)
 fux wait has no limit: it waits as long as the program runs. To bound it, wait for the
 holder to go, with a limit, and then ask:
     ended() { n=0; while alive "$1"; do n=$((n+1)); [ $n -lt "${2:-100}" ] || return 1; sleep 0.1; done; }
@@ -252,8 +257,11 @@ own number, and what it started is in it as a rule (a job-control shell's jobs a
     kill -TERM -"$p"; sleep 0.3; kill -0 -"$p" 2>/dev/null || echo "nothing of it is left"
 Removing a pane's directory ends the pane too (its holder sees it within 2 seconds).
 In a pane with no terminal (--out) `ctl` has one command, kill [SIGNAL]: its holder, the program's
-parent, sends the program's process group the signal (1, the hangup, if none is named). No
-number read from a file is signalled, so none that is another process's by then:
+parent, sends the program's process group the signal (1, the hangup, if none is named), until
+it has seen the program end. Its waiting thread reaps it first, so for an instant the number is
+nobody's (and a group's number is not given out again while a member lives); no number read
+from a file is signalled. Removing the folder is that hangup too, and so is the program's end.
+Ended with SIGTERM:
     K=$(fux start --out agent-demo/sleeper -- sleep 600); echo 'kill 15' > "$K/ctl"; fux wait "$K" | tail -n 1
 
 MANY PANES
