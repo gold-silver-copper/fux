@@ -4592,7 +4592,7 @@ fn kill_on_the_ctl_of_a_pane_with_no_terminal_is_a_signal_to_its_program_and_its
 fn a_viewer_draws_a_pane_with_no_terminal_as_an_empty_tile_and_not_as_lost() {
     let session = Session::new("outview");
     let job = start_out(&session, "w/job", "exec sleep 600");
-    session.start("w/t", &["sh", "-c", "echo ready; exec sleep 600"]);
+    let t = session.start("w/t", &["sh", "-c", "echo ready; exec sleep 600"]);
     assert!(session.fux().args(["layout", "w", "split", "row", "t", "beside", "job"]).ended().success());
     let mut start = session.fux();
     start.env("COLUMNS", "60").env("LINES", "10").args([
@@ -4606,8 +4606,20 @@ fn a_viewer_draws_a_pane_with_no_terminal_as_an_empty_tile_and_not_as_lost() {
     let view = session.started(&mut start);
     until("both tiles are drawn", || read(&view.join("shown/screen")).contains("ready"));
     assert!(!read(&view.join("shown/screen")).contains("lost"), "{}", read(&view.join("shown/screen")));
+    // A pane with a terminal is alive while something reads its `in`, as one kept elsewhere is.
+    let kept = fuxix::open(t.join("in"), false).unwrap();
+    let holder = read(&t.join("status")).lines().find_map(|line| line.strip_prefix("holder ")?.parse().ok()).unwrap();
+    fuxix::signal_to(holder, 9).unwrap();
     send(&job.join("ctl"), "kill\n");
     until("its end is drawn", || read(&view.join("shown/screen")).contains(" killed 1 "));
+    assert!(!read(&view.join("shown/screen")).contains("lost"), "{}", read(&view.join("shown/screen")));
+    drop(kept);
+    // What is typed at it is taken by nothing, and the viewer says why.
+    assert!(session.fux().args(["layout", "w", "pane", "job"]).ended().success());
+    send(&view.join("in"), "x");
+    until("the viewer says it", || read(&view.join("shown/screen")).contains("job has no terminal"));
+    // It was asked no size: it has no terminal to take one.
+    assert_eq!(read(&job.join("log")), "");
 }
 
 #[test]
