@@ -4,7 +4,8 @@ A terminal multiplexer that is a view over directories.
 
 - **A pane is a directory kept by one small process** (its *holder*). The
   holder owns the program's terminal and writes what it shows into files; it
-  takes typed bytes and commands from two FIFOs. There is no server and no
+  takes typed bytes and commands from two FIFOs. (A program is, as a rule, on a
+  terminal: started with `--out` it has none, and what it writes is a file.) There is no server and no
   socket: `cat`, `ls`, `printf`, `rm` are the clients.
 - **A workspace is a folder; panes are folders in it.**
 - **The viewer is one more client.** It draws a workspace's panes in tiles and
@@ -37,15 +38,15 @@ scripts" says where that is).
 | | |
 |---|---|
 | `fux dir` | prints the default session's directory: `$XDG_RUNTIME_DIR/fux`, else `~/.cache/fux` |
-| `fux start [PANE] [-- PROGRAM…]` | starts a pane and prints its directory, by the folder's own whole path. PANE is `NAME`, `WORKSPACE/NAME`, or `WORKSPACE/` or nothing for the first free number, 1 to 9999 (no workspace named: below); the workspace is a name or a directory's path (below). No program: `$SHELL`, else `/bin/sh`. A pane is one run: a name that is there is refused, whether its pane runs, has ended or never came up, and nothing of it is touched (`rm -r` the folder to start the name anew; a number is the first that is not there). A start that fails leaves the folder, with a `log` that says why |
-| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote the last screen first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. A pane whose holder ended before its first screen was written has no `state`: `fux wait` says so and fails (`log` says why the holder ended). Wait with this, not by watching `state`, before you read a program's last screen |
+| `fux start [PANE] [-- PROGRAM…]` | starts a pane and prints its directory, by the folder's own whole path. PANE is `NAME`, `WORKSPACE/NAME`, or `WORKSPACE/` or nothing for the first free number, 1 to 9999 (no workspace named: below); the workspace is a name or a directory's path (below). No program: `$SHELL`, else `/bin/sh`. A pane is one run: a name that is there is refused, whether its pane runs, has ended or never came up, and nothing of it is touched (`rm -r` the folder to start the name anew; a number is the first that is not there). A start that fails leaves the folder, with a `log` that says why. `fux start --out [PANE] [-- PROGRAM…]`: the program has no terminal (its input is `/dev/null`, it leads a session of its own) and its output and errors are the file `out`; the folder has none of a terminal's files (`in`, the screens, `size`, `cursor`, `modes`, `history`, `marks`, `title`), and `ctl` takes `kill [SIGNAL]` alone |
+| `fux wait PANE-DIRECTORY` | waits until the pane's holder is gone, then prints `pid N` and `state …` as `status` and `state` have them. A holder that ended by itself wrote `state`, and for a pane with a terminal its last screen, first (`log` says if it could not); one that was killed leaves the files as they were, `state running` too. A pane whose holder ended before it wrote `state` has no `state`: `fux wait` says so and fails (`log` says why the holder ended). Wait with this, not by watching `state`, before you read a program's last screen |
 | `fux view [WORKSPACE [KEYS]]` | the viewer of a workspace, with the key scripts of the directory KEYS ("Keys are scripts" says which it is if none is named) |
 | `fux layout [WORKSPACE [EDIT…]]` | prints the workspace's layout as the folders make it (and writes it, if they changed it), or edits it (below). The workspace comes first, always, a name or a path: a workspace may be called `pane` or `tab`, as an edit is. With nothing after `layout` it is `main`'s that is printed |
 | `fux --help` | prints the command summary and the complete one-page guide (for people, scripts and agents): how to start a pane, type, read, wait, get a command's exit code, tell a live pane from a dead one and clean up, in plain sh, with the hazards said. It is `src/help.txt`, in the binary; its indented lines are run, in order, as one sh session by `tools/help-agents.sh` (CI, both systems; the perl section where perl is) |
 
 Names are ASCII letters, digits, `.`, `_` and `-`, at most 64, not starting
 with a dot, and not `-` alone, `layout`, `colours` or `keyboard`
-(a workspace and a session have files of those names).
+(a workspace and a session have files of those names). A PANE given to `fux start` as `--out` alone is the option: write `main/--out` for a pane of that name.
 
 **A name or a path.** A workspace is named by its name, which means the
 folder of that name in the session `fux dir` prints, or by a directory's
@@ -113,7 +114,7 @@ name as an empty pane for one frame.
 |---|---|
 | `in` | FIFO. Bytes written here are typed to the program |
 | `ctl` | FIFO, one command a line (a line over 1,280 bytes, counted as they were written, is dropped, with a line in `log`): `kill` (hang up the program), `resize COLS ROWS [CELL-WIDTH CELL-HEIGHT]`, `notify TEXT` (have something noticed, as a program does: `printf 'notify %s\n' 'the build is done' > ctl`) |
-| `main/`, `alt/` | a folder for each of the terminal's two screens, the same five names in each: `screen`, `screen.styled`, `lines`, `links`, `pictures` (below). `main/` is there always: the main screen, the one a shell prints on and whose rows go to `history`. `alt/` is there while a program has the alternate screen (an editor, a pager), and after a pane ended under one. A name never changes which screen it means: `main/screen` is the shell's screen also while vim covers it, so what was on the terminal before an editor or a pager was opened is read without leaving it; its files are written again only when it changes (a resize wraps it anew under the program; a colour the program sets for its pane is one in `main/screen.styled` too), not when the program draws on the other |
+| `main/`, `alt/` | a folder for each of the terminal's two screens, the same five names in each: `screen`, `screen.styled`, `lines`, `links`, `pictures` (below). `main/` is there always in a pane with a terminal: the main screen, the one a shell prints on and whose rows go to `history`. `alt/` is there while a program has the alternate screen (an editor, a pager), and after a pane ended under one. A name never changes which screen it means: `main/screen` is the shell's screen also while vim covers it, so what was on the terminal before an editor or a pager was opened is read without leaving it; its files are written again only when it changes (a resize wraps it anew under the program; a colour the program sets for its pane is one in `main/screen.styled` too), not when the program draws on the other |
 | `shown` | a link to `main` or to `alt` (relative, so it holds in a copy of the folder): the screen that is drawn. `cat shown/screen` is what the pane shows, `readlink shown` says which screen that is. Replaced in one step, as a file is: when a program takes the alternate screen, `alt/` is filled first and `shown` turned to it after; when it leaves, `shown` is turned back first and `alt/` removed after, with all that is in it (a reader standing in `alt/` then is told: "No such file or directory") |
 | `screen` (in a screen's folder) | that screen as plain text: one line per row, and nothing else |
 | `screen.styled` (in a screen's folder) | the same with colours: text and SGR codes only, so `cat` shows it and nothing a program printed can reach your terminal as a control code. Where two neighbouring characters would read as one (two halves of a flag a program put side by side), U+200B stands between them. The cell a wide character left empty at a row's end, having no room there, is no text; where it has a colour it is told all the same, as U+200B and a blank at the row's end, so that the row is coloured to its last cell |
@@ -137,6 +138,7 @@ name as an empty pane for one frame.
 | `clipboard` | the bytes the program last put on the clipboard (OSC 52), at most 1 MiB, replaced in one step: `cat clipboard \| wl-copy`. A program that asks to read the clipboard is refused, with a line in `log` |
 | `cwd` | the directory the program says it is in (OSC 7, which shells can be set to send at each prompt), one line. Not there until it says; removed when it names another machine (a shell at the far end of ssh). At most 4,096 bytes. A shell that does not send OSC 7 can write the file itself, into its pane's folder (`keys/.here` says which that is): `pwd > "$P/cwd"` |
 | `notice` | what was last to be noticed: a number that grows with each round of writing that had one (from 1), then the words, on one line (at most 1 KiB, control characters taken out); the number alone is the bell. From the program (BEL; OSC 9 with words, not with a number and `;` first, which is a progress bar's and its like; OSC 777; OSC 99 with plain words) or from anyone through `ctl`. The file is replaced each time: what is unread is each reader's own to remember |
+| `out` | in a pane started with `--out`, and only there (it is made before `run`): what the program wrote to its standard output and error, one file opened once to append, so both in the order written, byte for byte and without bound; the holder never reads it. There `ctl` takes one command, `kill [SIGNAL]`: the holder, the program's parent, sends the signal (1, a hangup, if none is named) to the program's process group, and removing the folder is that hangup too, and so is the program's end (what should outlive it is started with `nohup` or `setsid`, as under a terminal; what such a survivor writes still lands in `out` after `fux wait`). Killed outright, the holder leaves the program running: no terminal hangs it up. `generation` does not speak for `out`. `out` is not yours to make: a file of your own of that name in a pane with a terminal makes the viewer and `.restore` take it for one without |
 | `log` | what this holder refused or lost and why (a command it does not know, a picture that is too large, history it could not write); stops at 64 KiB |
 
 **One fact, one file.** A screen's text is text and nothing else; everything
@@ -247,7 +249,7 @@ fux's holder reads only so much between two screens (Bounds), which is what boun
 the frames a program can write. From run to run the key rows move by a millisecond and the flood by a few
 hundredths of a second.)
 
-The program runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux`,
+The program of a pane with a terminal runs with `TERM=xterm-256color`, `TERM_PROGRAM=fux`,
 `TERM_PROGRAM_VERSION` and `COLORTERM=truecolor`, in
 the directory `fux start` was run in, with the rest of that environment and
 the signals 1 to 31 at their defaults. Nothing in it names the pane: fux sets no variable
@@ -257,6 +259,7 @@ so a starter that wants its program to know its pane says so in a variable of it
 Two names are not passed on, `COLUMNS` and `LINES`, which the holder reads for itself: the
 pane's first size is 80x24, or the `COLUMNS` and the `LINES` the starter set (each 1 to
 500; one that is set and is not such a number fails the start, which says so).
+A program started with `--out` is given the starter's environment as it is, `COLUMNS` and `LINES` too.
 
 What is this terminal, and what can it do? Programs ask, and fux answers as
 itself and for itself, with nobody watching:
@@ -492,7 +495,7 @@ looks the last is passed on; of two panes', both, the last in the corner. Anothe
 that asked to be told about focus (mode 1004) is told when its pane gains
 and loses the keys, and when your terminal's window does.
 
-The viewer asks a pane to take the size of its tile (through `ctl`), once each time the tile or the terminal's cell size changes, another folder has the pane's name (a pane is one run: a name removed and started anew is another pane, which the viewer knows by its `run` and its folder's device and inode, read each time it looks, and not by a number in `status`; it holds no folder open. A folder with no `run`, made by hand or kept by a holder from before there was one, is known by its device and inode alone: one such removed, and another with no `run` made under its name that is given the same inode, is taken for the first. It is not asked its size again, and where neither has a `generation` the first one's screen stays drawn; a `run` in it, any 32 hex digits of your own, says which it is), or the pane is a tile again after its tab was not shown (a request its `ctl` had no room for, 64 KiB unread there with its holder stopped, is not made again until one of them changes). Two
+The viewer asks a pane with a terminal to take the size of its tile (through `ctl`), once each time the tile or the terminal's cell size changes, another folder has the pane's name (a pane is one run: a name removed and started anew is another pane, which the viewer knows by its `run` and its folder's device and inode, read each time it looks, and not by a number in `status`; it holds no folder open. A folder with no `run`, made by hand or kept by a holder from before there was one, is known by its device and inode alone: one such removed, and another with no `run` made under its name that is given the same inode, is taken for the first. It is not asked its size again, and where neither has a `generation` the first one's screen stays drawn; a `run` in it, any 32 hex digits of your own, says which it is), or the pane is a tile again after its tab was not shown (a request its `ctl` had no room for, 64 KiB unread there with its holder stopped, is not made again until one of them changes). Two
 viewers with different sizes do not fight: the last to ask wins, and the
 other shows what fits.
 
@@ -542,7 +545,9 @@ The keys directory is the one named to `fux view` after the workspace
 `~/.config/fux/keys`; the viewer
 writes the default scripts there if it does not exist (and only then: after
 an upgrade, remove the folder, or copy `keys/` from the source over it, to
-get the new defaults; a copy over it leaves the keys this version no longer has). A key that has a file
+get the new defaults; a copy over it leaves the keys this version no longer has). Before you use `--out` in a
+session that `.restore` restores, bring that one up to date (`cp keys/.restore` from the source into the folder), or
+add its one line to your own: `[ -s "$p/command" ] && [ ! -e "$p/out" ] || continue`; an older one starts such a pane anew and removes its `out`. A key that has a file
 of its name runs it (a file that cannot be run says so in the corner). A key that has a directory opens it as a
 menu (each script's second line, `# what it does`, is its entry) and the next
 key is looked up there. Any other key, with no menu open, goes to the program. So the prefix is
@@ -798,12 +803,14 @@ Both are scripts over the files, and yours to change.
 
 **`C-b f s` searches every pane of the session.** It asks for words in a pane
 of its own, lists every line that has them as they are (no pattern; each pane's `history.1`,
-`history` and main screen, wrapped lines whole, ASCII letters of either case; ended
+`history` and main screen, not an `--out` pane's `out`, wrapped lines whole, ASCII letters of either case; ended
 panes too; a `history` put aside in the instant it is read can be missed: search again), and opens the pane's text, made anew, at the number of the line you choose, in the editor.
 `keys/.search` does it: `.text` for a pane's text, `grep`, `.pick` for the
 choice, `.edit` to open.
 
-**`sh ~/.config/fux/keys/.restore` (in your keys directory) starts anew every pane whose program is not running.**
+**`sh ~/.config/fux/keys/.restore` (in your keys directory) starts anew every pane with a terminal whose program is not running.**
+(A `.restore` written by a fux before 0.44 starts a pane of `--out` anew too, and removes its `out`: before using `--out`
+there, install the new one, or add its one line to yours, as "Keys are scripts" says.)
 A pane is one run, and a name that is there is never started again. So the
 script moves a pane that is over out of its workspace, whole, and starts its
 name anew: the program and the arguments of its `command` file, exactly as
@@ -822,7 +829,8 @@ its panes alive and leaves them.
 Which panes: one that has a `command` (its program was started once), that
 no holder keeps (the lock on its folder is free) and whose `in` nobody reads
 (a folder whose `in` is read with no holder is the picture of a pane kept
-elsewhere). A pane that is alive is left alone, and so are a viewer's own
+elsewhere). A pane that is alive is left alone, and so are one whose program had no terminal
+(it has `out`, the record of that run), a viewer's own
 pane (any pane whose program's first argument is `view` or `hold`, whatever
 the program is called; a viewer run through another program, `env X=1 fux
 view`, is not known for one and is started anew) and the keys' helpers (an
@@ -894,24 +902,25 @@ fux adds nothing to stop these. What happens is what Unix does:
   leaves a `.view.PID` each time, which stay in a session that outlasts a
   reboot. Leave with `C-b d` first.
 - **Don't kill a holder with `kill -9`, or expect tidiness if you do.** The
-  kernel hangs up its program. `state` stays as it was (`running`, as a rule) and the
+  kernel hangs up its program (one with no terminal, `--out`, runs on: nothing hangs it up). `state` stays as it was (`running`, as a rule) and the
   FIFOs stay, with no reader: the viewer says `lost` in the pane's corner, and a plain
-  `printf > in` then waits for ever, as on any FIFO nobody reads (neither, while something of yours still holds `in` open for reading). The folder
+  `printf > in` then waits for ever, as on any FIFO nobody reads (neither, while something of yours still holds `in` open for reading;
+  a pane started with `--out` has no `in`, and the FIFO left is `ctl`). The folder
   is the record of that run, and its name is taken: `rm -r` it to start the
-  name anew (who still waits on its FIFOs waits on), or let
+  name anew (who still waits on its FIFOs waits on), or, for a pane with a terminal, let
   `keys/.restore` do that and keep its text. (A holder that ends normally
   removes its FIFOs, so a late `echo kill > ctl` only leaves a small file.)
 - **Don't count on `kill`, or `rm -r`, killing.** They hang up the terminal.
-  A program that ignores SIGHUP lives on (after `kill`, with `state hungup`,
-  and what is then written to `in` goes nowhere), and so does anything it
+  A program that ignores SIGHUP lives on (after `kill`, in a pane with a terminal, with `state hungup`,
+  and what is then written to `in` goes nowhere; one with no terminal stays `running`), and so does anything it
   started in a session of its own. Its number is `pid` in `status`.
 - **Don't expect a start that failed to tidy up.** `fux start` makes a
   folder and never removes one: a program that could not be run leaves its
   pane's folder with a `log` that says why, and a `status` that names its holder and the command and no `pid`. The name stays taken until you `rm -r` it. A program that
   removes its pane's folder before the holder's first screen fails its start
   too (`the holder ended without a word`: the log went with the folder).
-- **Don't remove a live pane's `in`**: that is how its holder knows the
-  directory is gone, and it leaves.
+- **Don't remove a live pane's `in`**, or the `ctl` of one with no terminal: that is how its holder knows the
+  directory is gone, and it leaves (one with no terminal hangs its program up first, and `state` is not written).
 - **Don't expect a pane to drop what its starter had open.** Past 0, 1 and 2, its
   terminal, it inherits the open files of whoever ran `fux start` (`3>&-` closes one).
 - **Don't start a pane from a program that blocks signals.** A pane's program gets the

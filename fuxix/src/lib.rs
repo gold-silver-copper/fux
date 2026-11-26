@@ -95,6 +95,8 @@ unsafe extern "C" {
     fn tcsetattr(fd: c_int, actions: c_int, termios: *const Termios) -> c_int;
     fn cfmakeraw(termios: *mut Termios);
     fn gethostname(name: *mut c_char, len: usize) -> c_int;
+    fn kill(pid: c_int, signal: c_int) -> c_int;
+    fn geteuid() -> u32;
 }
 
 fn check(result: c_int) -> io::Result<c_int> {
@@ -142,6 +144,23 @@ pub fn new_session(command: &mut Command, tty: bool) {
             Ok(())
         });
     }
+}
+
+/// Sends a signal to the process `pid`, or to the process group `-pid` (kill(2)); the signal 0 asks
+/// only whether it is there. 0 (the caller's own group) and -1 (every process it may signal) are
+/// refused: neither is one process or one group.
+pub fn signal_to(pid: i32, signal: i32) -> io::Result<()> {
+    if matches!(pid, -1 | 0) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    // SAFETY: kill takes two numbers and touches no memory.
+    check(unsafe { kill(pid, signal) }).map(drop)
+}
+
+/// The number of the user this process acts as (its effective one, which `id -u` prints).
+pub fn uid() -> u32 {
+    // SAFETY: geteuid takes nothing, touches no memory and cannot fail.
+    unsafe { geteuid() }
 }
 
 /// Makes sure this process is told of its children's ends, even when

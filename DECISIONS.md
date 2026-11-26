@@ -3305,6 +3305,50 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   history as before, whose lines the marks number. Only key scripts changed:
   a keys directory that is there already keeps the scripts it has.
 
+- **D130. `fux start --out`: a pane whose program has no terminal** (the
+  owner, 2026-11-26: koh's jobs, a command that outlives the link with its
+  output a raw file and its end kept, held a second time in koh's memory;
+  "could we say a job is a fux folder? perhaps we just need to add a single
+  file").
+  - **What is done.** With `--out` the holder starts the program with
+    `/dev/null` as its input and one file, `out`, opened once to append, as
+    both its output and its errors, in a session of its own with no
+    controlling terminal. The holder never reads those bytes: no pty, no
+    terminal emulation is run, nothing in `out` but what the program wrote, in the order it
+    wrote it. `state`, `status`, `run`, `command`, `log`, the lock and
+    `fux wait` are as for any pane; `generation` numbers the writings of
+    `state`, which is all that changes there. A program that cannot be
+    started is a start that failed, said as for any pane.
+  - **The name.** `out` pairs with `in`; `log` is the holder's own.
+  - **Which files.** None that would always be empty or false: no `in`, no
+    screens, `shown`, `size`, `cursor`, `modes`, `history` or `marks`.
+    Leaving them out is less code than writing them (the loop that writes
+    them is not run). Which kind a pane is, is `out`: made before `run`,
+    and by `--out` alone. A file of its own beside it would say the same
+    thing twice; that `main/` is missing would say it too late (a terminal's
+    pane has none either until its first round is written).
+  - **`ctl`, `kill [SIGNAL]`.** The lesson of daemontools' `supervise`:
+    only the parent signals its child. So ending such a program is an
+    order to its holder, which sends the signal (1, a hangup, as a terminal's
+    program gets, unless another is named) to the program's group until it
+    has seen the program end; never a signal to a number read from a file.
+    The holder already had a thread that waits for the program, and it
+    has reaped the leader by then: while any member of the group lives the
+    group's number is not given out again, and with none left the signal as
+    a rule reaches nobody. This loop waits on that
+    thread's pipe and on `ctl`. A removed folder is the hangup too, and so is
+    the program's end, as a terminal's end hangs up its group: what should
+    outlive it uses `nohup` or `setsid`. Any other command is refused, with
+    a line in `log`.
+  - **The viewer** tells a living holder by a reader of `in`, as before, and
+    of `ctl` in a pane with `out`, which has only that FIFO; it draws such a
+    pane as an empty tile with its end in the corner, sends it no `resize`,
+    and says it has no terminal when it is typed at. `.restore` passes such a
+    pane over: its `out` is the record of that run (a keys directory written
+    before keeps its own `.restore`, which does not: see the README).
+  - **fuxix**: `signal_to(pid, signal)` (kill(2), refusing 0 and -1, which
+    are no one process or group) and `uid()` (the effective user's number).
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

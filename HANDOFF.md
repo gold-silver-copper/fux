@@ -2,7 +2,7 @@
 
 Written 2026-11-21, at `fux` 0.40.0 / `fux-vt` 0.18.0 / `fuxix` 0.11.0 (tag `v0.40.0`, all three on
 crates.io). Read this first, then `README.md` (the contract: commands, the pane folder's files, keys,
-bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D129, append-only:
+bounds), `DESIGN.md` (one page: the model and the parts) and `DECISIONS.md` (D1 to D130, append-only:
 a historical log, in which a later entry says so when it replaces an earlier one).
 
 ## What fux is
@@ -11,7 +11,8 @@ A terminal multiplexer that is a view over the filesystem and pane daemons.
 
 - A **pane** is a directory kept by one **holder** process: it owns the program's pty and a terminal
   emulator, and publishes what the terminal shows as files, one file per fact. It takes typed bytes
-  from the FIFO `in` and commands from the FIFO `ctl`.
+  from the FIFO `in` and commands from the FIFO `ctl`. (A pane started with `--out` has no terminal:
+  its program's output is the file `out`, and `ctl` takes `kill [SIGNAL]` alone.)
 - A **workspace** is a folder of panes, with a readable `layout` text file.
 - The **viewer** is one more client: it draws a workspace's panes as tiles and tabs and sends keys
   to the focused pane.
@@ -81,12 +82,13 @@ generation                      odd while the holder writes a round, even when d
 size, cursor, modes             the terminal: size; the cursor on the screen shown; input modes
 title, cwd, clipboard, notice   what the program said
 shown -> main | alt             the screen being drawn
-main/ screen screen.styled lines links pictures    the main screen, always
+main/ screen screen.styled lines links pictures    the main screen, always in a pane with a terminal
 alt/  screen screen.styled lines links pictures    the alternate screen, while a program has it
 history, history.styled (.1)    the text that scrolled off the main screen
 marks                           OSC 133 prompt marks, in the text's numbering
 marks.dropped                   how many marks `marks` no longer has: its line n is mark number that + n
 pic-N.sixel                     a picture's bytes
+out                             with --out alone: the program's output and errors (no terminal files then)
 ```
 
 `alt/` can also remain after a pane ended under a full-screen program. A name is a thing and never a
@@ -116,7 +118,7 @@ compares text and cursor; CI fails on a disagreement that is not listed.
 The default session is `$XDG_RUNTIME_DIR/fux`, else `~/.cache/fux`: a name is a name in it, wherever a
 command is typed. Anything else is named by a directory's path (an argument that begins with `/` or
 `.`). The keys are the directory named to `fux view WORKSPACE KEYS`, else `$XDG_CONFIG_HOME/fux/keys`,
-else `~/.config/fux/keys`. A pane's program sees `TERM_PROGRAM=fux`; XTVERSION says `fux VERSION`.
+else `~/.config/fux/keys`. A terminal pane's program sees `TERM_PROGRAM=fux`; XTVERSION says `fux VERSION`.
 fux sets, reads and removes no variable of its own (D123): what `FUX_DIR`, `FUX_WS` and `FUX_KEYS` said is an
 argument, what `FUX_PANE` said is `keys/.here`'s to find, and what a key's script was told in five more
 is a folder of files the viewer makes for it (`SESSION/.view.PID/N`). koh, which uses fux as a library

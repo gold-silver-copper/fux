@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "fux"
-version = "0.43.6"
+version = "0.44.0"
 dependencies = [
  "fux-vt",
  "fuxix",
@@ -16,4 +16,4 @@ version = "0.20.1"
 
 [[package]]
 name = "fuxix"
-version = "0.12.0"
+version = "0.13.0"

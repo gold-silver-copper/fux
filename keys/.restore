@@ -10,7 +10,8 @@
 # `.before` it had itself first), and the old folder goes.
 # Which panes: one that has a `command` (its program was started once), that no holder keeps (the
 # lock on its folder is free) and whose `in` nobody reads (one that is read is the picture of a
-# pane kept elsewhere, not this machine's to start). Not a viewer's own pane, nor a helper's (below).
+# pane kept elsewhere, not this machine's to start). Not a viewer's own pane, nor a helper's (below),
+# nor one whose program had no terminal (it has `out`: what it wrote is that run's record).
 # What that costs: there is no way back. For a moment the name has no folder: a viewer that looks
 # just then takes the pane out of its tab, and the new one gets a tab of its own (a viewer looks
 # every few milliseconds: it may catch every pane, or none); after a reboot none is looking, and
@@ -34,7 +35,7 @@ printed() { for f in .before history.1 history main/screen; do [ ! -e "$1/$f" ] 
 left=0
 for p in "$D"/*/*/; do
   p=${p%/} name=${p#"$D"/}
-  [ -s "$p/command" ] || continue
+  [ -s "$p/command" ] && [ ! -e "$p/out" ] || continue
   # (A viewer's own pane and a holder's: by its first argument as it was given, whole (the second of
   # the fields that a zero byte ends in `command`), whatever the program is called. So
   # any program whose first argument is the word `view` or `hold` is passed over too, and a viewer

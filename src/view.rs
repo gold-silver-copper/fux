@@ -977,9 +977,10 @@ impl View {
         match send_to(&path, &typed) {
             Ok(n) if n == typed.len() => {}
             Ok(n) => self.message = format!("{name}: only {n} of {} typed bytes were queued", typed.len()),
-            // A FIFO nobody reads, or none at all: the pane has ended.
+            // A FIFO nobody reads, or none at all: the pane has ended, or has no terminal.
             Err(e) if sys::no_reader(&e) || e.kind() == io::ErrorKind::NotFound => {
-                self.message = format!("{name} has ended: nothing reads what you type");
+                let why = if path.with_file_name("out").exists() { "has no terminal" } else { "has ended" };
+                self.message = format!("{name} {why}: nothing reads what you type");
             }
             // (Something else than a FIFO has the name: `open_fifo` wrote nothing into it.)
             Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
@@ -1071,9 +1072,10 @@ impl View {
         let panes: Vec<(Stamp, bool)> = tiles
             .iter()
             .map(|(name, _)| {
-                // (Whether its holder lives is whether anything reads its `in`. While it is in the
-                // middle of writing, a pane is as it was last read.)
-                let held = sys::open_fifo(directory.join(name).join("in")).is_ok();
+                // (Whether its holder lives is whether anything reads its `in`, or the `ctl` of one with
+                // no terminal. While it is in the middle of writing, a pane is as it was last read.)
+                let fifo = if directory.join(name).join("out").exists() { "ctl" } else { "in" };
+                let held = sys::open_fifo(directory.join(name).join(fifo)).is_ok();
                 let pane = self.panes.entry(name.clone()).or_insert_with(unread);
                 // (Another folder under the name, or one that was no tile a moment ago: it is known from
                 // here on, has been asked nothing, and is drawn whatever its files say. Another folder
@@ -1133,7 +1135,8 @@ impl View {
             let focused = self.focus.as_ref() == Some(name);
             // Each pane is asked once to take the tile's size, and told the size of a cell in pixels.
             let asked = Some((body.w, body.h, cell_size));
-            if pane.asked != asked {
+            // (One with no terminal has no size to take.)
+            if pane.asked != asked && !pane_directory.join("out").exists() {
                 let cell =
                     if cell_size.0 > 0 { format!(" {} {}", cell_size.0, cell_size.1.max(1)) } else { String::new() };
                 if pane.size != (body.w, body.h) || !cell.is_empty() {
