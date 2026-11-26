@@ -2,7 +2,7 @@
 //! the emulator, publishes what the terminal shows as files in the pane's
 //! directory (its working directory), and takes bytes and commands from two
 //! FIFOs. It handles no signals: killed, it is gone, and the kernel hangs up
-//! its program.
+//! the program of a pane with a terminal.
 
 use crate::sys::{self, Winsize};
 use crate::term::{Out, Picture, SIZE_MAX, TERM, Term, files};
@@ -202,8 +202,8 @@ impl Holder {
 
     /// Keeps a pane whose program has no terminal until the program ends; a round of writing is `state`.
     /// `kill [SIGNAL]` on `ctl` is sent to the group the program leads, until the holder has seen it end.
-    /// The waiting thread reaps it first, so for an instant the number is nobody's (and a group's number
-    /// is not given out again while a member lives).
+    /// The waiting thread has reaped the leader by then: while any member of the group lives the group's
+    /// number is not given out again, and with none left the signal as a rule reaches nobody.
     fn keep(&mut self, pid: i32, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
         let state = |holder: &mut Self, state: &str| {
             let round = holder.turn(true).and_then(|()| replace("state", format!("{state}\n").as_bytes()));

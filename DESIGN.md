@@ -57,7 +57,8 @@ locks it as the directory it stands in, and
 starts `fux hold` there in a new session with the
 pane's lock as its standard input: the lock lives exactly as long as the
 holder. The start
-is done when the holder says, on a pipe, that its first screen is written.
+is done when the holder says, on a pipe, that its first screen is written (with `--out`,
+that `state` says `running`).
 The holder
 works inside the folder with relative names, so it does not care what the
 folder is called.
@@ -78,8 +79,9 @@ file, `out`, whose bytes the holder never touches; the loop waits on `ctl` and
 the pipe alone, and writes `state` as a round. There `kill` is a signal the
 holder sends the program's group (a hangup, unless another is named), until it
 has seen the program end; the folder gone is that hangup too, and so is the
-program's end. The waiting thread reaps first, so for an instant the number is
-nobody's (and a group's number is not given out again while a member lives).
+program's end. The waiting thread has reaped the leader by then: while any member
+of the group lives the group's number is not given out again, and with none left
+the signal as a rule reaches nobody.
 
 **Viewing.** The viewer has no channel to holders but each pane's `in` and `ctl`. It looks at files (often just after something happened, seldom at rest), reads a pane's
 facts and the `screen.styled` that `shown` leads to when the pane's `generation` is another file

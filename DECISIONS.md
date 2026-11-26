@@ -3314,7 +3314,7 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     `/dev/null` as its input and one file, `out`, opened once to append, as
     both its output and its errors, in a session of its own with no
     controlling terminal. The holder never reads those bytes: no pty, no
-    emulator, nothing in `out` but what the program wrote, in the order it
+    terminal emulation is run, nothing in `out` but what the program wrote, in the order it
     wrote it. `state`, `status`, `run`, `command`, `log`, the lock and
     `fux wait` are as for any pane; `generation` numbers the writings of
     `state`, which is all that changes there. A program that cannot be
@@ -3333,8 +3333,9 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     program gets, unless another is named) to the program's group until it
     has seen the program end; never a signal to a number read from a file.
     The holder already had a thread that waits for the program, and it
-    reaps first: for an instant the number is nobody's (and a group's number
-    is not given out again while a member lives). This loop waits on that
+    has reaped the leader by then: while any member of the group lives the
+    group's number is not given out again, and with none left the signal as
+    a rule reaches nobody. This loop waits on that
     thread's pipe and on `ctl`. A removed folder is the hangup too, and so is
     the program's end, as a terminal's end hangs up its group: what should
     outlive it uses `nohup` or `setsid`. Any other command is refused, with
