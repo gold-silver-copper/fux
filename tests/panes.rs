@@ -4508,6 +4508,23 @@ fn a_kitty_graphics_command_leaves_a_pane_as_it_was_and_its_program_is_told_only
     assert_eq!((files().filter(|name| name.starts_with("pic-")).count(), read(&pane.join("log")).as_str()), (0, ""));
 }
 
+#[test]
+fn fuxix_signals_a_process_or_its_group_refuses_what_is_neither_and_knows_the_users_number() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    // 0 is the caller's own group, -1 every process it may signal: neither is meant.
+    for target in [0, -1] {
+        assert_eq!(fuxix::signal_to(target, 0).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+    let sleeps = Command::new("sleep").arg("600").process_group(0).stdin(Stdio::null()).begin();
+    let pid = locked(&sleeps.child).id() as i32;
+    assert!(fuxix::signal_to(pid, 0).is_ok() && fuxix::signal_to(-pid, 0).is_ok());
+    fuxix::signal_to(-pid, 15).unwrap();
+    assert_eq!(sleeps.end().signal(), Some(15));
+    assert_eq!(fuxix::signal_to(-pid, 0).unwrap_err().raw_os_error(), Some(3), "no such process");
+    let id = Command::new("id").arg("-u").run();
+    assert_eq!(String::from_utf8_lossy(&id.stdout).trim(), fuxix::uid().to_string());
+}
+
 /// A terminal that is the test itself: the other end of the one a viewer is started on. It keeps
 /// every byte the viewer writes, and says nothing but what the test types.
 struct Terminal(fs::File, RefCell<Vec<u8>>);
