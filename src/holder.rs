@@ -98,9 +98,8 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
     // The slave stays open until this function ends, so that output a program wrote just before it
     // ended is not thrown away (macOS drops it when the last slave closes).
     let pty = if out {
-        // With no terminal, the program has nothing to read, and what it writes, to its output and
-        // its errors alike, is added to `out` as it is written (one file, opened once, to append).
-        // Made before `run`: what a folder that has a `run` has an `out` of, has had no terminal.
+        // Output and errors are one descriptor, so in `out` they are in the order written. Made
+        // before `run`: what a folder that has a `run` has an `out` of, has had no terminal.
         let file = OpenOptions::new().append(true).create_new(true).open("out");
         let file = file.and_then(|file| Ok((file.try_clone()?, file))).map_err(|e| format!("cannot make out: {e}"))?;
         child.stdin(Stdio::null()).stdout(file.0).stderr(file.1);
@@ -162,7 +161,6 @@ impl Holder {
             sys::open("/dev/urandom", false)?.read_exact(&mut bits)?;
             replace("run", format!("{:032x}\n", u128::from_ne_bytes(bits)).as_bytes())
         };
-        // (With no terminal there is nothing to type to.)
         let input = if self.pty.is_some() { sys::fifo("in").map(Some) } else { Ok(None) };
         let fifos = input.and_then(|input| Ok((input, sys::fifo("ctl")?)));
         let fifos = fifos.and_then(|fifos| run().map(|()| fifos));
@@ -202,11 +200,10 @@ impl Holder {
         }
     }
 
-    /// Keeps a pane whose program has no terminal until the program ends. There is no screen: a round
-    /// of writing is `state`. `ctl` takes one command, `kill`: a signal to the group the program leads
-    /// (whose number is its own), a hangup unless another is named. Only its parent signals it, and not
-    /// once its end is read: until then the number is what is left of the program's group, or nobody's
-    /// (a number is not another's before its parent has waited, and is given again after all others).
+    /// Keeps a pane whose program has no terminal until the program ends; a round of writing is `state`.
+    /// `kill [SIGNAL]` on `ctl` is sent to the group the program leads, until the holder has seen it end.
+    /// The waiting thread reaps it first, so for an instant the number is nobody's (and a group's number
+    /// is not given out again while a member lives).
     fn keep(&mut self, pid: i32, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
         let state = |holder: &mut Self, state: &str| {
             let round = holder.turn(true).and_then(|()| replace("state", format!("{state}\n").as_bytes()));
@@ -235,11 +232,11 @@ impl Holder {
             }
             let n = if commanded != 0 { (&*ctl).read(&mut buffer).unwrap_or(0) } else { 0 };
             for line in crate::lines(&mut self.ctl_line, buffer.get(..n).unwrap_or(&[]), CTL_LINE_MAX) {
-                let words = line.as_ref().map(|line| line.split_whitespace().collect::<Vec<_>>());
-                let signal = match words.as_deref() {
+                let words = line.as_deref().map(str::split_whitespace).map(|mut w| [w.next(), w.next(), w.next()]);
+                let signal = match words {
                     None => Err(format!("a line over {CTL_LINE_MAX} bytes was dropped")),
-                    Some(["kill"]) => Ok(1),
-                    Some(["kill", number]) => {
+                    Some([Some("kill"), None, _]) => Ok(1),
+                    Some([Some("kill"), Some(number), None]) => {
                         number.parse().ok().filter(|n| *n > 0).ok_or("a signal is a number from 1".into())
                     }
                     Some(_) => Err("the program has no terminal: the one command is kill [SIGNAL]".into()),

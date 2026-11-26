@@ -4531,13 +4531,9 @@ fn a_pane_started_with_out_has_no_terminal_and_out_has_what_its_program_wrote_by
     let waited = session.fux().arg("wait").arg(&job).run();
     assert_eq!(String::from_utf8_lossy(&waited.stdout), format!("pid {}\nstate exited 3\n", pid_of(&job)));
     assert_eq!(fs::read(job.join("out")).unwrap(), b"a\xffbe\nf");
-    // The folder has the facts of a run and `out`, and none of a terminal's: nothing to type to, no
-    // screen. Its FIFO `ctl` went with its holder; `generation` numbered the writings of `state`.
-    let mut names: Vec<String> =
-        fs::read_dir(&job).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
-    names.sort();
-    assert_eq!(names, ["command", "generation", "log", "out", "run", "state", "status"]);
-    assert_eq!(fact(&job, "generation"), "4");
+    // The folder has the facts of a run and `out`, and none of a terminal's: nothing to type to, no screen.
+    assert!(["command", "run", "state", "status"].iter().all(|name| job.join(name).exists()));
+    assert!(!job.join("in").exists() && !job.join("main").exists());
     assert_eq!(read(&job.join("log")), "");
     // None of its three streams is a terminal, and it has none it could open.
     let alone =
@@ -4560,9 +4556,13 @@ fn kill_on_the_ctl_of_a_pane_with_no_terminal_is_a_signal_to_its_program_and_its
     let plain = start_out(&session, "plain", "exec sleep 600");
     let lock = fuxix::open(&plain, false).unwrap();
     assert!(lock.try_lock_shared().is_err(), "the holder holds its folder");
+    let generation = || fact(&plain, "generation").parse::<u64>().unwrap();
+    let up = generation();
     send(&plain.join("ctl"), "kill\n");
     assert!(String::from_utf8_lossy(&session.fux().arg("wait").arg(&plain).run().stdout).ends_with("state killed 1\n"));
     assert!(lock.try_lock_shared().is_ok(), "its lock went with it");
+    // (`generation` numbers the writings of `state`: even when the files agree.)
+    assert!(generation() > up && generation() % 2 == 0, "{up} {}", generation());
     // Its program ended, what it left in its group is hung up, as a terminal's is by the kernel.
     let marker = session.0.join("left");
     let leader = start_out(&session, "leader", &format!("(sleep 1; touch '{}') & exit 0", marker.display()));

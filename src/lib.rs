@@ -242,8 +242,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     say(dir.as_os_str().as_bytes())
 }
 
-/// Starts the holder of a pane we hold the lock of and are in, and waits until it is up. `cwd` is where we were;
-/// `out`, that the program has no terminal.
+/// Starts the holder of a pane we hold the lock of and are in, and waits until it is up. `cwd` is where we were.
 fn launch(cwd: &Path, lock: File, out: bool, program: &[OsString]) -> Result<(), String> {
     let log = File::create("log").map_err(|e| format!("cannot make the log: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
