@@ -4608,6 +4608,14 @@ fn the_holder_signals_the_group_of_a_program_with_no_terminal_before_it_reaps_th
     let waited = session.fux().arg("wait").arg(&job).run();
     assert!(String::from_utf8_lossy(&waited.stdout).ends_with("state exited 0\n"), "{waited:?}");
     assert!(!read(&job.join("log")).contains("No such process"), "{}", read(&job.join("log")));
+    // A program that stops has not ended (on macOS waitid may say otherwise): it is held, and told what comes.
+    let (stop, cont) = if cfg!(target_os = "macos") { (17, 19) } else { (19, 18) };
+    let stopped = start_out(&session, "stopped", "exec sleep 600");
+    send(&stopped.join("ctl"), format!("kill {stop}\n"));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(fact(&stopped, "state") == "running" && fuxix::signal_to(pid_of(&stopped), 0).is_ok());
+    send(&stopped.join("ctl"), format!("kill {cont}\nkill 15\n"));
+    until("it is told to end, and ends", || fact(&stopped, "state") == "killed 15");
 }
 
 #[test]
