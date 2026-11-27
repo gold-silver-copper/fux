@@ -3364,20 +3364,25 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   terminal is as it was (its program is hung up by the kernel). On macOS a
   signal to a group whose one member is the zombie is refused (EPERM): a
   `kill` that comes in that instant is a line in `log`, and reaches nobody
-  else either. A test
+  else either. A stopped program is not an ended one: a test stops and
+  continues one through `ctl` on both systems, and it is still held. A test
   sends `kill` on `ctl` as fast as the holder takes it while the program
   ends: before, tens of them found no such group, every run.
   - **fuxix**: `ended(pid)`.
 
-- **D132. `fux start` ends as a shell does when its program is the cause**
+- **D132. `fux start` ends 127 or 126 when its program cannot be started**
   (koh, 2026-11-27: it told its users 127 from 126 by matching the text
-  `(os error 2)` in what `fux start` said). A program that is not found is
-  127, one that is found and cannot be run 126, for a pane with a terminal
-  or without; any other failure of the start (a name taken, a bad name, a
-  FIFO that cannot be made) is 1, as before. The holder ends with that
-  status and `fux start` passes on that one alone: a holder that ended any
-  other way is a start that failed, 1. What is said is as it was, and the
-  folder stays with its `log`.
+  `(os error 2)` in what `fux start` said). For a pane with a terminal or
+  without: 127 when the system says there is no such file (the program, or
+  the interpreter its `#!` names); 126 for every other reason the program
+  could not be started (not executable, a directory, its working directory
+  cannot be entered, no process to be had); 1 when `start` itself failed
+  before that (a name taken, a bad name, a FIFO that cannot be made). The
+  holder ends with that status and `fux start` passes on 126 and 127 alone:
+  a holder that ended any other way is a start that failed, 1. What is said
+  is as it was. With 126 or 127 the folder stays, with a `log` that says why.
+  Which step failed (the working directory or the exec) is not told apart:
+  std's spawn reports one error for both.
 
 ## The old fux3's bugs: which classes are gone
 
