@@ -218,8 +218,9 @@ mark of a kind (with none listed, of the last mark dropped): an `end`'s never go
 (The `end`s numbered above $e are the commands that ended since, each once. If `marks.dropped`
 is by then above the number of the last mark read before, over a thousand marks came between
 the two looks: that many came and went unread. `more` reads the two files as they are: read
-between two writings its number is too small, never too big, and it looks again.)
-    grep ' end' "$S/marks" | tail -n 1; cat "$S/cwd"       # LINE AT end 1, and /
+between two writings its number is too small, never too big, and it looks again. `cwd` may be
+written after the prompt's mark: wait for the directory itself.)
+    grep ' end' "$S/marks" | tail -n 1; seen '^/$' "$S/cwd" && cat "$S/cwd"       # LINE AT end 1, and /
 
 FULL-SCREEN PROGRAMS (vim, less, htop)
 While one has the alternate screen, there is `alt/` with the program's own screen, `shown`
