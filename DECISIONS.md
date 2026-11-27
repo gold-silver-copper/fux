@@ -3361,7 +3361,10 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   not given out again, and with none left the signal as a rule reaches
   nobody"), which becomes: the loop reaps the program after the last
   signal, so the number signalled is the group's throughout. A pane with a
-  terminal is as it was (its program is hung up by the kernel). A test
+  terminal is as it was (its program is hung up by the kernel). On macOS a
+  signal to a group whose one member is the zombie is refused (EPERM): a
+  `kill` that comes in that instant is a line in `log`, and reaches nobody
+  else either. A test
   sends `kill` on `ctl` as fast as the holder takes it while the program
   ends: before, tens of them found no such group, every run.
   - **fuxix**: `ended(pid)`.
