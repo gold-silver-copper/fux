@@ -262,9 +262,8 @@ own number, and what it started is in it as a rule (a job-control shell's jobs a
 Removing a pane's directory ends the pane too (its holder sees it within 2 seconds).
 In a pane with no terminal (--out) `ctl` has one command, kill [SIGNAL]: its holder, the program's
 parent, sends the program's process group the signal (1, the hangup, if none is named), until
-it has seen the program end. Its waiting thread has reaped the leader by then: while any member
-of the group lives the group's number is not given out again, and with none left the signal as
-a rule reaches nobody; no number read from a file is signalled. Removing the folder is that
+it has seen the program end, and reaps the program only after that: the number is the group's
+throughout, and no number read from a file is signalled. Removing the folder is that
 hangup too, and so is the program's end.
 Ended with SIGTERM:
     K=$(fux start --out agent-demo/sleeper -- sleep 600); echo 'kill 15' > "$K/ctl"; fux wait "$K" | tail -n 1

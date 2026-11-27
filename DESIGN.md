@@ -79,9 +79,8 @@ file, `out`, whose bytes the holder never touches; the loop waits on `ctl` and
 the pipe alone, and writes `state` as a round. There `kill` is a signal the
 holder sends the program's group (a hangup, unless another is named), until it
 has seen the program end; the folder gone is that hangup too, and so is the
-program's end. The waiting thread has reaped the leader by then: while any member
-of the group lives the group's number is not given out again, and with none left
-the signal as a rule reaches nobody.
+program's end. It reaps the program only after that: the number it signals is the
+group's throughout.
 
 **Viewing.** The viewer has no channel to holders but each pane's `in` and `ctl`. It looks at files (often just after something happened, seldom at rest), reads a pane's
 facts and the `screen.styled` that `shown` leads to when the pane's `generation` is another file

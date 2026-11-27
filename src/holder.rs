@@ -16,7 +16,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 /// While the program keeps writing (never a millisecond without output), the screen files are
@@ -46,6 +46,17 @@ const LOOK_EVERY: Duration = Duration::from_secs(2);
 /// A screen's folder, then its files in it, in the order they are written: the facts, then the text.
 const MAIN: [&str; 6] = ["main", "main/lines", "main/links", "main/pictures", "main/screen", "main/screen.styled"];
 const ALT: [&str; 6] = ["alt", "alt/lines", "alt/links", "alt/pictures", "alt/screen", "alt/screen.styled"];
+
+/// What became of a program that ended, as `state` says it.
+fn state_of(waited: io::Result<ExitStatus>) -> String {
+    match waited {
+        Ok(status) => match (status.code(), status.signal()) {
+            (Some(code), _) => format!("exited {code}"),
+            (_, signal) => format!("killed {}", signal.unwrap_or(0)),
+        },
+        Err(error) => format!("lost {error}"),
+    }
+}
 
 struct Holder {
     term: Term,
@@ -183,28 +194,24 @@ impl Holder {
         if let Err(e) = status(Some(pid)).and_then(|()| replace("command", &given)) {
             self.log(&format!("the program runs, but its `status` or its `command` could not be written: {e}"));
         }
+        let thread = |e: io::Error| format!("cannot start a thread: {e}");
+        // With no terminal the thread only learns of the end (the pipe closes): the loop reaps the program.
+        let Some(input) = &input else {
+            std::thread::Builder::new().spawn(move || _ = (sys::ended(pid), end_writer)).map_err(thread)?;
+            return self.keep(child, &ctl, &ended);
+        };
         let waiter = std::thread::Builder::new().spawn(move || {
-            let state = match child.wait() {
-                Ok(status) => match (status.code(), status.signal()) {
-                    (Some(code), _) => format!("exited {code}"),
-                    (_, signal) => format!("killed {}", signal.unwrap_or(0)),
-                },
-                Err(error) => format!("lost {error}"),
-            };
-            let _ = end_writer.write_all(state.as_bytes());
+            let _ = end_writer.write_all(state_of(child.wait()).as_bytes());
         });
-        waiter.map_err(|e| format!("cannot start a thread: {e}"))?;
-        match &input {
-            Some(input) => self.run(input, &ctl, &mut ended),
-            None => self.keep(pid as i32, &ctl, &mut ended),
-        }
+        waiter.map_err(thread)?;
+        self.run(input, &ctl, &mut ended)
     }
 
     /// Keeps a pane whose program has no terminal until the program ends; a round of writing is `state`.
-    /// `kill [SIGNAL]` on `ctl` is sent to the group the program leads, until the holder has seen it end.
-    /// The waiting thread has reaped the leader by then: while any member of the group lives the group's
-    /// number is not given out again, and with none left the signal as a rule reaches nobody.
-    fn keep(&mut self, pid: i32, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
+    /// `kill [SIGNAL]` on `ctl` is sent to the group the program leads, until the holder has seen it end;
+    /// then the hangup, and only then is the program reaped: until that, its number is its group's.
+    fn keep(&mut self, mut child: Child, ctl: &File, ended: &PipeReader) -> Result<(), String> {
+        let pid = child.id() as i32;
         let state = |holder: &mut Self, state: &str| {
             let round = holder.turn(true).and_then(|()| replace("state", format!("{state}\n").as_bytes()));
             let round = round.and_then(|()| holder.turn(false));
@@ -218,11 +225,9 @@ impl Holder {
             let [over, commanded] =
                 sys::wait(wanted, LOOK_EVERY.as_millis() as i32).map_err(|e| format!("cannot wait: {e}"))?;
             if over != 0 {
-                let mut end = String::new();
-                let _ = ended.read_to_string(&mut end);
                 // What it left in its group is hung up, as a terminal's is when its program ends.
                 let _ = sys::signal_to(-pid, 1);
-                state(self, &end);
+                state(self, &state_of(child.wait()));
                 return Ok(());
             }
             // The directory is the pane: when it is gone, its program is hung up, as a terminal's is.

@@ -4589,6 +4589,21 @@ fn kill_on_the_ctl_of_a_pane_with_no_terminal_is_a_signal_to_its_program_and_its
 }
 
 #[test]
+fn the_holder_signals_the_group_of_a_program_with_no_terminal_before_it_reaps_the_program() {
+    // A program alone in its group ends while `kill` comes on `ctl` as fast as the holder takes it (28 is
+    // SIGWINCH on both systems, nothing to `sleep`): until the holder has reaped it, its zombie keeps the
+    // number its group's, so not one of them finds no such group.
+    let session = Session::new("outreap");
+    let job = start_out(&session, "job", "exec sleep 0.5");
+    let ctl = fuxix::open(job.join("ctl"), true).unwrap();
+    let lines = "kill 28\n".repeat(64);
+    while (&ctl).write(lines.as_bytes()).map_or_else(|e| e.kind() == std::io::ErrorKind::WouldBlock, |_| true) {}
+    let waited = session.fux().arg("wait").arg(&job).run();
+    assert!(String::from_utf8_lossy(&waited.stdout).ends_with("state exited 0\n"), "{waited:?}");
+    assert_eq!(read(&job.join("log")), "");
+}
+
+#[test]
 fn a_viewer_draws_a_pane_with_no_terminal_as_an_empty_tile_and_not_as_lost() {
     let session = Session::new("outview");
     let job = start_out(&session, "w/job", "exec sleep 600");

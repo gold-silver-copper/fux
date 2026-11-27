@@ -3332,11 +3332,10 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     order to its holder, which sends the signal (1, a hangup, as a terminal's
     program gets, unless another is named) to the program's group until it
     has seen the program end; never a signal to a number read from a file.
-    The holder already had a thread that waits for the program, and it
-    has reaped the leader by then: while any member of the group lives the
-    group's number is not given out again, and with none left the signal as
-    a rule reaches nobody. This loop waits on that
-    thread's pipe and on `ctl`. A removed folder is the hangup too, and so is
+    A thread learns of the program's end without reaping it (`waitid` with
+    `WNOWAIT`, as daemontools orders it), and the loop reaps it after the last
+    signal: the number signalled is the group's throughout, pinned by the
+    program or its zombie. This loop waits on that thread's pipe and on `ctl`. A removed folder is the hangup too, and so is
     the program's end, as a terminal's end hangs up its group: what should
     outlive it uses `nohup` or `setsid`. Any other command is refused, with
     a line in `log`.
@@ -3347,7 +3346,8 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     pane over: its `out` is the record of that run (a keys directory written
     before keeps its own `.restore`, which does not: see the README).
   - **fuxix**: `signal_to(pid, signal)` (kill(2), refusing 0 and -1, which
-    are no one process or group) and `uid()` (the effective user's number).
+    are no one process or group), `uid()` (the effective user's number) and
+    `ended(pid)` (waitid(2) with WNOWAIT: a child's end, the child left unreaped).
 
 ## The old fux3's bugs: which classes are gone
 
