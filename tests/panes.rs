@@ -1051,7 +1051,7 @@ fn a_pane_is_one_run_and_a_name_that_is_there_is_refused_whatever_is_there() {
     let refused = |name: &str| {
         let out = session.fux().args(["start", name, "--", "sleep", "600"]).run();
         let said = String::from_utf8_lossy(&out.stderr).into_owned();
-        assert!(!out.status.success() && out.stdout.is_empty() && said.contains("rm -r"), "{name}: {out:?}");
+        assert!(out.status.code() == Some(1) && out.stdout.is_empty() && said.contains("rm -r"), "{name}: {out:?}");
     };
     // A pane that runs is not started again; nor is it when its program has ended, and nothing of
     // that run is touched: a pane is one run, and its folder is the record of it.
@@ -1064,8 +1064,10 @@ fn a_pane_is_one_run_and_a_name_that_is_there_is_refused_whatever_is_there() {
     refused("p");
     assert_eq!(files(), was);
     assert!(fact(&pane, "state") == "exited 3" && read(&pane.join("main/screen")).starts_with("first\n"));
-    // A pane that never came up stays as it is too, with the `log` that says why.
-    assert!(!session.fux().args(["start", "none", "--", "/no/such/program"]).run().status.success());
+    // A pane that never came up stays as it is too, with the `log` that says why. Its start ends as a shell
+    // does: 127 for a program that is not found, 126 for one that is and cannot be run.
+    assert_eq!(session.fux().args(["start", "none", "--", "/no/such/program"]).run().status.code(), Some(127));
+    assert_eq!(session.fux().args(["start", "root", "--", "/"]).run().status.code(), Some(126));
     refused("none");
     assert!(read(&session.0.join("main/none/log")).contains("cannot start /no/such/program"));
     // A folder nobody started is a name that is there (making the folder is the claim to a name),
@@ -4545,7 +4547,11 @@ fn a_pane_started_with_out_has_no_terminal_and_out_has_what_its_program_wrote_by
     assert_eq!(read(&alone.join("out")), "");
     // A program that cannot be started is a start that failed, as in any pane; a name is a number when none is given.
     let none = session.fux().args(["start", "--out", "none", "--", "/no/such/program"]).run();
-    assert!(!none.status.success() && String::from_utf8_lossy(&none.stderr).contains("cannot start /no/such/program"));
+    assert!(
+        none.status.code() == Some(127)
+            && String::from_utf8_lossy(&none.stderr).contains("cannot start /no/such/program")
+    );
+    assert_eq!(session.fux().args(["start", "--out", "root", "--", "/"]).run().status.code(), Some(126));
     assert_eq!(session.started(session.fux().args(["start", "--out", "--", "true"])), session.0.join("main/1"));
 }
 

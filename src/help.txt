@@ -27,6 +27,8 @@ starter's environment and working directory, and its first size from COLUMNS and
     W=$(cd / && COLUMNS=120 LINES=40 fux start agent-demo/wide -- sh -c 'pwd; exec sleep 600')
 A pane is one run. A name that is there is refused ("the name is taken"), whether its pane
 runs or has ended, and nothing of it is touched: rm -r its directory to start the name anew.
+fux start exits 0 when the pane is up, 127 when its program is not found and 126 when it is found
+and cannot be run (as a shell does: the folder stays, its log says why), 1 for any other failure.
 With --out the program has no terminal: its input is /dev/null, it leads a session of its own,
 and what it writes to its output and its errors goes as it is written, byte for byte, to one file
 of the pane, `out`. Such a pane has `out` and none of a terminal's files (in, main/, shown, size,

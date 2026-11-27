@@ -3349,6 +3349,16 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     are no one process or group), `uid()` (the effective user's number) and
     `ended(pid)` (waitid(2) with WNOWAIT: a child's end, the child left unreaped).
 
+- **D131. `fux start` ends as a shell does when its program is the cause**
+  (koh, 2026-11-27: it told its users 127 from 126 by matching the text
+  `(os error 2)` in what `fux start` said). A program that is not found is
+  127, one that is found and cannot be run 126, for a pane with a terminal
+  or without; any other failure of the start (a name taken, a bad name, a
+  FIFO that cannot be made) is 1, as before. The holder ends with that
+  status and `fux start` passes on that one alone: a holder that ended any
+  other way is a start that failed, 1. What is said is as it was, and the
+  folder stays with its `log`.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

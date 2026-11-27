@@ -6,7 +6,7 @@
 
 use crate::sys::{self, Winsize};
 use crate::term::{Out, Picture, SIZE_MAX, TERM, Term, files};
-use crate::{plain, replace};
+use crate::{Failed, plain, replace};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -80,7 +80,7 @@ struct Holder {
 /// Keeps the pane whose directory is the working directory until its program
 /// ends. `fux start` locked the directory and handed the lock over as this
 /// process's standard input: it is held for exactly as long as the holder lives.
-pub fn hold(args: &[OsString]) -> Result<(), String> {
+pub fn hold(args: &[OsString]) -> Result<(), Failed> {
     let (out, args) = match args {
         [first, args @ ..] if first == "--out" => (true, args),
         args => (false, args),
@@ -156,7 +156,7 @@ pub fn hold(args: &[OsString]) -> Result<(), String> {
 impl Holder {
     /// Makes the FIFOs, says in `run` which run this is and in `status` who holds the pane, starts the
     /// program and keeps the pane until it ends.
-    fn start(&mut self, mut program: Command, command: &str) -> Result<(), String> {
+    fn start(&mut self, mut program: Command, command: &str) -> Result<(), Failed> {
         // Who holds the pane and what it runs are in `status` before the program is started: the
         // program, whose parent this is, finds from its first instruction which pane it is in. (After
         // `generation` says the files are being written.) Its own number follows when it runs: one
@@ -187,7 +187,9 @@ impl Holder {
         // like on everything else.
         let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
         let name = program.get_program().to_string_lossy().into_owned();
-        let mut child = program.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
+        // (As a shell ends: 127 for a program that is not found, 126 for one that is and cannot be run.)
+        let code = |e: &io::Error| if e.kind() == ErrorKind::NotFound { 127 } else { 126 };
+        let mut child = program.spawn().map_err(|e| Failed(code(&e), format!("cannot start {name}: {e}")))?;
         let pid = child.id();
         // From here the program runs, and is held whatever cannot be written of it: a holder that
         // left now would leave it running with nothing that keeps it.
@@ -198,13 +200,13 @@ impl Holder {
         // With no terminal the thread only learns of the end (the pipe closes): the loop reaps the program.
         let Some(input) = &input else {
             std::thread::Builder::new().spawn(move || _ = (sys::ended(pid), end_writer)).map_err(thread)?;
-            return self.keep(child, &ctl, &ended);
+            return Ok(self.keep(child, &ctl, &ended)?);
         };
         let waiter = std::thread::Builder::new().spawn(move || {
             let _ = end_writer.write_all(state_of(child.wait()).as_bytes());
         });
         waiter.map_err(thread)?;
-        self.run(input, &ctl, &mut ended)
+        Ok(self.run(input, &ctl, &mut ended)?)
     }
 
     /// Keeps a pane whose program has no terminal until the program ends; a round of writing is `state`.
