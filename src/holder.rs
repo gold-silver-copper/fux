@@ -175,7 +175,7 @@ impl Holder {
         // The program's end arrives as a line on a pipe, so the loop waits on it
         // like on everything else.
         let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
-        // 127 when the system says there is no such file (the program, or its `#!` interpreter), else 126.
+        // 127 when the system says there is no such file (the program, its `#!` interpreter, its directory), else 126.
         let mut child = program.spawn().map_err(|e| {
             let code = if e.kind() == ErrorKind::NotFound { 127 } else { 126 };
             Failed(code, format!("cannot start {}: {e}", program.get_program().to_string_lossy()))

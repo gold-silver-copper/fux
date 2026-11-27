@@ -3367,11 +3367,13 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
 - **D132. `fux start` ends 127 or 126 when its program cannot be started**
   (koh, 2026-11-27: it told its users 127 from 126 by matching the text
   `(os error 2)` in what `fux start` said). For a pane with a terminal or
-  without: 127 when the system says there is no such file (the program, or
-  the interpreter its `#!` names); 126 for every other reason the program
-  could not be started (not executable, a directory, its working directory
-  cannot be entered, no process to be had); 1 when `start` itself failed
-  before that (a name taken, a bad name, a FIFO that cannot be made). The
+  without: 127 when the system's error on starting the program is "no such
+  file" (the program, the interpreter its `#!` names, a working directory
+  that is gone); 126 for any other error on starting it (not executable, a
+  directory, no permission to enter the working directory, no process to
+  be had); 1 for any other failure of `start` (a name taken, a bad name, a
+  FIFO that cannot be made, its answer that cannot be written: the pane is
+  up then). The
   holder ends with that status and `fux start` passes on 126 and 127 alone:
   a holder that ended any other way is a start that failed, 1. What is said
   is as it was. With 126 or 127 the folder stays, with a `log` that says why.

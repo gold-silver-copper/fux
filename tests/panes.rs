@@ -1064,8 +1064,8 @@ fn a_pane_is_one_run_and_a_name_that_is_there_is_refused_whatever_is_there() {
     refused("p");
     assert_eq!(files(), was);
     assert!(fact(&pane, "state") == "exited 3" && read(&pane.join("main/screen")).starts_with("first\n"));
-    // A pane that never came up stays as it is too, with the `log` that says why. Its start ends as a shell
-    // does: 127 for a program that is not found, 126 for one that is and cannot be run.
+    // A pane that never came up stays as it is too, with the `log` that says why. Its start ends 127
+    // when the system says there is no such file, 126 for any other error on starting the program.
     assert_eq!(session.fux().args(["start", "none", "--", "/no/such/program"]).run().status.code(), Some(127));
     assert_eq!(session.fux().args(["start", "root", "--", "/"]).run().status.code(), Some(126));
     refused("none");
@@ -4596,8 +4596,8 @@ fn kill_on_the_ctl_of_a_pane_with_no_terminal_is_a_signal_to_its_program_and_its
 
 #[test]
 fn a_program_with_no_terminal_that_stops_has_not_ended() {
-    // Stopped through `ctl`, it is still held, and told what comes. (On macOS waitid reports a stop as an
-    // end: D131.)
+    // Stopped through `ctl`, it is still held, and told what comes. (A wait that took a stop for an end
+    // ended such a pane on macOS: D131.)
     let session = Session::new("outstop");
     let (stop, cont) = if cfg!(target_os = "macos") { (17, 19) } else { (19, 18) };
     let stopped = start_out(&session, "stopped", "exec sleep 600");
