@@ -1051,7 +1051,7 @@ fn a_pane_is_one_run_and_a_name_that_is_there_is_refused_whatever_is_there() {
     let refused = |name: &str| {
         let out = session.fux().args(["start", name, "--", "sleep", "600"]).run();
         let said = String::from_utf8_lossy(&out.stderr).into_owned();
-        assert!(!out.status.success() && out.stdout.is_empty() && said.contains("rm -r"), "{name}: {out:?}");
+        assert!(out.status.code() == Some(1) && out.stdout.is_empty() && said.contains("rm -r"), "{name}: {out:?}");
     };
     // A pane that runs is not started again; nor is it when its program has ended, and nothing of
     // that run is touched: a pane is one run, and its folder is the record of it.
@@ -1064,8 +1064,10 @@ fn a_pane_is_one_run_and_a_name_that_is_there_is_refused_whatever_is_there() {
     refused("p");
     assert_eq!(files(), was);
     assert!(fact(&pane, "state") == "exited 3" && read(&pane.join("main/screen")).starts_with("first\n"));
-    // A pane that never came up stays as it is too, with the `log` that says why.
-    assert!(!session.fux().args(["start", "none", "--", "/no/such/program"]).run().status.success());
+    // A pane that never came up stays as it is too, with the `log` that says why. Its start ends 127
+    // when the system says there is no such file, 126 for any other error on starting the program.
+    assert_eq!(session.fux().args(["start", "none", "--", "/no/such/program"]).run().status.code(), Some(127));
+    assert_eq!(session.fux().args(["start", "root", "--", "/"]).run().status.code(), Some(126));
     refused("none");
     assert!(read(&session.0.join("main/none/log")).contains("cannot start /no/such/program"));
     // A folder nobody started is a name that is there (making the folder is the claim to a name),
@@ -4545,7 +4547,11 @@ fn a_pane_started_with_out_has_no_terminal_and_out_has_what_its_program_wrote_by
     assert_eq!(read(&alone.join("out")), "");
     // A program that cannot be started is a start that failed, as in any pane; a name is a number when none is given.
     let none = session.fux().args(["start", "--out", "none", "--", "/no/such/program"]).run();
-    assert!(!none.status.success() && String::from_utf8_lossy(&none.stderr).contains("cannot start /no/such/program"));
+    assert!(
+        none.status.code() == Some(127)
+            && String::from_utf8_lossy(&none.stderr).contains("cannot start /no/such/program")
+    );
+    assert_eq!(session.fux().args(["start", "--out", "root", "--", "/"]).run().status.code(), Some(126));
     assert_eq!(session.started(session.fux().args(["start", "--out", "--", "true"])), session.0.join("main/1"));
 }
 
@@ -4586,6 +4592,22 @@ fn kill_on_the_ctl_of_a_pane_with_no_terminal_is_a_signal_to_its_program_and_its
     let group = -pid_of(&gone);
     fs::remove_dir_all(&gone).unwrap();
     until("the program is hung up", || fuxix::signal_to(group, 0).is_err());
+}
+
+#[test]
+fn a_program_with_no_terminal_that_stops_has_not_ended() {
+    // Stopped through `ctl`, it is still held, and told what comes. (A wait that took a stop for an end
+    // ended such a pane on macOS: D131.)
+    let session = Session::new("outstop");
+    let (stop, cont) = if cfg!(target_os = "macos") { (17, 19) } else { (19, 18) };
+    let stopped = start_out(&session, "stopped", "exec sleep 600");
+    send(&stopped.join("ctl"), format!("kill {stop}\n"));
+    std::thread::sleep(Duration::from_millis(1000));
+    let (state, alive) = (fact(&stopped, "state"), fuxix::signal_to(pid_of(&stopped), 0));
+    let said = format!("state {state}, {alive:?}, log {:?}", read(&stopped.join("log")));
+    assert!(state == "running" && alive.is_ok(), "{said}");
+    send(&stopped.join("ctl"), format!("kill {cont}\nkill 15\n"));
+    until("it is told to end, and ends", || fact(&stopped, "state") == "killed 15");
 }
 
 #[test]

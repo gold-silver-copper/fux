@@ -45,6 +45,20 @@ WORKSPACE (and what PANE has before its last /) is a name in the default session
 /// The single help page for people, scripts and agents; every command on it is run by `tools/help-agents.sh`.
 const HELP: &str = include_str!("help.txt");
 
+/// Why a command failed, and the status it ends with: for a program `start` could not start, 127 when the
+/// system says there is no such file and 126 for any other reason; 1 for anything else.
+struct Failed(u8, String);
+impl From<String> for Failed {
+    fn from(why: String) -> Self {
+        Failed(1, why)
+    }
+}
+impl From<&str> for Failed {
+    fn from(why: &str) -> Self {
+        Failed(1, why.into())
+    }
+}
+
 /// A variable of the environment that is set and not empty, as a path.
 fn var(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
@@ -188,7 +202,7 @@ fn text(path: &Path, most: u64) -> String {
     String::from_utf8_lossy(&read(sys::open(path, false), most).0).into_owned()
 }
 
-fn start(args: &[OsString]) -> Result<(), String> {
+fn start(args: &[OsString]) -> Result<(), Failed> {
     let mut sections = args.splitn(2, |arg| arg == "--");
     let (out, given) = match sections.next().unwrap_or_default() {
         [first, given @ ..] if first == "--out" => (true, given),
@@ -211,7 +225,7 @@ fn start(args: &[OsString]) -> Result<(), String> {
     );
     let workspace = workspace(given, &wrong)?;
     if !(pane.is_empty() || is_name(pane)) {
-        return Err(wrong);
+        return Err(wrong.into());
     }
     let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
     let workspace = made(&workspace)?;
@@ -238,12 +252,12 @@ fn start(args: &[OsString]) -> Result<(), String> {
         // (Of a folder made a moment ago: whoever looked at it in that moment has its lock.)
         Err(_) => Err("its folder is locked by another".into()),
     };
-    started.map_err(|why| format!("{}: {why}", dir.display()))?;
-    say(dir.as_os_str().as_bytes())
+    started.map_err(|Failed(code, why)| Failed(code, format!("{}: {why}", dir.display())))?;
+    Ok(say(dir.as_os_str().as_bytes())?)
 }
 
 /// Starts the holder of a pane we hold the lock of and are in, and waits until it is up. `cwd` is where we were.
-fn launch(cwd: &Path, lock: File, out: bool, program: &[OsString]) -> Result<(), String> {
+fn launch(cwd: &Path, lock: File, out: bool, program: &[OsString]) -> Result<(), Failed> {
     let log = File::create("log").map_err(|e| format!("cannot make the log: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let mut holder = Command::new(me);
@@ -255,14 +269,15 @@ fn launch(cwd: &Path, lock: File, out: bool, program: &[OsString]) -> Result<(),
     let mut holder = holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?;
     // The holder says a line when its first screen is written (with `--out`, when `state` says
     // `running`): it is up. With no line it has ended before that, whatever became of its folder
-    // since: its log's last line says why.
+    // since: its log's last line says why, and its status whether that was its program not found or not run.
     if matches!(holder.stdout.take().map(|mut line| line.read(&mut [0])), Some(Ok(1))) {
         return Ok(());
     }
-    let _ = holder.wait();
+    let code =
+        holder.wait().ok().and_then(|status| status.code()).filter(|code| matches!(code, 126 | 127)).unwrap_or(1);
     let log = text(Path::new("log"), 64 << 10);
     let why = log.lines().last().unwrap_or("the holder ended without a word");
-    Err(why.trim_start_matches("fux: ").to_string())
+    Err(Failed(code as u8, why.trim_start_matches("fux: ").to_string()))
 }
 
 fn wait(args: &[OsString]) -> Result<(), String> {
@@ -284,11 +299,11 @@ fn wait(args: &[OsString]) -> Result<(), String> {
     say(format!("{pid}\nstate {}", String::from_utf8_lossy(&state).trim_end()).as_bytes())
 }
 
-fn run(args: &[OsString]) -> Result<(), String> {
+fn run(args: &[OsString]) -> Result<(), Failed> {
     let rest = args.get(1..).unwrap_or(&[]);
-    match args.first().and_then(|a| a.to_str()) {
+    let done = match args.first().and_then(|a| a.to_str()) {
         Some("dir") => say(session()?.as_os_str().as_bytes()),
-        Some("start") => start(rest),
+        Some("start") => return start(rest),
         Some("wait") => wait(rest),
         Some("view") => {
             let wrong = "view takes a workspace, by its name or its directory, and then perhaps the keys' directory";
@@ -304,7 +319,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             let keys = rest.get(1).map(PathBuf::from).or_else(|| config.map(|config| config.join(FOLDER).join("keys")));
             let keys = keys.map(|keys| std::path::absolute(&keys).unwrap_or(keys));
             let (Some(session), Some(name), Some(keys)) = (workspace.parent(), name, keys) else {
-                return Err(format!("{}: {wrong}", workspace.display()));
+                return Err(format!("{}: {wrong}", workspace.display()).into());
             };
             view::view(session.into(), name.into(), keys)
         }
@@ -315,10 +330,11 @@ fn run(args: &[OsString]) -> Result<(), String> {
             let layout = layout::command(&workspace(named, &format!("{named}: not a workspace's name"))?, edit)?;
             if edit.is_empty() { say(layout.print().trim_end().as_bytes()) } else { Ok(()) }
         }
-        Some("hold") => holder::hold(rest),
+        Some("hold") => return holder::hold(rest),
         Some("help" | "--help" | "-h") if rest.is_empty() => say(format!("{USAGE}\n\n{}", HELP.trim_end()).as_bytes()),
         _ => Err(format!("usage:\n{USAGE}")),
-    }
+    };
+    Ok(done?)
 }
 
 /// The whole of `fux` as a program.
@@ -337,12 +353,12 @@ pub fn command(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args: Vec<OsString> = args.into_iter().collect();
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(why) => {
+        Err(Failed(code, why)) => {
             // What is quoted may be anything: no control codes, and not without end.
             // (Line by line: the usage is several.)
             let why: String = why.lines().map(plain).collect::<Vec<_>>().join("\n").chars().take(1000).collect();
             let _ = writeln!(std::io::stderr(), "fux: {why}");
-            ExitCode::FAILURE
+            ExitCode::from(code)
         }
     }
 }

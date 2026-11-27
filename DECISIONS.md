@@ -3349,6 +3349,37 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - **fuxix**: `signal_to(pid, signal)` (kill(2), refusing 0 and -1, which
     are no one process or group) and `uid()` (the effective user's number).
 
+- **D131. Signalling before reaping was tried, and is not done** (the
+  review of D130: the hangup at a program's end, and a `kill` on `ctl` in
+  that instant, go to a number that nothing pins any more). Tried: the
+  waiting thread of a pane with no terminal learns of the end with waitid(2)
+  and WNOWAIT, the loop signals the group, then reaps (daemontools' order).
+  Linux: it works. macOS: waitid, asked for ends alone, reports a stop too,
+  and again at once, so a program stopped through `ctl` was taken for ended
+  and hung up, and a loop that waits again spun (CI, three pushes; Go stopped
+  using waitid on Darwin for this, golang.org/issue/19314). Not done: D130's
+  order and its sentence stand. What would do it on macOS is kqueue's
+  EVFILT_PROC with NOTE_EXIT, or two orders behind a `cfg`: machinery for a
+  gap that is a process number given out again within microseconds of a
+  reap, which is not worth them. A test stops, continues and ends a program through
+  `ctl`, on both systems: it guards the next attempt.
+
+- **D132. `fux start` ends 127 or 126 when its program cannot be started**
+  (koh, 2026-11-27: it told its users 127 from 126 by matching the text
+  `(os error 2)` in what `fux start` said). For a pane with a terminal or
+  without: 127 when the system's error on starting the program is "no such
+  file" (the program, the interpreter its `#!` names, a working directory
+  that is gone); 126 for any other error on starting it (not executable, a
+  directory, no permission to enter the working directory, no process to
+  be had); 1 for any other failure of `start` (a name taken, a bad name, a
+  FIFO that cannot be made, its answer that cannot be written: the pane is
+  up then). The
+  holder ends with that status and `fux start` passes on 126 and 127 alone:
+  a holder that ended any other way is a start that failed, 1. What is said
+  is as it was. With 126 or 127 the folder stays, with a `log` that says why.
+  Which step failed (the working directory or the exec) is not told apart:
+  std's spawn reports one error for both.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.
