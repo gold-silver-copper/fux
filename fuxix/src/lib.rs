@@ -32,6 +32,7 @@ mod os {
     pub const TIOCSCTTY: c_ulong = 0x540E;
     pub const TIOCGWINSZ: c_ulong = 0x5413;
     pub const TIOCSWINSZ: c_ulong = 0x5414;
+    pub const WNOWAIT: c_int = 0x0100_0000;
     pub type Nfds = c_ulong;
     pub type Mode = u32;
 }
@@ -44,11 +45,15 @@ mod os {
     pub const TIOCSCTTY: c_ulong = 0x2000_7461;
     pub const TIOCGWINSZ: c_ulong = 0x4008_7468;
     pub const TIOCSWINSZ: c_ulong = 0x8008_7467;
+    pub const WNOWAIT: c_int = 0x20;
     pub type Nfds = c_uint;
     pub type Mode = u16;
 }
 const F_GETFL: c_int = 3;
 const F_SETFL: c_int = 4;
+/// `waitid`'s P_PID and WEXITED, the same on both systems.
+const P_PID: c_int = 1;
+const WEXITED: c_int = 4;
 pub const POLLIN: i16 = 0x1;
 pub const POLLOUT: i16 = 0x4;
 
@@ -69,6 +74,10 @@ struct PollFd {
     events: i16,
     revents: i16,
 }
+
+/// `siginfo_t` is 128 bytes on Linux and 104 on macOS. Nothing here looks inside it either.
+#[repr(C, align(8))]
+struct SigInfo([u8; 128]);
 
 /// `struct termios` is 60 bytes on Linux and 72 on macOS. Nothing here looks
 /// inside it (`cfmakeraw` does), so it is a block big enough for both.
@@ -96,6 +105,7 @@ unsafe extern "C" {
     fn cfmakeraw(termios: *mut Termios);
     fn gethostname(name: *mut c_char, len: usize) -> c_int;
     fn kill(pid: c_int, signal: c_int) -> c_int;
+    fn waitid(idtype: c_int, id: u32, info: *mut SigInfo, options: c_int) -> c_int;
     fn geteuid() -> u32;
 }
 
@@ -155,6 +165,19 @@ pub fn signal_to(pid: i32, signal: i32) -> io::Result<()> {
     }
     // SAFETY: kill takes two numbers and touches no memory.
     check(unsafe { kill(pid, signal) }).map(drop)
+}
+
+/// Waits until the child `pid` has ended, and leaves it a zombie (waitid(2) with WNOWAIT): until it is
+/// reaped (`Child::wait`), its number, and its group's if it leads one, are not given out again.
+pub fn ended(pid: u32) -> io::Result<()> {
+    let mut info = SigInfo([0; 128]);
+    loop {
+        // SAFETY: waitid writes one siginfo_t, which fits in the block.
+        match check(unsafe { waitid(P_PID, pid, &mut info, WEXITED | os::WNOWAIT) }) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            result => return result.map(drop),
+        }
+    }
 }
 
 /// The number of the user this process acts as (its effective one, which `id -u` prints).
