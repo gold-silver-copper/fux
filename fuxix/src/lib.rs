@@ -75,9 +75,16 @@ struct PollFd {
     revents: i16,
 }
 
-/// `siginfo_t` is 128 bytes on Linux and 104 on macOS. Nothing here looks inside it either.
+/// `siginfo_t` is 128 bytes on Linux and 104 on macOS; both begin with `si_signo`, `si_errno` and `si_code`.
 #[repr(C, align(8))]
-struct SigInfo([u8; 128]);
+struct SigInfo {
+    signo: c_int,
+    errno: c_int,
+    code: c_int,
+    rest: [u8; 116],
+}
+/// `si_code` of a child that exited, was killed, or was killed and dumped core: the same on both systems.
+const CLD_ENDED: [c_int; 3] = [1, 2, 3];
 
 /// `struct termios` is 60 bytes on Linux and 72 on macOS. Nothing here looks
 /// inside it (`cfmakeraw` does), so it is a block big enough for both.
@@ -171,11 +178,14 @@ pub fn signal_to(pid: i32, signal: i32) -> io::Result<()> {
 /// reaped (`Child::wait`), its number, and its group's if it leads one, are not given out again. It holds only
 /// while the caller is the child's one reaper: WNOWAIT does not keep another `wait` from taking it.
 pub fn ended(pid: u32) -> io::Result<()> {
-    let mut info = SigInfo([0; 128]);
+    let mut info = SigInfo { signo: 0, errno: 0, code: 0, rest: [0; 116] };
     loop {
+        info.code = 0;
         // SAFETY: waitid writes one siginfo_t, which fits in the block.
         match check(unsafe { waitid(P_PID, pid, &mut info, WEXITED | os::WNOWAIT) }) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            // (A child that stopped is no end, and macOS may report one.)
+            Ok(_) if !CLD_ENDED.contains(&info.code) => {}
             result => return result.map(drop),
         }
     }

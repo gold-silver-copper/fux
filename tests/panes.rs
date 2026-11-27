@@ -4612,8 +4612,15 @@ fn the_holder_signals_the_group_of_a_program_with_no_terminal_before_it_reaps_th
     let (stop, cont) = if cfg!(target_os = "macos") { (17, 19) } else { (19, 18) };
     let stopped = start_out(&session, "stopped", "exec sleep 600");
     send(&stopped.join("ctl"), format!("kill {stop}\n"));
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(fact(&stopped, "state") == "running" && fuxix::signal_to(pid_of(&stopped), 0).is_ok());
+    std::thread::sleep(Duration::from_millis(1000));
+    // (Nor does its holder spin while it waits.)
+    let status = read(&stopped.join("status"));
+    let holder = status.lines().find_map(|line| line.strip_prefix("holder ")).unwrap();
+    let busy = Command::new("ps").args(["-o", "%cpu=", "-p", holder]).output().unwrap().stdout;
+    let (state, alive) = (fact(&stopped, "state"), fuxix::signal_to(pid_of(&stopped), 0));
+    let busy: f64 = String::from_utf8_lossy(&busy).trim().replace(',', ".").parse().unwrap();
+    let said = format!("state {state}, {alive:?}, {busy}% busy, log {:?}", read(&stopped.join("log")));
+    assert!(state == "running" && alive.is_ok() && busy < 50.0, "{said}");
     send(&stopped.join("ctl"), format!("kill {cont}\nkill 15\n"));
     until("it is told to end, and ends", || fact(&stopped, "state") == "killed 15");
 }
