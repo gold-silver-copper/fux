@@ -45,8 +45,8 @@ WORKSPACE (and what PANE has before its last /) is a name in the default session
 /// The single help page for people, scripts and agents; every command on it is run by `tools/help-agents.sh`.
 const HELP: &str = include_str!("help.txt");
 
-/// Why a command failed, and the status it ends with: as a shell's, 127 for a program that is not found and
-/// 126 for one that is and cannot be run; 1 for anything else.
+/// Why a command failed, and the status it ends with: for a program `start` could not start, 127 when the
+/// system says there is no such file and 126 for any other reason; 1 for anything else.
 struct Failed(u8, String);
 impl From<String> for Failed {
     fn from(why: String) -> Self {
@@ -273,10 +273,11 @@ fn launch(cwd: &Path, lock: File, out: bool, program: &[OsString]) -> Result<(),
     if matches!(holder.stdout.take().map(|mut line| line.read(&mut [0])), Some(Ok(1))) {
         return Ok(());
     }
-    let code = holder.wait().ok().and_then(|status| status.code()).filter(|code| matches!(code, 126 | 127));
+    let code =
+        holder.wait().ok().and_then(|status| status.code()).filter(|code| matches!(code, 126 | 127)).unwrap_or(1);
     let log = text(Path::new("log"), 64 << 10);
     let why = log.lines().last().unwrap_or("the holder ended without a word");
-    Err(Failed(code.map_or(1, |code| code as u8), why.trim_start_matches("fux: ").to_string()))
+    Err(Failed(code as u8, why.trim_start_matches("fux: ").to_string()))
 }
 
 fn wait(args: &[OsString]) -> Result<(), String> {

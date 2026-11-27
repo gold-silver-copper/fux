@@ -183,13 +183,14 @@ impl Holder {
         // program has been started: a pane with none has run nothing.
         let given = std::iter::once(program.get_program()).chain(program.get_args());
         let given: Vec<u8> = given.flat_map(|word| word.as_bytes().iter().copied().chain([0])).collect();
-        // The program's end arrives as a line on a pipe, so the loop waits on it
-        // like on everything else.
+        // The program's end arrives on a pipe, so the loop waits on it like on everything else: as a
+        // line that says it (with a terminal), or as the pipe closing (with none).
         let (mut ended, mut end_writer) = io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
-        let name = program.get_program().to_string_lossy().into_owned();
-        // (As a shell ends: 127 for a program that is not found, 126 for one that is and cannot be run.)
-        let code = |e: &io::Error| if e.kind() == ErrorKind::NotFound { 127 } else { 126 };
-        let mut child = program.spawn().map_err(|e| Failed(code(&e), format!("cannot start {name}: {e}")))?;
+        // 127 when the system says there is no such file (the program, or its `#!` interpreter), else 126.
+        let mut child = program.spawn().map_err(|e| {
+            let code = if e.kind() == ErrorKind::NotFound { 127 } else { 126 };
+            Failed(code, format!("cannot start {}: {e}", program.get_program().to_string_lossy()))
+        })?;
         let pid = child.id();
         // From here the program runs, and is held whatever cannot be written of it: a holder that
         // left now would leave it running with nothing that keeps it.
@@ -199,7 +200,12 @@ impl Holder {
         let thread = |e: io::Error| format!("cannot start a thread: {e}");
         // With no terminal the thread only learns of the end (the pipe closes): the loop reaps the program.
         let Some(input) = &input else {
-            std::thread::Builder::new().spawn(move || _ = (sys::ended(pid), end_writer)).map_err(thread)?;
+            std::thread::Builder::new()
+                .spawn(move || {
+                    _ = sys::ended(pid);
+                    drop(end_writer)
+                })
+                .map_err(thread)?;
             return Ok(self.keep(child, &ctl, &ended)?);
         };
         let waiter = std::thread::Builder::new().spawn(move || {
