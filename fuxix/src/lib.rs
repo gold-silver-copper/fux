@@ -2,7 +2,7 @@
 //! Every `extern` is declared by hand after the C prototypes; the constants
 //! are those of Linux (x86-64 and arm64) and of macOS, and differ where the two differ.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_ulong, c_void};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Error, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -51,8 +51,8 @@ mod os {
 }
 const F_GETFL: c_int = 3;
 const F_SETFL: c_int = 4;
-/// `waitid`'s P_PID and WEXITED, the same on both systems.
-const P_PID: c_int = 1;
+/// `waitid`'s P_PID (an `idtype_t`, unsigned) and WEXITED, the same on both systems.
+const P_PID: c_uint = 1;
 const WEXITED: c_int = 4;
 pub const POLLIN: i16 = 0x1;
 pub const POLLOUT: i16 = 0x4;
@@ -105,7 +105,7 @@ unsafe extern "C" {
     fn cfmakeraw(termios: *mut Termios);
     fn gethostname(name: *mut c_char, len: usize) -> c_int;
     fn kill(pid: c_int, signal: c_int) -> c_int;
-    fn waitid(idtype: c_int, id: u32, info: *mut SigInfo, options: c_int) -> c_int;
+    fn waitid(idtype: c_uint, id: u32, info: *mut SigInfo, options: c_int) -> c_int;
     fn geteuid() -> u32;
 }
 
@@ -168,7 +168,8 @@ pub fn signal_to(pid: i32, signal: i32) -> io::Result<()> {
 }
 
 /// Waits until the child `pid` has ended, and leaves it a zombie (waitid(2) with WNOWAIT): until it is
-/// reaped (`Child::wait`), its number, and its group's if it leads one, are not given out again.
+/// reaped (`Child::wait`), its number, and its group's if it leads one, are not given out again. It holds only
+/// while the caller is the child's one reaper: WNOWAIT does not keep another `wait` from taking it.
 pub fn ended(pid: u32) -> io::Result<()> {
     let mut info = SigInfo([0; 128]);
     loop {
