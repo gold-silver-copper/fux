@@ -1,6 +1,6 @@
 [package]
 name = "fux"
-version = "0.44.0"
+version = "0.45.0"
 edition = "2024"
 description = "A terminal multiplexer that is a view over directories: a pane is a directory kept by one small process"
 license = "MIT"
@@ -19,7 +19,7 @@ lto = "thin"
 
 [dependencies]
 fux-vt = { path = "fux-vt", version = "0.20.1" }
-fuxix = { path = "fuxix", version = "0.13.0" }
+fuxix = { path = "fuxix", version = "0.14.0" }
 
 # A program that is not fux and carries it, as koh does: the `main` is the test's own.
 [[test]]
