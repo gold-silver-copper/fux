@@ -3364,13 +3364,14 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   terminal is as it was (its program is hung up by the kernel). On macOS a
   signal to a group whose one member is the zombie is refused (EPERM): a
   `kill` that comes in that instant is a line in `log`, and reaches nobody
-  else either. A stopped program is not an ended one, but macOS's
-  waitid, asked for ends alone, returned for a stop too (CI: a program
-  stopped through `ctl` was no longer held; Go stopped using waitid on
-  Darwin for this, golang.org/issue/19314). So `ended` reads `si_code` and
-  waits again unless the child exited, was killed or dumped core. A test
-  stops and continues a program through `ctl` on both systems: it is still
-  held, its holder does not spin, and it ends when told. A test
+  else either. Open on macOS: a stopped program is taken for an ended
+  one. Its waitid, asked for ends alone, returns for a stop too (Go stopped
+  using waitid on Darwin for this, golang.org/issue/19314), so the holder (as the
+  code reads) hangs up a program that was stopped through `ctl` and waits to reap it.
+  Reading `si_code` and waiting again does not mend it: with WNOWAIT the
+  stop is reported again at once, and the holder spun (97% of a processor
+  in CI). Linux is right. A test stops, continues and ends a program
+  through `ctl`; on macOS it fails until this is mended. A test
   sends `kill` on `ctl` as fast as the holder takes it while the program
   ends: before, tens of them found no such group, every run.
   - **fuxix**: `ended(pid)`.
