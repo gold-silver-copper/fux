@@ -3332,10 +3332,11 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     order to its holder, which sends the signal (1, a hangup, as a terminal's
     program gets, unless another is named) to the program's group until it
     has seen the program end; never a signal to a number read from a file.
-    A thread learns of the program's end without reaping it (`waitid` with
-    `WNOWAIT`, as daemontools orders it), and the loop reaps it after the last
-    signal: the number signalled is the group's throughout, pinned by the
-    program or its zombie. This loop waits on that thread's pipe and on `ctl`. A removed folder is the hangup too, and so is
+    The holder already had a thread that waits for the program, and it
+    has reaped the leader by then: while any member of the group lives the
+    group's number is not given out again, and with none left the signal as
+    a rule reaches nobody. This loop waits on that
+    thread's pipe and on `ctl`. A removed folder is the hangup too, and so is
     the program's end, as a terminal's end hangs up its group: what should
     outlive it uses `nohup` or `setsid`. Any other command is refused, with
     a line in `log`.
@@ -3346,10 +3347,26 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
     pane over: its `out` is the record of that run (a keys directory written
     before keeps its own `.restore`, which does not: see the README).
   - **fuxix**: `signal_to(pid, signal)` (kill(2), refusing 0 and -1, which
-    are no one process or group), `uid()` (the effective user's number) and
-    `ended(pid)` (waitid(2) with WNOWAIT: a child's end, the child left unreaped).
+    are no one process or group) and `uid()` (the effective user's number).
 
-- **D131. `fux start` ends as a shell does when its program is the cause**
+- **D131. The holder signals before it reaps** (the review of D130: the
+  hangup at a program's end, and a `kill` on `ctl` in that instant, were
+  sent to a number that nothing pinned any more). The waiting thread of a
+  pane with no terminal learns of the program's end without reaping it
+  (`fuxix::ended`, waitid(2) with WNOWAIT: daemontools' order); the loop
+  sends the hangup, then reaps. Every signal the holder sends finds the
+  number its group's, pinned by the program or its zombie: the gap is gone,
+  not guarded. This replaces D130's sentence on it ("it has reaped the
+  leader by then: while any member of the group lives the group's number is
+  not given out again, and with none left the signal as a rule reaches
+  nobody"), which becomes: the loop reaps the program after the last
+  signal, so the number signalled is the group's throughout. A pane with a
+  terminal is as it was (its program is hung up by the kernel). A test
+  sends `kill` on `ctl` as fast as the holder takes it while the program
+  ends: before, tens of them found no such group, every run.
+  - **fuxix**: `ended(pid)`.
+
+- **D132. `fux start` ends as a shell does when its program is the cause**
   (koh, 2026-11-27: it told its users 127 from 126 by matching the text
   `(os error 2)` in what `fux start` said). A program that is not found is
   127, one that is found and cannot be run 126, for a pane with a terminal
