@@ -1,8 +1,8 @@
 [package]
 name = "fuxix"
-version = "0.14.0"
+version = "0.13.0"
 edition = "2024"
-description = "The system calls std does not give: a pty, poll, a FIFO, a new session, a signal, a child's end, window size, raw mode"
+description = "The system calls std does not give: a pty, poll, a FIFO, a new session, a signal, window size, raw mode"
 license = "MIT"
 repository = "https://github.com/gold-silver-copper/fux"
 keywords = ["pty", "terminal", "unix"]

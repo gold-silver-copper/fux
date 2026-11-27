@@ -3349,32 +3349,20 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   - **fuxix**: `signal_to(pid, signal)` (kill(2), refusing 0 and -1, which
     are no one process or group) and `uid()` (the effective user's number).
 
-- **D131. The holder signals before it reaps** (the review of D130: the
-  hangup at a program's end, and a `kill` on `ctl` in that instant, were
-  sent to a number that nothing pinned any more). The waiting thread of a
-  pane with no terminal learns of the program's end without reaping it
-  (`fuxix::ended`, waitid(2) with WNOWAIT: daemontools' order); the loop
-  sends the hangup, then reaps. Every signal the holder sends finds the
-  number its group's, pinned by the program or its zombie: the gap is gone,
-  not guarded. This replaces D130's sentence on it ("it has reaped the
-  leader by then: while any member of the group lives the group's number is
-  not given out again, and with none left the signal as a rule reaches
-  nobody"), which becomes: the loop reaps the program after the last
-  signal, so the number signalled is the group's throughout. A pane with a
-  terminal is as it was (its program is hung up by the kernel). On macOS a
-  signal to a group whose one member is the zombie is refused (EPERM): a
-  `kill` that comes in that instant is a line in `log`, and reaches nobody
-  else either. Open on macOS: a stopped program is taken for an ended
-  one. Its waitid, asked for ends alone, returns for a stop too (Go stopped
-  using waitid on Darwin for this, golang.org/issue/19314), so the holder (as the
-  code reads) hangs up a program that was stopped through `ctl` and waits to reap it.
-  Reading `si_code` and waiting again does not mend it: with WNOWAIT the
-  stop is reported again at once, and the holder spun (97% of a processor
-  in CI). Linux is right. A test stops, continues and ends a program
-  through `ctl`; on macOS it fails until this is mended. A test
-  sends `kill` on `ctl` as fast as the holder takes it while the program
-  ends: before, tens of them found no such group, every run.
-  - **fuxix**: `ended(pid)`.
+- **D131. Signalling before reaping was tried, and is not done** (the
+  review of D130: the hangup at a program's end, and a `kill` on `ctl` in
+  that instant, go to a number that nothing pins any more). Tried: the
+  waiting thread of a pane with no terminal learns of the end with waitid(2)
+  and WNOWAIT, the loop signals the group, then reaps (daemontools' order).
+  Linux: it works. macOS: waitid, asked for ends alone, reports a stop too,
+  and again at once, so a program stopped through `ctl` was taken for ended
+  and hung up, and a loop that waits again spun (CI, three pushes; Go stopped
+  using waitid on Darwin for this, golang.org/issue/19314). Not done: D130's
+  order and its sentence stand. What would do it on macOS is kqueue's
+  EVFILT_PROC with NOTE_EXIT, or two orders behind a `cfg`: machinery for a
+  gap that is a process number given out again within microseconds of a
+  reap, which is not worth them. A test stops, continues and ends a program through
+  `ctl`, on both systems: it guards the next attempt.
 
 - **D132. `fux start` ends 127 or 126 when its program cannot be started**
   (koh, 2026-11-27: it told its users 127 from 126 by matching the text

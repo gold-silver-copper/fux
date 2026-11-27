@@ -4595,32 +4595,17 @@ fn kill_on_the_ctl_of_a_pane_with_no_terminal_is_a_signal_to_its_program_and_its
 }
 
 #[test]
-fn the_holder_signals_the_group_of_a_program_with_no_terminal_before_it_reaps_the_program() {
-    // A program alone in its group ends while `kill` comes on `ctl` as fast as the holder takes it (28 is
-    // SIGWINCH on both systems, nothing to `sleep`): until the holder has reaped it, its zombie keeps the
-    // number its group's, so not one of them finds no such group. (One that reaches the zombie alone is
-    // refused on macOS, and logged.)
-    let session = Session::new("outreap");
-    let job = start_out(&session, "job", "exec sleep 0.5");
-    let ctl = fuxix::open(job.join("ctl"), true).unwrap();
-    let lines = "kill 28\n".repeat(64);
-    while (&ctl).write(lines.as_bytes()).map_or_else(|e| e.kind() == std::io::ErrorKind::WouldBlock, |_| true) {}
-    let waited = session.fux().arg("wait").arg(&job).run();
-    assert!(String::from_utf8_lossy(&waited.stdout).ends_with("state exited 0\n"), "{waited:?}");
-    assert!(!read(&job.join("log")).contains("No such process"), "{}", read(&job.join("log")));
-    // A program that stops has not ended (on macOS waitid may say otherwise): it is held, and told what comes.
+fn a_program_with_no_terminal_that_stops_has_not_ended() {
+    // Stopped through `ctl`, it is still held, and told what comes. (On macOS waitid reports a stop as an
+    // end: D131.)
+    let session = Session::new("outstop");
     let (stop, cont) = if cfg!(target_os = "macos") { (17, 19) } else { (19, 18) };
     let stopped = start_out(&session, "stopped", "exec sleep 600");
     send(&stopped.join("ctl"), format!("kill {stop}\n"));
     std::thread::sleep(Duration::from_millis(1000));
-    // (Nor does its holder spin while it waits.)
-    let status = read(&stopped.join("status"));
-    let holder = status.lines().find_map(|line| line.strip_prefix("holder ")).unwrap();
-    let busy = Command::new("ps").args(["-o", "%cpu=", "-p", holder]).output().unwrap().stdout;
     let (state, alive) = (fact(&stopped, "state"), fuxix::signal_to(pid_of(&stopped), 0));
-    let busy: f64 = String::from_utf8_lossy(&busy).trim().replace(',', ".").parse().unwrap();
-    let said = format!("state {state}, {alive:?}, {busy}% busy, log {:?}", read(&stopped.join("log")));
-    assert!(state == "running" && alive.is_ok() && busy < 50.0, "{said}");
+    let said = format!("state {state}, {alive:?}, log {:?}", read(&stopped.join("log")));
+    assert!(state == "running" && alive.is_ok(), "{said}");
     send(&stopped.join("ctl"), format!("kill {cont}\nkill 15\n"));
     until("it is told to end, and ends", || fact(&stopped, "state") == "killed 15");
 }
