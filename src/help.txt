@@ -100,8 +100,9 @@ normally `in` is gone, and `1<>` would make a plain file of that name.) Under a 
 stopped reading keys it can still wait, as said above. So when the answer matters, ask first whether
 the pane is alive. Alive is not what `state` says: it is the holder's process, there and not a zombie:
     alive() { s=$(ps -o state= -p "$(sed -n 's/^holder //p' "$1/status")" 2>/dev/null) && case $s in ''|Z*) false ;; esac; }
+    ended() { n=0; while alive "$1"; do n=$((n+1)); [ $n -lt "${2:-100}" ] || return 1; sleep 0.1; done; }
     X=$(fux start agent-demo/crash -- sleep 600); kill -9 "$(sed -n 's/^holder //p' "$X/status")"   # a crash, to show it
-    seen . "$X/state"; sleep 0.2; alive "$P"; alive "$X" || echo "crash is dead, though its state says $(cat "$X/state")"
+    alive "$P"; ended "$X" && echo "crash is dead, though its state says $(cat "$X/state")"
     printf 'x' 1<>"$X/in"; echo "the write to the dead pane came back"
 Its one limit: long after a crash the holder's number may be another process's. Exact,
 where there is flock(1) (Linux): the holder holds a lock on the pane's directory while it
@@ -196,8 +197,7 @@ get. The pane stays.
     code=$(fux wait "$J" | sed -n 's/^state exited //p'); echo "exit code $code"
     whole "$J"                                # all it printed (cat "$J/out", started with --out)
 fux wait has no limit: it waits as long as the program runs. To bound it, wait for the
-holder to go, with a limit, and then ask:
-    ended() { n=0; while alive "$1"; do n=$((n+1)); [ $n -lt "${2:-100}" ] || return 1; sleep 0.1; done; }
+holder to go (here for up to 50 tries), and then ask:
     ended "$J" 50 && fux wait "$J" | tail -n 1
 In a shell you keep typing into, print a tag after the command that the typed line itself
 does not contain (here the typed line has $? where the output has a number):
@@ -257,14 +257,16 @@ need more than sh: the optional section below says what.)
 `kill` hangs up (SIGHUP), as closing a terminal does. It does not remove the pane: the
 directory stays, with the last screen and state. It does not force: a program that
 ignores it lives on, with `state` hungup, and is typed to no more; then signal the program (never the holder):
-    T=$(fux start agent-demo/stubborn -- sh -c 'trap "" HUP; echo ready; sleep 600; echo over')
+    T=$(fux start agent-demo/stubborn -- sh -c 'trap "" HUP; sleep 600 & echo ready; wait')
     seen ready "$T/shown/screen"; echo kill > "$T/ctl"; seen hungup "$T/state"
     p=$(sed -n 's/^pid //p' "$T/status"); kill -TERM "$p"; fux wait "$T"    # state killed 15
 `state` and `fux wait` are about the pane's program alone, not about what it started:
 here the shell is gone and its `sleep` runs on. The program leads a process group of its
 own number, and what it started is in it as a rule (a job-control shell's jobs are not):
     kill -0 -"$p" && echo "something of pane stubborn still runs"       # pgrep -g "$p" lists it
-    kill -TERM -"$p"; sleep 0.3; kill -0 -"$p" 2>/dev/null || echo "nothing of it is left"
+    kill -TERM -"$p"; n=0
+    while kill -0 -"$p" 2>/dev/null; do n=$((n+1)); [ "$n" -lt 50 ] || break; sleep 0.1; done
+    kill -0 -"$p" 2>/dev/null || echo "nothing of it is left"
 Removing a pane's directory ends the pane too (its holder sees it within 2 seconds).
 In a pane with no terminal (--out) `ctl` has one command, kill [SIGNAL]: its holder, the program's
 parent, sends the program's process group the signal (1, the hangup, if none is named), until

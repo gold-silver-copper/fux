@@ -21,35 +21,32 @@ def fail(why):
     raise SystemExit(why)
 
 
-def write(data):
+def write(data, keep=False):
+    heard = b""
     while data:
         # The terminal may be answering the case's own questions: take them in, or both sides wait.
         if select.select([0], [], [], 0)[0]:
-            os.read(0, 4096)
+            chunk = os.read(0, 4096)
+            if not chunk:
+                fail("the terminal closed while writing")
+            if keep:
+                heard += chunk
         if select.select([], [1], [], 0.05)[1]:
             data = data[os.write(1, data[:1024]) :]
+    return heard
 
 
-def ask(question, answer):
-    """Writes a question and gives the terminal's last answer of that shape, once it has said
-    all it had to say: a case's own questions are answered before this one."""
-    write(question)
-    heard, deadline = b"", time.monotonic() + 5
-    while True:
-        found = list(re.finditer(answer, heard))
-        ended = found and found[-1].end() == len(heard)
-        if not select.select([0], [], [], 0.03 if ended else 0.5)[0]:
-            if ended:
-                return found[-1]
-            if time.monotonic() > deadline:
-                fail(f"no answer to {question!r}: got {heard!r}")
-            continue
-        heard += os.read(0, 4096)
-
-
-def taken_in():
-    """"Are you well?": the answer comes once everything before it was taken in."""
-    ask(b"\x1b[5n", rb"\x1b\[0n")
+def taken_in(question=b""):
+    """The status reply comes after the case's replies and any question sent here."""
+    heard, deadline = write(question + b"\x1b[5n", keep=True), time.monotonic() + 5
+    while not heard.endswith(b"\x1b[0n"):
+        if not select.select([0], [], [], max(0, deadline - time.monotonic()))[0] or time.monotonic() >= deadline:
+            fail(f"no status reply after {question!r}: got {heard!r}")
+        chunk = os.read(0, 4096)
+        if not chunk:
+            fail(f"the terminal closed before status reply: got {heard!r}")
+        heard += chunk
+    return heard[:-4]
 
 
 def size():
@@ -80,8 +77,11 @@ for number, line in enumerate(open(steps).read().split("\n")):
             write(b"\x1b[8;%d;%dt" % (rows, cols))
         becomes(cols, rows)
         taken_in()
-at = ask(b"\x1b[6n", rb"\x1b\[(\d+);(\d+)R")
-open(f"{out}/cursor.new", "w").write(f"{int(at[1]) - 1} {int(at[2]) - 1}\n")
+positions = re.findall(rb"\x1b\[(\d+);(\d+)R", taken_in(b"\x1b[6n"))
+if not positions:
+    fail("no cursor reply before the status reply")
+at = positions[-1]
+open(f"{out}/cursor.new", "w").write(f"{int(at[0]) - 1} {int(at[1]) - 1}\n")
 os.rename(f"{out}/cursor.new", f"{out}/cursor")
 if xterm:
     # Print the whole screen to the command the referee gave xterm; `final` tells that command
