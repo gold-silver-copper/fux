@@ -787,16 +787,24 @@ fn a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines(
     // `history.styled.1` is a directory: `history.styled` cannot be put aside when the two are
     // past their size. It begins anew, and the log says so; left as it was, it would be past its
     // size at every later round, and `history` put aside each time, over the lines it kept.
-    // (56,000 lines of 80 bytes: past 4 MiB once, and not twice.)
+    // (56,000 lines of 80 bytes: past 4 MiB once, and not twice. Files are put aside when already
+    // past their size as lines are written, so after `done` one more line end scrolls a line: of the
+    // 56,000, the last 22 are on the screen above `done`.)
     let session = Session::new("aside");
-    let prints = "mkdir \"$PANE/history.styled.1\"; awk 'BEGIN { for (i = 0; i < 56000; i++) printf \"%079d\\n\", i }'; printf done; sleep 600";
+    let prints = "mkdir \"$PANE/history.styled.1\"; awk 'BEGIN { for (i = 0; i < 56000; i++) printf \"%079d\\n\", i }'; printf done; while [ ! -e \"$PANE/go\" ]; do sleep 0.05; done; echo; sleep 600";
     let pane = session.start("p", &["sh", "-c", prints]);
     until("the lines are printed", || read(&pane.join("shown/screen")).contains("done"));
-    let (aside, history) = (read(&pane.join("history.1")), read(&pane.join("history")));
-    let lines = aside.lines().count() + history.lines().count();
-    assert!(aside.starts_with("0000") && lines == 56000 - 23, "{lines} lines, {} put aside", aside.len());
+    fs::write(pane.join("go"), "").unwrap();
+    let lines = || read(&pane.join("history.1")).lines().count() + read(&pane.join("history")).lines().count();
+    let aside = || read(&pane.join("history.1")).starts_with("0000") && lines() == 56000 - 22;
+    let aside = || aside() && read(&pane.join("log")).contains("history.styled was lost");
+    until_or("history is put aside, with all but 22 lines", || format!(": {} lines", lines()), aside);
     let (styled, log) = (fs::metadata(pane.join("history.styled")).unwrap().len(), read(&pane.join("log")));
-    assert!(styled < 4 << 20 && log.contains("history.styled was lost"), "{styled} {log}");
+    assert!(styled < 4 << 20 && log.matches("history.styled was lost").count() == 1, "{styled} {log}");
+    // The lines kept are the lines printed, each once and in order.
+    let kept = read(&pane.join("history.1")) + &read(&pane.join("history"));
+    let wrong = kept.lines().enumerate().find(|(n, line)| **line != format!("{n:079}"));
+    assert_eq!(wrong, None, "a line that is not the one printed there");
 }
 
 #[test]

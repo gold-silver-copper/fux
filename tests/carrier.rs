@@ -334,12 +334,16 @@ fn waits(me: &Path, root: &Path) -> Result<(), String> {
     let size = fuxix::Winsize { cols: 50, rows: 12, xpixel: 500, ypixel: 240 };
     let before = shown.drawn.len();
     fuxix::set_winsize(&shown.terminal, size).map_err(|e| e.to_string())?;
-    until("the pane is asked to be the terminal's size", || {
+    let drawn = |shown: &Shown| String::from_utf8_lossy(shown.drawn.get(before..).unwrap_or_default()).into_owned();
+    let anew = until("the pane is asked to be the terminal's size and is drawn anew", || {
         shown.draws(|_| true);
+        let drawn = drawn(&shown);
+        // (After its last clear the frame has `deaf` and is ended: not a clear alone, nor a frame cut short.)
+        let whole = |after: &str| after.split_once("deaf").is_some_and(|(_, rest)| rest.contains("\x1b[?2026l"));
         read(&pane.join("size")).trim() == "50 12"
-    })?;
-    let drawn = String::from_utf8_lossy(shown.drawn.get(before..).unwrap_or_default()).into_owned();
-    check(drawn.contains("\x1b[2J") && drawn.contains("deaf"), format!("not drawn anew: {drawn:?}"))?;
+            && drawn.rsplit_once("\x1b[2J").is_some_and(|(_, after)| whole(after))
+    });
+    anew.map_err(|e| format!("{e}: {:?}", drawn(&shown)))?;
     // Told to leave on its `ctl`, it leaves, with all of that still waiting.
     let own = std::fs::read_dir(root).map_err(|e| e.to_string())?.flatten().map(|entry| entry.path());
     let own =
