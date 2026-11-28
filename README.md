@@ -916,9 +916,7 @@ fux adds nothing to stop these. What happens is what Unix does:
   started in a session of its own. Its number is `pid` in `status`.
 - **Don't expect a start that failed to tidy up.** `fux start` makes a
   folder and never removes one: a program that could not be run leaves its
-  pane's folder with a `log` that says why, and a `status` that names its holder and the command and no `pid`. The name stays taken until you `rm -r` it. A program that
-  removes its pane's folder before the holder's first screen fails its start
-  too (`the holder ended without a word`: the log went with the folder).
+  pane's folder with a `log` that says why, and a `status` that names its holder and the command and no `pid`. The name stays taken until you `rm -r` it.
 - **Don't remove a live pane's `in`**, or the `ctl` of one with no terminal: that is how its holder knows the
   directory is gone, and it leaves (one with no terminal hangs its program up first, and `state` is not written).
 - **Don't expect a pane to drop what its starter had open.** Past 0, 1 and 2, its

@@ -4734,3 +4734,45 @@ fn the_viewer_draws_a_sixel_file_where_its_terminal_draws_sixel_and_sends_no_oth
         assert_eq!((seen.matches("\x1b_").count(), pictures), (0, drawn), "to a terminal that says {what_it_is:?}");
     }
 }
+
+#[test]
+fn a_program_that_removes_its_own_pane_at_once_was_started_and_so_is_its_pane() {
+    // A first round that fails (the folder was removed at once, or a name in it is taken) still
+    // says the pane is up, keeps `generation` odd until a round succeeds, makes the histories
+    // then, and writes the end `state` even if the screen stays blocked.
+    let session = Session::new("gone");
+    let hold_with = |name: &str, keep_blocked: bool| {
+        let folder = session.0.join("main").join(name);
+        fs::create_dir_all(folder.join("history/full")).unwrap();
+        fs::write(folder.join("main"), b"x").unwrap();
+        let log = fs::File::create(folder.join("log")).unwrap();
+        let mut hold = session.fux();
+        hold.args(["hold", ".", "sh", "-c", "until [ -e go ]; do sleep 0.02; done; printf ok; exit 3"]);
+        hold.current_dir(&folder).stdin(fuxix::open(&folder, false).unwrap()).stdout(Stdio::piped()).stderr(log);
+        let mut child = hold.spawn().unwrap();
+        let mut up = [0; 1];
+        assert_eq!(child.stdout.take().unwrap().read(&mut up).unwrap(), 1, "the holder said the pane is up");
+        assert!(fact(&folder, "generation") == "1" && read(&folder.join("log")).contains("cannot write"));
+        if !keep_blocked {
+            fs::remove_dir_all(folder.join("history")).unwrap();
+            fs::remove_file(folder.join("main")).unwrap();
+        }
+        fs::write(folder.join("go"), b"").unwrap();
+        assert!(child.wait().unwrap().success());
+        folder
+    };
+    let healed = hold_with("healed", false);
+    assert_eq!((fact(&healed, "generation").as_str(), fact(&healed, "state").as_str()), ("2", "exited 3"));
+    assert!(healed.join("history").is_file() && healed.join("history.styled").is_file());
+    assert!(read(&healed.join("main/screen")).starts_with("ok\n"));
+    let blocked = hold_with("blocked", true);
+    assert_eq!((fact(&blocked, "generation").as_str(), fact(&blocked, "state").as_str()), ("1", "exited 3"));
+    for round in 0..5 {
+        std::thread::scope(|starts| {
+            for n in 0..8 {
+                let session = &session;
+                starts.spawn(move || session.start(&format!("p{round}-{n}"), &["sh", "-c", "exec rm -rf \"$PANE\""]));
+            }
+        });
+    }
+}

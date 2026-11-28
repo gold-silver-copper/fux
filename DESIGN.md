@@ -57,8 +57,7 @@ locks it as the directory it stands in, and
 starts `fux hold` there in a new session with the
 pane's lock as its standard input: the lock lives exactly as long as the
 holder. The start
-is done when the holder says, on a pipe, that its first screen is written (with `--out`,
-that `state` says `running`).
+is done when the holder says, on a pipe, that its program runs and its first round has been tried.
 The holder
 works inside the folder with relative names, so it does not care what the
 folder is called.

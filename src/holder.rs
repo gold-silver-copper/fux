@@ -142,6 +142,28 @@ pub fn hold(args: &[OsString]) -> Result<(), Failed> {
     result
 }
 
+/// How long it is from `now` until the next round of writing, of what is not written since `dirty`.
+/// A program in the middle of drawing (mode 2026) is not shown until it says it is done, or the
+/// oldest of what is not written is half a second old: nothing it wrote waits longer, so one that
+/// never says so, or says it again at once, cannot freeze its pane. Any other is shown 25 ms after
+/// the last round, or sooner once it has gone quiet: nothing more from it for a millisecond
+/// (whatever else the holder was woken for meanwhile), and not because it is not being read.
+pub(crate) fn round_due(
+    now: Instant,
+    dirty: Option<Instant>,
+    published: Instant,
+    heard: Instant,
+    budget: usize,
+    drawing: bool,
+) -> Option<Duration> {
+    let left = |since: Instant, long: Duration| long.saturating_sub(now.duration_since(since));
+    dirty.map(|first| match budget {
+        _ if drawing => left(first, DRAWING_MAX),
+        0 => left(published, PUBLISH_EVERY),
+        _ => left(published, PUBLISH_EVERY).min(left(published, PUBLISH_QUIET).max(left(heard, QUIET))),
+    })
+}
+
 impl Holder {
     /// Makes the FIFOs, says in `run` which run this is and in `status` who holds the pane, starts the
     /// program and keeps the pane until it ends.
@@ -252,10 +274,10 @@ impl Holder {
     }
 
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
-        for history in ["history", "history.styled"] {
-            File::create(history).map_err(|e| format!("cannot make {history}: {e}"))?;
+        // The program runs (it may have removed its folder already): what cannot be written is logged.
+        if let Err(e) = self.publish(None) {
+            self.log(&format!("cannot write the pane's files: {e}"));
         }
-        self.publish(None).map_err(|e| format!("cannot write the screen: {e}"))?;
         // (The pane is up: `fux start` waits for this line.)
         let _ = crate::say(b"");
 
@@ -268,18 +290,7 @@ impl Holder {
             // How long it still is until `long` after a moment: no time, once that has come.
             let now = Instant::now();
             let left = |since: Instant, long: Duration| long.saturating_sub(now.duration_since(since));
-            // When the next round of writing is due. A program in the middle of drawing (mode 2026)
-            // is not shown until it says it is done, or the oldest of what is not written is half a
-            // second old: nothing it wrote waits longer, so one that never says so, or says it again
-            // at once, cannot freeze its pane. Any other is shown this long after the last round, or
-            // sooner once it has gone quiet: nothing more from it for a millisecond (whatever else
-            // the holder was woken for meanwhile), and not because it is not being read.
-            let drawing = self.term.shown().sync && self.pty.is_some();
-            let round = dirty.map(|first: Instant| match budget {
-                _ if drawing => left(first, DRAWING_MAX),
-                0 => left(published, PUBLISH_EVERY),
-                _ => left(published, PUBLISH_EVERY).min(left(published, PUBLISH_QUIET).max(left(heard, QUIET))),
-            });
+            let round = round_due(now, dirty, published, heard, budget, self.term.shown().sync && self.pty.is_some());
             // The budget is for what is read between two screens; while a program in the middle
             // of drawing is not shown, for what is read in the time of one.
             let refill = (budget == 0).then(|| left(filled, PUBLISH_EVERY));
@@ -584,12 +595,16 @@ impl Holder {
         let (main, alt) = (folder(MAIN, false), folder(ALT, true));
         // `shown` is a link to the folder of the screen drawn: `alt` is filled before it is
         // turned there, and goes (with all that is in it) after it is turned back.
+        let hist = [("history", Some(String::new())), ("history.styled", Some(String::new()))];
         let turn = [("shown", Some(if alt.is_some() { "alt" } else { "main" }.to_string()))];
         let gone = alt.is_none().then_some(("alt", None));
-        let files = pane.into_iter().chain(main.into_iter().flatten()).chain(alt.into_iter().flatten());
+        let files = pane.into_iter().chain(hist).chain(main.into_iter().flatten()).chain(alt.into_iter().flatten());
         let files = files.chain(turn).chain(gone).map(|(name, text)| (name, text.map(String::into_bytes)));
         let absent = |made: io::Result<()>, kind| made.or_else(|e| if e.kind() == kind { Ok(()) } else { Err(e) });
         let write = |name: &str, bytes: Option<&[u8]>| match (name, bytes) {
+            ("history" | "history.styled", Some(_)) => {
+                OpenOptions::new().create(true).append(true).open(name).map(drop)
+            }
             ("main" | "alt", Some(_)) => absent(fs::create_dir(name), ErrorKind::AlreadyExists),
             ("alt", None) => absent(fs::remove_dir_all(name), ErrorKind::NotFound),
             ("shown", Some(folder)) => {

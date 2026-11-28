@@ -267,8 +267,8 @@ fn launch(cwd: &Path, lock: File, out: bool, program: &[OsString]) -> Result<(),
     holder.stdin(Stdio::from(lock)).stdout(Stdio::piped()).stderr(log);
     sys::new_session(&mut holder, false);
     let mut holder = holder.spawn().map_err(|e| format!("cannot start the holder: {e}"))?;
-    // The holder says a line when its first screen is written (with `--out`, when `state` says
-    // `running`): it is up. With no line it has ended before that, whatever became of its folder
+    // The holder says a line once its program is started and its first round of writing has run:
+    // it is up. With no line it has ended before that, whatever became of its folder
     // since: its log's last line says why, and its status whether that was its program not found or not run.
     if matches!(holder.stdout.take().map(|mut line| line.read(&mut [0])), Some(Ok(1))) {
         return Ok(());
