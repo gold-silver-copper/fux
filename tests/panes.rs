@@ -2782,14 +2782,21 @@ fn a_menu_with_no_room_for_its_count_shows_no_part_of_a_number() {
         fs::write(keys.join("C-b").join(key.to_string()), "#!/bin/sh\n# abcdefghij\n").unwrap();
     }
     inner.start("one", &["sleep", "600"]);
-    let mut start = outer.fux();
-    start.env("COLUMNS", "4").env("LINES", "3").args(["start", "view", "--"]).args(viewer(&inner, &keys));
-    let view = outer.started(&mut start);
-    let screen = || read(&view.join("shown/screen"));
-    until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
-    send(&view.join("in"), "\x02");
-    until_or("the menu is shown", screen, || screen().contains('▼'));
-    assert!(!screen().contains(|c: char| c.is_ascii_digit()), "{:?}", screen());
+    let menu = |columns: &str| {
+        let mut start = outer.fux();
+        start.env("COLUMNS", columns).env("LINES", "3").args(["start", &format!("view{columns}"), "--"]);
+        let view = outer.started(start.args(viewer(&inner, &keys)));
+        let screen = || read(&view.join("shown/screen"));
+        until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
+        send(&view.join("in"), "\x02");
+        until_or("the menu is shown", screen, || screen().contains('▼'));
+        screen()
+    };
+    let narrow = menu("4");
+    assert!(!narrow.contains(|c: char| c.is_ascii_digit()), "{narrow:?}");
+    // Where it has room, it is the whole count (two keys are shown there).
+    let wide = menu("30");
+    assert!(wide.contains("▼ 24 more"), "{wide:?}");
 }
 
 #[test]
@@ -2974,11 +2981,11 @@ fn rounds_of_writing_that_fail_do_not_leave_their_pictures_for_good() {
     // be written (a directory where its new file would be made): a round that fails still removes
     // the files of pictures no screen has any more, so they do not grow in number while it lasts.
     let session = Session::new("picfail");
-    let draws = "until [ -e \"$PANE/go\" ]; do sleep 0.05; done; i=0; while [ $i -lt 12 ]; do i=$((i + 1)); \
-        printf '\\033[2J\\033[H\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\'; sleep 0.1; done; : > \"$PANE/drawn\"; sleep 600";
+    // (One at a time: each when the test says so.)
+    let draws = "i=0; while [ $i -lt 3 ]; do i=$((i + 1)); until [ -e \"$PANE/go$i\" ]; do sleep 0.05; done; \
+        printf '\\033[2J\\033[H\\033Pq\"1;1;10;6#0;2;100;0;0#0!10~\\033\\\\'; done; sleep 600";
     let pane = session.start("p", &["sh", "-c", draws]);
     fs::create_dir(pane.join("main/.pictures.new")).unwrap();
-    fs::write(pane.join("go"), "").unwrap();
     let files = || {
         fs::read_dir(&pane)
             .unwrap()
@@ -2986,15 +2993,15 @@ fn rounds_of_writing_that_fail_do_not_leave_their_pictures_for_good() {
             .filter(|file| file.file_name().as_encoded_bytes().starts_with(b"pic-"))
             .count()
     };
-    until("the pictures are drawn in rounds that failed", || {
-        pane.join("drawn").exists() && read(&pane.join("log")).matches("cannot write the pane's files").count() >= 6
-    });
-    // (A few seconds for the last round, not `until`'s minute: files that stay, stay for good.)
-    let begun = Instant::now();
-    while files() > 2 {
-        assert!(begun.elapsed() < Duration::from_secs(3), "{} picture files after 12 pictures, one at a time", files());
-        std::thread::sleep(Duration::from_millis(20));
+    for i in 1..=3 {
+        fs::write(pane.join(format!("go{i}")), "").unwrap();
+        until("the picture is drawn in a round that failed", || {
+            let failed = read(&pane.join("log")).matches("cannot write the pane's files").count();
+            failed >= i && pane.join(format!("pic-{i}.sixel")).exists()
+        });
     }
+    // The last is there, and none of those before.
+    assert_eq!(files(), 1, "picture files after 3 pictures, one at a time");
 }
 
 #[test]
@@ -3006,42 +3013,50 @@ fn a_line_of_ctl_is_measured_in_the_bytes_that_were_written() {
     send(&pane.join("ctl"), [&b"notify "[..], &[0xff; 500], b"\n"].concat());
     until("the line is taken or refused", || !fact(&pane, "notice").is_empty() || !read(&pane.join("log")).is_empty());
     assert!(fact(&pane, "notice").starts_with("1 \u{fffd}"), "{}", read(&pane.join("log")));
-    // A line over the bound is dropped whole, however it arrives, and the next one is taken.
-    send(&pane.join("ctl"), [&[b'x'; 3000][..], b"\nnotify next\n"].concat());
-    until("the next line is taken", || fact(&pane, "notice") == "2 next");
+    // A line of 1,280 bytes (its end not counted) is under it too; one over it is dropped whole,
+    // however it arrives, and the next one is taken.
+    let line = |bytes: usize| [&b"notify "[..], &vec![b'x'; bytes - 7], b"\n"].concat();
+    send(&pane.join("ctl"), line(1280));
+    until("the line is taken", || fact(&pane, "notice").starts_with("2 xxx"));
+    send(&pane.join("ctl"), [line(1281), b"notify next\n".to_vec()].concat());
+    until("the next line is taken", || fact(&pane, "notice") == "3 next");
     assert_eq!(read(&pane.join("log")), "ctl: a line over 1280 bytes was dropped\n");
 }
 
 #[test]
 fn the_viewer_writes_to_a_fifo_under_a_panes_name_and_to_nothing_a_link_there_leads_to() {
     // A pane's folder that another than a holder wrote: under `in` and under `ctl` a link, each to a
-    // file that is none of the pane's. The viewer shows the pane, asks it nothing and types nothing
-    // into it: what a link leads to is not written, and a pane with no FIFO under `in` is not read.
+    // FIFO that is none of the pane's (the test reads it). The viewer shows the pane, asks it nothing
+    // and types nothing into it: what a link leads to is not written, and a pane with no FIFO under
+    // `in` is not read.
     let (outer, inner) = (Session::new("wlouter"), Session::new("wlinner"));
     let (keys, pane) = (inner.0.join(".keys"), inner.0.join("main/linked"));
     fs::create_dir_all(&keys).unwrap();
     fs::create_dir_all(&pane).unwrap();
     let kept = [("in", inner.0.join("typed-kept")), ("ctl", inner.0.join("asked-kept"))];
-    for (name, file) in &kept {
-        fs::write(file, "not the pane's\n").unwrap();
-        std::os::unix::fs::symlink(file, pane.join(name)).unwrap();
+    assert!(Command::new("mkfifo").args(kept.iter().map(|(_, fifo)| fifo)).ended().success());
+    for (name, fifo) in &kept {
+        std::os::unix::fs::symlink(fifo, pane.join(name)).unwrap();
     }
+    let readers = kept.each_ref().map(|(_, fifo)| fuxix::open(fifo, false).unwrap());
     let view = outer.start("view", &viewer(&inner, &keys));
     let screen = || read(&view.join("shown/screen"));
-    let written = || kept.iter().any(|(_, file)| read(file) != "not the pane's\n");
+    let got = std::cell::Cell::new(0);
+    let written = || {
+        let mut bytes = [0; 4096];
+        readers.iter().for_each(|mut fifo| got.set(got.get() + fifo.read(&mut bytes).unwrap_or(0)));
+        got.get() > 0
+    };
     until("the viewer shows the workspace", || fact(&view, "modes").contains("paste") || !screen().trim().is_empty());
     send(&view.join("in"), "typed\r");
-    until("the viewer says what became of the keys", || written() || screen().contains("linked"));
-    std::thread::sleep(Duration::from_millis(300));
-    for (name, file) in &kept {
-        assert_eq!(read(file), "not the pane's\n", "the viewer wrote through the link under `{name}`");
-    }
+    until("the viewer says what became of the keys", || written() || screen().contains("what you typed"));
+    assert!(!written(), "the viewer wrote {} bytes through the links", got.get());
     assert!(screen().contains("linked") && screen().contains("what you typed"), "{}", screen());
     // A file under the two names, and no link: it is not written either, and the viewer says what
     // is wrong with it.
-    for (name, file) in &kept {
+    for (name, _) in &kept {
         fs::remove_file(pane.join(name)).unwrap();
-        fs::copy(file, pane.join(name)).unwrap();
+        fs::write(pane.join(name), "not the pane's\n").unwrap();
     }
     send(&view.join("in"), "typed again\r");
     until("the viewer says that it is no FIFO", || screen().contains("linked: its `in` is no FIFO"));
@@ -3228,7 +3243,12 @@ fn a_pane_whose_tab_is_shown_again_is_asked_its_size_once_more_and_no_more() {
     assert_eq!(asked(), 1);
     assert!(inner.fux().args(["layout", "main", "tab", "prev"]).ended().success());
     until("the pane is shown again, and asked again", || shows("AYE") && asked() == 2);
-    std::thread::sleep(Duration::from_millis(400));
+    // (Drawn anew, as a holder writes it, it is not asked again.)
+    for (name, text) in [("main/screen.styled", "AYE AGAIN\n"), ("generation", "2\n")] {
+        fs::write(made.join(".new"), text).unwrap();
+        fs::rename(made.join(".new"), made.join(name)).unwrap();
+    }
+    until("the pane is drawn anew", || shows("AYE AGAIN"));
     assert_eq!(asked(), 2, "{}", all.borrow());
 }
 
@@ -3342,8 +3362,8 @@ fn the_windows_focus_is_not_told_to_a_program_that_asks_no_more() {
     send(&view.join("in"), "\x1b[O");
     std::thread::sleep(Duration::from_millis(300));
     assert!(Command::new("kill").args(["-CONT", &pid]).ended().success());
-    std::thread::sleep(Duration::from_millis(300));
-    send(&one.join("in"), "END");
+    // (Typed through the viewer: whatever it told the program came before.)
+    send(&view.join("in"), "END");
     until("the pane has what was typed", || read(&one.join("shown/screen")).contains("END"));
     assert_eq!(read(&one.join("shown/screen")).trim_end(), "^[[IEND");
 }
@@ -3446,6 +3466,8 @@ fn a_command_that_cannot_be_written_down_does_not_cost_the_pane_its_holder() {
     assert!(fact(&pane, "state") == "running" && status.lines().nth(1).is_some_and(|line| line.starts_with("pid ")));
     assert!(log.contains("command") && log.contains("File too large"), "{log}");
     assert!(!pane.join("command").exists() && pane.join("in").exists());
+    send(&pane.join("ctl"), "notify alive\n");
+    until("the holder still takes what it is told", || fact(&pane, "notice").ends_with(" alive"));
 }
 
 #[test]
@@ -3513,14 +3535,14 @@ fn a_line_of_ctl_that_has_not_ended_writes_no_screen() {
     // not woken for it. The line's end is what has the notice written, and `generation` after it.
     let session = Session::new("halfline");
     let pane = session.start("p", &["sleep", "600"]);
-    let first = stamp_of(&pane, "generation");
+    let (first, next) = (stamp_of(&pane, "generation"), fact(&pane, "generation").parse::<u64>().unwrap() + 2);
     send(&pane.join("ctl"), "notify the first");
     std::thread::sleep(Duration::from_millis(300));
     let now = (stamp_of(&pane, "generation"), fact(&pane, "notice"));
     assert_eq!(now, (first, String::new()), "a round was written for half a line");
     send(&pane.join("ctl"), " half\n");
     until("the whole line is taken", || fact(&pane, "notice") == "1 the first half");
-    until("the round has ended", || stamp_of(&pane, "generation") != first && fact(&pane, "generation") == "4");
+    until("the round has ended", || fact(&pane, "generation") == next.to_string());
 }
 
 #[test]
@@ -3544,14 +3566,23 @@ fn a_key_script_is_told_the_terminals_size_before_the_first_frame_and_none_where
     assert_eq!(read(&inner.0.join("told")), "80 24\n");
     // A terminal that says it has no rows (a pty whose size nobody set) has told no size: the workspace's
     // first shell is started all the same, at 80 by 24, as `fux start` has it when it is told none.
+    // (Its `.empty` notes whether it was told any rows.)
     let (outer, inner) = (Session::new("tsouter"), Session::new("tsinner"));
-    let view = outer.start("view", &["sh", "-c", &views(&inner, &inner.0.join(".keys"), "stty rows 0")]);
+    let keys = inner.0.join(".keys");
+    fs::create_dir_all(&inner.0).unwrap();
+    assert!(
+        Command::new("cp").arg("-R").arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys")).arg(&keys).ended().success()
+    );
+    let empty = "#!/bin/sh\necho \"${LINES+told}\" > session/.lines\nexec \"$(readlink keys)/.new-shell\"\n";
+    fs::write(keys.join(".empty"), empty).unwrap();
+    let view = outer.start("view", &["sh", "-c", &views(&inner, &keys, "stty rows 0")]);
     let first = inner.0.join("main/1");
     let log = || format!(": its log says {:?}, the viewer's {:?}", read(&first.join("log")), read(&view.join("log")));
     until_or("the first pane was started", log, || {
         fact(&first, "state") == "running" || !read(&first.join("log")).is_empty()
     });
     assert_eq!((fact(&first, "state").as_str(), fact(&first, "size").as_str()), ("running", "80 24"), "{}", log());
+    assert_eq!(read(&inner.0.join(".lines")), "\n", "the script was told rows");
 }
 
 #[test]
@@ -3617,6 +3648,7 @@ fn a_restore_that_fails_leaves_the_run_before_whole_and_starts_the_others() {
         assert!(session.fux().arg("wait").arg(pane).ended().success());
     }
     assert!(read(&lost.join("history")).contains("\n17\n") && read(&told.join("shown/screen")).trim() == "told");
+    let command = fs::read(lost.join("command")).unwrap();
     fs::remove_file(&counts).unwrap();
     // (Run as a login runs it: by the script's path, with no session named: it is the default one.)
     // (A CDPATH that leads to the script's folder makes `cd` print where it went: the session is still one path.)
@@ -3641,6 +3673,7 @@ fn a_restore_that_fails_leaves_the_run_before_whole_and_starts_the_others() {
     let before = before.unwrap_or_else(|| panic!("{said}"));
     assert!(said.starts_with("w/lost: ") && said.contains("cannot start ") && before.starts_with(&session.0), "{said}");
     assert!(read(&before.join("history")).contains("\n17\n") && read(&before.join("state")) == "exited 0\n");
+    assert_eq!(fs::read(before.join("command")).ok(), Some(command), "the run before lost its command");
     assert!(read(&lost.join("log")).contains("cannot start ") && !lost.join("command").exists());
     // So it is not tried again, and nothing more is moved (the other has ended once more by now).
     assert!(session.fux().arg("wait").arg(&told).ended().success());
@@ -3682,8 +3715,7 @@ fn a_paste_ends_marked_as_it_began_whatever_the_program_asks_by_then() {
     let (outer, inner) = (Session::new("p2outer"), Session::new("p2inner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(&keys).unwrap();
-    let reads =
-        "stty raw -echo; printf '\\033[?2004h'; dd bs=1 count=7 >/dev/null 2>&1; printf '\\033[?2004l'; exec cat -v";
+    let reads = "stty raw -echo; printf '\\033[?2004h'; dd bs=1 count=7 2>/dev/null > \"$PANE/began\"; printf '\\033[?2004l'; exec cat -v";
     let pane = inner.start("a", &["sh", "-c", reads]);
     until("the program asks for pastes marked", || fact(&pane, "modes").contains("paste"));
     let view = outer.start("view", &viewer(&inner, &keys));
@@ -3694,6 +3726,7 @@ fn a_paste_ends_marked_as_it_began_whatever_the_program_asks_by_then() {
     until("the program asks for them no more", || !fact(&pane, "modes").contains("paste"));
     send(&view.join("in"), "b\x1b[201~Z");
     until("the rest arrives", || read(&pane.join("shown/screen")).contains('Z'));
+    assert_eq!(read(&pane.join("began")), "\x1b[200~a", "a paste that was asked marked did not begin marked");
     assert_eq!(
         read(&pane.join("shown/screen")).trim_end(),
         "b^[[201~Z",
@@ -3930,7 +3963,7 @@ fn a_notice_that_cannot_be_opened_is_old_when_it_can_be() {
     // readable later (a `chmod` alone), it is the same old notice and is not rung.
     let (outer, inner) = (Session::new("shutout"), Session::new("shutin"));
     let keys = concat!(env!("CARGO_MANIFEST_DIR"), "/keys");
-    let (_p1, p2) = (inner.start("p1", &["sh", "-c", "echo SHOWN; sleep 600"]), inner.start("p2", &["sleep", "600"]));
+    let (p1, p2) = (inner.start("p1", &["sh", "-c", "echo SHOWN; sleep 600"]), inner.start("p2", &["sleep", "600"]));
     lay(&inner.0, "* p1 focus=p1\n  p2 focus=p2\n");
     send(&p2.join("ctl"), "notify old\n");
     until("the notice is written", || read(&p2.join("notice")) == "1 old\n");
@@ -3941,15 +3974,13 @@ fn a_notice_that_cannot_be_opened_is_old_when_it_can_be() {
     }
     let view = outer.start("view", &viewer(&inner, Path::new(&keys)));
     until("the viewer shows the first pane", || read(&view.join("shown/screen")).contains("SHOWN"));
-    std::thread::sleep(Duration::from_millis(600));
     send(&view.join("in"), "\x02");
-    until("the tabs are shown", || read(&view.join("shown/screen")).contains(" p2"));
-    let marked = read(&view.join("shown/screen")).contains(" p2! ");
+    until("the tab is marked", || read(&view.join("shown/screen")).contains(" p2! "));
+    // (A notice the viewer passes on after that is of a look at the panes after it.)
     mode("600");
-    std::thread::sleep(Duration::from_millis(600));
-    send(&p2.join("ctl"), "notify new\n");
-    until("the viewer passed the new one on", || read(&view.join("notice")).ends_with(" p2: new\n"));
-    assert_eq!((marked, read(&view.join("notice")).as_str()), (true, "1 p2: new\n"), "the old notice was rung");
+    send(&p1.join("ctl"), "notify new\n");
+    until("the viewer passed the new one on", || read(&view.join("notice")).ends_with(" p1: new\n"));
+    assert_eq!(read(&view.join("notice")), "1 p1: new\n", "the old notice was rung");
 }
 
 #[test]
@@ -4182,6 +4213,17 @@ fn the_readme_and_the_agents_page_list_the_capabilities_the_emulator_answers() {
         page.split_whitespace().collect::<Vec<_>>().join(" ").contains(&format!("{}.", names.join(" "))),
         "the agents' page"
     );
+    // And it is what the emulator answers a program that asks for one by its name (XTGETTCAP), as
+    // a name it does not know is not one.
+    let (mut term, hex) =
+        (fux_vt::Term::new(80, 24), |text: &str| text.bytes().map(|b| format!("{b:02X}")).collect::<String>());
+    for (name, value) in fux_vt::CAPS.iter().copied().chain([("nonesuch", "")]) {
+        term.feed(format!("\x1bP+q{}\x1b\\", hex(name)).as_bytes());
+        let (known, is) =
+            (name != "nonesuch", if value.is_empty() { String::new() } else { format!("={}", hex(value)) });
+        let answer = format!("\x1bP{}+r{}{is}\x1b\\", u8::from(known), hex(name));
+        assert_eq!(String::from_utf8_lossy(&term.take(0).reply), answer, "{name}");
+    }
 }
 
 #[test]
@@ -4634,7 +4676,12 @@ fn a_program_with_no_terminal_that_stops_has_not_ended() {
     let (stop, cont) = if cfg!(target_os = "macos") { (17, 19) } else { (19, 18) };
     let stopped = start_out(&session, "stopped", "exec sleep 600");
     send(&stopped.join("ctl"), format!("kill {stop}\n"));
-    std::thread::sleep(Duration::from_millis(1000));
+    let ps = || Command::new("ps").args(["-o", "stat=", "-p", &pid_of(&stopped).to_string()]).run().stdout;
+    until_or(
+        "it is stopped",
+        || String::from_utf8_lossy(&ps()).into_owned(),
+        || ps().trim_ascii_start().starts_with(b"T"),
+    );
     let (state, alive) = (fact(&stopped, "state"), fuxix::signal_to(pid_of(&stopped), 0));
     let said = format!("state {state}, {alive:?}, log {:?}", read(&stopped.join("log")));
     assert!(state == "running" && alive.is_ok(), "{said}");
