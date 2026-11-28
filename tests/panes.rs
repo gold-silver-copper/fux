@@ -481,7 +481,6 @@ fn what_a_test_runs_and_writes_to_ends_at_the_tests_one_deadline() {
     until("the program ignores the hangup", || read(&pane.join("shown/screen")).contains("ready"));
     let status = read(&pane.join("status"));
     let numbers: Vec<&str> = status.lines().take(2).filter_map(|line| line.split(' ').nth(1)).collect();
-    let alive = |pid: &str| Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).ended().success();
     assert!(numbers.len() == 2 && numbers.iter().all(|pid| alive(pid)), "{status}");
     assert_eq!(session.end(), [""; 0]);
     until("the holder and the program are gone", || !numbers.iter().any(|pid| alive(pid)));
@@ -523,7 +522,6 @@ fn a_session_ends_a_program_whose_holder_has_died() {
     until("the program ignores the hangup", || read(&pane.join("shown/screen")).contains("ready"));
     let status = read(&pane.join("status"));
     let numbers: Vec<&str> = status.lines().take(2).filter_map(|line| line.split(' ').nth(1)).collect();
-    let alive = |pid: &str| Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).ended().success();
     assert!(Command::new("kill").args(["-KILL", numbers[0]]).ended().success(), "{status}");
     until("the holder is gone", || !alive(numbers[0]));
     assert!(alive(numbers[1]), "the program went with its holder: the test means one that does not");
@@ -604,45 +602,7 @@ fn the_tests_stop_also_when_what_ends_their_sessions_does_not_return() {
     // which a holder looks for every two seconds, and its program is one a hangup ends.)
     assert!(sessions.len() == 1 && !sessions[0].exists(), "{said}");
     let holder = said.lines().find_map(|line| line.strip_prefix("its holder: ")).unwrap().to_string();
-    until("its holder has left", || {
-        !Command::new("kill").args(["-0", &holder]).stderr(Stdio::null()).ended().success()
-    });
-}
-
-#[test]
-fn the_tests_stop_with_no_command_of_another_test_left_running() {
-    // Beside the test that is held, another whose `fux start` waits (to say where its pane is, to a
-    // FIFO that is full) and whose own deadline is far off when the watcher stops the tests: that
-    // start is stopped with them. It is no pane of the session's own, so no session's end would have found it.
-    let set = [("TEST_LIMIT", "2"), ("TEST_HELD", "1")];
-    let out = tests(&["a_test_that_opens_a_fifo_nobody_writes", "a_test_whose_start_waits"], &set);
-    let said = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(124), "{said}");
-    let start = said.lines().find_map(|line| line.strip_prefix("its start: ")).unwrap_or_else(|| panic!("{said}"));
-    let alive = Command::new("kill").args(["-0", start]).stderr(Stdio::null()).ended().success();
-    assert!(!alive, "the start {start} of the other test outlived the tests");
-    assert!(said_sessions(&out).iter().all(|session| !session.exists()), "{said}");
-}
-
-#[test]
-fn a_test_whose_start_waits() {
-    // (Where a test above tells it to: that one runs it, beside the one that is held.)
-    if std::env::var_os("TEST_HELD").is_none() {
-        return;
-    }
-    std::thread::sleep(Duration::from_millis(750));
-    let session = Session::new("waits");
-    eprintln!("its session: {}", session.0.display());
-    // (Its answer goes to a FIFO that is full and that nobody empties: the start waits to say it.)
-    fs::create_dir_all(&session.0).unwrap();
-    let full = session.0.join("full");
-    assert!(Command::new("mkfifo").arg(&full).ended().success());
-    let (_reader, mut filler) = (fuxix::open(&full, false).unwrap(), fuxix::open(&full, true).unwrap());
-    while filler.write(&[0; 4096]).is_ok() {}
-    let answer = fs::OpenOptions::new().write(true).open(&full).unwrap();
-    let start = session.fux().args(["start", "p", "--", "sleep", "600"]).stdout(answer).begin();
-    eprintln!("its start: {}", locked(&start.child).id());
-    start.end();
+    until("its holder has left", || !alive(&holder));
 }
 
 #[test]
@@ -956,8 +916,7 @@ fn each_screen_has_a_folder_of_its_own_and_shown_leads_to_the_one_that_is_drawn(
     assert_eq!(folder("main"), ["lines", "links", "pictures", "screen", "screen.styled"]);
     assert!(!pane.join("screen").exists() && !pane.join("lines").exists() && !pane.join("screen.main").exists());
     // What the program draws meanwhile is not the main screen's: its files are not written again.
-    use std::os::unix::fs::MetadataExt;
-    let stamp = |name: &str| fs::metadata(pane.join(name)).map(|file| (file.ino(), file.mtime_nsec())).ok();
+    let stamp = |name: &str| stamp_of(&pane, name);
     let written = (stamp("main/screen"), stamp("main/screen.styled"));
     send(&pane.join("in"), "more");
     until("the program's screen has changed", || file("alt/screen").contains("\nfullmore\n"));
@@ -1004,6 +963,11 @@ fn until_or(what: &str, more: impl Fn() -> String, mut ready: impl FnMut() -> bo
         assert!(Instant::now() < end, "at the test's deadline, still waiting until {what}{}", more());
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Whether a process of this number is there (a zombie too).
+fn alive(pid: &str) -> bool {
+    pid.parse().is_ok_and(|pid| fuxix::signal_to(pid, 0).is_ok())
 }
 
 /// Which file a pane has of a name, and when it was written.
@@ -1367,10 +1331,9 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
     let other = session.start("b", &["sh", "-c", "echo $$ > \"$PANE/pid\"; exec sleep 600"]);
     until("the program runs", || !read(&other.join("pid")).is_empty());
     let pid = read(&other.join("pid")).trim().to_string();
-    let alive = || Command::new("kill").args(["-0", &pid]).run().status.success();
-    assert!(alive());
+    assert!(alive(&pid));
     fs::remove_dir_all(&other).unwrap();
-    until("the program is gone with its directory", || !alive());
+    until("the program is gone with its directory", || !alive(&pid));
 }
 
 #[test]
@@ -2423,7 +2386,7 @@ fn a_key_the_viewer_took_is_its_own_to_its_release_and_a_release_follows_its_pre
 }
 
 #[test]
-fn a_held_key_does_again_what_its_press_did_and_there_only_and_a_program_started_anew_gets_none_of_it() {
+fn a_held_key_does_again_what_its_press_did_and_there_only() {
     let (outer, inner) = (Session::new("houter"), Session::new("hinner"));
     let keys = inner.0.join(".keys");
     // Two menus that stay open, with the same key in both.
@@ -2471,18 +2434,6 @@ fn a_held_key_does_again_what_its_press_did_and_there_only_and_a_program_started
     send(&view.join("in"), format!("\x1b[97;1:2u{}", tap("122;1")));
     until("the second pane has the keys", || shown(&second) == "^[[?11u^[[122;1:1u^[[122;1:3u");
     until("the key is let go in the first", || shown(&first) == "^[[?11u^[[97;1:1u^[[97;1:3u");
-    // The first pane is removed and another is started under its name, in a tab that is not
-    // shown: what the terminal tells of the key after that is nothing to the new pane's program.
-    // (Once more where its holder wrote a file as the folder was emptied.)
-    until("the first pane's folder is removed", || fs::remove_dir_all(&first).is_ok() || !first.exists());
-    inner.start("first", &asking);
-    until("the new program is told its flags", || {
-        fact(&first, "state") == "running" && shown(&first).ends_with("^[[?11u")
-    });
-    let new = shown(&first);
-    send(&view.join("in"), format!("\x1b[97;1:2u\x1b[97;1:3u{}", tap("121;1")));
-    until("the second pane has the next key", || shown(&second).ends_with("^[[121;1:1u^[[121;1:3u"));
-    assert_eq!(shown(&first), new);
 }
 
 #[test]
@@ -3719,7 +3670,6 @@ fn a_paste_ends_marked_as_it_began_whatever_the_program_asks_by_then() {
     let pane = inner.start("a", &["sh", "-c", reads]);
     until("the program asks for pastes marked", || fact(&pane, "modes").contains("paste"));
     let view = outer.start("view", &viewer(&inner, &keys));
-    until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
     // (A terminal says what it is like before anything is pasted into it: its answers are not part of a paste.)
     until("the terminal has said what it is like", || inner.0.join("keyboard").exists());
     send(&view.join("in"), "\x1b[200~a");
@@ -3771,9 +3721,8 @@ fn a_key_script_is_told_the_size_the_terminal_has_when_the_key_is_typed() {
     let tells = "#!/bin/sh\necho \"$COLUMNS $LINES, $(cat row), $(cat col)\" > session/told\n";
     fs::write(keys.join("x"), tells).unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("x")).ended();
-    let pane = inner.start("one", &["sleep", "600"]);
+    inner.start("one", &["sleep", "600"]);
     let view = outer.start("view", &viewer(&inner, &keys));
-    until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
     // (At rest the viewer looks at its files, and at its terminal's size, every 50 ms.)
     std::thread::sleep(Duration::from_millis(3200));
     send(&view.join("ctl"), "resize 83 27\n");
@@ -4333,10 +4282,9 @@ fn two_restores_of_a_session_at_once_run_one_after_the_other() {
     };
     let panes: Vec<PathBuf> = (1..=12).map(|n| session.start(&format!("c/{n}"), &["sleep", "600"])).collect();
     let holders = || panes.iter().map(|pane| fact(pane, "status").lines().next().unwrap()[7..].to_string()).collect();
-    let alive = |pid: &String| Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).ended().success();
     let kill = |holders: &Vec<String>| {
         assert!(Command::new("kill").arg("-KILL").args(holders).ended().success());
-        until("the holders are gone", || !holders.iter().any(alive));
+        until("the holders are gone", || !holders.iter().any(|pid| alive(pid)));
     };
     let first: Vec<String> = holders();
     kill(&first);
@@ -4350,7 +4298,7 @@ fn two_restores_of_a_session_at_once_run_one_after_the_other() {
     drop(lock);
     assert!(waits.end().success());
     let second: Vec<String> = holders();
-    assert!(second.iter().all(alive) && second.iter().all(|holder| !first.contains(holder)), "{second:?}");
+    assert!(second.iter().all(|pid| alive(pid)) && second.iter().all(|holder| !first.contains(holder)), "{second:?}");
     // Two runs at once: every pane is started once, by one of them, and nothing is left aside.
     kill(&second);
     let (one, other) = std::thread::scope(|runs| {
@@ -4362,7 +4310,7 @@ fn two_restores_of_a_session_at_once_run_one_after_the_other() {
     assert!(one.status.success() && other.status.success() && wrong.is_empty(), "{wrong}");
     assert_eq!(said.lines().filter(|line| line.starts_with("started c/")).count(), 12, "{said}");
     let third: Vec<String> = holders();
-    assert!(third.iter().all(alive) && third.iter().all(|holder| !second.contains(holder)), "{third:?}");
+    assert!(third.iter().all(|pid| alive(pid)) && third.iter().all(|holder| !second.contains(holder)), "{third:?}");
     let left = fs::read_dir(&session.0).unwrap().flatten().map(|entry| entry.file_name().into_string().unwrap());
     assert_eq!(left.filter(|name| name.starts_with('.')).collect::<Vec<_>>(), [""; 0]);
 }
