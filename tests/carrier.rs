@@ -334,12 +334,13 @@ fn waits(me: &Path, root: &Path) -> Result<(), String> {
     let size = fuxix::Winsize { cols: 50, rows: 12, xpixel: 500, ypixel: 240 };
     let before = shown.drawn.len();
     fuxix::set_winsize(&shown.terminal, size).map_err(|e| e.to_string())?;
-    until("the pane is asked to be the terminal's size", || {
+    let drawn = |shown: &Shown| String::from_utf8_lossy(shown.drawn.get(before..).unwrap_or_default()).into_owned();
+    let anew = until("the pane is asked to be the terminal's size and is drawn anew", || {
         shown.draws(|_| true);
-        read(&pane.join("size")).trim() == "50 12"
-    })?;
-    let drawn = String::from_utf8_lossy(shown.drawn.get(before..).unwrap_or_default()).into_owned();
-    check(drawn.contains("\x1b[2J") && drawn.contains("deaf"), format!("not drawn anew: {drawn:?}"))?;
+        let drawn = drawn(&shown);
+        read(&pane.join("size")).trim() == "50 12" && drawn.contains("\x1b[2J") && drawn.contains("deaf")
+    });
+    anew.map_err(|e| format!("{e}: {:?}", drawn(&shown)))?;
     // Told to leave on its `ctl`, it leaves, with all of that still waiting.
     let own = std::fs::read_dir(root).map_err(|e| e.to_string())?.flatten().map(|entry| entry.path());
     let own =
