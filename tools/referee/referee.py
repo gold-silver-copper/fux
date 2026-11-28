@@ -151,7 +151,14 @@ def fux(case, binary):
     env = dict(os.environ, XDG_RUNTIME_DIR=str(played.dir), COLUMNS=str(case[0]), LINES=str(case[1]))
     try:
         pane = pathlib.Path(run([binary, "start", "r/p", "--", *played.command], env=env, text=True).strip())
-        cursor = played.run(lambda c, r: (pane / "ctl").write_text(f"resize {c} {r}\n"))
+        def resize(cols, rows):
+            try:
+                with os.fdopen(os.open(pane / "ctl", os.O_WRONLY | os.O_NONBLOCK), "w") as ctl:
+                    ctl.write(f"resize {cols} {rows}\n")
+            except OSError as error:
+                raise Unplayed("the pane's ctl has no reader") from error
+
+        cursor = played.run(resize)
         # The screen file follows the emulator by a moment. Once the player has left, the pane's
         # keeper has taken in all it wrote and published the last screen: `wait` says when.
         played.leave()
@@ -309,21 +316,24 @@ def main():
     known, new, stale, agree = departures(), [], [], {name: 0 for name in witnesses}
     # A row for a case or a witness that does not exist excuses nothing, and is somebody's slip.
     new += [f"the README's table has a row for {case} and {witness}: no such case or witness" for case, witness in known if case not in every_case or witness not in every]
+    def play_twice_if_needed(play, case, binary):
+        try:
+            return play(case, binary)
+        except Unplayed:
+            return play(case, binary)  # A terminal or X server may fail once.
+
     try:
         for name in cases:
             case = parse(*every_case[name])
             try:
-                ours = fux(case, options["--fux"])
+                ours = play_twice_if_needed(fux, case, options["--fux"])
             except Unplayed as error:
                 new.append(f"{name} could not be played to fux: {error}")
                 continue
             differing = []
             for witness, (play, binary) in witnesses.items():
                 try:
-                    try:
-                        theirs = play(case, binary)
-                    except Unplayed:
-                        theirs = play(case, binary)  # Once more: an X server or a terminal may fail to start once.
+                    theirs = play_twice_if_needed(play, case, binary)
                 except Unplayed as error:
                     new.append(f"{name} could not be played to {witness}: {error}")
                     continue

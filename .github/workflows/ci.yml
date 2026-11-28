@@ -22,8 +22,14 @@ jobs:
       - name: verify the pinned Unicode test file
         run: python3 tools/unicode.py test fux-vt/tests > /dev/null
       - run: cargo test --workspace --locked -- --test-threads 4
+        timeout-minutes: 5
+      - run: cargo test --release --locked --test panes --test carrier -- --test-threads 4
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 5
       - run: ./example.sh
+        timeout-minutes: 1
       - run: tools/help-agents.sh
+        timeout-minutes: 3
       - run: ./sizes.sh
   referee:
     # The same bytes to fux, xterm, tmux and the old emulator: fails on a difference the README's table lacks.
@@ -37,3 +43,4 @@ jobs:
       - run: cargo build --release --locked
       - run: cargo build --release --locked --manifest-path tools/referee/old/Cargo.toml
       - run: tools/referee/referee.py
+        timeout-minutes: 5
