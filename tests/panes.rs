@@ -762,11 +762,18 @@ fn the_two_histories_keep_their_bounds_and_the_same_lines() {
     let mode = |mode| {
         fs::set_permissions(pane.join("history.styled"), std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap()
     };
-    until("the first lines are in history", || texts(&pane).1.contains("one10\n"));
+    // (`history.styled` is written after `history`, and the screen after both: a round is over
+    // when its last lines are on the screen.)
+    until("the first lines are in both histories", || {
+        texts(&pane).0.contains("one39") && bare(&read(&pane.join("history.styled"))).contains("one10\n")
+    });
     mode(0o000);
     fs::write(pane.join("go1"), "").unwrap();
     until("the log says what was lost", || {
-        texts(&pane).1.contains("two10\n") && read(&pane.join("log")).contains("history.styled was lost")
+        let (screen, plain) = texts(&pane);
+        screen.contains("two39")
+            && plain.contains("two10\n")
+            && read(&pane.join("log")).contains("history.styled was lost")
     });
     mode(0o600);
     fs::write(pane.join("go2"), "").unwrap();
@@ -1014,6 +1021,13 @@ fn stamp_of(pane: &Path, name: &str) -> Option<(u64, i64)> {
 /// One of a pane's facts: the text of its file, without the line end.
 fn fact(pane: &Path, name: &str) -> String {
     read(&pane.join(name)).trim_end().to_string()
+}
+
+/// What `look` reads of a pane, if it was all of one round of writing: `generation` the same even
+/// number before and after.
+fn of_one_round<T>(pane: &Path, look: impl FnOnce() -> T) -> Option<T> {
+    let (before, seen) = (fact(pane, "generation"), look());
+    (before.parse::<u64>().is_ok_and(|n| n % 2 == 0) && fact(pane, "generation") == before).then_some(seen)
 }
 
 #[test]
@@ -2501,7 +2515,10 @@ fn a_link_a_program_makes_is_a_line_of_links_and_the_viewer_draws_it_inside_its_
     let left = inner.start("left", &["sh", "-c", &prints]);
     inner.start("right", &["sh", "-c", "echo right; sleep 600"]);
     let above = format!("0 0 1 {address}1\n0 1 1 {address}2\n1 2 4 {address}\n2 39 1 {address}3\n");
-    until("the link is the pane's", || read(&left.join("shown/links")) == format!("{above}3 34 10 {address}\n"));
+    until("the link is the pane's", || {
+        read(&left.join("shown/links")) == format!("{above}3 34 10 {address}\n")
+            && bare(&read(&left.join("shown/screen.styled"))).contains("link plain")
+    });
     assert!(!read(&left.join("shown/screen.styled")).contains("\x1b]"));
     fs::create_dir_all(inner.0.join("main")).unwrap();
     lay(&inner.0, "* row(left right) focus=right\n");
@@ -2545,8 +2562,9 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
         "stty -echo; printf '\\033P%s\\033\\\\' '{picture}'; read line; set -- $(stty size); i=3; while [ $i -lt $1 ]; do echo; i=$((i + 1)); done; sleep 600"
     );
     let left = inner.start("left", &["sh", "-c", &prints]);
-    inner.start("right", &["sh", "-c", "echo right; sleep 600"]);
+    let right = inner.start("right", &["sh", "-c", "echo right; sleep 600"]);
     until("the picture is the pane's", || fact(&left, "shown/pictures") == "pic-1.sixel 0 0 60 3 10 20");
+    until("the other pane has printed", || read(&right.join("shown/screen")).contains("right"));
     let whole = fs::read(left.join("pic-1.sixel")).unwrap();
     assert_eq!(whole, format!("\x1bP{picture}\x1b\\").as_bytes());
     lay(&inner.0, "* row(left right) focus=right\n");
@@ -2570,13 +2588,21 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     // The tile is 40 columns wide and the pane takes that size, with its picture whole. The
     // viewer draws the 40 columns of it that are in the tile, 400 pixels of each row: the line
     // between the tiles and the pane beside it are as they were.
-    until("the part in the tile is drawn", || fact(&left, "size") == "40 24" && drawn().0 == "0 0 40 3");
-    let (_, part) = drawn();
+    // (The picture and the text are read as of one round of the viewer's pane.)
+    let (tile, mut part) = (format!("{:40}│right\n{:40}│\n{:40}│\n", "", "", ""), Vec::new());
+    until_or(
+        "the part in the tile is drawn",
+        || read(&view.join("shown/screen")),
+        || {
+            let seen = of_one_round(&view, || (drawn(), read(&view.join("shown/screen"))));
+            let ((place, picture), screen) = seen.unwrap_or_default();
+            part = picture;
+            fact(&left, "size") == "40 24" && place == "0 0 40 3" && screen.starts_with(&tile)
+        },
+    );
     let (w, h, colours) = pixels(&part, [0, 0, 1000, 100]).expect("the viewer drew a sixel picture");
     assert_eq!((w, h, colours[394], colours[395], colours[399], colours[30 * 400]), (400, 60, red, blue, blue, green));
     assert!(Some((w, h, colours)) == pixels(&whole, [0, 0, 400, 60]));
-    let screen = read(&view.join("shown/screen"));
-    assert!(screen.starts_with(&format!("{:40}│right\n{:40}│\n{:40}│\n", "", "", "")), "{screen}");
     assert_eq!(fact(&left, "shown/pictures"), "pic-1.sixel 0 0 60 3 10 20");
     assert_eq!(fs::read(left.join("pic-1.sixel")).unwrap(), whole);
     // In a tile wide enough the picture is whole again: the program's own bytes.
@@ -2613,9 +2639,14 @@ fn a_picture_that_does_not_fit_its_tile_is_drawn_as_the_part_of_it_inside_the_ti
     // when it has the name itself): nothing of it is drawn.
     anew(format!("q\"1;1;600;60#1;2;0;0;100{}", ["!600~"; 10].join("-")));
     until("the picture is drawn again", || pixels(&drawn().1, [0, 0, 1000, 100]).is_some_and(all_blue));
-    fs::rename(left.join("pic-1.sixel"), inner.0.join("elsewhere")).unwrap();
-    std::os::unix::fs::symlink(inner.0.join("elsewhere"), left.join("pic-1.sixel")).unwrap();
-    until("the link is not drawn", || fact(&view, "shown/pictures").is_empty());
+    // (Put in its place in one step: the name is never without a file.)
+    fs::copy(left.join("pic-1.sixel"), inner.0.join("elsewhere")).unwrap();
+    std::os::unix::fs::symlink(inner.0.join("elsewhere"), left.join("pic-1.sixel.new")).unwrap();
+    fs::rename(left.join("pic-1.sixel.new"), left.join("pic-1.sixel")).unwrap();
+    send(&view.join("in"), "\x02");
+    until("the link is not drawn", || {
+        read(&view.join("shown/screen")).contains("C-b …") && fact(&view, "shown/pictures").is_empty()
+    });
 }
 
 #[test]
@@ -2872,13 +2903,14 @@ fn a_clipboard_set_while_a_workspace_with_no_pane_was_shown_is_not_sent_on_the_w
     let keys = inner.0.join(".keys");
     fs::create_dir_all(&keys).unwrap();
     fs::create_dir_all(inner.0.join("other")).unwrap();
-    let copies = "stty -echo; while read -r word; do printf '\\033]52;c;%s\\007did %s\\n' \"$word\" \"$word\"; done";
+    // (A word that begins with `-` is only printed.)
+    let copies = "stty -echo; echo ready; while read -r word; do case $word in -*) echo \"$word\" ;; \
+        *) printf '\\033]52;c;%s\\007did %s\\n' \"$word\" \"$word\" ;; esac; done";
     let pane = inner.start("a", &["sh", "-c", copies]);
     let view = outer.start("view", &viewer(&inner, &keys));
     let (screen, sent) = (|| read(&view.join("shown/screen")), || read(&view.join("clipboard")));
     // What the pane copies while it has the keys reaches the viewer's own terminal.
-    until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
-    std::thread::sleep(Duration::from_millis(300));
+    until("the viewer has looked at the pane", || screen().contains("ready"));
     send(&pane.join("in"), "b25l\n");
     until("the first copy is passed on", || sent() == "one");
     // What it copies while the viewer shows a workspace with no pane is old when the viewer
@@ -2890,7 +2922,9 @@ fn a_clipboard_set_while_a_workspace_with_no_pane_was_shown_is_not_sent_on_the_w
     until("the pane copied again", || read(&pane.join("clipboard")) == "two");
     send(&ctl, "workspace main\n");
     until("the pane is shown again", || screen().contains("did dHdv"));
-    std::thread::sleep(Duration::from_millis(300));
+    // (`clipboard` is written after the screen: a round that is over, after the one that drew the pane.)
+    send(&pane.join("in"), "-back\n");
+    until("the viewer drew after that", || of_one_round(&view, screen).is_some_and(|screen| screen.contains("-back")));
     assert_eq!(sent(), "one", "a clipboard set while another workspace was shown was sent on the way back");
     send(&pane.join("in"), "dGhyZWU=\n");
     until("the next copy is passed on", || sent() == "three");
@@ -4193,22 +4227,42 @@ fn a_menu_shades_its_group_headings() {
     let mut start = outer.fux();
     start.env("COLUMNS", "80").env("LINES", "12").args(["start", "view", "--"]).args(viewer(&inner, &keys));
     let view = outer.started(&mut start);
-    let screen = || read(&view.join("shown/screen"));
+    let (screen, styled) = (|| read(&view.join("shown/screen")), || read(&view.join("shown/screen.styled")));
     until("the viewer draws", || !fact(&view, "modes").is_empty() || !screen().trim().is_empty());
     send(&view.join("in"), "\x02");
-    until_or("the menu shows", screen, || screen().contains("Panes") && screen().contains("Tabs"));
-    let styled = read(&view.join("shown/screen.styled"));
-    let row = |needle: &str| styled.lines().find(|line| line.contains(needle)).unwrap_or_default();
-    let (title, panes, split, tabs, next) = (row("C-b"), row("Panes"), row("split"), row("Tabs"), row("next"));
-    assert!(
-        panes.contains("38;5;255;48;5;235m Panes\x1b[0;48;5;235m")
-            && tabs.contains("38;5;255;48;5;235m Tabs\x1b[0;48;5;235m"),
-        "headings not shaded across box width:\n{styled}"
-    );
-    assert!(
-        !title.contains("48;5;235") && !split.contains("48;5;235") && !next.contains("48;5;235"),
-        "non-headings shaded:\n{styled}"
-    );
+    until_or("the menu shows", styled, || bare(&styled()).contains("Panes") && bare(&styled()).contains("Tabs"));
+    // The background of each cell of a row: what its run's codes (each from a reset) say after `48`.
+    let background = |codes: &str| {
+        let (mut codes, mut background) = (codes.split(';'), None);
+        while let Some(code) = codes.next() {
+            let n = match (code, codes.clone().next()) {
+                ("38" | "48", Some("5")) => 2,
+                ("38" | "48", _) => 4,
+                _ => 0,
+            };
+            let colour = codes.by_ref().take(n).collect::<Vec<_>>().join(";");
+            background =
+                if code == "48" { Some(colour) } else { background.filter(|_| !matches!(code, "" | "0" | "49")) };
+        }
+        background
+    };
+    let styled = styled();
+    let row = |needle: &str| {
+        let line = styled.lines().find(|line| line.contains(needle)).unwrap_or_default();
+        let runs = line.split("\x1b[").skip(1).filter_map(|run| run.split_once('m'));
+        let lead = line.split("\x1b[").next().unwrap_or_default().chars().map(|_| None);
+        lead.chain(runs.flat_map(|(codes, text)| text.chars().map(move |_| background(codes)))).collect::<Vec<_>>()
+    };
+    // Across the box (where its title has a background), a heading is drawn on one background of
+    // its own: not the title's, nor a key's.
+    let (title, others) = (row("C-b"), [row("C-b"), row("split"), row("next")]);
+    let boxed: Vec<usize> = (0..title.len()).filter(|&x| title[x].is_some()).collect();
+    for heading in [row("Panes"), row("Tabs")] {
+        let shade = boxed.first().and_then(|&x| heading.get(x)).cloned().flatten();
+        let across = shade.is_some() && boxed.iter().all(|&x| heading.get(x) == Some(&shade));
+        let apart = others.iter().all(|other| boxed.iter().all(|&x| other.get(x) != Some(&shade)));
+        assert!(boxed.len() > 10 && across && apart, "a heading is not shaded across the box alone:\n{styled}");
+    }
 }
 
 #[test]
