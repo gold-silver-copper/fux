@@ -689,12 +689,14 @@ fn a_test_that_opens_a_fifo_nobody_writes() {
 fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
     // Lines of 252 bytes, three rows each, in bursts: more than twice what `history` holds, so
     // it is put aside twice. No line is cut by that: `history.1` ends with a whole line, and
-    // `history` goes on with the next one. (Each line's number has a colour.)
+    // `history` goes on with the next one. (Each line's number has a colour. Half way, past the first
+    // time, the program waits until the test has seen that one.)
     let session = Session::new("turns");
     let prints = "awk 'BEGIN { pad = sprintf(\"%245s\", \"\"); gsub(/ /, \"x\", pad); \
-        for (i = 0; i < 36000; i++) { printf \"\\033[3%dm%06d\\033[m%s\\n\", i % 8, i, pad; if (i % 700 == 699) { fflush(); system(\"sleep 0.01\") } } }'";
+        for (i = 0; i < 36000; i++) { if (i == 18000) { fflush(); while (system(\"[ -e \\\"$PANE/go\\\" ]\")) system(\"sleep 0.05\") } printf \"\\033[3%dm%06d\\033[m%s\\n\", i % 8, i, pad; if (i % 700 == 699) { fflush(); system(\"sleep 0.01\") } } }'";
     let mut start = session.fux();
-    start.env("COLUMNS", "120").env("LINES", "36").args(["start", "lines", "--", "sh", "-c", prints]);
+    start.env("COLUMNS", "120").env("LINES", "36").env("PANE", session.0.join("main/lines"));
+    start.args(["start", "lines", "--", "sh", "-c", prints]);
     let pane = session.started(&mut start);
     let mut turns = Vec::new();
     until("the program has ended", || {
@@ -704,6 +706,7 @@ fn history_is_put_aside_where_a_line_ends_however_the_lines_come() {
         let first = aside.get(..6).map(<[u8]>::to_vec);
         if aside.len() > 252 && turns.last().map(|(_, _, first)| first) != Some(&first) {
             turns.push((aside.len(), aside.ends_with(b"\n") && aside.len().is_multiple_of(252), first));
+            fs::write(pane.join("go"), "").unwrap();
         }
         fact(&pane, "state") == "exited 0"
     });
@@ -854,7 +857,7 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
         read(&old.join("history")).contains("needle") && read(&other.join("shown/screen")).contains("$HOME")
     });
     fs::write(session.0.join("ed"), "#!/bin/sh\nsed -n \"${1#+}p\" \"$2\" > \"$OUT\"\n").unwrap();
-    Command::new("chmod").arg("+x").arg(session.0.join("ed")).ended();
+    assert!(Command::new("chmod").arg("+x").arg(session.0.join("ed")).ended().success());
     let out = session.0.join("out");
     // The search, in a pane as the key starts it: the words, then the first line of the list.
     // (By its key, as a viewer of the workspace `w` runs it; the editor is run as `.editor` says. The
@@ -862,25 +865,16 @@ fn every_panes_text_is_searched_and_ended_panes_are_started_again_as_they_were()
     // where the viewer was started, and a start from a folder that is gone would be refused.)
     editor(&keys, &format!("exec {} \"+$2\" \"$1\"", session.0.join("ed").display()));
     let mut search = session.key(&keys, "C-b/f/s", "w", None);
-    search.env("OUT", &out).env("SHELL", "/bin/sh").env("PATH", format!("{}:{path}", session.0.join("none").display()));
+    // (With no finder, wherever the tests run: the lines are numbered.)
+    search.env("OUT", &out).env("SHELL", "/bin/sh").env("PATH", finderless(&session.0));
     assert!(search.ended().success());
     let find = session.0.join("w/1");
     until("it asks", || read(&find.join("shown/screen")).contains("search every pane for:"));
     send(&find.join("in"), "NEEDLE\r");
-    // (With a finder installed the list is its own; without, the lines are numbered.)
-    if ["fzf", "sk", "fzy"].iter().all(|finder| {
-        Command::new("sh")
-            .args(["-c", &format!("command -v {finder}")])
-            .run()
-            .status
-            .code()
-            .is_some_and(|code| code != 0)
-    }) {
-        until("the lines found are listed", || read(&find.join("shown/screen")).contains("w/old 1:a needle in old"));
-        assert!(read(&find.join("shown/screen")).contains("v/other 2:<the-needle;$HOME>"));
-        send(&find.join("in"), "1\r");
-        until("the editor was opened at the line", || read(&out) == "<the-needle;$HOME>\n");
-    }
+    until("the lines found are listed", || read(&find.join("shown/screen")).contains("w/old 1:a needle in old"));
+    assert!(read(&find.join("shown/screen")).contains("v/other 2:<the-needle;$HOME>"));
+    send(&find.join("in"), "1\r");
+    until("the editor was opened at the line", || read(&out) == "<the-needle;$HOME>\n");
     let _ = fs::remove_dir_all(&find);
     // A pane whose program has ended is started anew by `.restore`, from its `command` file: the
     // program and its arguments as they were given, each ended by a zero byte, none of them split,
@@ -1335,10 +1329,10 @@ fn kill_hangs_up_the_program_and_removing_the_directory_ends_the_pane() {
 
     // A program that ends without a word: `state` changes and the text does not. `generation` is
     // written again all the same, an even number, after the fact: who watches that one file finds the end.
-    use std::os::unix::fs::MetadataExt;
-    let quiet = session.start("q", &["sh", "-c", "sleep 0.4"]);
-    let stamp = || fs::metadata(quiet.join("generation")).map(|file| (file.ino(), file.mtime_nsec())).ok();
+    let quiet = session.start("q", &["sh", "-c", "until [ -e \"$PANE/go\" ]; do sleep 0.05; done"]);
+    let stamp = || stamp_of(&quiet, "generation");
     let (running, first, text) = (fact(&quiet, "state"), stamp(), stamp_of(&quiet, "main/screen.styled"));
+    fs::write(quiet.join("go"), "").unwrap();
     until("its end is written", || {
         stamp() != first && fact(&quiet, "generation").parse::<u64>().is_ok_and(|n| n % 2 == 0)
     });
@@ -1384,16 +1378,12 @@ fn what_is_written_to_in_after_a_kill_goes_nowhere_and_its_writer_does_not_wait(
     // A program that ignores the hangup lives on with no terminal. What is then written to `in`
     // is read and dropped: more than a FIFO holds is written at once, by a process of its own.
     let session = Session::new("afterkill");
-    let pane = session.start("a", &["sh", "-c", "trap '' HUP; echo r''eady; exec sleep 20"]);
+    let pane = session.start("a", &["sh", "-c", "trap '' HUP; echo r''eady; exec sleep 600"]);
     until("the program ignores the hangup", || read(&pane.join("shown/screen")).contains("ready"));
     send(&pane.join("ctl"), "kill\n");
     until("the pty is closed", || fact(&pane, "state") == "hungup");
     let writer = Command::new("sh").args(["-c", "head -c 100000 /dev/zero > in"]).current_dir(&pane).begin();
-    let done = writer.end_by(Instant::now() + Duration::from_secs(5));
-    assert!(
-        done.as_ref().is_ok_and(|status| status.success()),
-        "100,000 bytes to `in` after kill: {done:?} after 5 seconds"
-    );
+    assert!(writer.end().success(), "100,000 bytes to `in` after kill");
     assert_eq!(fact(&pane, "state"), "hungup");
 }
 
@@ -1433,21 +1423,21 @@ fn a_pane_made_narrow_and_wide_again_is_as_it_was_and_loses_no_text_on_the_way()
 #[test]
 fn a_flood_is_published_a_bounded_number_of_times_and_loses_no_line() {
     let session = Session::new("flood");
-    let pane = session.start("yes", &["sh", "-c", "yes | head -n 200000; echo done; sleep 600"]);
+    // (1.5 MB: more than twice what is read between two rounds, 512 KiB.)
+    let floods = "until [ -e \"$PANE/go\" ]; do sleep 0.05; done; yes | head -n 750000; echo done; sleep 600";
+    let pane = session.start("yes", &["sh", "-c", floods]);
     // Each round of writing ends with the next even number in `generation`: how many there were is
     // read from the numbers, however often the file was looked at.
     let rounds = || fact(&pane, "generation").parse::<f64>().map_or(0.0, |n| (n / 2.0).floor());
     let (start, first) = (Instant::now(), rounds());
-    while !read(&pane.join("shown/screen")).contains("\ndone\n") {
-        assert!(start.elapsed() < Duration::from_secs(20), "the flood did not end");
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let publishes = rounds() - first;
-    let seconds = start.elapsed().as_secs_f64() + 0.1;
-    assert!(publishes >= 2.0, "the flood was watched");
-    assert!(publishes <= 41.0 * seconds + 2.0, "{publishes} publishes in {seconds} s is over 40 a second");
+    fs::write(pane.join("go"), "").unwrap();
+    until("the flood has ended", || read(&pane.join("shown/screen")).contains("\ndone\n"));
+    let (publishes, seconds) = (rounds() - first, start.elapsed().as_secs_f64() + 0.1);
+    // A round waits 8 ms after the one before, however the program and the holder are scheduled.
+    assert!(publishes >= 3.0, "{publishes} publishes: the flood was watched");
+    assert!(publishes <= 125.0 * seconds + 2.0, "{publishes} publishes in {seconds} s is over 125 a second");
     let history = read(&pane.join("history.1")) + &read(&pane.join("history")) + &read(&pane.join("shown/screen"));
-    assert_eq!(history.lines().filter(|line| *line == "y").count(), 200_000);
+    assert_eq!(history.lines().filter(|line| *line == "y").count(), 750_000);
 }
 
 #[test]
@@ -1722,12 +1712,14 @@ fn a_workspace_with_no_pane_gets_a_shell_when_it_is_first_shown() {
     std::thread::sleep(Duration::from_millis(300));
     assert!(fs::read_dir(inner.0.join("main")).unwrap().flatten().all(|entry| !entry.path().is_dir()));
     // A workspace the viewer is taken to runs the keys' own `.empty`, once: here one that only
-    // notes that it ran.
-    fs::write(keys.join(".empty"), "#!/bin/sh\nbasename \"$(readlink workspace)\" >> keys/ran\n").unwrap();
+    // notes that it ran (in one step: the note is whole when it is there).
+    let notes = "#!/bin/sh\n{ cat keys/ran; basename \"$(readlink workspace)\"; } > keys/.ran 2>/dev/null; mv keys/.ran keys/ran\n";
+    fs::write(keys.join(".empty"), notes).unwrap();
     fs::create_dir_all(inner.0.join("other")).unwrap();
     let ctl = view_fifo(&inner.0);
     send(&ctl, "workspace other\n");
     until("the other workspace is shown", || read(&view.join("shown/screen")).contains("no panes in other"));
+    until("`.empty` ran", || !read(&keys.join("ran")).is_empty());
     assert_eq!(read(&keys.join("ran")), "other\n");
     // The viewer keeps no workspace but the one it shows: `-` is no name, and names none.
     send(&ctl, "workspace -\n");
@@ -2011,31 +2003,32 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     let raw = "stty raw -echo; printf '\\033[?1004h'; exec cat -vt";
     let (p1, p2) = (inner.start("p1", &["sh", "-c", raw]), inner.start("p2", &["sh", "-c", raw]));
     lay(&inner.0, "* p1 focus=p1\n  p2 focus=p2\n");
-    let view = outer.start("view", &viewer(&inner, &keys));
+    let mut start = outer.fux();
+    start.env("PATH", finderless(&inner.0)).args(["start", "view", "--"]).args(viewer(&inner, &keys));
+    let view = outer.started(&mut start);
     let shown = |pane: &Path| read(&pane.join("shown/screen")).replace('\n', "");
     // The pane that has the keys is told so, having asked (mode 1004), and the viewer asks its
     // own terminal to tell it of the window's focus.
     until("the first pane is told it has the keys", || shown(&p1) == "^[[I");
     until("the viewer asked its terminal", || fact(&view, "modes").contains("focus"));
     // Where a program says it is (OSC 7) is the pane's `cwd`; a place on another machine is no place here.
-    let print = inner.start("print", &["sh", "-c", "printf '\\033]7;file:///usr/share\\007'; sleep 600"]);
-    until("the directory is told", || read(&print.join("cwd")) == "/usr/share\n");
-    let far = inner.start(
-        "far",
-        &["sh", "-c", "printf '\\033]7;file:///usr\\007\\033]7;file://elsewhere.example/home/x\\007'; sleep 600"],
-    );
-    until("the far pane runs", || {
-        fact(&far, "state") == "running" && read(&far.join("shown/screen.styled")).is_empty().eq(&false)
+    let far = "printf '\\033]7;file:///usr/share\\007'; until [ -e \"$PANE/go\" ]; do sleep 0.05; done; \
+        printf '\\033]7;file://elsewhere.example/home/x\\007far'; sleep 600";
+    let far = inner.start("far", &["sh", "-c", far]);
+    until("the directory is told", || read(&far.join("cwd")) == "/usr/share\n");
+    fs::write(far.join("go"), "").unwrap();
+    // (`cwd` is written after the screen: a round that is over.)
+    until("the far place is told", || {
+        of_one_round(&far, || read(&far.join("shown/screen")).contains("far")) == Some(true)
     });
     assert!(!far.join("cwd").exists());
     // Anyone may have something noticed through `ctl`; a program rings the bell. Each is the
     // pane's `notice`, with a number that grows. The viewer passes a new one on to its own
     // terminal once and marks the tab until its pane has had the keys.
-    until("the viewer has looked at the panes once", || fact(&view, "modes").contains("focus"));
-    std::thread::sleep(Duration::from_millis(600));
     send(&p2.join("ctl"), "notify the build is done\n");
     until("the notice is written", || read(&p2.join("notice")) == "1 the build is done\n");
     until("the viewer passed it on", || read(&view.join("notice")).ends_with(" p2: the build is done\n"));
+    assert_eq!(read(&view.join("notice")), "1 p2: the build is done\n");
     send(&view.join("in"), "\x02");
     until("the tab is marked", || read(&view.join("shown/screen")).contains(" p2! "));
     // The terminal's window loses and gains the keys with the menu open: the menu stays, and
@@ -2051,17 +2044,14 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
         read(&view.join("shown/screen")).contains(" p2 ") && !read(&view.join("shown/screen")).contains("p2!")
     });
     send(&view.join("in"), "\x1b");
-    // A program that stops asking (it ends, and a shell is there again) is told nothing more:
+    // A program that stops asking (here once it was told it has the keys) is told nothing more:
     // not when it stops, and not when its pane loses the keys.
-    let asks_then_stops = "stty raw -echo; printf '\\033[?1004h'; until [ -e \"$PANE/go\" ]; do sleep 0.05; done; printf '\\033[?1004l'; exec cat -vt";
+    let asks_then_stops = "stty raw -echo; printf '\\033[?1004h'; dd bs=1 count=3 2>/dev/null | cat -vt; printf '\\033[?1004l'; exec cat -vt";
     let quits = inner.start("quits", &["sh", "-c", asks_then_stops]);
     until("it asks, and has its place", || {
         fact(&quits, "modes") == "focus" && read(&inner.0.join("main/layout")).contains("quits")
     });
     lay(&inner.0, "  p1 focus=p1\n  p2 focus=p2\n* quits focus=quits\n");
-    until("the second pane lost the keys", || shown(&p2).ends_with("^[[I^[[O"));
-    std::thread::sleep(Duration::from_millis(300));
-    fs::write(quits.join("go"), "").unwrap();
     let seen = || {
         format!(
             ": it has {:?}, modes {:?}, layout {:?}",
@@ -2073,10 +2063,12 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     until_or("it was told it had the keys, and stops asking", seen, || {
         shown(&quits) == "^[[I" && fact(&quits, "modes").is_empty()
     });
-    std::thread::sleep(Duration::from_millis(300));
     lay(&inner.0, "  p1 focus=p1\n* p2 focus=p2\n  quits focus=quits\n");
     until("the second pane has the keys again", || shown(&p2).ends_with("^[[O^[[I"));
-    assert_eq!(shown(&quits), "^[[I");
+    // (Whatever it was told came before what is typed to it now.)
+    send(&quits.join("in"), "Q");
+    until("it has what was typed", || shown(&quits).ends_with('Q'));
+    assert_eq!(shown(&quits), "^[[IQ");
     let bell = inner.start("bell", &["sh", "-c", "sleep 0.7; printf '\\007'; sleep 600"]);
     until("the bell is a notice with no words", || read(&bell.join("notice")) == "1\n");
     // A pane that is new, and has something to notice at once: that is new too.
@@ -2085,27 +2077,24 @@ fn a_pane_says_where_its_program_is_and_what_it_wants_noticed_and_the_viewer_pas
     // A program in the middle of drawing (mode 2026) is not shown until it is done: half a
     // frame is never seen. One that never says it is done is shown after half a second, however
     // often it says that it draws.
-    let draws = inner.start("draws", &["sh", "-c", "printf '\\033[?2026hhalf'; sleep 0.3; printf ' whole\\033[?2026l'; sleep 0.3; printf '\\033[?2026h stuck'; while sleep 0.1; do printf '\\033[?2026h'; done"]);
-    let start = Instant::now();
-    while !read(&draws.join("shown/screen")).contains("stuck") {
-        assert!(!read(&draws.join("shown/screen")).starts_with("half\n"), "half a frame was shown");
-        assert!(start.elapsed() < Duration::from_secs(10), "a program that never ends its drawing froze its pane");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(start.elapsed() > Duration::from_millis(900));
-    // The find key lists the panes in a pane of its own, with whatever finder there is (a
-    // numbered list if none): the pane chosen gets the keys.
+    let draws = "w() { until [ -e \"$PANE/$1\" ]; do sleep 0.05; done; }; w go; printf '\\033[?2026hhalf'; sleep 0.1; \
+        printf ' whole\\033[?2026l'; w stuck; printf '\\033[?2026h stuck'; while sleep 0.1; do printf '\\033[?2026h'; done";
+    let draws = inner.start("draws", &["sh", "-c", draws]);
+    fs::write(draws.join("go"), "").unwrap();
+    until("the frame is shown when it is done", || {
+        let screen = read(&draws.join("shown/screen"));
+        assert!(!screen.starts_with("half\n"), "half a frame was shown");
+        screen.starts_with("half whole\n")
+    });
+    fs::write(draws.join("stuck"), "").unwrap();
+    until("a frame that is never done is shown all the same", || read(&draws.join("shown/screen")).contains("stuck"));
+    // The find key lists the panes in a pane of its own (numbered, with no finder): the pane chosen
+    // gets the keys.
     lay(&inner.0, "* p1 focus=p1\n  p2 focus=p2\n");
     until("the first tab is shown", || shown(&p1).ends_with("^[[I"));
     send(&view.join("in"), "\x02fp");
-    until("the list is shown", || {
-        read(&view.join("shown/screen")).contains("p2") && read(&view.join("shown/screen")).contains("draws")
-    });
-    std::thread::sleep(Duration::from_millis(300));
-    // (A finder takes a moment to narrow its list to what was typed.)
-    send(&view.join("in"), "p2");
-    std::thread::sleep(Duration::from_millis(500));
-    send(&view.join("in"), "\r");
+    until("the list is shown", || read(&view.join("shown/screen")).contains("which (its number or its name)?"));
+    send(&view.join("in"), "p2\r");
     until("the pane chosen has the keys", || read(&inner.0.join("main/layout")).contains("* p2 focus=p2"));
 }
 
@@ -2297,29 +2286,27 @@ fn the_workspace_chosen_is_told_to_the_viewer_that_is_there_and_no_file_is_made_
     // choice is made: the picker's pane was given the FIFO's own path.)
     let view = session.0.join(".view.0/ctl");
     fs::create_dir_all(view.parent().unwrap()).unwrap();
+    let path = finderless(&session.0);
     let choose = || {
-        assert!(session.key(&keys, "C-b/w/g", "main", None).ended().success());
+        assert!(session.key(&keys, "C-b/w/g", "main", None).env("PATH", &path).ended().success());
         let _ = fs::remove_dir_all(session.0.join(".view.0/1"));
         let pane = session.0.join("main/1");
-        until("the list is shown", || read(&pane.join("shown/screen")).contains("main"));
-        // (A finder takes a moment to narrow its list to what was typed; with none it is the name.)
-        std::thread::sleep(Duration::from_millis(300));
-        send(&pane.join("in"), "main");
-        std::thread::sleep(Duration::from_millis(500));
-        send(&pane.join("in"), "\r");
+        until("the list is shown", || read(&pane.join("shown/screen")).contains("which (its number or its name)?"));
+        send(&pane.join("in"), "main\r");
         until("the picker's pane is gone", || !pane.exists());
     };
     // A viewer that is there is told (here the test holds its FIFO, and reads it).
     assert!(Command::new("mkfifo").arg(&view).ended().success());
-    let mut fifo = fs::OpenOptions::new().read(true).write(true).open(&view).unwrap();
+    let (mut fifo, mut told) = (fuxix::open(&view, false).unwrap(), String::new());
     choose();
-    let (told, tells) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = [0; 64];
-        let n = std::io::Read::read(&mut fifo, &mut line).unwrap();
-        told.send(String::from_utf8_lossy(&line[..n]).into_owned())
+    until("the viewer is told", || {
+        let mut bytes = [0; 64];
+        while let Ok(n @ 1..) = fifo.read(&mut bytes) {
+            told.push_str(&String::from_utf8_lossy(&bytes[..n]));
+        }
+        told.ends_with('\n')
     });
-    assert_eq!(tells.recv_timeout(Duration::from_secs(60)).as_deref(), Ok("workspace main\n"));
+    assert_eq!(told, "workspace main\n");
     fs::remove_file(&view).unwrap();
     choose();
     assert!(!view.exists(), "a file was made in place of the FIFO of a viewer that has gone");
@@ -2733,19 +2720,8 @@ fn a_click_whose_release_the_terminal_never_told_of_does_not_take_the_next_click
     assert!(inner.fux().args(["layout", "main", "pane", "a"]).ended().success());
     until("the viewer asks for the mouse again", || fact(&view, "modes").contains("mouse1000"));
     send(&view.join("in"), "\x1b[<0;5;3M\x1b[<0;5;3m");
-    let start = Instant::now();
-    until_or(
-        "the click is the program's",
-        || read(&a.join("shown/screen")),
-        || {
-            assert!(
-                start.elapsed() < Duration::from_secs(8),
-                "the click went nowhere: {:?}",
-                read(&a.join("shown/screen"))
-            );
-            read(&a.join("shown/screen")).contains("^[[<0;5;3M^[[<0;5;3m")
-        },
-    );
+    let screen = || read(&a.join("shown/screen"));
+    until_or("the click is the program's", screen, || screen().contains("^[[<0;5;3M^[[<0;5;3m"));
 }
 
 #[test]
@@ -2772,16 +2748,8 @@ fn a_press_after_the_program_asked_for_no_mouse_for_a_while_is_a_new_click() {
     fs::write(a.join("on"), "").unwrap();
     until("the viewer asks for the mouse again", || fact(&view, "modes").contains("mouse1000"));
     send(&view.join("in"), "\x1b[<0;50;3M\x1b[<0;50;3m");
-    let start = Instant::now();
-    let layout = || read(&inner.0.join("main/layout"));
-    until_or("the click moved the focus", layout, || {
-        assert!(
-            start.elapsed() < Duration::from_secs(8),
-            "the press was the first program's: {:?}",
-            read(&a.join("shown/screen"))
-        );
-        layout().contains("focus=b")
-    });
+    let seen = || format!(": the first program has {:?}", read(&a.join("shown/screen")));
+    until_or("the click moved the focus", seen, || read(&inner.0.join("main/layout")).contains("focus=b"));
 }
 
 #[test]
@@ -2857,19 +2825,11 @@ fn a_workspace_whose_layout_is_a_fifo_is_drawn_and_left_all_the_same() {
     assert!(Command::new("mkfifo").arg(inner.0.join("main/layout")).ended().success());
     let view = outer.start("view", &viewer(&inner, &keys));
     let screen = || read(&view.join("shown/screen"));
-    // (A few seconds, not `until`'s minute: a viewer that waits for the FIFO waits for good.)
-    let soon = |what: &str, ready: &dyn Fn() -> bool| {
-        let start = Instant::now();
-        while !ready() {
-            assert!(start.elapsed() < Duration::from_secs(8), "after 8 s the viewer had not {what}: {:?}", screen());
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    };
-    soon("shown the pane", &|| screen().contains('$') || screen().contains('#'));
+    until_or("the viewer shows the pane", screen, || screen().contains('$') || screen().contains('#'));
     // (It read nothing there, and wrote the layout it shows in the FIFO's place.)
     assert_eq!(read(&inner.0.join("main/layout")), "* one focus=one\n");
     send(&view.join("in"), "\x02d");
-    soon("left", &|| fact(&view, "state").starts_with("exited"));
+    until_or("the viewer has left", screen, || fact(&view, "state").starts_with("exited"));
 }
 
 #[test]
@@ -2937,10 +2897,9 @@ fn a_fifo_where_a_named_pane_would_be_is_refused_at_once() {
     let session = Session::new("fifoname");
     fs::create_dir_all(session.0.join("main")).unwrap();
     assert!(Command::new("mkfifo").arg(session.0.join("main/p")).ended().success());
-    let start = session.fux().args(["start", "p", "--", "sleep", "600"]).begin();
-    // (A few seconds, not the test's two minutes: a start that waits for the FIFO waits for good.)
-    let status = start.end_by(Instant::now() + Duration::from_secs(4));
-    assert!(status.as_ref().is_ok_and(|status| !status.success()), "{status:?}: the start was to say no at once");
+    let refused = session.fux().args(["start", "p", "--", "sleep", "600"]).run();
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success() && said.contains("main/p: the name is taken"), "{refused:?}");
 }
 
 #[test]
@@ -2950,9 +2909,10 @@ fn a_fifo_where_a_workspace_would_be_is_refused_at_once() {
     let session = Session::new("fifoworkspace");
     fs::create_dir_all(&session.0).unwrap();
     assert!(Command::new("mkfifo").arg(session.0.join("main")).ended().success());
-    let layout = session.fux().arg("layout").stdout(Stdio::null()).begin();
-    let status = layout.end_by(Instant::now() + Duration::from_secs(4));
-    assert!(status.as_ref().is_ok_and(|status| !status.success()), "{status:?}: the layout was to say no at once");
+    let refused = session.fux().arg("layout").run();
+    let said = String::from_utf8_lossy(&refused.stderr);
+    let named = said.starts_with(&format!("fux: {}: ", session.0.join("main").display()));
+    assert!(!refused.status.success() && named, "{refused:?}");
 }
 
 #[test]
@@ -3395,6 +3355,17 @@ fn viewer(session: &Session, keys: &Path) -> Vec<String> {
     vec![env!("CARGO_BIN_EXE_fux").into(), "view".into(), main.display().to_string(), keys.display().to_string()]
 }
 
+/// A `PATH` of this `fux` and of links, in `dir/.bin`, to the tools the keys' scripts use: no finder
+/// (fzf, sk, fzy) is in it, wherever the tests run, so `.pick` numbers its list.
+fn finderless(dir: &Path) -> String {
+    let bin = dir.join(".bin");
+    fs::create_dir_all(&bin).unwrap();
+    let tools = "sh cat rm awk sed grep head tail tr wc ls ps perl sleep mktemp dirname basename readlink env mv";
+    let links = format!("for tool in {tools}; do ln -s \"$(command -v $tool)\" \"$0/$tool\" || exit; done");
+    assert!(Command::new("sh").arg("-c").arg(links).arg(&bin).ended().success());
+    format!("{}:{}", Path::new(env!("CARGO_BIN_EXE_fux")).parent().unwrap().display(), bin.display())
+}
+
 /// The FIFO of the one viewer of a session (`.view.PID/ctl`).
 fn view_fifo(session: &Path) -> PathBuf {
     let files = fs::read_dir(session).unwrap().flatten().map(|entry| entry.path());
@@ -3407,16 +3378,12 @@ fn a_name_that_is_a_number_of_no_line_is_chosen_without_a_word_of_complaint() {
     // With no finder, the list is numbered and a number or a name is asked for. `0` is no line's
     // number: it is the name of the second line here, and that is all that is said.
     let folder = Session::new("pickzero");
-    let (bin, pane, list) = (folder.0.join("bin"), folder.0.join("pane"), folder.0.join("list"));
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&pane).unwrap();
-    let links = "for tool in rm awk head; do ln -s \"$(command -v $tool)\" \"$0/$tool\"; done";
-    assert!(Command::new("sh").arg("-c").arg(links).arg(&bin).ended().success());
+    let (path, list) = (finderless(&folder.0), folder.0.join("list"));
     fs::write(&list, "one\tthe first\n0\tnought\n").unwrap();
     fs::write(folder.0.join("typed"), "0\n").unwrap();
     let mut pick = folder.command("/bin/sh");
     pick.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/keys/.pick")).arg(&list).args(["echo", "chose"]);
-    pick.env("PATH", &bin);
+    pick.env("PATH", path);
     let out = pick.run_from(Some(fs::File::open(folder.0.join("typed")).unwrap()));
     let (said, wrong) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(said.ends_with("chose 0\n") && wrong.is_empty(), "{said:?} {wrong:?}");
@@ -3747,20 +3714,16 @@ fn a_paste_larger_than_a_pane_takes_at_once_is_cut_and_said_and_holds_no_key() {
     let reads = "stty raw -echo; until [ -e \"$PANE/go\" ]; do sleep 0.05; done; exec cat > \"$PANE/got\"";
     let pane = inner.start("a", &["sh", "-c", reads]);
     let view = outer.start("view", &viewer(&inner, &keys));
-    until("the viewer has looked at the pane", || fact(&pane, "size") == "80 24");
     until("the terminal has said what it is like", || inner.0.join("keyboard").exists());
     let pasted: String = (0..1 << 17).map(|n| format!("{n:07}\n")).collect();
     send(&view.join("in"), format!("\x1b[200~{pasted}\x1b[201~"));
     until("the corner says what was not typed", || read(&view.join("shown/screen")).contains("typed"));
-    let began = Instant::now();
     send(&view.join("in"), "\x14");
     until("the key's script ran", || inner.0.join("ran").exists());
-    assert!(began.elapsed() < Duration::from_secs(2), "the key was held for {:?}", began.elapsed());
     // What the program then reads is the start of what was pasted, and not all of it.
     fs::write(pane.join("go"), "").unwrap();
     let got = || fs::read(pane.join("got")).unwrap_or_default();
-    until("the program has read what was typed", || !got().is_empty());
-    std::thread::sleep(Duration::from_millis(500));
+    until("the program has read what was typed", || got().len() >= 64 << 10);
     let got = got();
     assert!(got.len() < pasted.len() && pasted.as_bytes().starts_with(&got[..64 << 10]), "{} bytes", got.len());
 }
@@ -3818,8 +3781,11 @@ fn what_is_typed_after_a_key_that_shows_a_workspace_with_no_pane_goes_to_its_she
     let (outer, inner) = (Session::new("wtouter"), Session::new("wtinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b/w")).unwrap();
-    fs::write(keys.join("C-b/w/l"), "#!/bin/sh\necho workspace other\nsleep 0.2\n").unwrap();
-    let empty = "#!/bin/sh\nsleep 1\np=$(fux start ./workspace/1 -- cat) && fux layout ./workspace pane 1\n";
+    // (Each waits for the other to have begun, `.empty` for the key's script to have ended.)
+    let key = "#!/bin/sh\necho workspace other\nuntil [ -e session/.empty ]; do sleep 0.02; done; : > session/.key\n";
+    fs::write(keys.join("C-b/w/l"), key).unwrap();
+    let empty = "#!/bin/sh\n: > session/.empty; until [ -e session/.key ]; do sleep 0.02; done; sleep 0.2\n\
+        p=$(fux start ./workspace/1 -- cat) && fux layout ./workspace pane 1\n";
     fs::write(keys.join(".empty"), empty).unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/w/l")).arg(keys.join(".empty")).ended();
     inner.start("one", &["sh", "-c", "echo READY; exec cat"]);
@@ -3847,10 +3813,11 @@ fn what_is_typed_after_a_key_whose_script_makes_the_pane_waits_for_it_though_emp
     let (outer, inner) = (Session::new("wkouter"), Session::new("wkinner"));
     let keys = inner.0.join(".keys");
     fs::create_dir_all(keys.join("C-b/w")).unwrap();
-    let key =
-        "#!/bin/sh\necho workspace other\nsleep 1\nexec fux start \"$(readlink session)/other/1\" -- cat >/dev/null\n";
+    // (The key's script waits for `.empty` to have ended.)
+    let key = "#!/bin/sh\necho workspace other\nuntil [ -e session/.empty ]; do sleep 0.02; done; sleep 0.2\n\
+        exec fux start \"$(readlink session)/other/1\" -- cat >/dev/null\n";
     fs::write(keys.join("C-b/w/l"), key).unwrap();
-    fs::write(keys.join(".empty"), "#!/bin/sh\nexit 0\n").unwrap();
+    fs::write(keys.join(".empty"), "#!/bin/sh\n: > session/.empty\n").unwrap();
     Command::new("chmod").arg("+x").arg(keys.join("C-b/w/l")).arg(keys.join(".empty")).ended();
     inner.start("one", &["sh", "-c", "echo READY; exec cat"]);
     fs::create_dir_all(inner.0.join("other")).unwrap();
@@ -3859,10 +3826,11 @@ fn what_is_typed_after_a_key_whose_script_makes_the_pane_waits_for_it_though_emp
     send(&view.join("in"), "\x02wlZ");
     let shell = inner.0.join("other/1");
     until("the workspace has its pane", || fact(&shell, "state") == "running");
-    until("the viewer shows it", || read(&inner.0.join("other/layout")).contains("focus=1"));
-    // (A letter the viewer had dropped before the pane was there never comes: a second is given.)
-    std::thread::sleep(Duration::from_secs(1));
-    assert!(read(&shell.join("shown/screen")).contains('Z'), "the pane shows {:?}", read(&shell.join("shown/screen")));
+    until_or(
+        "the letter is typed to it",
+        || read(&shell.join("shown/screen")),
+        || read(&shell.join("shown/screen")).contains('Z'),
+    );
 }
 
 #[test]
@@ -4079,15 +4047,15 @@ fn two_files_of_a_pane_that_floods_are_read_as_of_one_moment() {
     let pane = session.start("seq", &["sh", "-c", "seq 1 100000000"]);
     let number = |name: &str| read(&pane.join(name)).lines().next().and_then(|line| line.parse::<u64>().ok());
     until("the flood scrolls", || number("main/lines") > Some(1000));
-    let (start, mut kept, mut apart) = (Instant::now(), 0, 0);
-    while start.elapsed() < Duration::from_secs(2) && apart == 0 {
+    let (end, mut kept) = (deadline(), 0);
+    while kept <= 100 {
+        assert!(Instant::now() < end, "at the test's deadline, {kept} reads were of one round of writing");
         let (before, top, first) = (number("generation"), number("main/lines"), number("main/screen"));
         if before.is_some_and(|n| n % 2 == 0) && number("generation") == before {
             kept += 1;
-            apart += u32::from(top.map(|top| top + 1) != first);
+            assert_eq!(top.map(|top| top + 1), first, "read {kept} kept was of two rounds of writing");
         }
     }
-    assert!(kept > 100 && apart == 0, "of {kept} reads kept, {apart} were of two rounds of writing");
 }
 
 #[test]
@@ -4466,19 +4434,22 @@ fn picker_waits_for_finder_ready_so_first_enter_is_not_lost_and_checks_exit_stat
     let keys = inner.0.join(".keys");
     let fakebin = inner.0.join(".fakebin");
     fs::create_dir_all(&fakebin).unwrap();
-    // Simulate a TUI finder (like fzf) that takes ~80ms to start up, calls TCSAFLUSH on /dev/tty
-    // (dropping any unread bytes typed before it was ready), draws a prompt, then reads one key.
+    // Simulate a TUI finder (like fzf) that starts (`.started`), is ready when the test says so
+    // (`.flush`), calls TCSAFLUSH on /dev/tty (dropping any unread bytes typed before it was ready),
+    // draws a prompt, then reads one key.
     let fzf = fakebin.join("fzf");
-    let picked = inner.0.join(".picked");
+    let (picked, started, flush) = (inner.0.join(".picked"), inner.0.join(".started"), inner.0.join(".flush"));
     fs::write(
         &fzf,
         format!(
             r#"#!/bin/sh
 cat > "{0}"
 pwd -P > "{0}.in"
-python3 - "{0}" "{1}" <<'PY'
-import sys, time, termios, tty
-time.sleep(0.08)
+: > "{2}"
+python3 - "{0}" "{1}" "{3}" <<'PY'
+import os, sys, time, termios, tty
+while not os.path.exists(sys.argv[3]):
+    time.sleep(0.05)
 f = open("/dev/tty", "rb+", buffering=0)
 old = termios.tcgetattr(f)
 try:
@@ -4496,7 +4467,9 @@ else:
 PY
 "#,
             inner.0.join(".items").display(),
-            picked.display()
+            picked.display(),
+            started.display(),
+            flush.display()
         ),
     )
     .unwrap();
@@ -4510,16 +4483,13 @@ PY
     let view = outer.started(&mut start);
     let screen = || read(&view.join("shown/screen"));
     until_or("viewer shows PANE_ONE", screen, || screen().contains("PANE_ONE"));
-    // Press C-b f p and press Enter 20ms later (before the 80ms finder calls TCSAFLUSH).
+    // Press C-b f p, and Enter once the finder has started and before it calls TCSAFLUSH.
     send(&view.join("in"), "\x02fp");
-    std::thread::sleep(Duration::from_millis(20));
+    until("the finder has started", || started.exists());
     send(&view.join("in"), "\r");
+    fs::write(&flush, "").unwrap();
     // Picker pane must receive that first Enter, select `one`, and close cleanly!
-    until_or("picker closed on first Enter", screen, || {
-        picked.exists()
-            && screen().contains("PANE_ONE")
-            && fs::read_dir(inner.0.join("main")).unwrap().filter_map(Result::ok).count() <= 2
-    });
+    until_or("picker closed on first Enter", screen, || read(&picked) == "ok\n" && screen().contains("PANE_ONE"));
     // (The list's pane was started from where the viewer was started, not from the folder of the key's
     // script, which was gone before the finder had drawn.)
     let here = std::env::current_dir().unwrap().canonicalize().unwrap();
@@ -4632,11 +4602,11 @@ fn kill_on_the_ctl_of_a_pane_with_no_terminal_is_a_signal_to_its_program_and_its
     // (`generation` numbers the writings of `state`: even when the files agree.)
     assert!(generation() > up && generation() % 2 == 0, "{up} {}", generation());
     // Its program ended, what it left in its group is hung up, as a terminal's is by the kernel.
-    let marker = session.0.join("left");
-    let leader = start_out(&session, "leader", &format!("(sleep 1; touch '{}') & exit 0", marker.display()));
+    let left = session.0.join("left");
+    let leader = start_out(&session, "leader", &format!("sleep 600 & echo $! > '{}'; exit 0", left.display()));
     assert!(session.fux().arg("wait").arg(&leader).ended().success());
-    std::thread::sleep(Duration::from_millis(1500));
-    assert!(!marker.exists(), "what the program left running was not hung up");
+    let left = fact(&session.0, "left").parse::<i32>().unwrap();
+    until("what the program left running is hung up", || fuxix::signal_to(left, 0).is_err());
     // A program that ignores it is sent the signal asked for, and so is what it started. What a pane
     // with no terminal cannot do is refused.
     let stubborn = start_out(&session, "stubborn", "trap '' HUP; sleep 600 & echo ready; wait");
