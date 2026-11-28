@@ -3380,6 +3380,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   Which step failed (the working directory or the exec) is not told apart:
   std's spawn reports one error for both.
 
+- **D133. A holder whose first screen cannot be written still says the pane is up**
+  (the audit of 2026-11-28: a program that removes its pane's folder at once,
+  as `.shell` does after a shell that ends at once, made `fux start` fail with
+  "the holder ended without a word" in 4 of 10 runs of 40 such starts, 8 at a
+  time). The program runs from the spawn on, and is held whatever cannot be
+  written of it (D132's line): the history and the first screen that cannot be
+  made are a line in `log`, as the state of a pane without a terminal already
+  was, and the line `fux start` waits for is said. A program that cannot be
+  started is as in D132. When a round of writing is due is a function of its
+  own now, and a unit test holds it to its rates: 40 rounds a second under
+  output, up to 125 for a trickle, half a second at most while drawing.
+
 ## The old fux3's bugs: which classes are gone
 
 From the seventy-odd reproductions in the notes of 2026-11-18.

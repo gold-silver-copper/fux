@@ -4734,3 +4734,18 @@ fn the_viewer_draws_a_sixel_file_where_its_terminal_draws_sixel_and_sends_no_oth
         assert_eq!((seen.matches("\x1b_").count(), pictures), (0, drawn), "to a terminal that says {what_it_is:?}");
     }
 }
+
+#[test]
+fn a_program_that_removes_its_own_pane_at_once_was_started_and_so_is_its_pane() {
+    // The holder writes its first screen after the program has begun, which may have removed the
+    // folder by then (as `.shell` does after a shell that ends at once): the start is no failure.
+    let session = Session::new("gone");
+    for round in 0..5 {
+        std::thread::scope(|starts| {
+            for n in 0..8 {
+                let session = &session;
+                starts.spawn(move || session.start(&format!("p{round}-{n}"), &["sh", "-c", "rm -rf \"$PANE\""]));
+            }
+        });
+    }
+}

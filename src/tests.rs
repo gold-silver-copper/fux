@@ -520,3 +520,24 @@ fn a_run_is_its_file_to_the_byte_or_none() {
     assert_eq!(crate::run_of(&dir), None);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_round_of_writing_comes_40_times_a_second_under_output_and_up_to_125_times_when_it_trickles() {
+    use crate::holder::round_due;
+    use std::time::{Duration, Instant};
+    let (t, ms) = (Instant::now(), Duration::from_millis);
+    let at = |n: u64| t + Duration::from_micros(n * 100);
+    // The last round was at `t`; what is not written began at 0.1 ms. Nothing unwritten, no round.
+    assert_eq!(round_due(at(100), None, t, t, 1, false), None);
+    // A budget spent: 25 ms after the last round, whenever it was heard. Output still coming: it is
+    // waited for to go quiet a millisecond, but not past those 25 ms.
+    assert_eq!(round_due(at(100), Some(at(1)), t, at(2), 0, false), Some(ms(15)));
+    assert_eq!(round_due(at(100), Some(at(1)), t, at(100), 1, false), Some(ms(1)));
+    assert_eq!(round_due(at(245), Some(at(1)), t, at(245), 1, false), Some(Duration::from_micros(500)));
+    // Gone quiet: 8 ms after the last round at the soonest, and at once from then.
+    assert_eq!(round_due(at(30), Some(at(1)), t, at(1), 1, false), Some(ms(5)));
+    assert_eq!(round_due(at(85), Some(at(1)), t, at(75), 1, false), Some(Duration::ZERO));
+    // Drawing: half a second after what is not written began, however it was heard or written.
+    assert_eq!(round_due(at(1000), Some(at(10)), at(900), at(1000), 1, true), Some(ms(401)));
+    assert_eq!(round_due(at(5010), Some(at(10)), at(900), at(5010), 0, true), Some(Duration::ZERO));
+}
