@@ -3381,16 +3381,18 @@ and its folders `fux3c`; those entries stand as written. D34 renamed it.
   std's spawn reports one error for both.
 
 - **D133. A holder whose first screen cannot be written still says the pane is up**
-  (the audit of 2026-11-28: a program that removes its pane's folder at once,
-  as `.shell` does after a shell that ends at once, made `fux start` fail with
-  "the holder ended without a word" in 4 of 10 runs of 40 such starts, 8 at a
-  time). The program runs from the spawn on, and is held whatever cannot be
-  written of it (D132's line): the history and the first screen that cannot be
-  made are a line in `log`, as the state of a pane without a terminal already
-  was, and the line `fux start` waits for is said. A program that cannot be
-  started is as in D132. When a round of writing is due is a function of its
-  own now, and a unit test holds it to its rates: 40 rounds a second under
-  output, up to 125 for a trickle, half a second at most while drawing.
+  (the audit of 2026-11-28; replaces D105's "A program that removes its pane's
+  folder before the first screen fails its start", under which `.shell` after a
+  shell that ended at once made `fux start` fail with "the holder ended without
+  a word" in 4 of 10 runs of 40 such starts, 8 at a time). Once the program
+  runs, it is held whatever cannot be written of it (D132): a failure in the
+  first round of writing is a line in `log` (as in `--out` panes), `history` and
+  `history.styled` are made in the round after `state` so a later round makes
+  them if the first could not and an obstructed screen does not hide an end,
+  and the line `fux start` waits for is said. A program that cannot be started
+  is as in D132. When a round of writing is due is a function of its own,
+  `round_due`, with a unit test of its rates (40 rounds a second under output,
+  up to 125 for a trickle, half a second at most while drawing).
 
 ## The old fux3's bugs: which classes are gone
 

@@ -537,7 +537,9 @@ fn a_round_of_writing_comes_40_times_a_second_under_output_and_up_to_125_times_w
     // Gone quiet: 8 ms after the last round at the soonest, and at once from then.
     assert_eq!(round_due(at(30), Some(at(1)), t, at(1), 1, false), Some(ms(5)));
     assert_eq!(round_due(at(85), Some(at(1)), t, at(75), 1, false), Some(Duration::ZERO));
-    // Drawing: half a second after what is not written began, however it was heard or written.
+    // Drawing: half a second after what is not written began, however it was heard or written,
+    // also when the read budget between screens is spent.
     assert_eq!(round_due(at(1000), Some(at(10)), at(900), at(1000), 1, true), Some(ms(401)));
+    assert_eq!(round_due(at(1000), Some(at(100)), at(900), at(1000), 0, true), Some(ms(410)));
     assert_eq!(round_due(at(5010), Some(at(10)), at(900), at(5010), 0, true), Some(Duration::ZERO));
 }

@@ -275,9 +275,8 @@ impl Holder {
 
     fn run(&mut self, input: &File, ctl: &File, ended: &mut PipeReader) -> Result<(), String> {
         // The program runs (it may have removed its folder already): what cannot be written is logged.
-        let made = ["history", "history.styled"].into_iter().try_for_each(|name| File::create(name).map(drop));
-        if let Err(e) = made.and_then(|()| self.publish(None)) {
-            self.log(&format!("cannot make the history or write the screen: {e}"));
+        if let Err(e) = self.publish(None) {
+            self.log(&format!("cannot write the pane's files: {e}"));
         }
         // (The pane is up: `fux start` waits for this line.)
         let _ = crate::say(b"");
@@ -596,12 +595,16 @@ impl Holder {
         let (main, alt) = (folder(MAIN, false), folder(ALT, true));
         // `shown` is a link to the folder of the screen drawn: `alt` is filled before it is
         // turned there, and goes (with all that is in it) after it is turned back.
+        let hist = [("history", Some(String::new())), ("history.styled", Some(String::new()))];
         let turn = [("shown", Some(if alt.is_some() { "alt" } else { "main" }.to_string()))];
         let gone = alt.is_none().then_some(("alt", None));
-        let files = pane.into_iter().chain(main.into_iter().flatten()).chain(alt.into_iter().flatten());
+        let files = pane.into_iter().chain(hist).chain(main.into_iter().flatten()).chain(alt.into_iter().flatten());
         let files = files.chain(turn).chain(gone).map(|(name, text)| (name, text.map(String::into_bytes)));
         let absent = |made: io::Result<()>, kind| made.or_else(|e| if e.kind() == kind { Ok(()) } else { Err(e) });
         let write = |name: &str, bytes: Option<&[u8]>| match (name, bytes) {
+            ("history" | "history.styled", Some(_)) => {
+                OpenOptions::new().create(true).append(true).open(name).map(drop)
+            }
             ("main" | "alt", Some(_)) => absent(fs::create_dir(name), ErrorKind::AlreadyExists),
             ("alt", None) => absent(fs::remove_dir_all(name), ErrorKind::NotFound),
             ("shown", Some(folder)) => {
