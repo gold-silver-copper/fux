@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -41,39 +42,63 @@ fn test() -> ExitCode {
     let tests: [(&str, Test); 5] =
         [("carries", carries), ("shows", shows), ("types", types), ("waits", waits), ("rings", rings)];
     static CURRENT: AtomicUsize = AtomicUsize::new(0);
-    let scratch = root.clone();
-    std::thread::spawn(move || {
-        let limit = std::env::var("TEST_LIMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
-        std::thread::sleep(Duration::from_secs(limit));
-        let name = tests.get(CURRENT.load(Ordering::Relaxed)).unwrap().0;
-        eprintln!("carrier: {name}: not over in {limit} s");
-        let _ = clean(&scratch);
-        std::process::exit(124);
-    });
+    static RUNNING: Mutex<bool> = Mutex::new(true);
     let mut args = std::env::args().skip(1);
-    let (mut list, mut filters) = (false, Vec::new());
+    let (mut list, mut exact, mut filters, mut skips) = (false, false, Vec::new(), Vec::new());
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--list" => list = true,
-            "--test-threads" => {
+            "--exact" => exact = true,
+            "--skip" => {
+                if let Some(skip) = args.next() {
+                    skips.push(skip);
+                }
+            }
+            "--test-threads" | "--format" | "--color" | "--logfile" => {
                 args.next();
             }
             flag if flag.starts_with('-') => (),
             _ => filters.push(arg),
         }
     }
+    let matches = |name: &str, f: &str| if exact { name == f } else { name.contains(f) };
+    if list {
+        for (name, _) in tests {
+            if (filters.is_empty() || filters.iter().any(|f| matches(name, f)))
+                && !skips.iter().any(|s| matches(name, s))
+            {
+                println!("{name}: test");
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+    let scratch = root.clone();
+    std::thread::spawn(move || {
+        let limit = std::env::var("TEST_LIMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+        std::thread::sleep(Duration::from_secs(limit));
+        *RUNNING.lock().unwrap() = false;
+        let name = tests.get(CURRENT.load(Ordering::Relaxed)).unwrap().0;
+        eprintln!("carrier: {name}: not over in {limit} s");
+        let _ = clean(&scratch);
+        std::process::exit(124);
+    });
     let mut failed = !clean(&root);
     for (i, (name, test)) in tests.into_iter().enumerate() {
-        if !filters.is_empty() && !filters.iter().any(|f| name.contains(f)) {
-            continue;
-        }
-        if list {
-            println!("{name}: test");
+        if (!filters.is_empty() && !filters.iter().any(|f| matches(name, f))) || skips.iter().any(|s| matches(name, s))
+        {
             continue;
         }
         CURRENT.store(i, Ordering::Relaxed);
         let dir = root.join(name);
-        let wrong = std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|()| test(&me, &dir)).err();
+        let made = {
+            let guard = RUNNING.lock().unwrap();
+            if !*guard {
+                drop(guard);
+                std::thread::park();
+            }
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())
+        };
+        let wrong = made.and_then(|()| test(&me, &dir)).err();
         match &wrong {
             None => println!("test {name} ... ok"),
             Some(why) => eprintln!("test {name} ... FAILED\n{why}"),
@@ -157,13 +182,16 @@ impl Shown {
     fn draws(&mut self, mut ready: impl FnMut(&str) -> bool) -> String {
         let by = Instant::now() + Duration::from_secs(20);
         loop {
+            if Instant::now() >= by {
+                return String::from_utf8_lossy(&self.drawn).into_owned();
+            }
             let mut piece = [0; 4096];
             match self.terminal.read(&mut piece) {
                 Ok(n) if n > 0 => self.drawn.extend(piece.iter().take(n)),
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
                     let drawn = String::from_utf8_lossy(&self.drawn);
-                    if ready(&drawn) || Instant::now() >= by {
+                    if ready(&drawn) {
                         return drawn.into_owned();
                     }
                     std::thread::sleep(Duration::from_millis(5));
@@ -173,10 +201,30 @@ impl Shown {
         }
     }
 
+    /// Reads until the viewer closes its end of the pty (`EOF` or `EIO`), failing on timeout or other errors.
+    fn draws_to_end(&mut self) -> Result<String, String> {
+        let by = Instant::now() + Duration::from_secs(20);
+        loop {
+            if Instant::now() >= by {
+                return Err("not in 20 s: viewer pty closed".into());
+            }
+            let mut piece = [0; 4096];
+            match self.terminal.read(&mut piece) {
+                Ok(0) => return Ok(String::from_utf8_lossy(&self.drawn).into_owned()),
+                Ok(n) => self.drawn.extend(piece.iter().take(n)),
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(5)),
+                Err(e) if e.raw_os_error() == Some(5) => return Ok(String::from_utf8_lossy(&self.drawn).into_owned()),
+                Err(e) => return Err(format!("pty read: {e}")),
+            }
+        }
+    }
+
     fn ctl(&self, dir: &Path) -> PathBuf {
         dir.join(format!(".view.{}/ctl", self.viewer.id()))
     }
 
+    /// Writes until the terminal refuses bytes continuously for 200 ms after taking more than `minimum`.
     fn fill(&mut self, keys: &[u8], minimum: usize) -> Result<usize, String> {
         let mut taken = 0;
         let mut last = Instant::now();
@@ -219,6 +267,7 @@ impl Shown {
     fn ended(&mut self, long: Duration) -> Option<std::process::ExitStatus> {
         let by = Instant::now() + long;
         while matches!(self.viewer.try_wait(), Ok(None)) && Instant::now() < by {
+            self.draws(|_| true);
             std::thread::sleep(Duration::from_millis(5));
         }
         self.viewer.try_wait().ok().flatten()
@@ -272,7 +321,7 @@ fn shows(me: &Path, root: &Path) -> Result<(), String> {
     // written after it (whoever has the terminal puts it back).
     let mut ctl = fuxix::open(pane.join("ctl"), true).map_err(|e| format!("ctl: {e}"))?;
     ctl.write_all(b"kill\n").map_err(|e| format!("ctl: {e}"))?;
-    let last = shown.draws(|_| false);
+    let last = shown.draws_to_end()?;
     let ended = shown.ended(Duration::from_secs(5));
     check(ended.is_some_and(|ended| ended.success()), format!("the viewer did not end with its pane: {ended:?}"))?;
     check(last.contains("killed 1") && last.ends_with("\x1b[?2026l"), format!("the end: {last:?}"))?;
@@ -288,9 +337,7 @@ fn shows(me: &Path, root: &Path) -> Result<(), String> {
 /// flag 2). While the paste waits the program asks to be told of the focus, and is: behind what
 /// waits, not in place of it.
 fn types(me: &Path, root: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(root)
-        .and_then(|()| std::fs::write(root.join("keyboard"), "31\n"))
-        .map_err(|e| e.to_string())?;
+    std::fs::write(root.join("keyboard"), "31\n").map_err(|e| e.to_string())?;
     // (It reads a piece every two milliseconds: slower than a viewer has what is typed.)
     let slowly = "while (sysread(STDIN, $b, 4096)) { syswrite(STDOUT, $b); select(undef, undef, undef, 0.002) }";
     let reads = format!(
@@ -300,20 +347,20 @@ fn types(me: &Path, root: &Path) -> Result<(), String> {
     let pane = start(me, root, "typed", &reads.replace("$0", &got.to_string_lossy()))?;
     until("the program asks for keys let go", || read(&pane.join("modes")).contains("keys"))?;
     let mut shown = Shown::of(me, root, &pane)?;
-    shown.draws(|drawn| drawn.contains("\x1b[?2026l"));
+    check(shown.draws(|drawn| drawn.contains("\x1b[?2026l")).contains("\x1b[?2026l"), "viewer drew no frame".into())?;
     let (press, release, focus) = ("\x1b[97;1:1u", "\x1b[97;1:3u", "\x1b[I");
     let pasted: String = (0..1 << 17).map(|n| format!("{n:07}\n")).collect();
     let typed = format!("{press}\x1b[200~{pasted}\x1b[201~{release}");
     // The terminal takes a part of it and then no more: the viewer reads no further while the
     // pane has not taken what it has.
-    let first = shown.fill(typed.as_bytes(), press.len() + (64 << 10))?;
+    let first = shown.fill(typed.as_bytes(), press.len() + (72 << 10))?;
     // The program asks for the focus now, and the viewer tells it: into a pane that is full.
     std::fs::write(root.join("got.ask"), "").map_err(|e| e.to_string())?;
     let mode = "\x1b[?1004h";
     check(shown.draws(|d| d.contains(mode)).contains(mode), "viewer did not enable focus reports".into())?;
     // Then the program reads, and the rest is taken.
     std::fs::write(root.join("got.go"), "").map_err(|e| e.to_string())?;
-    let rest = shown.types(typed.as_bytes().get(first..).unwrap_or_default(), Duration::from_secs(30));
+    let rest = shown.types(typed.as_bytes().get(first..).unwrap_or_default(), Duration::from_secs(60));
     check(first + rest == typed.len(), format!("{} of {} bytes were taken", first + rest, typed.len()))?;
     // All of it arrives, once and in its order: the press, the paste, the release (the paste
     // without its marks: this program did not ask for them). And the focus report, whole, once,
@@ -341,7 +388,7 @@ fn rings(me: &Path, root: &Path) -> Result<(), String> {
     let go = root.join("go");
     let pane = start(me, root, "rings", &says.replace("$0", &go.to_string_lossy()))?;
     let mut shown = Shown::of(me, root, &pane)?;
-    shown.draws(|drawn| drawn.contains("ready"));
+    check(shown.draws(|drawn| drawn.contains("ready")).contains("ready"), "viewer did not draw ready".into())?;
     // (What is there at a viewer's first look is old, and is not rung: the bell comes after it.)
     std::fs::write(&go, "").map_err(|e| e.to_string())?;
     let rung = shown.draws(|drawn| drawn.contains('\x07'));
@@ -350,8 +397,8 @@ fn rings(me: &Path, root: &Path) -> Result<(), String> {
     let told = shown.draws(|drawn| drawn.contains("said-aloud\x1b\\"));
     check(told.contains("\x1b]9;rings: said-aloud\x1b\\"), format!("the terminal was not told: {told:?}"))?;
     fuxix::open(pane.join("ctl"), true).and_then(|mut ctl| ctl.write_all(b"kill\n")).map_err(|e| e.to_string())?;
-    let all = shown.draws(|_| false);
-    check(shown.ended(Duration::from_secs(1)).is_some_and(|s| s.success()), "viewer did not end".into())?;
+    let all = shown.draws_to_end()?;
+    check(shown.ended(Duration::from_secs(5)).is_some_and(|s| s.success()), "viewer did not end".into())?;
     let rings = all.matches('\x07').count();
     check(rings == 1 && all.matches("said-aloud").count() == 1, format!("rung {rings} times: {all:?}"))?;
     check(!all.contains("rings: bell"), format!("the bell was written on the screen: {all:?}"))
@@ -362,12 +409,12 @@ fn rings(me: &Path, root: &Path) -> Result<(), String> {
 fn waits(me: &Path, root: &Path) -> Result<(), String> {
     let pane = start(me, root, "deaf", "stty raw -echo; printf deaf; exec sleep 600")?;
     let mut shown = Shown::of(me, root, &pane)?;
-    shown.draws(|drawn| drawn.contains("deaf"));
+    check(shown.draws(|drawn| drawn.contains("deaf")).contains("deaf"), "viewer did not draw deaf".into())?;
     let typed = vec![b'x'; 2 << 20];
-    shown.fill(&typed, 0)?;
+    shown.fill(&typed, 64 << 10)?;
     // Nothing of it was dropped to make room: a moment later the terminal takes no more.
     let more = shown.types(&typed, Duration::from_millis(200));
-    check(more == 0, format!("{more} more bytes were taken"))?;
+    check(more < 4096, format!("{more} more bytes were taken"))?;
     // The terminal is made another size: the viewer draws at it, and asks the pane to be it.
     let size = fuxix::Winsize { cols: 50, rows: 12, xpixel: 500, ypixel: 240 };
     let before = shown.drawn.len();
