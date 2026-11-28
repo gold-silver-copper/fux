@@ -800,7 +800,11 @@ fn a_history_that_cannot_be_put_aside_begins_anew_and_the_other_keeps_its_lines(
     let aside = || aside() && read(&pane.join("log")).contains("history.styled was lost");
     until_or("history is put aside, with all but 22 lines", || format!(": {} lines", lines()), aside);
     let (styled, log) = (fs::metadata(pane.join("history.styled")).unwrap().len(), read(&pane.join("log")));
-    assert!(styled < 4 << 20, "{styled} {log}");
+    assert!(styled < 4 << 20 && log.matches("history.styled was lost").count() == 1, "{styled} {log}");
+    // The lines kept are the lines printed, each once and in order.
+    let kept = read(&pane.join("history.1")) + &read(&pane.join("history"));
+    let wrong = kept.lines().enumerate().find(|(n, line)| **line != format!("{n:079}"));
+    assert_eq!(wrong, None, "a line that is not the one printed there");
 }
 
 #[test]

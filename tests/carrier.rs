@@ -338,7 +338,10 @@ fn waits(me: &Path, root: &Path) -> Result<(), String> {
     let anew = until("the pane is asked to be the terminal's size and is drawn anew", || {
         shown.draws(|_| true);
         let drawn = drawn(&shown);
-        read(&pane.join("size")).trim() == "50 12" && drawn.contains("\x1b[2J") && drawn.contains("deaf")
+        // (After its last clear the frame has `deaf` and is ended: not a clear alone, nor a frame cut short.)
+        let whole = |after: &str| after.split_once("deaf").is_some_and(|(_, rest)| rest.contains("\x1b[?2026l"));
+        read(&pane.join("size")).trim() == "50 12"
+            && drawn.rsplit_once("\x1b[2J").is_some_and(|(_, after)| whole(after))
     });
     anew.map_err(|e| format!("{e}: {:?}", drawn(&shown)))?;
     // Told to leave on its `ctl`, it leaves, with all of that still waiting.
