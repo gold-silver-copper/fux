@@ -102,7 +102,7 @@ the pane is alive. Alive is not what `state` says: it is the holder's process, t
     alive() { s=$(ps -o state= -p "$(sed -n 's/^holder //p' "$1/status")" 2>/dev/null) && case $s in ''|Z*) false ;; esac; }
     ended() { n=0; while alive "$1"; do n=$((n+1)); [ $n -lt "${2:-100}" ] || return 1; sleep 0.1; done; }
     X=$(fux start agent-demo/crash -- sleep 600); kill -9 "$(sed -n 's/^holder //p' "$X/status")"   # a crash, to show it
-    ended "$X"; alive "$P"; echo "crash is dead, though its state says $(cat "$X/state")"
+    alive "$P"; ended "$X" && echo "crash is dead, though its state says $(cat "$X/state")"
     printf 'x' 1<>"$X/in"; echo "the write to the dead pane came back"
 Its one limit: long after a crash the holder's number may be another process's. Exact,
 where there is flock(1) (Linux): the holder holds a lock on the pane's directory while it
@@ -197,7 +197,7 @@ get. The pane stays.
     code=$(fux wait "$J" | sed -n 's/^state exited //p'); echo "exit code $code"
     whole "$J"                                # all it printed (cat "$J/out", started with --out)
 fux wait has no limit: it waits as long as the program runs. To bound it, wait for the
-holder to go (here for up to five seconds), and then ask:
+holder to go (here for up to 50 tries), and then ask:
     ended "$J" 50 && fux wait "$J" | tail -n 1
 In a shell you keep typing into, print a tag after the command that the typed line itself
 does not contain (here the typed line has $? where the output has a number):

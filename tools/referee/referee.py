@@ -156,7 +156,7 @@ def fux(case, binary):
                 with os.fdopen(os.open(pane / "ctl", os.O_WRONLY | os.O_NONBLOCK), "w") as ctl:
                     ctl.write(f"resize {cols} {rows}\n")
             except OSError as error:
-                raise Unplayed("the pane's ctl has no reader") from error
+                raise Unplayed(f"the pane's ctl: {error}") from error
 
         cursor = played.run(resize)
         # The screen file follows the emulator by a moment. Once the player has left, the pane's
@@ -326,7 +326,7 @@ def main():
         for name in cases:
             case = parse(*every_case[name])
             try:
-                ours = play_twice_if_needed(fux, case, options["--fux"])
+                ours = fux(case, options["--fux"])
             except Unplayed as error:
                 new.append(f"{name} could not be played to fux: {error}")
                 continue

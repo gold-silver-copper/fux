@@ -21,23 +21,31 @@ def fail(why):
     raise SystemExit(why)
 
 
-def write(data):
+def write(data, keep=False):
+    heard = b""
     while data:
         # The terminal may be answering the case's own questions: take them in, or both sides wait.
         if select.select([0], [], [], 0)[0]:
-            os.read(0, 4096)
+            chunk = os.read(0, 4096)
+            if not chunk:
+                fail("the terminal closed while writing")
+            if keep:
+                heard += chunk
         if select.select([], [1], [], 0.05)[1]:
             data = data[os.write(1, data[:1024]) :]
+    return heard
 
 
 def taken_in(question=b""):
     """The status reply comes after the case's replies and any question sent here."""
-    write(question + b"\x1b[5n")
-    heard, deadline = b"", time.monotonic() + 5
+    heard, deadline = write(question + b"\x1b[5n", keep=True), time.monotonic() + 5
     while not heard.endswith(b"\x1b[0n"):
         if not select.select([0], [], [], max(0, deadline - time.monotonic()))[0] or time.monotonic() >= deadline:
             fail(f"no status reply after {question!r}: got {heard!r}")
-        heard += os.read(0, 4096)
+        chunk = os.read(0, 4096)
+        if not chunk:
+            fail(f"the terminal closed before status reply: got {heard!r}")
+        heard += chunk
     return heard[:-4]
 
 
